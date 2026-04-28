@@ -167,6 +167,22 @@ WORKFLOW:
   5. view_screenshot            → see current state
   6. drawing_save               → save your work
 
+ENGINEERING WORKFLOW (parts requiring real production drawings):
+  1. drawing_new           → auto-bootstraps engineering layers + linetypes
+  2. titleblock_apply_iso_a3 → standard ISO 7200 border + title (NEVER hand-draw the title)
+  3. gear_draw_helical_front_view / gear_draw_spur_front_view
+                           → parametric gear front view (NEVER hand-draw teeth or invent the title)
+  4. gear_draw_section_aa  → parametric cross-section
+  5. dimension_*           → real DIMENSION entities (NEVER use text+leader fakes)
+  6. drawing_finalize      → 8-step validator + save + screenshot;
+                             cannot complete without this; raises if invalid.
+
+CRITICAL: For engineering drawings, NEVER manually draw gear teeth, keyways,
+or section hatches with primitive line/circle calls. Use the gear_*, keyway_*,
+and titleblock_* tools — they are deterministic and produce production-quality
+output. The title text is whatever you pass to titleblock_apply_iso_a3 — do
+not invent variants like "HELICAL SPUR GEAR".
+
 HANDLES: Every entity has a unique handle (hex string). Use it for
 entity_get, entity_move, entity_delete, entity_set_properties, etc.
 
@@ -243,14 +259,39 @@ async def drawing_info(ctx: Context) -> dict:
 )
 async def drawing_new(
     template: Annotated[str | None, "Optional path to .dwt template file"] = None,
+    bootstrap: Annotated[bool, Field(
+        description="Auto-load CENTER/HIDDEN/PHANTOM linetypes and create standard "
+                    "engineering layers (GEOMETRY, DIM, CENTER, HIDDEN, PHANTOM, "
+                    "HATCH, TEXT, TITLEBLOCK). Disable for vanilla DXF.",
+    )] = True,
     ctx: Context = None,
 ) -> dict:
-    """Create a new empty drawing, optionally from a template (.dwt)."""
+    """Create a new empty drawing, optionally from a template (.dwt).
+
+    When ``bootstrap=True`` (default), the drawing is also seeded with the
+    standard engineering linetypes (CENTER/HIDDEN/PHANTOM) and layers
+    (GEOMETRY, DIM, CENTER, HIDDEN, PHANTOM, HATCH, TEXT, TITLEBLOCK).
+    """
     if template is not None:
         validated_template = validate_path(template, allow_write=False)
         template = str(validated_template)
-    await ctx.info(f"Creating new drawing (template={template})")
-    return await _backend(ctx).drawing_new(template)
+    await ctx.info(f"Creating new drawing (template={template}, bootstrap={bootstrap})")
+    backend = _backend(ctx)
+    raw = await backend.drawing_new(template)
+    result = dict(raw) if isinstance(raw, dict) else {"result": raw}
+    if bootstrap:
+        try:
+            from engineering import (
+                ensure_engineering_layers,
+                ensure_standard_linetypes,
+            )
+            lt_status = await ensure_standard_linetypes(backend)
+            layer_status = await ensure_engineering_layers(backend)
+            result["bootstrap"] = {"linetypes": lt_status, "layers": layer_status}
+        except Exception as exc:
+            await ctx.warning(f"Engineering bootstrap skipped: {exc}")
+            result["bootstrap"] = {"error": str(exc)}
+    return result
 
 
 @mcp.tool(
@@ -1111,6 +1152,39 @@ async def layer_isolate(
     return {"ok": True, "isolated": name, "hidden_count": len(hidden), "hidden_layers": hidden}
 
 
+@mcp.tool(
+    annotations={"title": "List Loaded Linetypes", "readOnlyHint": True},
+    tags={"layer", "linetype"},
+)
+async def linetype_list(ctx: Context = None) -> list[str]:
+    """Return the names of all linetypes currently loaded in the active drawing."""
+    return await _backend(ctx).linetype_list()
+
+
+@mcp.tool(
+    annotations={"title": "Load Linetype", "readOnlyHint": False},
+    tags={"layer", "linetype"},
+)
+async def linetype_load(
+    name: Annotated[str, "Linetype name to load (e.g. 'CENTER', 'DASHED', 'HIDDEN')"],
+    file: Annotated[
+        str | None,
+        "Optional .lin file. Defaults to acadiso.lin (metric) or acad.lin "
+        "(imperial), chosen from MEASUREMENT. Ignored by ezdxf backend."
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """Load a single linetype safely.
+
+    Use this instead of `system_run_command('_-LINETYPE _LOAD ...')` — that
+    raw form can deadlock on the FILEDIA file-picker dialog and on the
+    -LINETYPE option-menu prompt. This tool sets FILEDIA=0 around the call,
+    picks the right .lin file from MEASUREMENT, and verifies the linetype
+    actually loaded.
+    """
+    return await _backend(ctx).linetype_load(name, file)
+
+
 # ---------------------------------------------------------------------------
 # ── SECTION 7: Block Operations (7 tools) ───────────────────────────────────
 # ---------------------------------------------------------------------------
@@ -1874,7 +1948,12 @@ async def system_run_command(
 ) -> dict:
     """Execute an AutoCAD command string directly (COM backend only).
 
-    Append \\n for Enter. Example: '_LINE 0,0 100,0 \\n'
+    Append \\n for Enter. Example: '_LINE 0,0 100,0 \\n'.
+
+    IMPORTANT: commands that finish at an option menu (e.g. -LINETYPE, -LAYER,
+    -STYLE return to '[?/Create/Load/Set]:' after their action) need an EXTRA
+    blank line or '_X\\n' to exit, otherwise AutoCAD stays at a prompt and the
+    next COM call will deadlock. Example: '_-LINETYPE _LOAD CENTER acad.lin\\n\\n'.
     """
     sanitize_command(command)
     await ctx.warning(f"Running command: {command}")
@@ -1932,7 +2011,8 @@ async def system_about(ctx: Context = None) -> dict:
             "templates": ["template_apply_layers", "template_list"],
             "layers": ["layer_list", "layer_create", "layer_delete", "layer_set_current",
                        "layer_modify", "layer_freeze", "layer_thaw", "layer_lock",
-                       "layer_unlock", "layer_hide", "layer_show", "layer_isolate"],
+                       "layer_unlock", "layer_hide", "layer_show", "layer_isolate",
+                       "linetype_list", "linetype_load"],
             "blocks": ["block_list", "block_insert", "block_explode",
                        "block_get_attributes", "block_set_attributes",
                        "block_create_from_entities", "block_find_references"],
@@ -1950,6 +2030,217 @@ async def system_about(ctx: Context = None) -> dict:
         "total_tools": _registered_tool_count(),
         "unsafe_mode": config.settings.dangerous_commands_enabled,
     }
+
+
+# ---------------------------------------------------------------------------
+# ── SECTION 12: Engineering Tools (deterministic CAD generators) ────────────
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    annotations={"title": "Gear: Helical Front View", "destructiveHint": False},
+    tags={"engineering", "gear"},
+)
+async def gear_draw_helical_front_view(
+    module: Annotated[float, Field(gt=0, description="Module (mm). Pitch radius = module*teeth/2.")],
+    teeth: Annotated[int, Field(ge=6, description="Number of teeth.")],
+    helix_angle: Annotated[float, Field(ge=0, lt=45, description="Helix angle in degrees.")],
+    pressure_angle: Annotated[float, Field(default=20.0, gt=0, lt=45,
+        description="Pressure angle (deg). Standard: 20.")] = 20.0,
+    hand: Annotated[str, Field(default="RH",
+        description="Helix hand: 'RH' (right) or 'LH' (left).")] = "RH",
+    center_x: Annotated[float, Field(default=0.0)] = 0.0,
+    center_y: Annotated[float, Field(default=0.0)] = 0.0,
+    bore_diameter: Annotated[float | None, Field(default=None, gt=0,
+        description="Optional bore diameter (mm). Adds a centered hole.")] = None,
+    keyway_width: Annotated[float | None, Field(default=None, gt=0,
+        description="Keyway width (b). Auto from DIN 6885 if bore set and this is None.")] = None,
+    keyway_depth: Annotated[float | None, Field(default=None, gt=0,
+        description="Keyway depth into hub (t2).")] = None,
+    ctx: Context = None,
+) -> dict:
+    """Deterministic helical gear front view: full involute outline (40 pts/flank),
+    pitch/base/outer/root circles, helix symbol, optional bore + keyway.
+
+    Returns a handle bundle plus 'metadata' for downstream gear_draw_section_aa.
+    """
+    from engineering import draw_helical_gear_front_view
+    backend = _backend(ctx)
+    await ctx.info(f"Drawing helical gear: m={module}, z={teeth}, beta={helix_angle} deg, hand={hand}")
+    return await draw_helical_gear_front_view(
+        backend, module=module, teeth=teeth, helix_angle=helix_angle,
+        pressure_angle=pressure_angle, hand=hand, center=(center_x, center_y),
+        bore_diameter=bore_diameter, keyway_width=keyway_width, keyway_depth=keyway_depth,
+    )
+
+
+@mcp.tool(
+    annotations={"title": "Gear: Spur Front View", "destructiveHint": False},
+    tags={"engineering", "gear"},
+)
+async def gear_draw_spur_front_view(
+    module: Annotated[float, Field(gt=0)],
+    teeth: Annotated[int, Field(ge=6)],
+    pressure_angle: Annotated[float, Field(default=20.0, gt=0, lt=45)] = 20.0,
+    center_x: Annotated[float, Field(default=0.0)] = 0.0,
+    center_y: Annotated[float, Field(default=0.0)] = 0.0,
+    bore_diameter: Annotated[float | None, Field(default=None, gt=0)] = None,
+    keyway_width: Annotated[float | None, Field(default=None, gt=0)] = None,
+    keyway_depth: Annotated[float | None, Field(default=None, gt=0)] = None,
+    ctx: Context = None,
+) -> dict:
+    """Deterministic spur gear front view (no helix symbol)."""
+    from engineering import draw_spur_gear_front_view
+    backend = _backend(ctx)
+    await ctx.info(f"Drawing spur gear: m={module}, z={teeth}")
+    return await draw_spur_gear_front_view(
+        backend, module=module, teeth=teeth, pressure_angle=pressure_angle,
+        center=(center_x, center_y), bore_diameter=bore_diameter,
+        keyway_width=keyway_width, keyway_depth=keyway_depth,
+    )
+
+
+@mcp.tool(
+    annotations={"title": "Gear: Section A-A View", "destructiveHint": False},
+    tags={"engineering", "gear"},
+)
+async def gear_draw_section_aa(
+    gear_metadata: Annotated[dict, Field(description="The 'metadata' dict returned by gear_draw_helical_front_view or gear_draw_spur_front_view.")],
+    x_offset: Annotated[float, Field(description="X position to place the section view.")],
+    face_width: Annotated[float, Field(gt=0, description="Gear face width (mm).")],
+    ctx: Context = None,
+) -> dict:
+    """Deterministic side cross-section of a gear created by gear_draw_*_front_view.
+    Includes top/bottom/left/right boundaries, bore lines, keyway notch, ANSI31 hatch.
+    """
+    from engineering import draw_gear_section_aa
+    backend = _backend(ctx)
+    await ctx.info(f"Drawing section A-A at x={x_offset}, face_width={face_width}")
+    return await draw_gear_section_aa(
+        backend, gear_metadata=gear_metadata, x_offset=x_offset, face_width=face_width,
+    )
+
+
+@mcp.tool(
+    annotations={"title": "Keyway: Keyed Bore (front view)", "destructiveHint": False},
+    tags={"engineering", "keyway"},
+)
+async def keyway_draw_keyed_bore(
+    center_x: Annotated[float, Field()],
+    center_y: Annotated[float, Field()],
+    bore_diameter: Annotated[float, Field(gt=0)],
+    keyway_width: Annotated[float | None, Field(default=None, gt=0)] = None,
+    keyway_depth: Annotated[float | None, Field(default=None, gt=0)] = None,
+    layer: Annotated[str, Field(default="GEOMETRY")] = "GEOMETRY",
+    ctx: Context = None,
+) -> dict:
+    """Bore + DIN 6885 keyway in front view. Auto-sizes keyway from bore if width/depth omitted."""
+    from engineering import draw_keyed_bore
+    backend = _backend(ctx)
+    return await draw_keyed_bore(
+        backend, center=(center_x, center_y), bore_diameter=bore_diameter,
+        keyway_width=keyway_width, keyway_depth=keyway_depth, layer=layer,
+    )
+
+
+@mcp.tool(
+    annotations={"title": "Keyway: Side Section", "destructiveHint": False},
+    tags={"engineering", "keyway"},
+)
+async def keyway_draw_section(
+    center_x: Annotated[float, Field()],
+    center_y: Annotated[float, Field()],
+    bore_diameter: Annotated[float, Field(gt=0)],
+    face_width: Annotated[float, Field(gt=0)],
+    keyway_width: Annotated[float | None, Field(default=None, gt=0)] = None,
+    keyway_depth: Annotated[float | None, Field(default=None, gt=0)] = None,
+    ctx: Context = None,
+) -> dict:
+    """Side cross-section view of a keyed bore."""
+    from engineering import draw_keyway_section
+    backend = _backend(ctx)
+    return await draw_keyway_section(
+        backend, center=(center_x, center_y), bore_diameter=bore_diameter,
+        face_width=face_width, keyway_width=keyway_width, keyway_depth=keyway_depth,
+    )
+
+
+@mcp.tool(
+    annotations={"title": "TitleBlock: ISO A3", "destructiveHint": False},
+    tags={"engineering", "titleblock"},
+)
+async def titleblock_apply_iso_a3(
+    title: Annotated[str, Field(description="Drawing title (verbatim, no LLM transformation).")],
+    drawing_no: Annotated[str, Field(description="Drawing number (e.g. 'AM-2026-001').")],
+    part_no: Annotated[str, Field(default="")] = "",
+    material: Annotated[str, Field(default="")] = "",
+    scale: Annotated[str, Field(default="1:1")] = "1:1",
+    units: Annotated[str, Field(default="mm")] = "mm",
+    drawn_by: Annotated[str, Field(default="")] = "",
+    checked_by: Annotated[str, Field(default="")] = "",
+    date: Annotated[str, Field(default="")] = "",
+    sheet: Annotated[str, Field(default="1/1")] = "1/1",
+    revision: Annotated[str, Field(default="A")] = "A",
+    company: Annotated[str, Field(default="Anka-Makine")] = "Anka-Makine",
+    origin_x: Annotated[float, Field(default=0.0)] = 0.0,
+    origin_y: Annotated[float, Field(default=0.0)] = 0.0,
+    ctx: Context = None,
+) -> dict:
+    """ISO 7200 / A3 (420x297 mm) title block. Title text is used verbatim."""
+    from engineering import apply_iso_a3_titleblock, TitleBlockMetadata
+    backend = _backend(ctx)
+    metadata = TitleBlockMetadata(
+        title=title, drawing_no=drawing_no, part_no=part_no, material=material,
+        scale=scale, units=units, drawn_by=drawn_by, checked_by=checked_by,
+        date=date, sheet=sheet, revision=revision, company=company,
+    )
+    return await apply_iso_a3_titleblock(backend, metadata=metadata, origin=(origin_x, origin_y))
+
+
+@mcp.tool(
+    annotations={"title": "Drawing: Finalize (validate + save + screenshot)",
+                 "destructiveHint": True},
+    tags={"engineering", "drawing", "validation"},
+)
+async def drawing_finalize(
+    save_path: Annotated[str | None, Field(default=None,
+        description="If given, save drawing here before validation. Pass full path including extension.")] = None,
+    screenshot_path: Annotated[str | None, Field(default=None,
+        description="If given, write PNG screenshot to this path.")] = None,
+    expected: Annotated[dict | None, Field(default=None,
+        description="Optional contract: {'part_type', 'helix_angle', 'must_have_bore', 'must_have_keyway'}")] = None,
+    ctx: Context = None,
+) -> dict:
+    """8-step pre-completion validator: real dimensions, no hidden orphans, linetypes loaded,
+    bore+keyway in both views (if expected), title consistency, saved to disk, screenshot exported,
+    DWG path returned. Raises ToolError if any 'error' severity finding is present.
+    """
+    from engineering import DrawingValidator
+    backend = _backend(ctx)
+
+    if save_path:
+        validated = validate_path(save_path, allow_write=True)
+        await backend.drawing_save_as(str(validated))
+
+    if screenshot_path:
+        validated_shot = validate_path(screenshot_path, allow_write=True)
+        try:
+            shot = await backend.view_screenshot()
+            if shot:
+                from pathlib import Path as _P
+                _P(str(validated_shot)).write_bytes(shot)
+        except Exception as exc:
+            await ctx.warning(f"Screenshot export failed: {exc}")
+
+    result = await DrawingValidator().run(backend, expected=expected or {})
+    payload = result.to_dict()
+    info = await backend.drawing_info()
+    payload["dwg_path"] = getattr(info, "full_path", "")
+    if not result.ok:
+        raise ToolError(
+            f"drawing_finalize: validation failed with {result.summary['error']} error(s). "
+            f"First: {result.findings[0].code}: {result.findings[0].message}"
+        )
+    return payload
 
 
 # ---------------------------------------------------------------------------

@@ -69,18 +69,19 @@ The `mcp` FastMCP instance is configured with:
 - **Middleware stack**: `ErrorHandlingMiddleware` → `AuditMiddleware` (custom timing/audit log) → `TimingMiddleware` → `LoggingMiddleware`
 - **`_backend(ctx)`** helper: retrieves the backend from lifespan context, raises `ToolError` if not ready
 
-Tools are organized into 11 sections:
+Tools are organized into 12 sections:
 1. Drawing Management (11 tools): `drawing_*`
 2. Entity Creation (13 tools): `entity_create_*`
 3. Dimensions (5 tools): `dimension_*`
 4. Entity Modification (10 tools): `entity_move/copy/rotate/scale/mirror/offset/delete/array_*`
 5. Entity Query (3 tools): `entity_get`, `entity_list`, `entity_delete_many`
-6. Layer Management (12 tools): `layer_*`
+6. Layer Management (12 tools + 2 linetype_*): `layer_*`, `linetype_list`, `linetype_load`
 7. Block Operations (7 tools): `block_*`
 8. Analysis & Query (8 tools): `analysis_*`
 9. View & Screenshot (5 tools — includes `view_zoom_and_screenshot`): `view_*`
 10. Transactions (3 tools): `transaction_begin/commit/rollback`
 11. System (6 tools): `system_status/get_variable/set_variable/run_command/run_lisp/about`
+12. Engineering / Deterministic CAD (7 tools): `gear_draw_*`, `keyway_draw_*`, `titleblock_apply_iso_a3`, `drawing_finalize`
 
 ### Adding a New Tool
 
@@ -98,3 +99,5 @@ Tools are organized into 11 sections:
 - **COM backend only**: `system_run_command`, `system_run_lisp`, and `view_zoom_extents/window` (view ops are no-ops in ezdxf).
 - **Screenshot**: COM uses Win32 window capture (Pillow required); ezdxf renders via matplotlib.
 - **`_dc(obj)`**: converts dataclasses to dicts recursively for JSON serialization.
+- **Engineering layer scaffold**: `drawing_new` auto-bootstraps standard linetypes (CENTER, HIDDEN, PHANTOM) and engineering layers (GEOMETRY, DIM, CENTER, HIDDEN, PHANTOM, HATCH, TEXT, TITLEBLOCK). Pass `bootstrap=False` to opt out.
+- **Production drawings**: For real engineering output, use the `engineering/` package primitives via the `gear_*` / `keyway_*` / `titleblock_*` MCP tools — do NOT hand-draw teeth/keyways/sections with raw `entity_create_*` calls. Always end with `drawing_finalize` for the 8-step validator.

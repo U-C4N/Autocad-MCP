@@ -358,6 +358,15 @@ class AutoCADBackend(ABC):
     @abstractmethod
     async def layer_show(self, name: str) -> dict: ...
 
+    # ── linetype management ──────────────────────────────────────────────────
+    @abstractmethod
+    async def linetype_list(self) -> list[str]: ...
+
+    @abstractmethod
+    async def linetype_load(
+        self, name: str, file: str | None = None,
+    ) -> dict: ...
+
     # ── block operations ─────────────────────────────────────────────────────
     @abstractmethod
     async def block_list(self) -> list[BlockInfo]: ...
@@ -448,6 +457,33 @@ class AutoCADBackend(ABC):
 
     @abstractmethod
     async def system_run_lisp(self, expression: str) -> dict: ...
+
+    # ── concrete helpers (use existing primitives) ──────────────────────────
+    async def set_layer_active(self, name: str) -> None:
+        """Convenience: alias for layer_set_current. Concrete; backends need not override."""
+        await self.layer_set_current(name)
+
+    async def ensure_linetypes(
+        self, names: list[str], file: str | None = None,
+    ) -> dict[str, str]:
+        """Idempotently load each linetype in `names`. Returns {name: status}.
+        Status is one of: 'already_loaded', 'loaded', 'failed: <msg>'.
+        """
+        try:
+            current = {ln.lower() for ln in await self.linetype_list()}
+        except Exception:
+            current = set()
+        results: dict[str, str] = {}
+        for n in names:
+            if n.lower() in current:
+                results[n] = "already_loaded"
+                continue
+            try:
+                await self.linetype_load(n, file=file)
+                results[n] = "loaded"
+            except Exception as exc:
+                results[n] = f"failed: {exc}"
+        return results
 
 
 # ---------------------------------------------------------------------------

@@ -55,6 +55,59 @@ _ACI_NAMES = {
     5: "Blue", 6: "Magenta", 7: "White", 256: "ByLayer", 0: "ByBlock",
 }
 
+_BUILTIN_LINETYPES = {"continuous", "bylayer", "byblock"}
+
+# AutoCAD-shipped linetypes that ezdxf.tools.standards does not include.
+# Pattern format: [total_length, dash_1, gap_1, dash_2, gap_2, ...] (gaps negative).
+# Values match acadiso.lin so drawings render the same in AutoCAD viewers.
+_AUTOCAD_FALLBACK_LINETYPES: dict[str, tuple[str, list[float]]] = {
+    "HIDDEN":   ("Hidden __ __ __ __ __ __ __ __ __",  [7.5, 5.0, -2.5]),
+    "HIDDEN2":  ("Hidden (.5x) _ _ _ _ _ _ _ _ _",     [3.75, 2.5, -1.25]),
+    "HIDDENX2": ("Hidden (2x) ____ ____ ____ ____",    [15.0, 10.0, -5.0]),
+    "BORDER":   ("Border __ __ . __ __ . __ __ . __",  [22.5, 7.5, -2.5, 7.5, -2.5, 0.0, -2.5]),
+    "BORDER2":  ("Border (.5x) __.__.__.__.__.__",     [11.25, 3.75, -1.25, 3.75, -1.25, 0.0, -1.25]),
+    "BORDERX2": ("Border (2x) ____  __  ____  __",     [45.0, 15.0, -5.0, 15.0, -5.0, 0.0, -5.0]),
+}
+
+
+def _add_linetype_from_fallback(doc, name: str) -> bool:
+    """Add `name` from _AUTOCAD_FALLBACK_LINETYPES if known. Returns True on success."""
+    fallback = _AUTOCAD_FALLBACK_LINETYPES.get(name.upper())
+    if fallback is None:
+        return False
+    description, pattern = fallback
+    doc.linetypes.add(name.upper(), pattern=pattern, description=description)
+    return True
+
+
+def _ensure_linetype_loaded(doc, name: str) -> None:
+    """Add `name` to doc.linetypes if not already present.
+
+    Lookup order: ezdxf.tools.standards → AutoCAD fallback table → warn.
+    Lets callers write `linetype="CENTER"` (or HIDDEN, BORDER) without
+    separately loading it.
+    """
+    if not name or name.lower() in _BUILTIN_LINETYPES:
+        return
+    if name in doc.linetypes:
+        return
+    try:
+        from ezdxf.tools import standards as ezdxf_standards
+        for lt_name, description, pattern in ezdxf_standards.linetypes():
+            if lt_name.lower() == name.lower():
+                doc.linetypes.add(lt_name, pattern=pattern, description=description)
+                return
+    except ImportError:
+        pass
+    if _add_linetype_from_fallback(doc, name):
+        return
+    log.warning(
+        "ezdxf backend: linetype %r is not in ezdxf's standard set or AutoCAD "
+        "fallback table; name will be assigned but renders as Continuous until "
+        "properly defined.",
+        name,
+    )
+
 
 def _entity_info_dxf(ent) -> EntityInfo:
     """Convert an ezdxf entity to EntityInfo."""
@@ -924,6 +977,7 @@ class EzdxfBackend(AutoCADBackend):
             if color is not None:
                 ent.dxf.color = int(color)
             if linetype is not None:
+                _ensure_linetype_loaded(self._require_doc(), linetype)
                 ent.dxf.linetype = linetype
             if lineweight is not None:
                 ent.dxf.lineweight = int(lineweight)
@@ -972,6 +1026,7 @@ class EzdxfBackend(AutoCADBackend):
     ) -> LayerInfo:
         def _sync():
             doc = self._require_doc()
+            _ensure_linetype_loaded(doc, linetype)
             lyr = doc.layers.add(
                 name,
                 color=int(color),
@@ -1016,6 +1071,7 @@ class EzdxfBackend(AutoCADBackend):
             if color is not None:
                 lyr.dxf.color = int(color)
             if linetype is not None:
+                _ensure_linetype_loaded(doc, linetype)
                 lyr.dxf.linetype = linetype
             if lineweight is not None:
                 lyr.dxf.lineweight = int(lineweight)
@@ -1081,6 +1137,45 @@ class EzdxfBackend(AutoCADBackend):
                 lyr.on()
                 self._mark_dirty()
             return {"ok": True, "layer": name, "visible": True}
+        return await self._async(_sync)
+
+    # ── linetype management ───────────────────────────────────────────────────
+
+    async def linetype_list(self) -> list[str]:
+        def _sync():
+            doc = self._require_doc()
+            return [lt.dxf.name for lt in doc.linetypes]
+        return await self._async(_sync)
+
+    async def linetype_load(self, name, file=None) -> dict:
+        # Loads a single linetype. Lookup order:
+        # 1. ezdxf.tools.standards (ISO: CENTER, DASHED, DASHDOT, PHANTOM, ...)
+        # 2. AutoCAD fallback table (HIDDEN, BORDER and *2/X2 variants)
+        # The `file` parameter is accepted for API parity with COM but ignored
+        # — ezdxf does not ship a .lin parser.
+        from ezdxf.tools import standards as ezdxf_standards
+        del file
+        def _sync():
+            doc = self._require_doc()
+            existing = {lt.dxf.name.lower() for lt in doc.linetypes}
+            if name.lower() in existing:
+                return {"ok": True, "name": name, "already_loaded": True}
+            for lt_name, description, pattern in ezdxf_standards.linetypes():
+                if lt_name.lower() == name.lower():
+                    doc.linetypes.add(lt_name, pattern=pattern, description=description)
+                    self._mark_dirty()
+                    return {"ok": True, "name": lt_name,
+                            "source": "ezdxf.tools.standards"}
+            if _add_linetype_from_fallback(doc, name):
+                self._mark_dirty()
+                return {"ok": True, "name": name.upper(),
+                        "source": "autocad_fallback"}
+            raise RuntimeError(
+                f"Linetype '{name}' is not in ezdxf's standard set or the "
+                "AutoCAD fallback table. Available standards: CENTER*, DASHED*, "
+                "DASHDOT*, PHANTOM*, DOT*, DIVIDE*. Available fallbacks: "
+                "HIDDEN*, BORDER*. Custom .lin files require the COM backend."
+            )
         return await self._async(_sync)
 
     # ── block operations ──────────────────────────────────────────────────────

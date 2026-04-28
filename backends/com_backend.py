@@ -127,6 +127,44 @@ def _msp():
     return _acad_doc().ModelSpace
 
 
+_BUILTIN_LINETYPES = {"continuous", "bylayer", "byblock"}
+
+
+def _ensure_linetype_loaded(name: str) -> None:
+    """If `name` is not already loaded, load it via -LINETYPE behind FILEDIA=0.
+
+    Called by attribute setters so users can write `linetype="CENTER"` without
+    having to remember to load it first. Must run on the COM thread.
+    """
+    if not name or name.lower() in _BUILTIN_LINETYPES:
+        return
+    doc = _acad_doc()
+    existing = {doc.Linetypes.Item(i).Name.lower()
+                for i in range(doc.Linetypes.Count)}
+    if name.lower() in existing:
+        return
+    app = _acad_app()
+    try:
+        measurement = int(app.GetVariable("MEASUREMENT"))
+    except Exception as exc:
+        log.debug("MEASUREMENT read failed, defaulting to acadiso: %s", exc)
+        measurement = 1
+    lin_file = "acadiso.lin" if measurement == 1 else "acad.lin"
+    try:
+        old_filedia = int(app.GetVariable("FILEDIA"))
+    except Exception as exc:
+        log.debug("FILEDIA read failed, assuming 1: %s", exc)
+        old_filedia = 1
+    try:
+        app.SetVariable("FILEDIA", 0)
+        doc.SendCommand(f"_-LINETYPE _LOAD {name} {lin_file}\n\n")
+    finally:
+        try:
+            app.SetVariable("FILEDIA", old_filedia)
+        except Exception as exc:
+            log.debug("FILEDIA restore failed: %s", exc)
+
+
 def _apply_entity_attrs(entity, layer: str | None, color: int | None, linetype: str | None):
     """Apply common entity attributes after creation."""
     if layer is not None:
@@ -134,6 +172,7 @@ def _apply_entity_attrs(entity, layer: str | None, color: int | None, linetype: 
     if color is not None:
         entity.Color = int(color)
     if linetype is not None:
+        _ensure_linetype_loaded(linetype)
         entity.Linetype = linetype
 
 
@@ -374,11 +413,23 @@ class ComBackend(AutoCADBackend):
                 return await asyncio.wait_for(future, timeout=timeout)
             return await future
         except asyncio.TimeoutError as e:
-            log.error("COM call timed out after %.1fs", timeout)
+            log.error("COM call timed out after %.1fs; rebuilding executor", timeout)
+            # The worker thread is still blocked inside SendCommand and cannot be
+            # cancelled. Abandon it (shutdown(wait=False)) and start a fresh
+            # single-thread executor so the next call doesn't queue behind the
+            # stuck one and time out too. Drop the cached COM app for the same
+            # reason — the new thread must re-Dispatch in its own apartment.
+            stuck = self._executor
+            self._executor = ThreadPoolExecutor(max_workers=1, initializer=_com_init)
+            if stuck is not None:
+                stuck.shutdown(wait=False)
+            _COM_STATE.pop("app", None)
+            self._connected = False
             raise RuntimeError(
                 f"AutoCAD did not respond within {timeout:.0f}s. The application "
-                "may be showing a modal dialog or hung. Increase COM_CALL_TIMEOUT "
-                "if a long operation is expected."
+                "may be showing a modal dialog or have an active command prompt "
+                "(press ESC in AutoCAD). Increase COM_CALL_TIMEOUT if a long "
+                "operation is expected."
             ) from e
         except pywintypes.com_error as e:
             hr = e.args[0] if e.args else 0
@@ -904,6 +955,7 @@ class ComBackend(AutoCADBackend):
             if color is not None:
                 ent.Color = int(color)
             if linetype is not None:
+                _ensure_linetype_loaded(linetype)
                 ent.Linetype = linetype
             if lineweight is not None:
                 ent.LineWeight = int(lineweight)
@@ -966,6 +1018,7 @@ class ComBackend(AutoCADBackend):
             doc = _acad_doc()
             lyr = doc.Layers.Add(name)
             lyr.Color = int(color)
+            _ensure_linetype_loaded(linetype)
             try:
                 lyr.Linetype = linetype
             except Exception as exc:
@@ -999,6 +1052,7 @@ class ComBackend(AutoCADBackend):
             if color is not None:
                 lyr.Color = int(color)
             if linetype is not None:
+                _ensure_linetype_loaded(linetype)
                 lyr.Linetype = linetype
             if lineweight is not None:
                 lyr.LineWeight = int(lineweight)
@@ -1051,6 +1105,67 @@ class ComBackend(AutoCADBackend):
             lyr = doc.Layers.Item(name)
             lyr.LayerOn = True
             return {"ok": True, "layer": name, "visible": True}
+        return await self._run(_sync)
+
+    # ── linetype management ───────────────────────────────────────────────────
+
+    async def linetype_list(self) -> list[str]:
+        def _sync():
+            doc = _acad_doc()
+            return [doc.Linetypes.Item(i).Name for i in range(doc.Linetypes.Count)]
+        return await self._run(_sync)
+
+    async def linetype_load(self, name, file=None) -> dict:
+        # Loads a single linetype from a .lin file. Two things would otherwise
+        # bite the user: (1) AutoCAD pops a "Select Linetype File" dialog when
+        # FILEDIA=1 and the file path can't be auto-resolved — that modal
+        # dialog deadlocks SendCommand; (2) ISO/metric drawings need acadiso.lin,
+        # imperial drawings need acad.lin. We pick automatically from MEASUREMENT
+        # if the caller didn't specify a file.
+        def _sync():
+            app = _acad_app()
+            doc = _acad_doc()
+
+            existing = {doc.Linetypes.Item(i).Name.lower()
+                        for i in range(doc.Linetypes.Count)}
+            if name.lower() in existing:
+                return {"ok": True, "name": name, "already_loaded": True}
+
+            if file is None:
+                try:
+                    measurement = int(app.GetVariable("MEASUREMENT"))
+                except Exception as exc:
+                    log.debug("MEASUREMENT read failed, defaulting to acadiso: %s", exc)
+                    measurement = 1
+                lin_file = "acadiso.lin" if measurement == 1 else "acad.lin"
+            else:
+                lin_file = file
+
+            try:
+                old_filedia = int(app.GetVariable("FILEDIA"))
+            except Exception as exc:
+                log.debug("FILEDIA read failed, assuming 1: %s", exc)
+                old_filedia = 1
+            try:
+                app.SetVariable("FILEDIA", 0)
+                # Double newline: first ends the file name, second exits
+                # -LINETYPE's [?/Create/Load/Set] option menu.
+                doc.SendCommand(f"_-LINETYPE _LOAD {name} {lin_file}\n\n")
+            finally:
+                try:
+                    app.SetVariable("FILEDIA", old_filedia)
+                except Exception as exc:
+                    log.debug("FILEDIA restore failed: %s", exc)
+
+            after = {doc.Linetypes.Item(i).Name.lower()
+                     for i in range(doc.Linetypes.Count)}
+            if name.lower() not in after:
+                raise RuntimeError(
+                    f"Failed to load linetype '{name}' from '{lin_file}'. "
+                    "Check the linetype name spelling and that the .lin file is "
+                    "on AutoCAD's support path."
+                )
+            return {"ok": True, "name": name, "file": lin_file}
         return await self._run(_sync)
 
     # ── block operations ──────────────────────────────────────────────────────
@@ -1347,8 +1462,23 @@ class ComBackend(AutoCADBackend):
         return await self._run(_sync)
 
     async def system_run_command(self, command) -> dict:
+        # Commands ending in option menus (e.g. -LINETYPE returning to its
+        # [?/Create/Load/Set] prompt) need a trailing blank line or _X to exit;
+        # otherwise SendCommand returns but AutoCAD stays at a prompt and the
+        # next COM call deadlocks. Example: "_-LINETYPE _LOAD CENTER acad.lin\n\n"
         def _sync():
+            app = _acad_app()
             doc = _acad_doc()
+            try:
+                cmd_active = int(app.GetVariable("CMDACTIVE"))
+            except Exception as exc:
+                log.debug("CMDACTIVE read failed, proceeding anyway: %s", exc)
+                cmd_active = 0
+            if cmd_active:
+                raise RuntimeError(
+                    "AutoCAD has an active command or prompt (CMDACTIVE="
+                    f"{cmd_active}). Press ESC in AutoCAD to cancel, then retry."
+                )
             cmd = command if command.endswith("\n") else command + "\n"
             doc.SendCommand(cmd)
             return {"ok": True, "command": command}
