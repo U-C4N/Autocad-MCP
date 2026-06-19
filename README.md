@@ -3,7 +3,7 @@
 **Production-grade AutoCAD automation for the Model Context Protocol.**
 Dual-engine. Battle-tested. Model-agnostic.
 
-87 tools · 6 resources · 5 prompt templates · COM + ezdxf backends · Python 3.11+ · MIT
+v1.1.0 · 110 tools · 5 resources · 5 prompt templates · COM + ezdxf backends · Python 3.11+ · MIT
 
 ---
 
@@ -15,7 +15,7 @@ My day job at **Anka-Makine** revolves around intensive AutoCAD work — product
 
 After months of leaning on this server inside my own daily workflow — and watching it shave hours off my week without a single misstep on critical drawings — I decided it deserved a public release. It works. It is fast. It stays out of the way.
 
-The model on the other end of the wire does not matter. The Model Context Protocol is the contract; AutoCAD MCP Pro is one well-typed implementation of that contract. Any MCP-aware client — and the LLM behind it — sees the same 87 tools.
+The model on the other end of the wire does not matter. The Model Context Protocol is the contract; AutoCAD MCP Pro is one well-typed implementation of that contract. Any MCP-aware client — and the LLM behind it — sees the same 110 tools.
 
 I will keep this repository actively maintained as my own use of it evolves, and **a public benchmark suite is on the way** — I want to give you numbers, not adjectives.
 
@@ -63,7 +63,7 @@ AutoCAD MCP Pro takes a different stance:
   - **ezdxf backend**: headless DXF file operations powered by [ezdxf](https://github.com/mozman/ezdxf). Works on every platform, ideal for batch workloads and CI pipelines.
   - Automatic backend selection, with a clean override via `AUTOCAD_MCP_BACKEND`.
 
-- **87 Tools, 11 Categories**
+- **110 Tools, 12 Categories**
   - Drawing management — `drawing_new`, `drawing_open`, `drawing_save`, `drawing_save_as`, `drawing_export_dxf`, `drawing_export_pdf`, `drawing_purge`, `drawing_audit`, `drawing_undo`, `drawing_redo`, `drawing_close`
   - Entity creation — line, circle, arc, polyline, rectangle, text, mtext, hatch, spline, ellipse, point, block reference, batch create
   - Dimensions — linear, aligned, angular, radius, diameter
@@ -75,13 +75,20 @@ AutoCAD MCP Pro takes a different stance:
   - Transactions — begin, commit, rollback, with disk-backed snapshots
   - System — status, get/set variables, run command, run AutoLISP, about
   - Templates and validation — apply standard layer templates, validate drawings against rule sets
+  - Engineering / deterministic CAD — involute gear front view + section A-A, DIN 6885 keyed bore, ISO A3 title block, and the 8-step `drawing_finalize` gate
+  - Premium drafting workflow — `drawing_plan`, deterministic OSNAP (`point_from_snap` / `point_intersection` / `point_tangent`), `drawing_apply_iso_layers`, `dimension_auto`, `entity_select_smart`, `drawing_critique`, `construction_*`
 
 - **Production-Grade Plumbing**
   - FastMCP 3.0 lifespan-managed backend singleton
   - Middleware stack: error handling, audit logging, timing, request logging
   - Structured progress reports for long-running operations (`drawing_open`, exports, batch ops)
-  - 104 tests across drawing, entity, dimension, layer, block, analysis, batch/template, security suites
+  - 318 tests across drawing, entity, dimension, layer, block, analysis, batch/template, engineering, premium, mocked-COM, and security suites
   - Ruff-clean codebase, GitHub Actions CI
+
+- **Closed-Loop Quality Gate**
+  - `drawing_finalize` runs **both** the 8-step structural validator **and** the premium ISO-128 critique (lineweights, layer colors, untrimmed corners, duplicate entities, leftover construction, dimension overlap) — leftover scaffolding or a non-standard lineweight blocks the gate instead of slipping through.
+  - Deterministic geometry: `point_from_snap` / `point_intersection` / `point_tangent` give the agent exact OSNAP coordinates instead of guessed ones — the single biggest source of LLM drawing errors.
+  - Cross-backend parity: the same `EntityInfo.properties` contract, save-format-from-extension, offset side selection, and ARC length on **both** engines.
 
 - **Security-First Defaults**
   - Path traversal & system-directory protection
@@ -117,7 +124,7 @@ pip install -e ".[full]"
 python server.py
 ```
 
-That is it. The server starts in STDIO mode and your MCP client will discover all 87 tools.
+That is it. The server starts in STDIO mode and your MCP client will discover all 110 tools.
 
 For headless / CI workflows:
 
@@ -363,8 +370,10 @@ autocad-mcp/
 ## Roadmap
 
 - [x] **1.0** — Initial public release
-- [x] **1.1** — Security hardening (LISP allowlist, transaction snapshots on disk, COM timeouts, HTTP bind guard, dynamic tool count)
-- [ ] **1.2** — Public benchmark suite (`benchmarks/` with reproducible runner)
+- [x] **1.1** — Correctness, cross-backend parity & the enforced quality gate: `drawing_finalize` now runs the premium ISO-128 critique; deterministic geometry (`point_intersection`/`point_tangent`); dimension/save-format/polar-array/offset fixes across both engines; COM robustness (CoUninitialize, transaction & LISP guards); security hardening (HTTP bind guard on every launch path, LISP-allowlist bypass tests); mocked-COM test harness. **318 tests.**
+- [ ] **1.2** — Closed-loop validation moat: scalar drawing-score, pre-plan clarification pass, and an iterative critique→repair→re-critique refiner (with dedicated transaction-stack isolation)
+- [ ] **1.3** — ISO production: 2D GD&T (ISO 1101) feature-control frames, ISO 129 dimension tolerances/fits, ISO-25 dimension styles
+- [ ] **1.4** — Public benchmark suite (`benchmarks/` with reproducible runner)
 - [ ] **1.3** — Backend `capabilities()` map and per-tool enablement (e.g. hide `system_run_command` automatically on ezdxf)
 - [ ] **1.4** — Module split for `server.py` and a clean `services/` orchestration layer
 - [ ] **1.5** — Windows CI matrix with mocked COM backend; full coverage report

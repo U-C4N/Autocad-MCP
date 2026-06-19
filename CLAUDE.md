@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AutoCAD MCP Pro is a FastMCP 3.0 server that exposes 87 tools, 6 resources, and 5 prompt templates for AutoCAD automation. (The exact tool count is reported dynamically by `system_status` / `system_about` — never hardcode it.) It runs with a dual-engine architecture: a live COM backend (Windows/AutoCAD required) and a headless ezdxf backend (works anywhere).
+AutoCAD MCP Pro is a FastMCP 3.0 server that exposes ~110 tools, 5 resources, and 5 prompt templates for AutoCAD automation. (The exact tool count is reported dynamically by `system_status` / `system_about` — never hardcode it.) It runs with a dual-engine architecture: a live COM backend (Windows/AutoCAD required) and a headless ezdxf backend (works anywhere).
 
 ## Running the Server
 
@@ -53,7 +53,7 @@ Uses `pytest-asyncio` for async test support.
 
 The server uses a strategy pattern with an abstract base:
 
-- `backends/base.py` — `AutoCADBackend` ABC defining the full interface + shared dataclasses (`EntityInfo`, `LayerInfo`, `BlockInfo`, `DrawingInfo`, `CommandResult`)
+- `backends/base.py` — `AutoCADBackend` ABC defining the full interface + shared dataclasses (`EntityInfo`, `LayerInfo`, `BlockInfo`, `DrawingInfo`)
 - `backends/ezdxf_backend.py` — `EzdxfBackend`: file-based DXF operations using the `ezdxf` library. All sync ezdxf calls are wrapped with `asyncio.to_thread` via `_async()`. Transactions are implemented as full DXF snapshots on an `_undo_stack`.
 - `backends/com_backend.py` — `ComBackend`: live AutoCAD control via `pywin32` COM. All COM calls are routed through a `ThreadPoolExecutor` with a single thread to satisfy AutoCAD's STA (Single-Threaded Apartment) COM requirement.
 
