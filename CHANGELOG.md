@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Next: 1.2 — closed-loop validation moat (scalar drawing-score, pre-plan clarification, iterative refiner + transaction-stack isolation)._
 
+## [1.1.1] — 2026-06-20
+
+### Added
+- **`selection_get`** (Entity Query, COM backend): reads AutoCAD's implied
+  ("pickfirst") viewport selection — the entities the user highlighted with
+  grips before invoking the AI — and returns their handles + `EntityInfo`.
+  This lets the AI scope work to exactly what the user picked
+  (`dimension_auto(selection_get()["handles"])`) instead of acting on the whole
+  drawing. Resolves [#1](https://github.com/U-C4N/Autocad-MCP/issues/1) — the
+  layer-juggling workaround is no longer needed. Surfaces the `PICKFIRST` sysvar
+  state so an empty selection is self-explanatory. The ezdxf headless backend
+  has no viewport, so it returns `ok=False` with an empty handle list (same
+  shape, never raises). Tool count: 110 → 111.
+
 ## [1.1.0] — 2026-06-19
 
 Correctness, cross-backend parity, and an **enforced** quality gate, landed across four audited

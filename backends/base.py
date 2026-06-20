@@ -487,6 +487,26 @@ class AutoCADBackend(ABC):
     @abstractmethod
     async def analysis_select_by_type(self, entity_type: str) -> list[EntityInfo]: ...
 
+    @abstractmethod
+    async def selection_get(self) -> dict:
+        """Read the live viewport's implied ("pickfirst") selection set.
+
+        COM-only / meaningful only with live AutoCAD. Returns a dict::
+
+            {
+                "ok": bool,                # True on COM even for an empty pick
+                "count": int,
+                "handles": list[str],      # entity handles to act on
+                "entities": list[EntityInfo],  # _dc()-converted by the server
+                "pickfirst": bool | None,  # state of the PICKFIRST sysvar
+                "message" / "error": str,  # optional guidance / failure reason
+            }
+
+        The ezdxf headless backend has no viewport, so it returns ``ok=False``
+        with an empty ``handles`` list (same shape, never raises).
+        """
+        ...
+
     # ── view / screenshot ────────────────────────────────────────────────────
     @abstractmethod
     async def view_zoom_extents(self) -> dict: ...

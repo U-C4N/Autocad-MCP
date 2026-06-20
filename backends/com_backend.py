@@ -1444,6 +1444,66 @@ class ComBackend(AutoCADBackend):
             return results
         return await self._run(_sync)
 
+    async def selection_get(self) -> dict:
+        def _sync():
+            doc = _acad_doc()
+
+            # PICKFIRST controls whether the noun/verb (grip) pre-selection is
+            # captured at all. Surface it so an empty result is explainable.
+            try:
+                pickfirst = bool(doc.GetVariable("PICKFIRST"))
+            except Exception as exc:
+                log.debug("selection_get: PICKFIRST read failed: %s", exc)
+                pickfirst = None
+
+            try:
+                ss = doc.PickfirstSelectionSet
+            except Exception as exc:
+                log.debug("selection_get: PickfirstSelectionSet unavailable: %s", exc)
+                return {
+                    "ok": False,
+                    "error": f"PickfirstSelectionSet unavailable: {exc}",
+                    "count": 0,
+                    "handles": [],
+                    "entities": [],
+                    "pickfirst": pickfirst,
+                }
+
+            try:
+                count = int(ss.Count)
+            except Exception as exc:
+                log.debug("selection_get: Count read failed: %s", exc)
+                count = 0
+
+            entities = []
+            for i in range(count):
+                try:
+                    entities.append(_entity_info(ss.Item(i)))
+                except Exception as exc:
+                    log.debug("selection_get: skip selection item %d: %s", i, exc)
+                    continue
+
+            handles = [e.handle for e in entities]
+            result = {
+                "ok": True,
+                "count": len(handles),
+                "handles": handles,
+                "entities": entities,   # _dc()-converted at the server layer
+                "pickfirst": pickfirst,
+            }
+            if not handles:
+                result["message"] = (
+                    "No entities are pre-selected in the AutoCAD viewport. "
+                    "Select entities (so grips appear) before calling, and "
+                    "ensure PICKFIRST=1."
+                    if pickfirst is not False
+                    else "PICKFIRST is 0; the noun/verb grip selection is disabled. "
+                         "Set PICKFIRST=1 (system_set_variable) and re-select."
+                )
+            return result
+
+        return await self._run(_sync)
+
     # ── view / screenshot ──────────────────────────────────────────────────────
 
     async def view_zoom_extents(self) -> dict:

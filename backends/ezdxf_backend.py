@@ -1466,6 +1466,19 @@ class EzdxfBackend(AutoCADBackend):
             ]
         return await self._async(_sync)
 
+    async def selection_get(self) -> dict:
+        # COM-only: headless ezdxf has no viewport / pickfirst grip selection.
+        # Return a not-supported result but keep the same shape (empty handles)
+        # so callers that iterate the selection do not KeyError.
+        return {
+            "ok": False,
+            "error": "selection_get not supported in ezdxf backend (no live AutoCAD viewport)",
+            "count": 0,
+            "handles": [],
+            "entities": [],
+            "pickfirst": None,
+        }
+
     # ── view / screenshot ──────────────────────────────────────────────────────
 
     async def view_zoom_extents(self) -> dict:

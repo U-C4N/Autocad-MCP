@@ -1,6 +1,6 @@
 [project]
 name = "autocad-mcp-pro"
-version = "1.1.0"
+version = "1.1.1"
 description = "Production-grade AutoCAD MCP server — COM API + ezdxf dual engine"
 readme = "README.md"
 requires-python = ">=3.11"

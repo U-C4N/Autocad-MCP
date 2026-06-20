@@ -1141,7 +1141,7 @@ async def entity_set_properties(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 5: Entity Query (3 tools) ───────────────────────────────────────
+# ── SECTION 5: Entity Query (4 tools) ───────────────────────────────────────
 # ---------------------------------------------------------------------------
 
 @mcp.tool(
@@ -1205,6 +1205,42 @@ async def entity_delete_many(
             errors.append({"handle": h, "error": str(exc)})
     await ctx.report_progress(len(handles), len(handles))
     return {"ok": True, "deleted": deleted, "errors": errors}
+
+
+@mcp.tool(
+    annotations={"title": "Get Viewport Selection", "readOnlyHint": True},
+    tags={"entity", "query"},
+)
+async def selection_get(ctx: Context = None) -> dict:
+    """Read the entities the user pre-selected in the AutoCAD viewport (COM backend only).
+
+    Returns the implied "pickfirst" selection — the entities highlighted with
+    grips before invoking the AI — so work can be scoped to exactly those
+    entities instead of the whole drawing. Typical use::
+
+        sel = selection_get()
+        dimension_auto(sel["handles"], style="chain")
+
+    Result keys:
+        ok        — True on the COM backend (even for an empty selection)
+        count     — number of selected entities
+        handles   — list of entity handles (hex strings) to act on
+        entities  — full per-entity info (type, layer, color, ...)
+        pickfirst — state of the PICKFIRST sysvar (None if unknown)
+        message   — guidance when nothing is selected
+
+    On the ezdxf headless backend there is no viewport, so this returns
+    ok=False with an empty handles list.
+    """
+    result = await _backend(ctx).selection_get()
+    if result.get("ok"):
+        await ctx.info(f"Viewport selection: {result.get('count', 0)} entit(y/ies)")
+    else:
+        await ctx.warning(result.get("error", "selection_get returned not-ok"))
+    # The backend places EntityInfo dataclasses under "entities"; serialize them.
+    result = dict(result)
+    result["entities"] = [_dc(e) for e in result.get("entities", [])]
+    return result
 
 
 # ---------------------------------------------------------------------------

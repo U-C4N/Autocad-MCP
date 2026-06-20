@@ -3,7 +3,7 @@
 **Production-grade AutoCAD automation for the Model Context Protocol.**
 Dual-engine. Battle-tested. Model-agnostic.
 
-v1.1.0 · 110 tools · 5 resources · 5 prompt templates · COM + ezdxf backends · Python 3.11+ · MIT
+v1.1.1 · 111 tools · 5 resources · 5 prompt templates · COM + ezdxf backends · Python 3.11+ · MIT
 
 ---
 
@@ -15,7 +15,7 @@ My day job at **Anka-Makine** revolves around intensive AutoCAD work — product
 
 After months of leaning on this server inside my own daily workflow — and watching it shave hours off my week without a single misstep on critical drawings — I decided it deserved a public release. It works. It is fast. It stays out of the way.
 
-The model on the other end of the wire does not matter. The Model Context Protocol is the contract; AutoCAD MCP Pro is one well-typed implementation of that contract. Any MCP-aware client — and the LLM behind it — sees the same 110 tools.
+The model on the other end of the wire does not matter. The Model Context Protocol is the contract; AutoCAD MCP Pro is one well-typed implementation of that contract. Any MCP-aware client — and the LLM behind it — sees the same 111 tools.
 
 I will keep this repository actively maintained as my own use of it evolves, and **a public benchmark suite is on the way** — I want to give you numbers, not adjectives.
 
@@ -63,11 +63,12 @@ AutoCAD MCP Pro takes a different stance:
   - **ezdxf backend**: headless DXF file operations powered by [ezdxf](https://github.com/mozman/ezdxf). Works on every platform, ideal for batch workloads and CI pipelines.
   - Automatic backend selection, with a clean override via `AUTOCAD_MCP_BACKEND`.
 
-- **110 Tools, 12 Categories**
+- **111 Tools, 12 Categories**
   - Drawing management — `drawing_new`, `drawing_open`, `drawing_save`, `drawing_save_as`, `drawing_export_dxf`, `drawing_export_pdf`, `drawing_purge`, `drawing_audit`, `drawing_undo`, `drawing_redo`, `drawing_close`
   - Entity creation — line, circle, arc, polyline, rectangle, text, mtext, hatch, spline, ellipse, point, block reference, batch create
   - Dimensions — linear, aligned, angular, radius, diameter
   - Entity modification — move, copy, rotate, scale, mirror, offset, delete, rectangular array, polar array, batch modify, set properties
+  - Entity query — `entity_get`, `entity_list`, `entity_delete_many`, and `selection_get` (read the user's live viewport "pickfirst" selection so the AI dimensions/edits only what was picked, not the whole drawing — COM backend)
   - Layer management — full lifecycle: create, delete, modify, freeze/thaw, lock/unlock, hide/show, isolate, set current
   - Block operations — list, insert, explode, attribute get/set, create-from-entities, find references
   - Analysis — entity stats, region select, distance/area measurement, bounding box, select by type/layer, layer statistics
@@ -124,7 +125,7 @@ pip install -e ".[full]"
 python server.py
 ```
 
-That is it. The server starts in STDIO mode and your MCP client will discover all 110 tools.
+That is it. The server starts in STDIO mode and your MCP client will discover all 111 tools.
 
 For headless / CI workflows:
 
@@ -243,7 +244,7 @@ Copy `.env.example` to `.env` and edit:
 | Entity Creation     |    13 | `entity_create_line`, `entity_create_polyline`, `entity_create_hatch`, `entity_create_block_ref`      |
 | Dimensions          |     5 | `dimension_linear`, `dimension_aligned`, `dimension_angular`, `dimension_radius`, `dimension_diameter`|
 | Entity Modification |    10 | `entity_move`, `entity_rotate`, `entity_array_polar`, `entity_offset`, `entity_array_rectangular`     |
-| Entity Query        |     3 | `entity_get`, `entity_list`, `entity_delete_many`                                                     |
+| Entity Query        |     4 | `entity_get`, `entity_list`, `entity_delete_many`, `selection_get`                                    |
 | Layer Management    |    12 | `layer_create`, `layer_freeze`, `layer_isolate`, `layer_modify`                                       |
 | Block Operations    |     7 | `block_insert`, `block_explode`, `block_create_from_entities`, `block_find_references`                |
 | Analysis            |     8 | `analysis_entity_stats`, `analysis_bounding_box`, `analysis_select_by_layer`, `analysis_layer_stats`  |
