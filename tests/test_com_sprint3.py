@@ -33,9 +33,9 @@ def _backend_no_executor():
 class _Doc:
     """Idle doc: GetVariable returns 0 (CMDACTIVE clear) and ModelSpace is empty."""
 
-    def __init__(self):
+    def __init__(self, variables: dict | None = None):
         self.sent: list[str] = []
-        self._vars: dict = {}
+        self._vars: dict = dict(variables or {})
         self.ModelSpace: list = []
 
     def GetVariable(self, name):
@@ -55,14 +55,14 @@ class _Doc:
 
 
 async def test_set_variable_coerces_string_to_sysvar_int_type(monkeypatch):
-    app = MagicMock()
-    app.GetVariable.return_value = 4159  # OSMODE current value is an int
-    monkeypatch.setattr(cb, "_acad_app", lambda: app)
+    doc = MagicMock()
+    doc.GetVariable.return_value = 4159  # OSMODE current value is an int
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
 
     b = _backend_no_executor()
     out = await b.system_set_variable("OSMODE", "0")
 
-    name, val = app.SetVariable.call_args[0]
+    name, val = doc.SetVariable.call_args[0]
     assert name == "OSMODE"
     assert val == 0 and isinstance(val, int)  # coerced from "0" to int 0
     assert out["value"] == 0
@@ -72,10 +72,8 @@ async def test_set_variable_coerces_string_to_sysvar_int_type(monkeypatch):
 
 
 async def test_run_lisp_refuses_when_cmdactive(monkeypatch):
-    app = MagicMock()
-    app.GetVariable.side_effect = lambda n: 1 if n == "CMDACTIVE" else 0
-    monkeypatch.setattr(cb, "_acad_app", lambda: app)
-    monkeypatch.setattr(cb, "_acad_doc", lambda: _Doc())
+    monkeypatch.setattr(cb, "_acad_app", lambda: MagicMock())
+    monkeypatch.setattr(cb, "_acad_doc", lambda: _Doc({"CMDACTIVE": 1}))
 
     b = _backend_no_executor()
     with pytest.raises(RuntimeError):
@@ -83,10 +81,8 @@ async def test_run_lisp_refuses_when_cmdactive(monkeypatch):
 
 
 async def test_run_lisp_captures_value_from_users1(monkeypatch):
-    app = MagicMock()
-    app.GetVariable.side_effect = lambda n: {"CMDACTIVE": 0, "USERS1": "3"}.get(n, 0)
-    doc = _Doc()
-    monkeypatch.setattr(cb, "_acad_app", lambda: app)
+    doc = _Doc({"CMDACTIVE": 0, "USERS1": "3"})
+    monkeypatch.setattr(cb, "_acad_app", lambda: MagicMock())
     monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
 
     b = _backend_no_executor()
