@@ -718,7 +718,11 @@ async def drawing_close(
     tags={"drawing", "undo"},
 )
 async def drawing_undo(ctx: Context = None) -> dict:
-    """Undo the last drawing operation."""
+    """Undo the last drawing operation (COM backend only).
+
+    The ezdxf backend keeps no per-operation history and always reports
+    "nothing to undo"; use transaction_begin/transaction_rollback there.
+    """
     return await _backend(ctx).drawing_undo()
 
 
@@ -1835,7 +1839,11 @@ async def layer_isolate(
     name: Annotated[str, "Layer name to keep visible (all others will be hidden)"],
     ctx: Context = None,
 ) -> dict:
-    """Hide all layers except the specified one (layer isolation)."""
+    """Hide all layers except the specified one (layer isolation).
+
+    Layer 0 always stays visible: AutoCAD keeps block definition geometry on it,
+    so hiding it would blank out unrelated blocks.
+    """
     await ctx.info(f"Isolating layer '{name}'")
     b = _backend(ctx)
     layers = await b.layer_list()
@@ -1986,7 +1994,9 @@ async def block_find_references(
 ) -> list[dict]:
     """Find all insert references to a specific block definition."""
     await ctx.info(f"Finding all references to block '{name}'")
-    result = await _backend(ctx).entity_list(type_filter="INSERT")
+    # The INSERT scan covers every block in the drawing, so the default
+    # entity_list cap would silently truncate before the name filter runs.
+    result = await _backend(ctx).entity_list(type_filter="INSERT", limit=10000)
     refs = [_dc(e) for e in result if e.properties.get("block_name") == name]
     return refs
 
@@ -2347,7 +2357,16 @@ async def template_apply_layers(
     created = []
     await ctx.info(f"Applying '{template_key}' layer template ({len(layers_def)} layers)")
 
+    existing = {lyr.name.lower() for lyr in await b.layer_list()}
+    skipped = []
+
     for ldef in layers_def:
+        # A template applied to a bootstrapped drawing always collides on
+        # HIDDEN/CENTER/…; ezdxf raises on a duplicate layer, so blind creation
+        # made this tool unusable in its own documented workflow.
+        if ldef["name"].lower() in existing:
+            skipped.append(ldef["name"])
+            continue
         await b.layer_create(
             ldef["name"],
             color=ldef["color"],
@@ -2356,7 +2375,13 @@ async def template_apply_layers(
         )
         created.append(ldef["name"])
 
-    return {"ok": True, "template": template_key, "layers_created": created, "count": len(created)}
+    return {
+        "ok": True,
+        "template": template_key,
+        "layers_created": created,
+        "layers_skipped": skipped,
+        "count": len(created),
+    }
 
 
 @mcp.tool(
@@ -2437,6 +2462,39 @@ async def validation_check(
                             "handle": line.handle,
                         }
                     )
+
+    if "duplicate_entities" in checks:
+        # Documented since day one but never implemented: entities of the same
+        # type stacked on the same spot were silently reported as clean.
+        seen: dict[tuple, str] = {}
+        for ent in await b.entity_list(limit=10000):
+            props = ent.properties or {}
+            key_geom = (
+                tuple(round(v, 4) for v in props.get("start", []) + props.get("end", []))
+                or tuple(round(v, 4) for v in props.get("center", []) + [props.get("radius", 0.0)])
+                or tuple(round(v, 4) for v in props.get("insertion", []))
+            )
+            if not key_geom:
+                continue
+            key = (ent.type, ent.layer, key_geom)
+            if key in seen:
+                issues.append(
+                    {
+                        "check": "duplicate_entities",
+                        "severity": "warning",
+                        "message": f"Duplicate {ent.type} on layer {ent.layer} (same geometry as {seen[key]})",
+                        "handle": ent.handle,
+                    }
+                )
+            else:
+                seen[key] = ent.handle
+
+    unknown = [c for c in checks if c not in ("empty_layers", "zero_length", "duplicate_entities")]
+    if unknown:
+        raise ToolError(
+            f"validation_check: unknown check(s) {unknown}. "
+            "Supported: empty_layers, zero_length, duplicate_entities."
+        )
 
     return {
         "ok": len(issues) == 0,
@@ -2529,9 +2587,16 @@ async def view_zoom_and_screenshot(
 
     await ctx.report_progress(10, 100)
     if x1 is not None and y1 is not None and x2 is not None and y2 is not None:
-        await b.view_zoom_window(x1, y1, x2, y2)
+        zoom = await b.view_zoom_window(x1, y1, x2, y2)
     else:
-        await b.view_zoom_extents()
+        zoom = await b.view_zoom_extents()
+    # The ezdxf backend reports applied=False because it has no viewport to
+    # frame; discarding that made a headless no-op look like real framing.
+    if isinstance(zoom, dict) and zoom.get("applied") is False:
+        await ctx.warning(
+            "Zoom was not applied by this backend - the screenshot shows the "
+            "full drawing extents, not the requested window."
+        )
 
     await ctx.report_progress(50, 100)
     png_bytes = await b.view_screenshot()
@@ -3041,7 +3106,7 @@ async def drawing_finalize(
     ctx: Context = None,
 ) -> dict:
     """Premium completion gate: runs BOTH the 8-step validator AND the premium critique focuses
-    (iso128, layer_color, dim_overlap, untrimmed_corner, duplicate_entities, construction_left),
+    (iso128, layer_color, dim_overlap, untrimmed_corner, duplicate_entities, construction_left, gdt),
     then saves to disk, exports a screenshot, and returns the DWG path.
 
     Raises ToolError if any validator 'error' finding is present, or if critique reports an
@@ -3274,7 +3339,7 @@ async def drawing_critique(
         Field(
             default=None,
             description="Subset of: iso128, layer_color, dim_overlap, untrimmed_corner, "
-            "duplicate_entities, construction_left. None = run all.",
+            "duplicate_entities, construction_left, gdt. None = run all.",
         ),
     ] = None,
     ctx: Context = None,
@@ -3385,7 +3450,10 @@ async def construction_xline(
     x: Annotated[float, "Base point X"],
     y: Annotated[float, "Base point Y"],
     angle_deg: Annotated[float, "Angle in degrees (0=horizontal, 90=vertical)"],
-    layer: Annotated[str, "Layer for the construction line"] = "CONSTRUCTION",
+    layer: Annotated[
+        str | None,
+        "Layer for the construction line (default: the active layer set's construction role)",
+    ] = None,
     ctx: Context = None,
 ) -> dict:
     """Create an infinite construction line on the CONSTRUCTION layer.
@@ -3400,7 +3468,9 @@ async def construction_xline(
     tags={"premium", "construction"},
 )
 async def construction_clear(
-    layer: Annotated[str, "Layer to clear"] = "CONSTRUCTION",
+    layer: Annotated[
+        str | None, "Layer to clear (default: the active layer set's construction role)"
+    ] = None,
     ctx: Context = None,
 ) -> dict:
     """Delete every entity on the CONSTRUCTION layer. Idempotent.

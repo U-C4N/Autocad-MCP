@@ -390,7 +390,15 @@ class EzdxfBackend(AutoCADBackend):
     async def drawing_new(self, template: str | None = None) -> dict:
         def _sync():
             if template and Path(template).exists():
-                self._doc = ezdxf.readfile(template)
+                try:
+                    self._doc = ezdxf.readfile(template)
+                except (OSError, ezdxf.DXFError) as exc:
+                    # A real AutoCAD .dwt/.dwg is binary; ezdxf only reads DXF.
+                    raise RuntimeError(
+                        f"ezdxf backend cannot read '{template}': it is not a DXF file "
+                        f"({exc}). Use a .dxf template here, or run the COM backend for "
+                        "binary DWG/DWT templates."
+                    ) from exc
             else:
                 self._doc = ezdxf.new(dxfversion="R2010")
             self._doc_path = None
@@ -702,6 +710,14 @@ class EzdxfBackend(AutoCADBackend):
 
     async def drawing_close(self, save: bool = True) -> dict:
         def _sync():
+            if save and self._dirty and not self._doc_path:
+                # Silently dropping unsaved work would be the worst possible
+                # outcome here; drawing_save raises for the same condition.
+                raise RuntimeError(
+                    "drawing_close(save=True): the drawing has never been saved, so there "
+                    "is no path to save it to. Call drawing_save_as(path=...) first, or "
+                    "close with save=False to discard it deliberately."
+                )
             if save and self._dirty and self._doc_path:
                 self._doc.saveas(self._doc_path)
             self._cleanup_undo_stack()
@@ -950,6 +966,7 @@ class EzdxfBackend(AutoCADBackend):
 
             self._mark_dirty()
             child_handles = [str(entity.dxf.handle) for entity in children]
+            self._register_composite(child_handles)
             group_id = f"table:{uuid.uuid4().hex}"
             return EntityInfo(
                 handle=child_handles[0],
@@ -1024,6 +1041,7 @@ class EzdxfBackend(AutoCADBackend):
 
             children = [path, arrow, label]
             child_handles = [str(entity.dxf.handle) for entity in children]
+            self._register_composite(child_handles)
             return EntityInfo(
                 handle=child_handles[0],
                 type="MLEADER",
@@ -1207,12 +1225,21 @@ class EzdxfBackend(AutoCADBackend):
     ) -> EntityInfo:
         def _sync():
             msp = self._msp()
+            # `distance` is the perpendicular offset from the measured line, not
+            # the straight-line distance to the caller's dimension point —
+            # feeding it the latter placed the dimension line far off the part.
+            px, py = float(x2) - float(x1), float(y2) - float(y1)
+            seg = math.hypot(px, py)
+            if seg < 1e-12:
+                raise RuntimeError("dimension_aligned: p1 and p2 coincide, nothing to measure.")
+            # Signed distance from the p1→p2 line to (dim_x, dim_y): positive is
+            # to the left of the direction of measurement, which is the side
+            # convention ezdxf's `distance` uses.
+            offset = ((float(dim_x) - float(x1)) * py - (float(dim_y) - float(y1)) * px) / seg
             dim = msp.add_aligned_dim(
                 p1=(float(x1), float(y1)),
                 p2=(float(x2), float(y2)),
-                distance=math.sqrt(
-                    (float(dim_x) - float(x1)) ** 2 + (float(dim_y) - float(y1)) ** 2
-                ),
+                distance=-offset,
             )
             dim.render()
             ent = dim.dimension
@@ -1348,10 +1375,18 @@ class EzdxfBackend(AutoCADBackend):
 
     async def entity_move(self, handle, dx, dy, dz=0.0) -> dict:
         def _sync():
-            ent = self._get_entity(handle)
-            ent.translate(float(dx), float(dy), float(dz))
+            # Composites (table grid + cells, leader + label) must move as one.
+            handles = self._composite_handles(handle)
+            for h in handles:
+                try:
+                    self._get_entity(h).translate(float(dx), float(dy), float(dz))
+                except Exception as exc:
+                    log.debug("entity_move: child %s not moved: %s", h, exc)
             self._mark_dirty()
-            return {"ok": True, "handle": handle}
+            result = {"ok": True, "handle": handle}
+            if len(handles) > 1:
+                result["entity_count"] = len(handles)
+            return result
 
         return await self._async(_sync)
 
@@ -1515,10 +1550,25 @@ class EzdxfBackend(AutoCADBackend):
 
     async def entity_delete(self, handle) -> dict:
         def _sync():
-            ent = self._get_entity(handle)
-            self._msp().delete_entity(ent)
+            msp = self._msp()
+            # Tables and mleaders are composites here: the returned handle is
+            # only their first child, so deleting it alone left the rest of the
+            # grid/leader behind as orphans.
+            handles = self._composite_handles(handle)
+            deleted = []
+            for h in handles:
+                try:
+                    msp.delete_entity(self._get_entity(h))
+                    deleted.append(h)
+                except Exception as exc:
+                    log.debug("entity_delete: child %s already gone: %s", h, exc)
+            self._composites.pop(str(handle), None)
             self._mark_dirty()
-            return {"ok": True, "deleted_handle": handle}
+            result = {"ok": True, "deleted_handle": handle}
+            if len(handles) > 1:
+                result["deleted_handles"] = deleted
+                result["entity_count"] = len(deleted)
+            return result
 
         return await self._async(_sync)
 
@@ -1771,9 +1821,22 @@ class EzdxfBackend(AutoCADBackend):
     async def layer_delete(self, name) -> dict:
         def _sync():
             doc = self._require_doc()
-            if name in doc.layers:
-                doc.layers.remove(name)
-                self._mark_dirty()
+            if name == "0":
+                raise RuntimeError(
+                    "layer_delete: layer '0' is the default layer and cannot be deleted."
+                )
+            if name not in doc.layers:
+                raise RuntimeError(f"layer_delete: layer '{name}' does not exist.")
+            # ezdxf happily removes a layer that still owns entities, leaving
+            # them pointing at a layer the table no longer has.
+            in_use = sum(1 for ent in self._msp() if ent.dxf.get("layer") == name)
+            if in_use:
+                raise RuntimeError(
+                    f"layer_delete: layer '{name}' still holds {in_use} entit"
+                    f"{'y' if in_use == 1 else 'ies'}. Delete or move them first."
+                )
+            doc.layers.remove(name)
+            self._mark_dirty()
             return {"ok": True, "deleted": name}
 
         return await self._async(_sync)
@@ -2092,12 +2155,14 @@ class EzdxfBackend(AutoCADBackend):
                 for ent in msp:
                     try:
                         bb = ezdxf_bbox.extents([ent])
+                        # Crossing selection (as documented): any overlap with
+                        # the query rectangle counts, not full containment.
                         if (
                             bb
-                            and bb.extmin.x >= mn_x
-                            and bb.extmax.x <= mx_x
-                            and bb.extmin.y >= mn_y
-                            and bb.extmax.y <= mx_y
+                            and bb.extmin.x <= mx_x
+                            and bb.extmax.x >= mn_x
+                            and bb.extmin.y <= mx_y
+                            and bb.extmax.y >= mn_y
                         ):
                             results.append(_entity_info_dxf(ent))
                     except Exception as exc:

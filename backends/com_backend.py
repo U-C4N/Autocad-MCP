@@ -165,6 +165,40 @@ def _set_sysvar(name: str, value) -> None:
 
 _BUILTIN_LINETYPES = {"continuous", "bylayer", "byblock"}
 
+# ActiveX ObjectName -> DXF-style type name. Callers filter with DXF names
+# ("LWPOLYLINE", "INSERT"), which is also what the ezdxf backend reports, but
+# AutoCAD's COM ObjectName uses different spellings ("AcDbPolyline",
+# "AcDbBlockReference"); stripping the "AcDb" prefix is not enough.
+_OBJECT_NAME_TO_TYPE = {
+    "AcDbPolyline": "LWPOLYLINE",
+    "AcDbLWPolyline": "LWPOLYLINE",
+    "AcDb2dPolyline": "POLYLINE",
+    "AcDb3dPolyline": "POLYLINE",
+    "AcDbBlockReference": "INSERT",
+    "AcDbMInsertBlock": "INSERT",
+    "AcDbAttributeDefinition": "ATTDEF",
+    "AcDbRotatedDimension": "DIMENSION",
+    "AcDbAlignedDimension": "DIMENSION",
+    "AcDb2LineAngularDimension": "DIMENSION",
+    "AcDb3PointAngularDimension": "DIMENSION",
+    "AcDbRadialDimension": "DIMENSION",
+    "AcDbDiametricDimension": "DIMENSION",
+    "AcDbOrdinateDimension": "DIMENSION",
+    "AcDbMText": "MTEXT",
+    "AcDbMLeader": "MULTILEADER",
+    "AcDbRasterImage": "IMAGE",
+    "AcDbProxyEntity": "ACAD_PROXY_ENTITY",
+    "AcDb3dSolid": "3DSOLID",
+}
+
+
+def _canonical_type(object_name: str) -> str:
+    """Map an ActiveX ObjectName to the DXF-style type name callers filter on."""
+    mapped = _OBJECT_NAME_TO_TYPE.get(object_name)
+    if mapped:
+        return mapped
+    return object_name.replace("AcDb", "").upper()
+
 
 def _ensure_linetype_loaded(name: str) -> None:
     """If `name` is not already loaded, load it through ``Linetypes.Load``.
@@ -191,9 +225,25 @@ def _ensure_linetype_loaded(name: str) -> None:
     doc.Linetypes.Load(name, lin_file)
 
 
+def _ensure_layer_exists(name: str) -> None:
+    """Create the layer if the drawing doesn't have it yet.
+
+    Assigning ``entity.Layer`` to an unknown name is a hard COM error, so every
+    create-with-layer call would fail unless the caller had run layer_create
+    first. The ezdxf backend auto-creates, so this keeps the two in step.
+    """
+    if not name:
+        return
+    doc = _acad_doc()
+    existing = {doc.Layers.Item(i).Name.lower() for i in range(doc.Layers.Count)}
+    if name.lower() not in existing:
+        doc.Layers.Add(name)
+
+
 def _apply_entity_attrs(entity, layer: str | None, color: int | None, linetype: str | None):
     """Apply common entity attributes after creation."""
     if layer is not None:
+        _ensure_layer_exists(layer)
         entity.Layer = layer
     if color is not None:
         entity.Color = int(color)
@@ -289,7 +339,7 @@ def _entity_info(entity) -> EntityInfo:
             # Arc length (N3) — parity with ezdxf so length_range selects ARCs.
             _sweep = (entity.EndAngle - entity.StartAngle) % (2.0 * math.pi)
             props["length"] = entity.Radius * _sweep
-        elif obj_name in ("AcDbLWPolyline", "AcDb2dPolyline"):
+        elif obj_name in ("AcDbPolyline", "AcDbLWPolyline", "AcDb2dPolyline"):
             coords = list(entity.Coordinates)
             pts = [[coords[i], coords[i + 1]] for i in range(0, len(coords), 2)]
             props["points"] = pts
@@ -318,7 +368,7 @@ def _entity_info(entity) -> EntityInfo:
     except Exception as exc:
         log.debug("Type-specific entity properties extraction failed: %s", exc)
 
-    ent_type = obj_name.replace("AcDb", "").upper()
+    ent_type = _canonical_type(obj_name)
     try:
         linetype = entity.Linetype
     except Exception as exc:
@@ -652,9 +702,13 @@ class ComBackend(AutoCADBackend):
     async def drawing_save_as(self, path: str, fmt: str = "dwg") -> dict:
         def _sync():
             doc = _acad_doc()
-            # AutoCAD SaveAs format constants: 12=DWG R2010, 61=DXF R2010
-            fmt_map = {"dwg": 12, "dxf": 61, "dwt": 5}
-            acad_fmt = fmt_map.get(fmt.lower(), 12)
+            # AcSaveAsType constants: 48=ac2010_dwg, 49=ac2010_dxf,
+            # 50=ac2010_Template. The previous map used 12 (ac2000_dwg),
+            # 61 (ac2013_dxf) and 5 (acR13_dxf, not a template at all), so
+            # every save was written in the wrong version and "dwt" produced
+            # an R13 DXF body under a .dwt name.
+            fmt_map = {"dwg": 48, "dxf": 49, "dwt": 50}
+            acad_fmt = fmt_map.get(fmt.lower(), 48)
             doc.SaveAs(path, acad_fmt)
             return {"ok": True, "path": path, "format": fmt}
 
@@ -749,16 +803,23 @@ class ComBackend(AutoCADBackend):
                     viewport.CustomScale = float(scale)
                 except Exception:  # some verticals expose StandardScale only
                     pass
+                # AcadPViewport has no "ViewCenter" — the model-space point the
+                # viewport looks at is Target (with Direction left at the
+                # default plan view). Setting the non-existent property used to
+                # fail silently, leaving every viewport centred on the origin.
+                view_centered = False
                 try:
-                    viewport.ViewCenter = _av([float(view_center_x), float(view_center_y)])
-                except Exception:
-                    pass
+                    viewport.Target = _apoint(float(view_center_x), float(view_center_y), 0.0)
+                    view_centered = True
+                except Exception as exc:
+                    log.debug("viewport_create: Target not applied: %s", exc)
                 return {
                     "ok": True,
                     "handle": viewport.Handle,
                     "layout": layout,
                     "scale": scale,
                     "view_height": float(height) / float(scale),
+                    "view_centered": view_centered,
                 }
             finally:
                 if previous != layout:
@@ -868,9 +929,15 @@ class ComBackend(AutoCADBackend):
     async def drawing_audit(self) -> dict:
         def _sync():
             doc = _acad_doc()
-            _set_sysvar("AUDITCTL", 1)
-            doc.SendCommand("_AUDIT Y\n")
-            return {"ok": True, "message": "Audit completed"}
+            # AcadDocument.Audit(FixErrors) instead of SendCommand("_AUDIT Y"):
+            # SendCommand only returns once AutoCAD is idle and hangs on a
+            # freshly created document. Audit returns the error count.
+            errors = doc.Audit(True)
+            try:
+                error_count = int(errors)
+            except (TypeError, ValueError):
+                error_count = 0
+            return {"ok": True, "error_count": error_count, "fixed": True}
 
         return await self._run(_sync)
 
@@ -1174,10 +1241,14 @@ class ComBackend(AutoCADBackend):
             flat = []
             for pt in fit_points:
                 flat.extend([float(pt[0]), float(pt[1]), 0.0])
+            # Null tangents let AutoCAD derive them from the fit points. A fixed
+            # (0,1,0) tangent used to be passed for both ends, which bent every
+            # spline vertically at its endpoints regardless of the actual data
+            # and diverged from the ezdxf backend.
             sp = mspace.AddSpline(
                 _av(flat),
-                _apoint(0, 1),  # start tangent
-                _apoint(0, 1),  # end tangent
+                _apoint(0, 0),  # start tangent — none
+                _apoint(0, 0),  # end tangent — none
             )
             _apply_entity_attrs(sp, layer, color, None)
             _regen()
@@ -1245,6 +1316,7 @@ class ComBackend(AutoCADBackend):
                 deg2rad(rotation),
             )
             if layer:
+                _ensure_layer_exists(layer)
                 ref.Layer = layer
             _regen()
             return _entity_info(ref)
@@ -1279,6 +1351,7 @@ class ComBackend(AutoCADBackend):
                 deg2rad(rotation),
             )
             if layer:
+                _ensure_layer_exists(layer)
                 dim.Layer = layer
             _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode, text_override)
             _regen()
@@ -1300,6 +1373,7 @@ class ComBackend(AutoCADBackend):
             mspace = _msp()
             dim = mspace.AddDimAligned(_apoint(x1, y1), _apoint(x2, y2), _apoint(dim_x, dim_y))
             if layer:
+                _ensure_layer_exists(layer)
                 dim.Layer = layer
             _regen()
             return _entity_info(dim)
@@ -1327,6 +1401,7 @@ class ComBackend(AutoCADBackend):
                 _apoint(tx, ty),
             )
             if layer:
+                _ensure_layer_exists(layer)
                 dim.Layer = layer
             _regen()
             return _entity_info(dim)
@@ -1352,6 +1427,7 @@ class ComBackend(AutoCADBackend):
                 _apoint(cx, cy), _apoint(chord_x, chord_y), float(leader_length)
             )
             if layer:
+                _ensure_layer_exists(layer)
                 dim.Layer = layer
             _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode, text_override)
             _regen()
@@ -1376,6 +1452,7 @@ class ComBackend(AutoCADBackend):
             mspace = _msp()
             dim = mspace.AddDimDiametric(_apoint(x1, y1), _apoint(x2, y2), float(leader_length))
             if layer:
+                _ensure_layer_exists(layer)
                 dim.Layer = layer
             _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode, text_override)
             _regen()
@@ -1476,7 +1553,22 @@ class ComBackend(AutoCADBackend):
                     cx, cy = _center(e)
                     return (cx - sx) ** 2 + (cy - sy) ** 2
 
-                if _sq_dist(pos[0]) <= _sq_dist(neg[0]):
+                # A circle/arc offset both ways keeps the same bounding-box
+                # centre, so the generic nearest-centre test cannot tell grow
+                # from shrink. Decide from the side point's distance to the
+                # centre instead, like the ezdxf backend does.
+                radial = None
+                if _canonical_type(ent.ObjectName) in ("CIRCLE", "ARC"):
+                    try:
+                        ctr = ent.Center
+                        inside = math.hypot(sx - ctr[0], sy - ctr[1]) < float(ent.Radius)
+                        radial = (neg, pos) if inside else (pos, neg)
+                    except Exception as exc:
+                        log.debug("offset: radial side test failed, using bbox: %s", exc)
+
+                if radial is not None:
+                    keep, drop = radial
+                elif _sq_dist(pos[0]) <= _sq_dist(neg[0]):
                     keep, drop = pos, neg
                 else:
                     keep, drop = neg, pos
@@ -1594,6 +1686,7 @@ class ComBackend(AutoCADBackend):
             doc = _acad_doc()
             ent = doc.HandleToObject(handle)
             if layer is not None:
+                _ensure_layer_exists(layer)
                 ent.Layer = layer
             if color is not None:
                 ent.Color = int(color)
@@ -1618,7 +1711,7 @@ class ComBackend(AutoCADBackend):
         def _sync():
             doc = _acad_doc()
             ent = doc.HandleToObject(handle)
-            name = ent.ObjectName.replace("AcDb", "").upper()
+            name = _canonical_type(ent.ObjectName)
             if name not in ("TEXT", "MTEXT"):
                 raise RuntimeError(
                     f"entity_edit_text: handle {handle} is {name}, expected TEXT or MTEXT."
@@ -1651,12 +1744,13 @@ class ComBackend(AutoCADBackend):
         def _sync():
             doc = _acad_doc()
             ent = doc.HandleToObject(handle)
-            name = ent.ObjectName.replace("AcDb", "").upper()
+            name = _canonical_type(ent.ObjectName)
             if name == "CIRCLE":
                 c = ent.Center
                 ent.Center = _apoint(
                     float(cx) if cx is not None else c[0],
                     float(cy) if cy is not None else c[1],
+                    c[2] if len(c) > 2 else 0.0,
                 )
                 if radius is not None:
                     ent.Radius = float(radius)
@@ -1665,16 +1759,19 @@ class ComBackend(AutoCADBackend):
                 ent.StartPoint = _apoint(
                     float(x1) if x1 is not None else s[0],
                     float(y1) if y1 is not None else s[1],
+                    s[2] if len(s) > 2 else 0.0,
                 )
                 ent.EndPoint = _apoint(
                     float(x2) if x2 is not None else e[0],
                     float(y2) if y2 is not None else e[1],
+                    e[2] if len(e) > 2 else 0.0,
                 )
             elif name == "ARC":
                 c = ent.Center
                 ent.Center = _apoint(
                     float(cx) if cx is not None else c[0],
                     float(cy) if cy is not None else c[1],
+                    c[2] if len(c) > 2 else 0.0,
                 )
                 if radius is not None:
                     ent.Radius = float(radius)
@@ -1707,7 +1804,7 @@ class ComBackend(AutoCADBackend):
             for i in range(total):
                 try:
                     ent = mspace.Item(i)
-                    ent_type = ent.ObjectName.replace("AcDb", "").upper()
+                    ent_type = _canonical_type(ent.ObjectName)
                     ent_layer = ent.Layer
 
                     if type_filter and type_filter.upper() != ent_type:
@@ -1959,6 +2056,7 @@ class ComBackend(AutoCADBackend):
                 deg2rad(rotation),
             )
             if layer:
+                _ensure_layer_exists(layer)
                 ref.Layer = layer
             if attributes:
                 try:
@@ -1977,8 +2075,26 @@ class ComBackend(AutoCADBackend):
         def _sync():
             doc = _acad_doc()
             ent = doc.HandleToObject(handle)
-            ent.Explode()
-            return {"ok": True, "exploded_handle": handle}
+            # AcadEntity.Explode() copies the block's contents into model space
+            # and leaves the original INSERT in place — the caller has to delete
+            # it. Without this the drawing ends up with the block reference and
+            # its exploded twin stacked on top of each other.
+            produced = ent.Explode()
+            handles = []
+            try:
+                for item in produced:
+                    handles.append(item.Handle)
+            except TypeError:
+                if produced is not None:
+                    handles.append(produced.Handle)
+            ent.Delete()
+            _regen()
+            return {
+                "ok": True,
+                "exploded_handle": handle,
+                "inserted_handles": handles,
+                "entity_count": len(handles),
+            }
 
         return await self._run(_sync)
 
@@ -2032,7 +2148,7 @@ class ComBackend(AutoCADBackend):
             for i in range(mspace.Count):
                 try:
                     ent = mspace.Item(i)
-                    t = ent.ObjectName.replace("AcDb", "")
+                    t = _canonical_type(ent.ObjectName)
                     lyr = ent.Layer
                     type_counts[t] = type_counts.get(t, 0) + 1
                     layer_counts[lyr] = layer_counts.get(lyr, 0) + 1
@@ -2084,19 +2200,37 @@ class ComBackend(AutoCADBackend):
 
     async def analysis_bounding_box(self) -> dict:
         def _sync():
-            doc = _acad_doc()
-            try:
-                emin = doc.Database.Extmin
-                emax = doc.Database.Extmax
+            # Database.Extmin/Extmax are only refreshed by a zoom-extents-class
+            # operation, so they lag behind entities added since the last one.
+            # Measure the real geometry instead, like the ezdxf backend does.
+            mspace = _msp()
+            xs_min = ys_min = None
+            xs_max = ys_max = None
+            for i in range(mspace.Count):
+                try:
+                    bb_min, bb_max = mspace.Item(i).GetBoundingBox()
+                except Exception as exc:
+                    log.debug("analysis_bounding_box: skip entity at index %d: %s", i, exc)
+                    continue
+                xs_min = bb_min[0] if xs_min is None else min(xs_min, bb_min[0])
+                ys_min = bb_min[1] if ys_min is None else min(ys_min, bb_min[1])
+                xs_max = bb_max[0] if xs_max is None else max(xs_max, bb_max[0])
+                ys_max = bb_max[1] if ys_max is None else max(ys_max, bb_max[1])
+
+            if xs_min is None:
                 return {
-                    "min": [emin[0], emin[1]],
-                    "max": [emax[0], emax[1]],
-                    "width": emax[0] - emin[0],
-                    "height": emax[1] - emin[1],
+                    "min": [0.0, 0.0],
+                    "max": [0.0, 0.0],
+                    "width": 0.0,
+                    "height": 0.0,
+                    "empty": True,
                 }
-            except Exception as exc:
-                log.debug("analysis_bounding_box: Database Extmin/Extmax read failed: %s", exc)
-                return {"error": str(exc)}
+            return {
+                "min": [xs_min, ys_min],
+                "max": [xs_max, ys_max],
+                "width": xs_max - xs_min,
+                "height": ys_max - ys_min,
+            }
 
         return await self._run(_sync)
 
@@ -2129,7 +2263,7 @@ class ComBackend(AutoCADBackend):
             for i in range(mspace.Count):
                 try:
                     ent = mspace.Item(i)
-                    if et_upper == ent.ObjectName.replace("AcDb", "").upper():
+                    if et_upper == _canonical_type(ent.ObjectName):
                         results.append(_entity_info(ent))
                 except Exception as exc:
                     log.debug("analysis_select_by_type: skip entity at index %d: %s", i, exc)
@@ -2325,9 +2459,15 @@ class ComBackend(AutoCADBackend):
                     coerced = int(float(value)) if isinstance(value, str) else int(value)
                 elif isinstance(current, float):
                     coerced = float(value)
+                elif isinstance(current, (tuple, list)) and isinstance(value, (tuple, list)):
+                    # Point/array sysvars (VIEWCTR, TARGET, INSBASE, LIMMIN…)
+                    # need an explicit VARIANT array, a plain list is rejected.
+                    coerced = _av([float(v) for v in value])
             except Exception as exc:
                 log.debug("set_variable type probe for %s failed: %s", name, exc)
             _set_sysvar(name, coerced)
+            if not isinstance(coerced, (bool, int, float, str)):
+                coerced = list(value)
             return {"ok": True, "variable": name, "value": coerced}
 
         return await self._run(_sync)
