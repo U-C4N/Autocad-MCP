@@ -70,14 +70,14 @@ async def test_drawing_save_as_uses_2010_format_constants(monkeypatch):
 @pytest.mark.asyncio
 async def test_drawing_audit_uses_activex_audit_not_sendcommand(monkeypatch):
     doc = MagicMock()
-    doc.Audit.return_value = 3
+    doc.AuditInfo.return_value = 3
     doc.SendCommand.side_effect = AssertionError("SendCommand hangs on fresh documents")
     monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
 
     out = await _com_backend().drawing_audit()
 
-    doc.Audit.assert_called_once_with(True)
-    assert out["error_count"] == 3
+    doc.AuditInfo.assert_called_once_with(True)
+    assert out["error_count"] == 3 and out["via"] == "AuditInfo"
 
 
 # ── COM: exploding a block must remove the original ─────────────────────────
@@ -357,26 +357,117 @@ async def test_entities_in_region_is_a_crossing_selection(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_chamfer_sets_distances_via_sysvars_not_inline_options(monkeypatch):
+async def test_chamfer_is_computed_without_the_command_line(monkeypatch):
+    """A corner op must never reach SendCommand: a prompt there kills the session."""
+    line_a, line_b = MagicMock(ObjectName="AcDbLine"), MagicMock(ObjectName="AcDbLine")
+    line_a.StartPoint, line_a.EndPoint = (0.0, 0.0, 0.0), (100.0, 0.0, 0.0)
+    line_b.StartPoint, line_b.EndPoint = (0.0, 0.0, 0.0), (0.0, 80.0, 0.0)
+    line_a.Layer = "GEOMETRY"
     doc = MagicMock()
-    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
-    monkeypatch.setattr(cb, "_entity_info", lambda e: "info")
-    written = {}
-    monkeypatch.setattr(cb, "_set_sysvar", lambda name, value: written.__setitem__(name, value))
-    sent = {}
-    monkeypatch.setattr(
-        ComBackend,
-        "_safe_send_command",
-        staticmethod(lambda d, cmd, **k: sent.setdefault("cmd", cmd) or []),
+    doc.HandleToObject.side_effect = lambda h: {"A": line_a, "B": line_b}[h]
+    doc.SendCommand.side_effect = AssertionError("corner ops must not use the command line")
+    drawn = {}
+    mspace = MagicMock()
+    mspace.AddLine.side_effect = lambda p1, p2: (
+        drawn.setdefault("line", (p1, p2)) and None or MagicMock()
     )
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
+    monkeypatch.setattr(cb, "_msp", lambda: mspace)
+    monkeypatch.setattr(cb, "_regen", lambda: None)
+    monkeypatch.setattr(
+        cb,
+        "_entity_info",
+        lambda e: cb.EntityInfo(
+            handle="C1",
+            type="LINE",
+            layer="GEOMETRY",
+            color=256,
+            linetype="ByLayer",
+            visible=True,
+            properties={},
+        ),
+    )
+    monkeypatch.setattr(cb, "_apoint", lambda x, y, z=0.0: (round(x, 6), round(y, 6), z))
 
-    await _com_backend().entity_chamfer("1A", "1B", 5, 7, trim=False)
+    await _com_backend().entity_chamfer("A", "B", 5, 7)
 
-    assert written["CHAMFERA"] == 5.0 and written["CHAMFERB"] == 7.0
-    assert written["TRIMMODE"] == 0
-    # Only the two selections may reach the command line: an inline "_D 5 7"
-    # option sequence is what hung AutoCAD and poisoned the COM session.
-    assert "_D" not in sent["cmd"] and sent["cmd"].count("handent") == 2
+    # Chamfer between +X and +Y at the origin: 5 along X, 7 along Y.
+    assert drawn["line"] == ((5.0, 0.0, 0.0), (0.0, 7.0, 0.0))
+    # Both lines were pulled back to the chamfer ends.
+    assert line_a.StartPoint == (5.0, 0.0, 0.0)
+    assert line_b.StartPoint == (0.0, 7.0, 0.0)
+
+
+@pytest.mark.asyncio
+async def test_fillet_places_the_arc_tangent_to_both_lines(monkeypatch):
+    line_a, line_b = MagicMock(ObjectName="AcDbLine"), MagicMock(ObjectName="AcDbLine")
+    line_a.StartPoint, line_a.EndPoint = (0.0, 0.0, 0.0), (100.0, 0.0, 0.0)
+    line_b.StartPoint, line_b.EndPoint = (0.0, 0.0, 0.0), (0.0, 80.0, 0.0)
+    line_a.Layer = "GEOMETRY"
+    doc = MagicMock()
+    doc.HandleToObject.side_effect = lambda h: {"A": line_a, "B": line_b}[h]
+    doc.SendCommand.side_effect = AssertionError("corner ops must not use the command line")
+    arcs = {}
+    mspace = MagicMock()
+
+    def _add_arc(centre, radius, start, end):
+        arcs["call"] = (centre, radius, start, end)
+        return MagicMock()
+
+    mspace.AddArc.side_effect = _add_arc
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
+    monkeypatch.setattr(cb, "_msp", lambda: mspace)
+    monkeypatch.setattr(cb, "_regen", lambda: None)
+    monkeypatch.setattr(
+        cb,
+        "_entity_info",
+        lambda e: cb.EntityInfo(
+            handle="C2",
+            type="ARC",
+            layer="GEOMETRY",
+            color=256,
+            linetype="ByLayer",
+            visible=True,
+            properties={},
+        ),
+    )
+    monkeypatch.setattr(cb, "_apoint", lambda x, y, z=0.0: (round(x, 6), round(y, 6), z))
+
+    await _com_backend().entity_fillet("A", "B", 8)
+
+    centre, radius, _, _ = arcs["call"]
+    # Right angle at the origin: the centre sits at (r, r) and both lines are
+    # trimmed back by r.
+    assert centre == (8.0, 8.0, 0.0) and radius == 8.0
+    assert line_a.StartPoint == (8.0, 0.0, 0.0)
+    assert line_b.StartPoint == (0.0, 8.0, 0.0)
+
+
+@pytest.mark.asyncio
+async def test_corner_ops_reject_parallel_lines(monkeypatch):
+    line_a, line_b = MagicMock(ObjectName="AcDbLine"), MagicMock(ObjectName="AcDbLine")
+    line_a.StartPoint, line_a.EndPoint = (0.0, 0.0, 0.0), (100.0, 0.0, 0.0)
+    line_b.StartPoint, line_b.EndPoint = (0.0, 50.0, 0.0), (100.0, 50.0, 0.0)
+    doc = MagicMock()
+    doc.HandleToObject.side_effect = lambda h: {"A": line_a, "B": line_b}[h]
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
+
+    with pytest.raises(RuntimeError, match="parallel"):
+        await _com_backend().entity_chamfer("A", "B", 5)
+
+
+@pytest.mark.asyncio
+async def test_corner_ops_reject_lines_too_short(monkeypatch):
+    line_a, line_b = MagicMock(ObjectName="AcDbLine"), MagicMock(ObjectName="AcDbLine")
+    # Meet at the origin, only 3 units long each: a 5-unit chamfer cannot fit.
+    line_a.StartPoint, line_a.EndPoint = (0.0, 0.0, 0.0), (3.0, 0.0, 0.0)
+    line_b.StartPoint, line_b.EndPoint = (0.0, 0.0, 0.0), (0.0, 3.0, 0.0)
+    doc = MagicMock()
+    doc.HandleToObject.side_effect = lambda h: {"A": line_a, "B": line_b}[h]
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
+
+    with pytest.raises(RuntimeError, match="exceed the available line lengths"):
+        await _com_backend().entity_chamfer("A", "B", 5)
 
 
 def test_safe_send_command_refuses_while_a_prompt_is_open():
@@ -387,3 +478,86 @@ def test_safe_send_command_refuses_while_a_prompt_is_open():
         ComBackend._safe_send_command(doc, "_CHAMFER\n")
 
     doc.SendCommand.assert_not_called()  # fail fast instead of blocking 60s
+
+
+@pytest.mark.asyncio
+async def test_com_call_retries_while_autocad_is_busy(monkeypatch):
+    """RPC_E_CALL_REJECTED means 'busy, try again', not 'the call failed'."""
+    import backends.com_backend as module
+
+    monkeypatch.setattr(module.time, "sleep", lambda *_: None)
+    backend = ComBackend()
+    backend._executor = _InlineExecutor()
+
+    calls = {"n": 0}
+
+    def _flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise Exception(-2147418111, "Вызов был отклонен", None, None)
+        return "done"
+
+    assert await backend._run(_flaky) == "done"
+    assert calls["n"] == 3
+
+
+def test_safe_send_command_never_puts_escape_in_the_payload():
+    """AutoCAD rejects a SendCommand payload containing ESC (verified live)."""
+    doc = MagicMock()
+    doc.GetVariable.side_effect = lambda name: 0
+    doc.ModelSpace.__iter__ = lambda _: iter([])
+
+    ComBackend._safe_send_command(doc, '_CHAMFER\n(handent "1A")\n(handent "1B")\n')
+
+    sent = doc.SendCommand.call_args[0][0]
+    assert "\x1b" not in sent
+
+
+class _InlineExecutor:
+    """Minimal executor stand-in: runs the callable on the calling thread."""
+
+    def submit(self, fn, *args, **kwargs):
+        import concurrent.futures
+
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        try:
+            future.set_result(fn(*args, **kwargs))
+        except BaseException as exc:  # noqa: BLE001 - mirror executor semantics
+            future.set_exception(exc)
+        return future
+
+
+def test_typed_refetch_recovers_a_late_bound_entity(monkeypatch):
+    """Add* sometimes returns an object whose first property read raises."""
+
+    class _Bare:
+        Handle = "9A"
+
+        def __getattr__(self, name):
+            if name == "ObjectName":
+                raise AttributeError("AddText.ObjectName")
+            raise AttributeError(name)
+
+    typed = MagicMock(ObjectName="AcDbText")
+    doc = MagicMock()
+    doc.HandleToObject.return_value = typed
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
+
+    assert cb._typed(_Bare()) is typed
+    doc.HandleToObject.assert_called_once_with("9A")
+
+
+def test_corner_trim_leaves_a_crossing_line_whole():
+    """A line that runs through the corner keeps both halves.
+
+    AutoCAD picks the half to keep from the user's pick point; without one,
+    trimming would silently delete geometry the caller still needs.
+    """
+    crossing = MagicMock()
+    crossing.StartPoint, crossing.EndPoint = (160.0, 0.0, 0.0), (160.0, 90.0, 0.0)
+
+    trimmed = ComBackend._retrim_to_corner(crossing, (160.0, 40.0), (0.0, 1.0), 5.0)
+
+    assert trimmed is False
+    assert crossing.StartPoint == (160.0, 0.0, 0.0)
+    assert crossing.EndPoint == (160.0, 90.0, 0.0)

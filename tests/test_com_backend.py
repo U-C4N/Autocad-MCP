@@ -224,8 +224,12 @@ def test_safe_send_command_restores_variables_on_timeout():
     assert any(c[0][1] == saved_osmode for c in set_calls)
 
 
-def test_safe_send_command_timeout_sends_esc():
-    """On timeout, three ESC sequences are sent to unblock the command prompt."""
+def test_safe_send_command_timeout_reports_the_open_prompt():
+    """On timeout the caller is told to press ESC — ESC cannot be sent over COM.
+
+    AutoCAD rejects a SendCommand payload that contains an ESC character, so the
+    old "send ESC x3" recovery never worked; saying so is more useful.
+    """
     doc = MagicMock()
     doc.SendCommand.return_value = None
     esc_reads = {"n": 0}
@@ -240,13 +244,10 @@ def test_safe_send_command_timeout_sends_esc():
     doc.ModelSpace.__iter__ = lambda _: iter([])
 
     with patch("time.sleep"), patch("time.monotonic", side_effect=[0.0, 0.0, 999.0]):
-        with pytest.raises(RuntimeError):
-            ComBackend._safe_send_command(doc, "BAD\n", deadline_s=1.0)
+        with pytest.raises(RuntimeError, match="Press ESC in AutoCAD"):
+            ComBackend._safe_send_command(doc, "BAD" + chr(10), deadline_s=1.0)
 
-    # Second SendCommand call should be the ESC sequence
-    calls = doc.SendCommand.call_args_list
-    assert len(calls) >= 2
-    assert "\x1b" in calls[-1][0][0]
+    assert all(chr(27) not in c[0][0] for c in doc.SendCommand.call_args_list)
 
 
 def test_safe_send_command_new_handle_detection():

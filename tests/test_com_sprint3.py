@@ -129,8 +129,10 @@ async def test_transaction_rollback_uses_safe_send_command(monkeypatch):
     out = await b.transaction_rollback()
     assert out["ok"] is True
     assert b._transaction_active is False
-    # UNDO B went through _safe_send_command (which appends a trailing newline).
-    assert any("_UNDO B" in c for c in doc.sent)
+    # UNDO Back goes through _safe_send_command with its confirmation answered
+    # inline; leaving the "OK?" prompt unanswered used to hang the COM session.
+    sent = "".join(doc.sent)
+    assert "_UNDO" in sent and "_B" in sent and "_Y" in sent
 
 
 # ── R13 — offset honors side_x/side_y and deletes the unused copy ───────────
