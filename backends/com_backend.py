@@ -1172,7 +1172,10 @@ class ComBackend(AutoCADBackend):
             flat = []
             for px, py in normalized:
                 flat.extend([px, py, 0.0])
-            leader = _msp().AddMLeader(_av(flat), 0)
+            # AddMLeader's second argument is a by-ref out parameter, so pywin32
+            # hands back (mleader, leader_index) rather than the entity itself.
+            created = _msp().AddMLeader(_av(flat), 0)
+            leader = created[0] if isinstance(created, tuple) else created
             leader.TextString = str(text)
             leader.TextHeight = float(text_height)
             leader.LandingGap = float(landing_gap)
@@ -2171,24 +2174,29 @@ class ComBackend(AutoCADBackend):
         y2,
     ) -> list[EntityInfo]:
         def _sync():
-            doc = _acad_doc()
-            ss_name = f"_REGION_{uuid.uuid4().hex[:8]}"
-            ss = doc.SelectionSets.Add(ss_name)
-            try:
-                ss.SelectCrossing(_apoint(x1, y1), _apoint(x2, y2))
-                results = []
-                for i in range(ss.Count):
-                    try:
-                        results.append(_entity_info(ss.Item(i)))
-                    except Exception as exc:
-                        log.debug("analysis_entities_in_region: skip selection item %d: %s", i, exc)
-                        continue
-                return results
-            finally:
+            # Late-bound SelectionSets have no usable type info under pywin32
+            # (`ss.SelectCrossing` raises AttributeError), and named sets linger
+            # in the drawing. Measure bounding boxes instead — same crossing
+            # semantics as the ezdxf backend, no side effects.
+            mn_x, mx_x = min(float(x1), float(x2)), max(float(x1), float(x2))
+            mn_y, mx_y = min(float(y1), float(y2)), max(float(y1), float(y2))
+            mspace = _msp()
+            results = []
+            for i in range(mspace.Count):
                 try:
-                    ss.Delete()
+                    ent = mspace.Item(i)
+                    bb_min, bb_max = ent.GetBoundingBox()
                 except Exception as exc:
-                    log.debug("SelectionSet cleanup failed: %s", exc)
+                    log.debug("analysis_entities_in_region: skip entity at index %d: %s", i, exc)
+                    continue
+                if (
+                    bb_min[0] <= mx_x
+                    and bb_max[0] >= mn_x
+                    and bb_min[1] <= mx_y
+                    and bb_max[1] >= mn_y
+                ):
+                    results.append(_entity_info(ent))
+            return results
 
         return await self._run(_sync)
 
@@ -2236,21 +2244,20 @@ class ComBackend(AutoCADBackend):
 
     async def analysis_select_by_layer(self, layer_name) -> list[EntityInfo]:
         def _sync():
-            doc = _acad_doc()
-            ss_name = f"_BYLAYER_{uuid.uuid4().hex[:8]}"
-            ss = doc.SelectionSets.Add(ss_name)
-            try:
-                ft = _ai([8])  # group code 8 = layer
-                fv = win32com.client.VARIANT(
-                    pythoncom.VT_ARRAY | pythoncom.VT_VARIANT, [layer_name]
-                )
-                ss.SelectAll(ft, fv)
-                return [_entity_info(ss.Item(i)) for i in range(ss.Count)]
-            finally:
+            # Same reason as analysis_entities_in_region: a late-bound
+            # SelectionSet has no SelectAll under pywin32.
+            mspace = _msp()
+            wanted = str(layer_name).lower()
+            results = []
+            for i in range(mspace.Count):
                 try:
-                    ss.Delete()
+                    ent = mspace.Item(i)
+                    if ent.Layer.lower() == wanted:
+                        results.append(_entity_info(ent))
                 except Exception as exc:
-                    log.debug("SelectionSet cleanup failed: %s", exc)
+                    log.debug("analysis_select_by_layer: skip entity at index %d: %s", i, exc)
+                    continue
+            return results
 
         return await self._run(_sync)
 
@@ -2538,6 +2545,20 @@ class ComBackend(AutoCADBackend):
         Returns a list of new entity handles created by the command (empty
         list for in-place operations like TRIM/EXTEND).
         """
+        # Pre-flight: SendCommand blocks until AutoCAD is idle, so sending while
+        # a prompt is already open hangs the executor and takes the session with
+        # it. Fail fast with something the caller can act on instead.
+        try:
+            busy = int(doc.GetVariable("CMDACTIVE"))
+        except Exception as exc:
+            log.debug("CMDACTIVE pre-flight check failed: %s", exc)
+            busy = 0
+        if busy:
+            raise RuntimeError(
+                "AutoCAD is waiting for input at the command line, so no command can be "
+                "sent. Press ESC in AutoCAD and retry."
+            )
+
         saved: dict[str, Any] = {}
         try:
             for var in ("OSMODE", "SNAPMODE", "CMDECHO"):
@@ -2628,11 +2649,14 @@ class ComBackend(AutoCADBackend):
     async def entity_fillet(self, handle1, handle2, radius, trim=True) -> EntityInfo:
         def _sync():
             doc = _acad_doc()
-            t = "T" if trim else "N"  # T=Trim, N=No-trim
-            cmd = (
-                f"_FILLET\n_R\n{float(radius)}\n_T\n_{t}\n"
-                f'(handent "{handle1}")\n(handent "{handle2}")\n'
-            )
+            # Drive FILLET through its system variables and hand the command
+            # nothing but the two entities. Options typed inline (_R/_T plus
+            # values) leave AutoCAD sitting at a prompt whenever a sub-prompt
+            # differs by release, and SendCommand then blocks until the COM call
+            # times out — which poisons the whole session.
+            _set_sysvar("FILLETRAD", float(radius))
+            _set_sysvar("TRIMMODE", 1 if trim else 0)
+            cmd = f'_FILLET\n(handent "{handle1}")\n(handent "{handle2}")\n'
             new_handles = self._safe_send_command(doc, cmd)
             # Return the new ARC entity if one was created (radius > 0); else
             # fall back to handle1 (radius=0 = sharp corner, no arc).
@@ -2659,11 +2683,16 @@ class ComBackend(AutoCADBackend):
             doc = _acad_doc()
             d1 = float(dist1)
             d2 = float(dist1 if dist2 is None else dist2)
-            t = "T" if trim else "N"
-            cmd = (
-                f"_CHAMFER\n_D\n{d1}\n{d2}\n_T\n_{t}\n"
-                f'(handent "{handle1}")\n(handent "{handle2}")\n'
-            )
+            # Same as entity_fillet: options via system variables, so the command
+            # consumes exactly two selections and always terminates. The old
+            # inline "_D d1 d2 _T _T" sequence left AutoCAD waiting at a prompt;
+            # SendCommand blocked for the full 60s COM timeout and every later
+            # call in the session then failed with "<unknown>.Count".
+            _set_sysvar("CHAMFERA", d1)
+            _set_sysvar("CHAMFERB", d2)
+            _set_sysvar("CHAMMODE", 0)  # 0 = distance/distance
+            _set_sysvar("TRIMMODE", 1 if trim else 0)
+            cmd = f'_CHAMFER\n(handent "{handle1}")\n(handent "{handle2}")\n'
             new_handles = self._safe_send_command(doc, cmd)
             for h in new_handles:
                 try:

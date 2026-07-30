@@ -119,7 +119,10 @@ def _make_mock_doc(
 
     # Simulate CMDACTIVE returning successive values on each GetVariable("CMDACTIVE") call.
     # Other variables (OSMODE, SNAPMODE, CMDECHO) return 0 by default.
-    getvar_calls: list[int] = list(cmdactive_sequence)
+    # The leading 0 answers _safe_send_command's pre-flight check ("is AutoCAD
+    # already sitting at a prompt?"); `cmdactive_sequence` describes what the
+    # command does after it has been sent.
+    getvar_calls: list[int] = [0] + list(cmdactive_sequence)
 
     def _get_variable(name: str):
         if name == "CMDACTIVE":
@@ -197,9 +200,14 @@ def test_safe_send_command_restores_variables_on_timeout():
     doc = MagicMock()
     doc.SendCommand.return_value = None
 
+    cmdactive_reads = {"n": 0}
+
     def _get_variable(name: str):
         if name == "CMDACTIVE":
-            return 1  # never clears → will time out
+            # 0 first: the pre-flight check must see an idle AutoCAD, then the
+            # command never clears and the poll loop times out.
+            cmdactive_reads["n"] += 1
+            return 0 if cmdactive_reads["n"] == 1 else 1
         if name == "OSMODE":
             return saved_osmode
         return 0
@@ -220,7 +228,15 @@ def test_safe_send_command_timeout_sends_esc():
     """On timeout, three ESC sequences are sent to unblock the command prompt."""
     doc = MagicMock()
     doc.SendCommand.return_value = None
-    doc.GetVariable.side_effect = lambda name: 1 if name == "CMDACTIVE" else 0
+    esc_reads = {"n": 0}
+
+    def _cmdactive(name: str):
+        if name != "CMDACTIVE":
+            return 0
+        esc_reads["n"] += 1  # first read is the idle pre-flight check
+        return 0 if esc_reads["n"] == 1 else 1
+
+    doc.GetVariable.side_effect = _cmdactive
     doc.ModelSpace.__iter__ = lambda _: iter([])
 
     with patch("time.sleep"), patch("time.monotonic", side_effect=[0.0, 0.0, 999.0]):

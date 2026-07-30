@@ -282,3 +282,108 @@ async def test_drawing_new_with_binary_template_explains_itself(tmp_path):
     await b.connect()
     with pytest.raises(RuntimeError, match="not a DXF file"):
         await b.drawing_new(template=str(fake_dwt))
+
+
+# ── COM: MLeader creation unwraps AddMLeader's out-parameter ────────────────
+
+
+@pytest.mark.asyncio
+async def test_leader_create_mleader_unwraps_addmleader_tuple(monkeypatch):
+    leader = MagicMock()
+    mspace = MagicMock()
+    # AddMLeader's second argument is by-ref, so pywin32 returns (entity, index).
+    mspace.AddMLeader.return_value = (leader, 0)
+    monkeypatch.setattr(cb, "_msp", lambda: mspace)
+    monkeypatch.setattr(cb, "_apply_entity_attrs", lambda *a, **k: None)
+    monkeypatch.setattr(cb, "_regen", lambda: None)
+    monkeypatch.setattr(
+        cb,
+        "_entity_info",
+        lambda e: cb.EntityInfo(
+            handle="7F",
+            type="MULTILEADER",
+            layer="DIM",
+            color=256,
+            linetype="ByLayer",
+            visible=True,
+            properties={},
+        ),
+    )
+
+    info = await _com_backend().leader_create_mleader([[0, 0], [10, 10]], "note")
+
+    assert leader.TextString == "note"  # would raise AttributeError on the tuple
+    assert info.type == "MLEADER"
+
+
+# ── COM: layer/region queries do not use late-bound SelectionSets ───────────
+
+
+@pytest.mark.asyncio
+async def test_select_by_layer_scans_modelspace(monkeypatch):
+    a = MagicMock(Layer="ЛВС_ТД")
+    b = MagicMock(Layer="GEOMETRY")
+    mspace = MagicMock()
+    mspace.Count = 2
+    mspace.Item.side_effect = lambda i: [a, b][i]
+    doc = MagicMock()
+    doc.SelectionSets.Add.side_effect = AssertionError("SelectionSets are not usable late-bound")
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
+    monkeypatch.setattr(cb, "_msp", lambda: mspace)
+    monkeypatch.setattr(cb, "_entity_info", lambda e: e.Layer)
+
+    assert await _com_backend().analysis_select_by_layer("лвс_тд") == ["ЛВС_ТД"]
+
+
+@pytest.mark.asyncio
+async def test_entities_in_region_is_a_crossing_selection(monkeypatch):
+    crossing = MagicMock()
+    crossing.GetBoundingBox.return_value = ((-50.0, 5.0, 0.0), (50.0, 5.0, 0.0))
+    outside = MagicMock()
+    outside.GetBoundingBox.return_value = ((500.0, 500.0, 0.0), (510.0, 510.0, 0.0))
+    mspace = MagicMock()
+    mspace.Count = 2
+    mspace.Item.side_effect = lambda i: [crossing, outside][i]
+    doc = MagicMock()
+    doc.SelectionSets.Add.side_effect = AssertionError("SelectionSets are not usable late-bound")
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
+    monkeypatch.setattr(cb, "_msp", lambda: mspace)
+    monkeypatch.setattr(cb, "_entity_info", lambda e: "hit")
+
+    assert await _com_backend().analysis_entities_in_region(0, 0, 10, 10) == ["hit"]
+
+
+# ── COM: corner ops must not park AutoCAD at a prompt ───────────────────────
+
+
+@pytest.mark.asyncio
+async def test_chamfer_sets_distances_via_sysvars_not_inline_options(monkeypatch):
+    doc = MagicMock()
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
+    monkeypatch.setattr(cb, "_entity_info", lambda e: "info")
+    written = {}
+    monkeypatch.setattr(cb, "_set_sysvar", lambda name, value: written.__setitem__(name, value))
+    sent = {}
+    monkeypatch.setattr(
+        ComBackend,
+        "_safe_send_command",
+        staticmethod(lambda d, cmd, **k: sent.setdefault("cmd", cmd) or []),
+    )
+
+    await _com_backend().entity_chamfer("1A", "1B", 5, 7, trim=False)
+
+    assert written["CHAMFERA"] == 5.0 and written["CHAMFERB"] == 7.0
+    assert written["TRIMMODE"] == 0
+    # Only the two selections may reach the command line: an inline "_D 5 7"
+    # option sequence is what hung AutoCAD and poisoned the COM session.
+    assert "_D" not in sent["cmd"] and sent["cmd"].count("handent") == 2
+
+
+def test_safe_send_command_refuses_while_a_prompt_is_open():
+    doc = MagicMock()
+    doc.GetVariable.side_effect = lambda name: 1 if name == "CMDACTIVE" else 0
+
+    with pytest.raises(RuntimeError, match="waiting for input"):
+        ComBackend._safe_send_command(doc, "_CHAMFER\n")
+
+    doc.SendCommand.assert_not_called()  # fail fast instead of blocking 60s
