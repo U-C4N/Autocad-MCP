@@ -390,7 +390,15 @@ class EzdxfBackend(AutoCADBackend):
     async def drawing_new(self, template: str | None = None) -> dict:
         def _sync():
             if template and Path(template).exists():
-                self._doc = ezdxf.readfile(template)
+                try:
+                    self._doc = ezdxf.readfile(template)
+                except (OSError, ezdxf.DXFError) as exc:
+                    # A real AutoCAD .dwt/.dwg is binary; ezdxf only reads DXF.
+                    raise RuntimeError(
+                        f"ezdxf backend cannot read '{template}': it is not a DXF file "
+                        f"({exc}). Use a .dxf template here, or run the COM backend for "
+                        "binary DWG/DWT templates."
+                    ) from exc
             else:
                 self._doc = ezdxf.new(dxfversion="R2010")
             self._doc_path = None
@@ -702,6 +710,14 @@ class EzdxfBackend(AutoCADBackend):
 
     async def drawing_close(self, save: bool = True) -> dict:
         def _sync():
+            if save and self._dirty and not self._doc_path:
+                # Silently dropping unsaved work would be the worst possible
+                # outcome here; drawing_save raises for the same condition.
+                raise RuntimeError(
+                    "drawing_close(save=True): the drawing has never been saved, so there "
+                    "is no path to save it to. Call drawing_save_as(path=...) first, or "
+                    "close with save=False to discard it deliberately."
+                )
             if save and self._dirty and self._doc_path:
                 self._doc.saveas(self._doc_path)
             self._cleanup_undo_stack()
@@ -950,6 +966,7 @@ class EzdxfBackend(AutoCADBackend):
 
             self._mark_dirty()
             child_handles = [str(entity.dxf.handle) for entity in children]
+            self._register_composite(child_handles)
             group_id = f"table:{uuid.uuid4().hex}"
             return EntityInfo(
                 handle=child_handles[0],
@@ -1024,6 +1041,7 @@ class EzdxfBackend(AutoCADBackend):
 
             children = [path, arrow, label]
             child_handles = [str(entity.dxf.handle) for entity in children]
+            self._register_composite(child_handles)
             return EntityInfo(
                 handle=child_handles[0],
                 type="MLEADER",
@@ -1207,12 +1225,21 @@ class EzdxfBackend(AutoCADBackend):
     ) -> EntityInfo:
         def _sync():
             msp = self._msp()
+            # `distance` is the perpendicular offset from the measured line, not
+            # the straight-line distance to the caller's dimension point —
+            # feeding it the latter placed the dimension line far off the part.
+            px, py = float(x2) - float(x1), float(y2) - float(y1)
+            seg = math.hypot(px, py)
+            if seg < 1e-12:
+                raise RuntimeError("dimension_aligned: p1 and p2 coincide, nothing to measure.")
+            # Signed distance from the p1→p2 line to (dim_x, dim_y): positive is
+            # to the left of the direction of measurement, which is the side
+            # convention ezdxf's `distance` uses.
+            offset = ((float(dim_x) - float(x1)) * py - (float(dim_y) - float(y1)) * px) / seg
             dim = msp.add_aligned_dim(
                 p1=(float(x1), float(y1)),
                 p2=(float(x2), float(y2)),
-                distance=math.sqrt(
-                    (float(dim_x) - float(x1)) ** 2 + (float(dim_y) - float(y1)) ** 2
-                ),
+                distance=-offset,
             )
             dim.render()
             ent = dim.dimension
@@ -1348,10 +1375,18 @@ class EzdxfBackend(AutoCADBackend):
 
     async def entity_move(self, handle, dx, dy, dz=0.0) -> dict:
         def _sync():
-            ent = self._get_entity(handle)
-            ent.translate(float(dx), float(dy), float(dz))
+            # Composites (table grid + cells, leader + label) must move as one.
+            handles = self._composite_handles(handle)
+            for h in handles:
+                try:
+                    self._get_entity(h).translate(float(dx), float(dy), float(dz))
+                except Exception as exc:
+                    log.debug("entity_move: child %s not moved: %s", h, exc)
             self._mark_dirty()
-            return {"ok": True, "handle": handle}
+            result = {"ok": True, "handle": handle}
+            if len(handles) > 1:
+                result["entity_count"] = len(handles)
+            return result
 
         return await self._async(_sync)
 
@@ -1515,10 +1550,25 @@ class EzdxfBackend(AutoCADBackend):
 
     async def entity_delete(self, handle) -> dict:
         def _sync():
-            ent = self._get_entity(handle)
-            self._msp().delete_entity(ent)
+            msp = self._msp()
+            # Tables and mleaders are composites here: the returned handle is
+            # only their first child, so deleting it alone left the rest of the
+            # grid/leader behind as orphans.
+            handles = self._composite_handles(handle)
+            deleted = []
+            for h in handles:
+                try:
+                    msp.delete_entity(self._get_entity(h))
+                    deleted.append(h)
+                except Exception as exc:
+                    log.debug("entity_delete: child %s already gone: %s", h, exc)
+            self._composites.pop(str(handle), None)
             self._mark_dirty()
-            return {"ok": True, "deleted_handle": handle}
+            result = {"ok": True, "deleted_handle": handle}
+            if len(handles) > 1:
+                result["deleted_handles"] = deleted
+                result["entity_count"] = len(deleted)
+            return result
 
         return await self._async(_sync)
 
@@ -1771,9 +1821,22 @@ class EzdxfBackend(AutoCADBackend):
     async def layer_delete(self, name) -> dict:
         def _sync():
             doc = self._require_doc()
-            if name in doc.layers:
-                doc.layers.remove(name)
-                self._mark_dirty()
+            if name == "0":
+                raise RuntimeError(
+                    "layer_delete: layer '0' is the default layer and cannot be deleted."
+                )
+            if name not in doc.layers:
+                raise RuntimeError(f"layer_delete: layer '{name}' does not exist.")
+            # ezdxf happily removes a layer that still owns entities, leaving
+            # them pointing at a layer the table no longer has.
+            in_use = sum(1 for ent in self._msp() if ent.dxf.get("layer") == name)
+            if in_use:
+                raise RuntimeError(
+                    f"layer_delete: layer '{name}' still holds {in_use} entit"
+                    f"{'y' if in_use == 1 else 'ies'}. Delete or move them first."
+                )
+            doc.layers.remove(name)
+            self._mark_dirty()
             return {"ok": True, "deleted": name}
 
         return await self._async(_sync)
@@ -2092,12 +2155,14 @@ class EzdxfBackend(AutoCADBackend):
                 for ent in msp:
                     try:
                         bb = ezdxf_bbox.extents([ent])
+                        # Crossing selection (as documented): any overlap with
+                        # the query rectangle counts, not full containment.
                         if (
                             bb
-                            and bb.extmin.x >= mn_x
-                            and bb.extmax.x <= mx_x
-                            and bb.extmin.y >= mn_y
-                            and bb.extmax.y <= mx_y
+                            and bb.extmin.x <= mx_x
+                            and bb.extmax.x >= mn_x
+                            and bb.extmin.y <= mx_y
+                            and bb.extmax.y >= mn_y
                         ):
                             results.append(_entity_info_dxf(ent))
                     except Exception as exc:
@@ -2403,34 +2468,143 @@ class EzdxfBackend(AutoCADBackend):
 
             target = self._get_entity(target_handle)
             boundary = self._get_entity(boundary_handle)
-            if target.dxftype() != "LINE" or boundary.dxftype() != "LINE":
+            if target.dxftype() != "LINE":
                 raise RuntimeError(
-                    f"entity_extend V1 supports LINE+LINE only "
-                    f"(got {target.dxftype()}+{boundary.dxftype()}). V2 will add LINE+ARC."
+                    f"entity_extend: the extended entity must be a LINE (got {target.dxftype()})."
+                )
+            b_type = boundary.dxftype()
+            if b_type not in ("LINE", "ARC", "CIRCLE", "LWPOLYLINE"):
+                raise RuntimeError(
+                    f"entity_extend supports LINE/ARC/CIRCLE/LWPOLYLINE boundaries (got {b_type})."
                 )
             if target_handle == boundary_handle:
                 raise RuntimeError("entity_extend: target and boundary cannot be the same entity.")
+
             t_start, t_end = self._line_endpoints(target)
-            b_start, b_end = self._line_endpoints(boundary)
-            ip = intersection_line_line_2d(
-                (Vec2(*t_start), Vec2(*t_end)),
-                (Vec2(*b_start), Vec2(*b_end)),
-                virtual=True,  # treat lines as infinite for extend
-            )
-            if ip is None:
-                raise RuntimeError(
-                    "entity_extend: target and boundary are parallel; no extension possible."
-                )
-            ix, iy = float(ip.x), float(ip.y)
+
+            # Which endpoint gets extended: the one nearest the pick point, or —
+            # in auto mode — nearest the boundary's centre of gravity.
             if end_x is None or end_y is None:
-                # auto: extend the endpoint nearest the boundary midpoint
-                b_mid = ((b_start[0] + b_end[0]) / 2, (b_start[1] + b_end[1]) / 2)
-                ref = b_mid
+                if b_type == "LINE":
+                    b_start, b_end = self._line_endpoints(boundary)
+                    ref = ((b_start[0] + b_end[0]) / 2, (b_start[1] + b_end[1]) / 2)
+                elif b_type in ("ARC", "CIRCLE"):
+                    c = boundary.dxf.center
+                    ref = (float(c[0]), float(c[1]))
+                else:  # LWPOLYLINE
+                    pts = [(float(p[0]), float(p[1])) for p in boundary.get_points()]
+                    ref = (
+                        sum(p[0] for p in pts) / len(pts),
+                        sum(p[1] for p in pts) / len(pts),
+                    )
             else:
                 ref = (float(end_x), float(end_y))
-            d_start = self._dist2(t_start, ref)
-            d_end = self._dist2(t_end, ref)
-            if d_start <= d_end:
+            extend_start = self._dist2(t_start, ref) <= self._dist2(t_end, ref)
+            anchor = t_end if extend_start else t_start  # stays in place
+            moving = t_start if extend_start else t_end  # gets extended
+
+            # Intersections of the target's infinite carrier line with the
+            # boundary, as parameters t along anchor→moving (t=1 is the moving
+            # endpoint; EXTEND only ever *lengthens*, so only t>1 qualifies).
+            dx, dy = moving[0] - anchor[0], moving[1] - anchor[1]
+            seg_len = math.hypot(dx, dy)
+            if seg_len < 1e-12:
+                raise RuntimeError("entity_extend: the target line has zero length.")
+
+            def _circle_params(center, radius) -> list[float]:
+                # |anchor + t*d - c|^2 = r^2 -> quadratic in t
+                acx, acy = anchor[0] - center[0], anchor[1] - center[1]
+                a = dx * dx + dy * dy
+                b = 2 * (acx * dx + acy * dy)
+                c = acx * acx + acy * acy - radius * radius
+                disc = b * b - 4 * a * c
+                if disc < 0:
+                    return []
+                root = math.sqrt(disc)
+                return [(-b - root) / (2 * a), (-b + root) / (2 * a)]
+
+            def _on_arc(pt, arc) -> bool:
+                c = arc.dxf.center
+                ang = math.degrees(math.atan2(pt[1] - c[1], pt[0] - c[0])) % 360.0
+                start = float(arc.dxf.start_angle) % 360.0
+                end = float(arc.dxf.end_angle) % 360.0
+                sweep = (end - start) % 360.0
+                return (ang - start) % 360.0 <= sweep + 1e-9
+
+            def _segment_param(p1, p2) -> float | None:
+                ip = intersection_line_line_2d(
+                    (Vec2(*anchor), Vec2(*moving)),
+                    (Vec2(*p1), Vec2(*p2)),
+                    virtual=True,
+                )
+                if ip is None:
+                    return None
+                # The boundary segment itself is finite: the hit must lie on it.
+                sdx, sdy = p2[0] - p1[0], p2[1] - p1[1]
+                s_len2 = sdx * sdx + sdy * sdy
+                if s_len2 < 1e-18:
+                    return None
+                u = ((ip.x - p1[0]) * sdx + (ip.y - p1[1]) * sdy) / s_len2
+                if u < -1e-9 or u > 1 + 1e-9:
+                    return None
+                return ((ip.x - anchor[0]) * dx + (ip.y - anchor[1]) * dy) / (seg_len * seg_len)
+
+            params: list[float] = []
+            if b_type == "LINE":
+                b_start, b_end = self._line_endpoints(boundary)
+                # V1 treated a LINE boundary as infinite; keep that behaviour.
+                ip = intersection_line_line_2d(
+                    (Vec2(*anchor), Vec2(*moving)),
+                    (Vec2(*b_start), Vec2(*b_end)),
+                    virtual=True,
+                )
+                if ip is not None:
+                    params.append(
+                        ((ip.x - anchor[0]) * dx + (ip.y - anchor[1]) * dy) / (seg_len * seg_len)
+                    )
+            elif b_type == "CIRCLE":
+                c = boundary.dxf.center
+                params.extend(
+                    _circle_params((float(c[0]), float(c[1])), float(boundary.dxf.radius))
+                )
+            elif b_type == "ARC":
+                c = boundary.dxf.center
+                for t in _circle_params((float(c[0]), float(c[1])), float(boundary.dxf.radius)):
+                    pt = (anchor[0] + t * dx, anchor[1] + t * dy)
+                    if _on_arc(pt, boundary):
+                        params.append(t)
+            else:  # LWPOLYLINE — decompose into virtual LINE/ARC pieces so bulge
+                # (arc) segments are honoured too.
+                for piece in boundary.virtual_entities():
+                    if piece.dxftype() == "LINE":
+                        p1 = (float(piece.dxf.start[0]), float(piece.dxf.start[1]))
+                        p2 = (float(piece.dxf.end[0]), float(piece.dxf.end[1]))
+                        t = _segment_param(p1, p2)
+                        if t is not None:
+                            params.append(t)
+                    elif piece.dxftype() == "ARC":
+                        c = piece.dxf.center
+                        for t in _circle_params(
+                            (float(c[0]), float(c[1])), float(piece.dxf.radius)
+                        ):
+                            pt = (anchor[0] + t * dx, anchor[1] + t * dy)
+                            if _on_arc(pt, piece):
+                                params.append(t)
+
+            ahead = [t for t in params if t > 1 + 1e-9]
+            if not ahead:
+                if params:
+                    raise RuntimeError(
+                        "entity_extend: the boundary lies behind or inside the target line; "
+                        "extending would shorten it (use entity_trim for that)."
+                    )
+                raise RuntimeError(
+                    "entity_extend: the target's extension never reaches the boundary."
+                )
+            t_hit = min(ahead)  # nearest crossing ahead of the moving endpoint
+            ix, iy = anchor[0] + t_hit * dx, anchor[1] + t_hit * dy
+
+            if extend_start:
                 target.dxf.start = (ix, iy, 0.0)
             else:
                 target.dxf.end = (ix, iy, 0.0)

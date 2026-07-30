@@ -122,6 +122,34 @@ def _solid_3d_capability() -> FeatureCapability:
     return FeatureCapability(False, reason="opt_in_disabled:set ENABLE_3D=true")
 
 
+_BUSY_HRESULTS = {
+    -2147418111,  # RPC_E_CALL_REJECTED
+    -2147417846,  # RPC_E_SERVERCALL_RETRYLATER
+}
+_DEAD_PROXY_HRESULTS = {
+    -2147023174,  # RPC_E_SERVER_UNAVAILABLE (0x800706BA) — AutoCAD was closed
+    -2147417848,  # RPC_E_DISCONNECTED (0x80010108)
+    -2147220995,  # CO_E_OBJNOTCONNECTED
+}
+
+
+def _com_error_codes(exc) -> set:
+    """Every HRESULT hiding in a pywin32 com_error: top-level + nested scode."""
+    codes = set()
+    hr = getattr(exc, "hresult", None)
+    if isinstance(hr, int):
+        codes.add(hr)
+    args = getattr(exc, "args", ())
+    if args and isinstance(args[0], int):
+        codes.add(args[0])
+    # com_error args: (hresult, strerror, excepinfo, argerror); scode = excepinfo[5]
+    if len(args) >= 3 and isinstance(args[2], (tuple, list)) and len(args[2]) >= 6:
+        scode = args[2][5]
+        if isinstance(scode, int):
+            codes.add(scode)
+    return codes
+
+
 def _acad_app():
     """Return (or lazily create) the AutoCAD Application COM object.
     Must only be called from the COM executor thread."""
@@ -153,14 +181,62 @@ def _msp():
     return _acad_doc().ModelSpace
 
 
+def _get_sysvar(name: str):
+    """Read a system variable. GetVariable lives on AcadDocument, not AcadApplication."""
+    return _acad_doc().GetVariable(name)
+
+
+def _set_sysvar(name: str, value) -> None:
+    """Write a system variable. SetVariable lives on AcadDocument, not AcadApplication."""
+    _acad_doc().SetVariable(name, value)
+
+
 _BUILTIN_LINETYPES = {"continuous", "bylayer", "byblock"}
+
+# ActiveX ObjectName -> DXF-style type name. Callers filter with DXF names
+# ("LWPOLYLINE", "INSERT"), which is also what the ezdxf backend reports, but
+# AutoCAD's COM ObjectName uses different spellings ("AcDbPolyline",
+# "AcDbBlockReference"); stripping the "AcDb" prefix is not enough.
+_OBJECT_NAME_TO_TYPE = {
+    "AcDbPolyline": "LWPOLYLINE",
+    "AcDbLWPolyline": "LWPOLYLINE",
+    "AcDb2dPolyline": "POLYLINE",
+    "AcDb3dPolyline": "POLYLINE",
+    "AcDbBlockReference": "INSERT",
+    "AcDbMInsertBlock": "INSERT",
+    "AcDbAttributeDefinition": "ATTDEF",
+    "AcDbRotatedDimension": "DIMENSION",
+    "AcDbAlignedDimension": "DIMENSION",
+    "AcDb2LineAngularDimension": "DIMENSION",
+    "AcDb3PointAngularDimension": "DIMENSION",
+    "AcDbRadialDimension": "DIMENSION",
+    "AcDbDiametricDimension": "DIMENSION",
+    "AcDbOrdinateDimension": "DIMENSION",
+    "AcDbMText": "MTEXT",
+    "AcDbMLeader": "MULTILEADER",
+    "AcDbRasterImage": "IMAGE",
+    "AcDbProxyEntity": "ACAD_PROXY_ENTITY",
+    "AcDb3dSolid": "3DSOLID",
+}
+
+
+def _canonical_type(object_name: str) -> str:
+    """Map an ActiveX ObjectName to the DXF-style type name callers filter on."""
+    mapped = _OBJECT_NAME_TO_TYPE.get(object_name)
+    if mapped:
+        return mapped
+    return object_name.replace("AcDb", "").upper()
 
 
 def _ensure_linetype_loaded(name: str) -> None:
-    """If `name` is not already loaded, load it via -LINETYPE behind FILEDIA=0.
+    """If `name` is not already loaded, load it through ``Linetypes.Load``.
 
     Called by attribute setters so users can write `linetype="CENTER"` without
     having to remember to load it first. Must run on the COM thread.
+
+    Uses the collection method rather than SendCommand("_-LINETYPE ..."):
+    SendCommand only returns once AutoCAD is idle and hangs outright on a
+    freshly created document, stalling the COM thread until the call timeout.
     """
     if not name or name.lower() in _BUILTIN_LINETYPES:
         return
@@ -168,31 +244,54 @@ def _ensure_linetype_loaded(name: str) -> None:
     existing = {doc.Linetypes.Item(i).Name.lower() for i in range(doc.Linetypes.Count)}
     if name.lower() in existing:
         return
-    app = _acad_app()
     try:
-        measurement = int(app.GetVariable("MEASUREMENT"))
+        measurement = int(_get_sysvar("MEASUREMENT"))
     except Exception as exc:
         log.debug("MEASUREMENT read failed, defaulting to acadiso: %s", exc)
         measurement = 1
     lin_file = "acadiso.lin" if measurement == 1 else "acad.lin"
+    doc.Linetypes.Load(name, lin_file)
+
+
+def _ensure_layer_exists(name: str) -> None:
+    """Create the layer if the drawing doesn't have it yet.
+
+    Assigning ``entity.Layer`` to an unknown name is a hard COM error, so every
+    create-with-layer call would fail unless the caller had run layer_create
+    first. The ezdxf backend auto-creates, so this keeps the two in step.
+    """
+    if not name:
+        return
+    doc = _acad_doc()
+    existing = {doc.Layers.Item(i).Name.lower() for i in range(doc.Layers.Count)}
+    if name.lower() not in existing:
+        doc.Layers.Add(name)
+
+
+def _typed(entity):
+    """Return an entity whose members resolve.
+
+    Objects handed back by AutoCAD's Add* methods sometimes arrive as bare
+    IDispatch without type information, and the first property read then raises
+    AttributeError ("AddText.ObjectName"). Re-fetching the same handle from the
+    document yields a usable object.
+    """
     try:
-        old_filedia = int(app.GetVariable("FILEDIA"))
-    except Exception as exc:
-        log.debug("FILEDIA read failed, assuming 1: %s", exc)
-        old_filedia = 1
-    try:
-        app.SetVariable("FILEDIA", 0)
-        doc.SendCommand(f"_-LINETYPE _LOAD {name} {lin_file}\n\n")
-    finally:
+        _ = entity.ObjectName  # probe: raises when the object came back untyped
+        return entity
+    except AttributeError as exc:
+        log.debug("late-bound entity re-fetched by handle: %s", exc)
         try:
-            app.SetVariable("FILEDIA", old_filedia)
-        except Exception as exc:
-            log.debug("FILEDIA restore failed: %s", exc)
+            return _acad_doc().HandleToObject(entity.Handle)
+        except Exception as inner:
+            log.debug("re-fetch failed: %s", inner)
+            return entity
 
 
 def _apply_entity_attrs(entity, layer: str | None, color: int | None, linetype: str | None):
     """Apply common entity attributes after creation."""
     if layer is not None:
+        _ensure_layer_exists(layer)
         entity.Layer = layer
     if color is not None:
         entity.Color = int(color)
@@ -253,6 +352,7 @@ def _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode="none", text_overri
 
 
 def _entity_info(entity) -> EntityInfo:
+    entity = _typed(entity)
     """Convert a COM entity object to EntityInfo dataclass."""
     try:
         bb_min, bb_max = entity.GetBoundingBox()
@@ -288,7 +388,7 @@ def _entity_info(entity) -> EntityInfo:
             # Arc length (N3) — parity with ezdxf so length_range selects ARCs.
             _sweep = (entity.EndAngle - entity.StartAngle) % (2.0 * math.pi)
             props["length"] = entity.Radius * _sweep
-        elif obj_name in ("AcDbLWPolyline", "AcDb2dPolyline"):
+        elif obj_name in ("AcDbPolyline", "AcDbLWPolyline", "AcDb2dPolyline"):
             coords = list(entity.Coordinates)
             pts = [[coords[i], coords[i + 1]] for i in range(0, len(coords), 2)]
             props["points"] = pts
@@ -317,7 +417,7 @@ def _entity_info(entity) -> EntityInfo:
     except Exception as exc:
         log.debug("Type-specific entity properties extraction failed: %s", exc)
 
-    ent_type = obj_name.replace("AcDb", "").upper()
+    ent_type = _canonical_type(obj_name)
     try:
         linetype = entity.Linetype
     except Exception as exc:
@@ -530,7 +630,38 @@ class ComBackend(AutoCADBackend):
             raise RuntimeError("ComBackend not connected. Call connect() first.")
         loop = asyncio.get_running_loop()
         timeout = config.settings.com_call_timeout
-        future = loop.run_in_executor(self._executor, lambda: func(*args, **kwargs))
+
+        def _call():
+            # Two families of retryable COM failures:
+            # * BUSY (RPC_E_CALL_REJECTED / RPC_E_SERVERCALL_RETRYLATER) —
+            #   AutoCAD cannot take the call right now (starting up, redrawing).
+            #   Retry with backoff; the operation may still have run.
+            # * DEAD PROXY (RPC_E_SERVER_UNAVAILABLE / RPC_E_DISCONNECTED /
+            #   CO_E_OBJNOTCONNECTED) — the user closed AutoCAD and the cached
+            #   Application object points at a dead process. Every call then
+            #   fails "Сервер RPC недоступен" forever. Drop the cache so
+            #   _acad_app() re-Dispatches (which relaunches AutoCAD) and retry.
+            attempts = 6
+            for attempt in range(attempts):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as exc:  # noqa: BLE001 - inspect COM HRESULTs
+                    codes = _com_error_codes(exc)
+                    if codes & _DEAD_PROXY_HRESULTS and attempt < attempts - 1:
+                        log.warning(
+                            "AutoCAD COM proxy is dead (%s); dropping cache and reconnecting",
+                            sorted(codes & _DEAD_PROXY_HRESULTS),
+                        )
+                        _COM_STATE.pop("app", None)
+                        time.sleep(1.0)
+                        continue
+                    if not (codes & _BUSY_HRESULTS) or attempt == attempts - 1:
+                        raise
+                    log.debug("AutoCAD busy (attempt %d/%d), retrying", attempt + 1, attempts)
+                    time.sleep(0.5 * (attempt + 1))
+            raise RuntimeError("unreachable")  # pragma: no cover
+
+        future = loop.run_in_executor(self._executor, _call)
         try:
             if timeout > 0:
                 return await asyncio.wait_for(future, timeout=timeout)
@@ -593,7 +724,7 @@ class ComBackend(AutoCADBackend):
 
             unit_map = {0: "Unitless", 1: "Inches", 2: "Feet", 4: "mm", 5: "cm", 6: "m"}
             try:
-                units = unit_map.get(int(app.GetVariable("INSUNITS")), "Unknown")
+                units = unit_map.get(int(_get_sysvar("INSUNITS")), "Unknown")
             except Exception as exc:
                 log.debug("INSUNITS variable read failed: %s", exc)
                 units = "Unknown"
@@ -618,10 +749,11 @@ class ComBackend(AutoCADBackend):
         def _sync():
             app = _acad_app()
             if template:
-                doc = app.Documents.Add(template)
+                app.Documents.Add(template)
             else:
-                doc = app.Documents.Add()
-            return {"ok": True, "name": doc.Name}
+                app.Documents.Add()
+            # Add() returns a late-bound object without type info; re-fetch.
+            return {"ok": True, "name": app.ActiveDocument.Name}
 
         result = await self._run(_sync)
         await self._ensure_document_state()
@@ -630,7 +762,11 @@ class ComBackend(AutoCADBackend):
     async def drawing_open(self, path: str) -> dict:
         def _sync():
             app = _acad_app()
-            doc = app.Documents.Open(path)
+            app.Documents.Open(path)
+            # The object Open() returns is late-bound without type info (its
+            # first property read raises "Open.Name"); the ActiveDocument
+            # fetched afterwards is usable. Same defect family as _typed().
+            doc = app.ActiveDocument
             return {"ok": True, "name": doc.Name, "path": doc.FullName}
 
         result = await self._run(_sync)
@@ -651,9 +787,13 @@ class ComBackend(AutoCADBackend):
     async def drawing_save_as(self, path: str, fmt: str = "dwg") -> dict:
         def _sync():
             doc = _acad_doc()
-            # AutoCAD SaveAs format constants: 12=DWG R2010, 61=DXF R2010
-            fmt_map = {"dwg": 12, "dxf": 61, "dwt": 5}
-            acad_fmt = fmt_map.get(fmt.lower(), 12)
+            # AcSaveAsType constants: 48=ac2010_dwg, 49=ac2010_dxf,
+            # 50=ac2010_Template. The previous map used 12 (ac2000_dwg),
+            # 61 (ac2013_dxf) and 5 (acR13_dxf, not a template at all), so
+            # every save was written in the wrong version and "dwt" produced
+            # an R13 DXF body under a .dwt name.
+            fmt_map = {"dwg": 48, "dxf": 49, "dwt": 50}
+            acad_fmt = fmt_map.get(fmt.lower(), 48)
             doc.SaveAs(path, acad_fmt)
             return {"ok": True, "path": path, "format": fmt}
 
@@ -748,16 +888,23 @@ class ComBackend(AutoCADBackend):
                     viewport.CustomScale = float(scale)
                 except Exception:  # some verticals expose StandardScale only
                     pass
+                # AcadPViewport has no "ViewCenter" — the model-space point the
+                # viewport looks at is Target (with Direction left at the
+                # default plan view). Setting the non-existent property used to
+                # fail silently, leaving every viewport centred on the origin.
+                view_centered = False
                 try:
-                    viewport.ViewCenter = _av([float(view_center_x), float(view_center_y)])
-                except Exception:
-                    pass
+                    viewport.Target = _apoint(float(view_center_x), float(view_center_y), 0.0)
+                    view_centered = True
+                except Exception as exc:
+                    log.debug("viewport_create: Target not applied: %s", exc)
                 return {
                     "ok": True,
                     "handle": viewport.Handle,
                     "layout": layout,
                     "scale": scale,
                     "view_height": float(height) / float(scale),
+                    "view_centered": view_centered,
                 }
             finally:
                 if previous != layout:
@@ -867,10 +1014,28 @@ class ComBackend(AutoCADBackend):
     async def drawing_audit(self) -> dict:
         def _sync():
             doc = _acad_doc()
-            app = _acad_app()
-            app.SetVariable("AUDITCTL", 1)
-            doc.SendCommand("_AUDIT Y\n")
-            return {"ok": True, "message": "Audit completed"}
+            # Prefer AcadDocument.AuditInfo(FixErrors) over SendCommand("_AUDIT Y"),
+            # which hangs on a freshly created document. Late-bound documents do
+            # not always expose it (pywin32 resolves "Audit" to nothing on
+            # AutoCAD 2027), so fall back to the command with the answer already
+            # supplied — _safe_send_command's pre-flight keeps that safe.
+            for attr in ("AuditInfo", "Audit"):
+                method = getattr(doc, attr, None)
+                if method is None:
+                    continue
+                try:
+                    errors = method(True)
+                except AttributeError as exc:
+                    log.debug("doc.%s unavailable late-bound: %s", attr, exc)
+                    continue
+                try:
+                    error_count = int(errors)
+                except (TypeError, ValueError):
+                    error_count = 0
+                return {"ok": True, "error_count": error_count, "fixed": True, "via": attr}
+
+            self._safe_send_command(doc, "_AUDIT\n_Y\n")
+            return {"ok": True, "error_count": None, "fixed": True, "via": "command"}
 
         return await self._run(_sync)
 
@@ -887,7 +1052,10 @@ class ComBackend(AutoCADBackend):
     async def drawing_undo(self) -> dict:
         def _sync():
             doc = _acad_doc()
-            doc.SendCommand("_UNDO 1\n")
+            # Through the CMDACTIVE-aware sender, like transaction_rollback:
+            # a raw SendCommand blocks for the whole COM timeout if the command
+            # ever answers with a prompt, and that kills the session.
+            self._safe_send_command(doc, "_U\n")
             return {"ok": True, "message": "Undo applied"}
 
         return await self._run(_sync)
@@ -1105,7 +1273,10 @@ class ComBackend(AutoCADBackend):
             flat = []
             for px, py in normalized:
                 flat.extend([px, py, 0.0])
-            leader = _msp().AddMLeader(_av(flat), 0)
+            # AddMLeader's second argument is a by-ref out parameter, so pywin32
+            # hands back (mleader, leader_index) rather than the entity itself.
+            created = _msp().AddMLeader(_av(flat), 0)
+            leader = created[0] if isinstance(created, tuple) else created
             leader.TextString = str(text)
             leader.TextHeight = float(text_height)
             leader.LandingGap = float(landing_gap)
@@ -1174,10 +1345,14 @@ class ComBackend(AutoCADBackend):
             flat = []
             for pt in fit_points:
                 flat.extend([float(pt[0]), float(pt[1]), 0.0])
+            # Null tangents let AutoCAD derive them from the fit points. A fixed
+            # (0,1,0) tangent used to be passed for both ends, which bent every
+            # spline vertically at its endpoints regardless of the actual data
+            # and diverged from the ezdxf backend.
             sp = mspace.AddSpline(
                 _av(flat),
-                _apoint(0, 1),  # start tangent
-                _apoint(0, 1),  # end tangent
+                _apoint(0, 0),  # start tangent — none
+                _apoint(0, 0),  # end tangent — none
             )
             _apply_entity_attrs(sp, layer, color, None)
             _regen()
@@ -1245,6 +1420,7 @@ class ComBackend(AutoCADBackend):
                 deg2rad(rotation),
             )
             if layer:
+                _ensure_layer_exists(layer)
                 ref.Layer = layer
             _regen()
             return _entity_info(ref)
@@ -1279,6 +1455,7 @@ class ComBackend(AutoCADBackend):
                 deg2rad(rotation),
             )
             if layer:
+                _ensure_layer_exists(layer)
                 dim.Layer = layer
             _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode, text_override)
             _regen()
@@ -1300,6 +1477,7 @@ class ComBackend(AutoCADBackend):
             mspace = _msp()
             dim = mspace.AddDimAligned(_apoint(x1, y1), _apoint(x2, y2), _apoint(dim_x, dim_y))
             if layer:
+                _ensure_layer_exists(layer)
                 dim.Layer = layer
             _regen()
             return _entity_info(dim)
@@ -1327,6 +1505,7 @@ class ComBackend(AutoCADBackend):
                 _apoint(tx, ty),
             )
             if layer:
+                _ensure_layer_exists(layer)
                 dim.Layer = layer
             _regen()
             return _entity_info(dim)
@@ -1352,6 +1531,7 @@ class ComBackend(AutoCADBackend):
                 _apoint(cx, cy), _apoint(chord_x, chord_y), float(leader_length)
             )
             if layer:
+                _ensure_layer_exists(layer)
                 dim.Layer = layer
             _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode, text_override)
             _regen()
@@ -1376,6 +1556,7 @@ class ComBackend(AutoCADBackend):
             mspace = _msp()
             dim = mspace.AddDimDiametric(_apoint(x1, y1), _apoint(x2, y2), float(leader_length))
             if layer:
+                _ensure_layer_exists(layer)
                 dim.Layer = layer
             _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode, text_override)
             _regen()
@@ -1476,7 +1657,22 @@ class ComBackend(AutoCADBackend):
                     cx, cy = _center(e)
                     return (cx - sx) ** 2 + (cy - sy) ** 2
 
-                if _sq_dist(pos[0]) <= _sq_dist(neg[0]):
+                # A circle/arc offset both ways keeps the same bounding-box
+                # centre, so the generic nearest-centre test cannot tell grow
+                # from shrink. Decide from the side point's distance to the
+                # centre instead, like the ezdxf backend does.
+                radial = None
+                if _canonical_type(ent.ObjectName) in ("CIRCLE", "ARC"):
+                    try:
+                        ctr = ent.Center
+                        inside = math.hypot(sx - ctr[0], sy - ctr[1]) < float(ent.Radius)
+                        radial = (neg, pos) if inside else (pos, neg)
+                    except Exception as exc:
+                        log.debug("offset: radial side test failed, using bbox: %s", exc)
+
+                if radial is not None:
+                    keep, drop = radial
+                elif _sq_dist(pos[0]) <= _sq_dist(neg[0]):
                     keep, drop = pos, neg
                 else:
                     keep, drop = neg, pos
@@ -1594,6 +1790,7 @@ class ComBackend(AutoCADBackend):
             doc = _acad_doc()
             ent = doc.HandleToObject(handle)
             if layer is not None:
+                _ensure_layer_exists(layer)
                 ent.Layer = layer
             if color is not None:
                 ent.Color = int(color)
@@ -1618,7 +1815,7 @@ class ComBackend(AutoCADBackend):
         def _sync():
             doc = _acad_doc()
             ent = doc.HandleToObject(handle)
-            name = ent.ObjectName.replace("AcDb", "").upper()
+            name = _canonical_type(ent.ObjectName)
             if name not in ("TEXT", "MTEXT"):
                 raise RuntimeError(
                     f"entity_edit_text: handle {handle} is {name}, expected TEXT or MTEXT."
@@ -1651,12 +1848,13 @@ class ComBackend(AutoCADBackend):
         def _sync():
             doc = _acad_doc()
             ent = doc.HandleToObject(handle)
-            name = ent.ObjectName.replace("AcDb", "").upper()
+            name = _canonical_type(ent.ObjectName)
             if name == "CIRCLE":
                 c = ent.Center
                 ent.Center = _apoint(
                     float(cx) if cx is not None else c[0],
                     float(cy) if cy is not None else c[1],
+                    c[2] if len(c) > 2 else 0.0,
                 )
                 if radius is not None:
                     ent.Radius = float(radius)
@@ -1665,16 +1863,19 @@ class ComBackend(AutoCADBackend):
                 ent.StartPoint = _apoint(
                     float(x1) if x1 is not None else s[0],
                     float(y1) if y1 is not None else s[1],
+                    s[2] if len(s) > 2 else 0.0,
                 )
                 ent.EndPoint = _apoint(
                     float(x2) if x2 is not None else e[0],
                     float(y2) if y2 is not None else e[1],
+                    e[2] if len(e) > 2 else 0.0,
                 )
             elif name == "ARC":
                 c = ent.Center
                 ent.Center = _apoint(
                     float(cx) if cx is not None else c[0],
                     float(cy) if cy is not None else c[1],
+                    c[2] if len(c) > 2 else 0.0,
                 )
                 if radius is not None:
                     ent.Radius = float(radius)
@@ -1707,7 +1908,7 @@ class ComBackend(AutoCADBackend):
             for i in range(total):
                 try:
                     ent = mspace.Item(i)
-                    ent_type = ent.ObjectName.replace("AcDb", "").upper()
+                    ent_type = _canonical_type(ent.ObjectName)
                     ent_layer = ent.Layer
 
                     if type_filter and type_filter.upper() != ent_type:
@@ -1868,14 +2069,12 @@ class ComBackend(AutoCADBackend):
         return await self._run(_sync)
 
     async def linetype_load(self, name, file=None) -> dict:
-        # Loads a single linetype from a .lin file. Two things would otherwise
-        # bite the user: (1) AutoCAD pops a "Select Linetype File" dialog when
-        # FILEDIA=1 and the file path can't be auto-resolved — that modal
-        # dialog deadlocks SendCommand; (2) ISO/metric drawings need acadiso.lin,
-        # imperial drawings need acad.lin. We pick automatically from MEASUREMENT
-        # if the caller didn't specify a file.
+        # Loads a single linetype from a .lin file through ``Linetypes.Load``,
+        # so neither the "Select Linetype File" modal nor SendCommand's
+        # idle-wait can deadlock the COM thread. ISO/metric drawings need
+        # acadiso.lin, imperial drawings need acad.lin — picked automatically
+        # from MEASUREMENT if the caller didn't specify a file.
         def _sync():
-            app = _acad_app()
             doc = _acad_doc()
 
             existing = {doc.Linetypes.Item(i).Name.lower() for i in range(doc.Linetypes.Count)}
@@ -1884,7 +2083,7 @@ class ComBackend(AutoCADBackend):
 
             if file is None:
                 try:
-                    measurement = int(app.GetVariable("MEASUREMENT"))
+                    measurement = int(_get_sysvar("MEASUREMENT"))
                 except Exception as exc:
                     log.debug("MEASUREMENT read failed, defaulting to acadiso: %s", exc)
                     measurement = 1
@@ -1892,21 +2091,7 @@ class ComBackend(AutoCADBackend):
             else:
                 lin_file = file
 
-            try:
-                old_filedia = int(app.GetVariable("FILEDIA"))
-            except Exception as exc:
-                log.debug("FILEDIA read failed, assuming 1: %s", exc)
-                old_filedia = 1
-            try:
-                app.SetVariable("FILEDIA", 0)
-                # Double newline: first ends the file name, second exits
-                # -LINETYPE's [?/Create/Load/Set] option menu.
-                doc.SendCommand(f"_-LINETYPE _LOAD {name} {lin_file}\n\n")
-            finally:
-                try:
-                    app.SetVariable("FILEDIA", old_filedia)
-                except Exception as exc:
-                    log.debug("FILEDIA restore failed: %s", exc)
+            doc.Linetypes.Load(name, lin_file)
 
             after = {doc.Linetypes.Item(i).Name.lower() for i in range(doc.Linetypes.Count)}
             if name.lower() not in after:
@@ -1975,6 +2160,7 @@ class ComBackend(AutoCADBackend):
                 deg2rad(rotation),
             )
             if layer:
+                _ensure_layer_exists(layer)
                 ref.Layer = layer
             if attributes:
                 try:
@@ -1993,8 +2179,26 @@ class ComBackend(AutoCADBackend):
         def _sync():
             doc = _acad_doc()
             ent = doc.HandleToObject(handle)
-            ent.Explode()
-            return {"ok": True, "exploded_handle": handle}
+            # AcadEntity.Explode() copies the block's contents into model space
+            # and leaves the original INSERT in place — the caller has to delete
+            # it. Without this the drawing ends up with the block reference and
+            # its exploded twin stacked on top of each other.
+            produced = ent.Explode()
+            handles = []
+            try:
+                for item in produced:
+                    handles.append(item.Handle)
+            except TypeError:
+                if produced is not None:
+                    handles.append(produced.Handle)
+            ent.Delete()
+            _regen()
+            return {
+                "ok": True,
+                "exploded_handle": handle,
+                "inserted_handles": handles,
+                "entity_count": len(handles),
+            }
 
         return await self._run(_sync)
 
@@ -2032,11 +2236,45 @@ class ComBackend(AutoCADBackend):
         base_x=0.0,
         base_y=0.0,
     ) -> dict:
-        return {
-            "ok": False,
-            "error": "block_create_from_entities not supported in COM backend. "
-            "Use system_run_command with _BLOCK instead.",
-        }
+        def _sync():
+            # Native ActiveX: create the block table record, copy the entities
+            # into it, then delete the originals. The tool used to report
+            # "not supported in COM backend" although its own docstring called
+            # itself COM-only, and no _BLOCK command line is needed.
+            doc = _acad_doc()
+            existing = {doc.Blocks.Item(i).Name.lower() for i in range(doc.Blocks.Count)}
+            if str(name).lower() in existing:
+                raise RuntimeError(f"block_create_from_entities: block '{name}' already exists.")
+
+            sources = []
+            for handle in handles:
+                try:
+                    sources.append(doc.HandleToObject(handle))
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"block_create_from_entities: no entity with handle {handle}"
+                    ) from exc
+            if not sources:
+                raise RuntimeError("block_create_from_entities: no entities given.")
+
+            block = doc.Blocks.Add(_apoint(float(base_x), float(base_y)), str(name))
+            copied = doc.CopyObjects(
+                win32com.client.VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_DISPATCH, sources),
+                block,
+            )
+            for ent in sources:
+                try:
+                    ent.Delete()
+                except Exception as exc:
+                    log.debug("block_create_from_entities: source not deleted: %s", exc)
+            _regen()
+            try:
+                count = len(copied)
+            except TypeError:
+                count = len(sources)
+            return {"ok": True, "name": str(name), "entity_count": count}
+
+        return await self._run(_sync)
 
     # ── analysis / query ──────────────────────────────────────────────────────
 
@@ -2048,7 +2286,7 @@ class ComBackend(AutoCADBackend):
             for i in range(mspace.Count):
                 try:
                     ent = mspace.Item(i)
-                    t = ent.ObjectName.replace("AcDb", "")
+                    t = _canonical_type(ent.ObjectName)
                     lyr = ent.Layer
                     type_counts[t] = type_counts.get(t, 0) + 1
                     layer_counts[lyr] = layer_counts.get(lyr, 0) + 1
@@ -2071,24 +2309,29 @@ class ComBackend(AutoCADBackend):
         y2,
     ) -> list[EntityInfo]:
         def _sync():
-            doc = _acad_doc()
-            ss_name = f"_REGION_{uuid.uuid4().hex[:8]}"
-            ss = doc.SelectionSets.Add(ss_name)
-            try:
-                ss.SelectCrossing(_apoint(x1, y1), _apoint(x2, y2))
-                results = []
-                for i in range(ss.Count):
-                    try:
-                        results.append(_entity_info(ss.Item(i)))
-                    except Exception as exc:
-                        log.debug("analysis_entities_in_region: skip selection item %d: %s", i, exc)
-                        continue
-                return results
-            finally:
+            # Late-bound SelectionSets have no usable type info under pywin32
+            # (`ss.SelectCrossing` raises AttributeError), and named sets linger
+            # in the drawing. Measure bounding boxes instead — same crossing
+            # semantics as the ezdxf backend, no side effects.
+            mn_x, mx_x = min(float(x1), float(x2)), max(float(x1), float(x2))
+            mn_y, mx_y = min(float(y1), float(y2)), max(float(y1), float(y2))
+            mspace = _msp()
+            results = []
+            for i in range(mspace.Count):
                 try:
-                    ss.Delete()
+                    ent = mspace.Item(i)
+                    bb_min, bb_max = ent.GetBoundingBox()
                 except Exception as exc:
-                    log.debug("SelectionSet cleanup failed: %s", exc)
+                    log.debug("analysis_entities_in_region: skip entity at index %d: %s", i, exc)
+                    continue
+                if (
+                    bb_min[0] <= mx_x
+                    and bb_max[0] >= mn_x
+                    and bb_min[1] <= mx_y
+                    and bb_max[1] >= mn_y
+                ):
+                    results.append(_entity_info(ent))
+            return results
 
         return await self._run(_sync)
 
@@ -2100,39 +2343,56 @@ class ComBackend(AutoCADBackend):
 
     async def analysis_bounding_box(self) -> dict:
         def _sync():
-            doc = _acad_doc()
-            try:
-                emin = doc.Database.Extmin
-                emax = doc.Database.Extmax
+            # Database.Extmin/Extmax are only refreshed by a zoom-extents-class
+            # operation, so they lag behind entities added since the last one.
+            # Measure the real geometry instead, like the ezdxf backend does.
+            mspace = _msp()
+            xs_min = ys_min = None
+            xs_max = ys_max = None
+            for i in range(mspace.Count):
+                try:
+                    bb_min, bb_max = mspace.Item(i).GetBoundingBox()
+                except Exception as exc:
+                    log.debug("analysis_bounding_box: skip entity at index %d: %s", i, exc)
+                    continue
+                xs_min = bb_min[0] if xs_min is None else min(xs_min, bb_min[0])
+                ys_min = bb_min[1] if ys_min is None else min(ys_min, bb_min[1])
+                xs_max = bb_max[0] if xs_max is None else max(xs_max, bb_max[0])
+                ys_max = bb_max[1] if ys_max is None else max(ys_max, bb_max[1])
+
+            if xs_min is None:
                 return {
-                    "min": [emin[0], emin[1]],
-                    "max": [emax[0], emax[1]],
-                    "width": emax[0] - emin[0],
-                    "height": emax[1] - emin[1],
+                    "min": [0.0, 0.0],
+                    "max": [0.0, 0.0],
+                    "width": 0.0,
+                    "height": 0.0,
+                    "empty": True,
                 }
-            except Exception as exc:
-                log.debug("analysis_bounding_box: Database Extmin/Extmax read failed: %s", exc)
-                return {"error": str(exc)}
+            return {
+                "min": [xs_min, ys_min],
+                "max": [xs_max, ys_max],
+                "width": xs_max - xs_min,
+                "height": ys_max - ys_min,
+            }
 
         return await self._run(_sync)
 
     async def analysis_select_by_layer(self, layer_name) -> list[EntityInfo]:
         def _sync():
-            doc = _acad_doc()
-            ss_name = f"_BYLAYER_{uuid.uuid4().hex[:8]}"
-            ss = doc.SelectionSets.Add(ss_name)
-            try:
-                ft = _ai([8])  # group code 8 = layer
-                fv = win32com.client.VARIANT(
-                    pythoncom.VT_ARRAY | pythoncom.VT_VARIANT, [layer_name]
-                )
-                ss.SelectAll(ft, fv)
-                return [_entity_info(ss.Item(i)) for i in range(ss.Count)]
-            finally:
+            # Same reason as analysis_entities_in_region: a late-bound
+            # SelectionSet has no SelectAll under pywin32.
+            mspace = _msp()
+            wanted = str(layer_name).lower()
+            results = []
+            for i in range(mspace.Count):
                 try:
-                    ss.Delete()
+                    ent = mspace.Item(i)
+                    if ent.Layer.lower() == wanted:
+                        results.append(_entity_info(ent))
                 except Exception as exc:
-                    log.debug("SelectionSet cleanup failed: %s", exc)
+                    log.debug("analysis_select_by_layer: skip entity at index %d: %s", i, exc)
+                    continue
+            return results
 
         return await self._run(_sync)
 
@@ -2145,7 +2405,7 @@ class ComBackend(AutoCADBackend):
             for i in range(mspace.Count):
                 try:
                     ent = mspace.Item(i)
-                    if et_upper == ent.ObjectName.replace("AcDb", "").upper():
+                    if et_upper == _canonical_type(ent.ObjectName):
                         results.append(_entity_info(ent))
                 except Exception as exc:
                     log.debug("analysis_select_by_type: skip entity at index %d: %s", i, exc)
@@ -2276,7 +2536,11 @@ class ComBackend(AutoCADBackend):
             doc.EndUndoMark()
             # R16: route UNDO B through the CMDACTIVE-aware sender instead of a raw
             # SendCommand that could deadlock if a command/prompt is active.
-            self._safe_send_command(doc, "_UNDO B")
+            # "_UNDO Back" asks "This will undo everything. OK?" and waits for
+            # the answer, so the confirmation has to travel with the command:
+            # SendCommand blocks until the prompt is answered, and that hang
+            # took the whole COM session down with it.
+            self._safe_send_command(doc, "_UNDO\n_B\n_Y\n")
             return {"ok": True, "message": "Transaction rolled back"}
 
         try:
@@ -2323,29 +2587,33 @@ class ComBackend(AutoCADBackend):
 
     async def system_get_variable(self, name) -> Any:
         def _sync():
-            app = _acad_app()
-            return app.GetVariable(name)
+            return _get_sysvar(name)
 
         return await self._run(_sync)
 
     async def system_set_variable(self, name, value) -> dict:
         def _sync():
-            app = _acad_app()
             # Coerce to the sysvar's actual type (NEW-com-set-variable-coercion):
             # AutoCAD rejects e.g. a string "0" for the integer OSMODE. Probe the
             # current value's type and convert to match; pass through on failure.
             coerced = value
             try:
-                current = app.GetVariable(name)
+                current = _get_sysvar(name)
                 if isinstance(current, bool):
                     coerced = bool(int(value)) if isinstance(value, str) else bool(value)
                 elif isinstance(current, int):
                     coerced = int(float(value)) if isinstance(value, str) else int(value)
                 elif isinstance(current, float):
                     coerced = float(value)
+                elif isinstance(current, (tuple, list)) and isinstance(value, (tuple, list)):
+                    # Point/array sysvars (VIEWCTR, TARGET, INSBASE, LIMMIN…)
+                    # need an explicit VARIANT array, a plain list is rejected.
+                    coerced = _av([float(v) for v in value])
             except Exception as exc:
                 log.debug("set_variable type probe for %s failed: %s", name, exc)
-            app.SetVariable(name, coerced)
+            _set_sysvar(name, coerced)
+            if not isinstance(coerced, (bool, int, float, str)):
+                coerced = list(value)
             return {"ok": True, "variable": name, "value": coerced}
 
         return await self._run(_sync)
@@ -2356,10 +2624,9 @@ class ComBackend(AutoCADBackend):
         # otherwise SendCommand returns but AutoCAD stays at a prompt and the
         # next COM call deadlocks. Example: "_-LINETYPE _LOAD CENTER acad.lin\n\n"
         def _sync():
-            app = _acad_app()
             doc = _acad_doc()
             try:
-                cmd_active = int(app.GetVariable("CMDACTIVE"))
+                cmd_active = int(_get_sysvar("CMDACTIVE"))
             except Exception as exc:
                 log.debug("CMDACTIVE read failed, proceeding anyway: %s", exc)
                 cmd_active = 0
@@ -2376,12 +2643,11 @@ class ComBackend(AutoCADBackend):
 
     async def system_run_lisp(self, expression) -> dict:
         def _sync():
-            app = _acad_app()
             doc = _acad_doc()
             # R23: refuse to send while a command/prompt is active (raw SendCommand
             # of a prompting form would deadlock the single STA thread).
             try:
-                if int(app.GetVariable("CMDACTIVE")):
+                if int(_get_sysvar("CMDACTIVE")):
                     raise RuntimeError(
                         "AutoCAD has an active command/prompt (CMDACTIVE). "
                         "Press ESC in AutoCAD and retry."
@@ -2396,7 +2662,7 @@ class ComBackend(AutoCADBackend):
             wrapped = f'(vl-load-com)(setvar "USERS1" (vl-princ-to-string (progn {expression})))'
             self._safe_send_command(doc, wrapped)
             try:
-                result = app.GetVariable("USERS1")
+                result = _get_sysvar("USERS1")
             except Exception:
                 result = None
             return {
@@ -2418,6 +2684,20 @@ class ComBackend(AutoCADBackend):
         Returns a list of new entity handles created by the command (empty
         list for in-place operations like TRIM/EXTEND).
         """
+        # Pre-flight: SendCommand blocks until AutoCAD is idle, so sending while
+        # a prompt is already open hangs the executor and takes the session with
+        # it. Fail fast with something the caller can act on instead.
+        try:
+            busy = int(doc.GetVariable("CMDACTIVE"))
+        except Exception as exc:
+            log.debug("CMDACTIVE pre-flight check failed: %s", exc)
+            busy = 0
+        if busy:
+            raise RuntimeError(
+                "AutoCAD is waiting for input at the command line, so no command can be "
+                "sent. Press ESC in AutoCAD and retry."
+            )
+
         saved: dict[str, Any] = {}
         try:
             for var in ("OSMODE", "SNAPMODE", "CMDECHO"):
@@ -2432,22 +2712,28 @@ class ComBackend(AutoCADBackend):
             except Exception:
                 pre = set()
             payload = cmd if cmd.endswith("\n") else cmd + "\n"
+            # No ESC and no trailing "(command)" cancel here: AutoCAD rejects a
+            # payload containing ESC outright, and an appended cancel changes
+            # what TRIM/EXTEND do (both verified live).
             doc.SendCommand(payload)
             deadline = time.monotonic() + float(deadline_s)
             while True:
                 try:
                     active = int(doc.GetVariable("CMDACTIVE"))
-                except Exception:
-                    active = 0
+                except Exception as exc:
+                    # A failed read means AutoCAD is too busy to answer — that is
+                    # "still working", not "finished". Treating it as idle used
+                    # to end the wait early and hand the next COM call a busy
+                    # AutoCAD, which then failed with "<unknown>.Count" and took
+                    # the rest of the session down with it.
+                    log.debug("CMDACTIVE read failed while waiting (treated as busy): %s", exc)
+                    active = 1
                 if active == 0:
                     break
                 if time.monotonic() > deadline:
-                    try:
-                        doc.SendCommand("\x1b\x1b\x1b\n")  # ESC×3
-                    except Exception:
-                        pass
                     raise RuntimeError(
-                        f"AutoCAD command did not finish within {deadline_s:.1f}s: {cmd!r}"
+                        f"AutoCAD command did not finish within {deadline_s:.1f}s: {cmd!r}. "
+                        "Press ESC in AutoCAD if a prompt is still open."
                     )
                 time.sleep(0.05)
             try:
@@ -2505,25 +2791,121 @@ class ComBackend(AutoCADBackend):
 
         return await self._run(_sync)
 
+    @staticmethod
+    def _corner_geometry(doc, handle1, handle2, op: str):
+        """Return line/corner data for a LINE+LINE corner.
+
+        Each unit vector points from the corner towards the far end of its line,
+        i.e. along the part the user keeps.
+        """
+        a = doc.HandleToObject(handle1)
+        b = doc.HandleToObject(handle2)
+        if _canonical_type(a.ObjectName) != "LINE" or _canonical_type(b.ObjectName) != "LINE":
+            raise RuntimeError(
+                f"entity_{op}: both entities must be LINEs "
+                f"(got {_canonical_type(a.ObjectName)} and {_canonical_type(b.ObjectName)})."
+            )
+        a1, a2 = a.StartPoint, a.EndPoint
+        b1, b2 = b.StartPoint, b.EndPoint
+        dax, day = a2[0] - a1[0], a2[1] - a1[1]
+        dbx, dby = b2[0] - b1[0], b2[1] - b1[1]
+        denom = dax * dby - day * dbx
+        if abs(denom) < 1e-9:
+            raise RuntimeError(
+                f"entity_{op}: the two lines are parallel, there is no corner to build."
+            )
+
+        t = ((b1[0] - a1[0]) * dby - (b1[1] - a1[1]) * dbx) / denom
+        corner = (a1[0] + t * dax, a1[1] + t * day)
+
+        def _keep_direction(p1, p2):
+            d1 = math.hypot(p1[0] - corner[0], p1[1] - corner[1])
+            d2 = math.hypot(p2[0] - corner[0], p2[1] - corner[1])
+            far = p1 if d1 >= d2 else p2
+            reach = max(d1, d2)
+            if reach < 1e-9:
+                raise RuntimeError(f"entity_{op}: a line degenerates at the corner.")
+            return ((far[0] - corner[0]) / reach, (far[1] - corner[1]) / reach), reach
+
+        u1, reach1 = _keep_direction(a1, a2)
+        u2, reach2 = _keep_direction(b1, b2)
+        return a, b, corner, u1, u2, reach1, reach2
+
+    @staticmethod
+    def _retrim_to_corner(line, corner, unit, distance, tol=1e-6):
+        """Pull the endpoint at `corner` back to corner + unit * distance.
+
+        Returns True when the line was trimmed. A line that merely *crosses* the
+        corner is left alone: AutoCAD decides which half to keep from the pick
+        point, and guessing here would delete geometry the caller still needs.
+        """
+        new_x = corner[0] + unit[0] * distance
+        new_y = corner[1] + unit[1] * distance
+        s, e = line.StartPoint, line.EndPoint
+        ds = math.hypot(s[0] - corner[0], s[1] - corner[1])
+        de = math.hypot(e[0] - corner[0], e[1] - corner[1])
+        if min(ds, de) > tol:
+            return False
+        if ds <= de:
+            line.StartPoint = _apoint(new_x, new_y, s[2] if len(s) > 2 else 0.0)
+        else:
+            line.EndPoint = _apoint(new_x, new_y, e[2] if len(e) > 2 else 0.0)
+        return True
+
     async def entity_fillet(self, handle1, handle2, radius, trim=True) -> EntityInfo:
         def _sync():
+            # Built from geometry instead of the FILLET command. SendCommand
+            # blocks until AutoCAD is idle, and a command that answers with a
+            # prompt rather than finishing (lines that cannot be joined, a
+            # sub-prompt that differs by release) hangs the COM executor; every
+            # later call then fails with "<unknown>.Count" and the session cannot
+            # be recovered, because AutoCAD rejects an ESC sent over COM.
             doc = _acad_doc()
-            t = "T" if trim else "N"  # T=Trim, N=No-trim
-            cmd = (
-                f"_FILLET\n_R\n{float(radius)}\n_T\n_{t}\n"
-                f'(handent "{handle1}")\n(handent "{handle2}")\n'
+            r = float(radius)
+            line1, line2, corner, u1, u2, reach1, reach2 = self._corner_geometry(
+                doc, handle1, handle2, "fillet"
             )
-            new_handles = self._safe_send_command(doc, cmd)
-            # Return the new ARC entity if one was created (radius > 0); else
-            # fall back to handle1 (radius=0 = sharp corner, no arc).
-            for h in new_handles:
-                try:
-                    ent = doc.HandleToObject(h)
-                    if ent.ObjectName == "AcDbArc":
-                        return _entity_info(ent)
-                except Exception:
-                    continue
-            return _entity_info(doc.HandleToObject(handle1))
+            cos_theta = max(-1.0, min(1.0, u1[0] * u2[0] + u1[1] * u2[1]))
+            theta = math.acos(cos_theta)
+            if theta < 1e-6 or abs(theta - math.pi) < 1e-6:
+                raise RuntimeError(
+                    "entity_fillet: the lines are collinear, there is no corner to round."
+                )
+            tangent = r / math.tan(theta / 2.0)
+            if tangent > reach1 or tangent > reach2:
+                raise RuntimeError(
+                    f"entity_fillet: radius {r:g} needs {tangent:.3f} of straight line on each "
+                    f"side; the lines offer {min(reach1, reach2):.3f}."
+                )
+
+            p1 = (corner[0] + u1[0] * tangent, corner[1] + u1[1] * tangent)
+            p2 = (corner[0] + u2[0] * tangent, corner[1] + u2[1] * tangent)
+            bisector = (u1[0] + u2[0], u1[1] + u2[1])
+            blen = math.hypot(bisector[0], bisector[1])
+            if blen < 1e-9:
+                raise RuntimeError("entity_fillet: cannot place the arc centre for this corner.")
+            centre_dist = r / math.sin(theta / 2.0)
+            centre = (
+                corner[0] + bisector[0] / blen * centre_dist,
+                corner[1] + bisector[1] / blen * centre_dist,
+            )
+            start_angle = math.atan2(p1[1] - centre[1], p1[0] - centre[0])
+            end_angle = math.atan2(p2[1] - centre[1], p2[0] - centre[0])
+            # AutoCAD sweeps arcs counter-clockwise; order the ends so the arc
+            # stays on the corner side (sweep < 180 deg).
+            if (end_angle - start_angle) % (2 * math.pi) > math.pi:
+                start_angle, end_angle = end_angle, start_angle
+
+            arc = _msp().AddArc(_apoint(centre[0], centre[1]), r, start_angle, end_angle)
+            arc.Layer = line1.Layer
+            trimmed = 0
+            if trim:
+                trimmed += int(self._retrim_to_corner(line1, corner, u1, tangent))
+                trimmed += int(self._retrim_to_corner(line2, corner, u2, tangent))
+            _regen()
+            info = _entity_info(arc)
+            info.properties["lines_trimmed"] = trimmed
+            return info
 
         return await self._run(_sync)
 
@@ -2536,23 +2918,38 @@ class ComBackend(AutoCADBackend):
         trim=True,
     ) -> EntityInfo:
         def _sync():
+            # Same reasoning as entity_fillet: computed, not commanded.
             doc = _acad_doc()
             d1 = float(dist1)
             d2 = float(dist1 if dist2 is None else dist2)
-            t = "T" if trim else "N"
-            cmd = (
-                f"_CHAMFER\n_D\n{d1}\n{d2}\n_T\n_{t}\n"
-                f'(handent "{handle1}")\n(handent "{handle2}")\n'
+            line1, line2, corner, u1, u2, reach1, reach2 = self._corner_geometry(
+                doc, handle1, handle2, "chamfer"
             )
-            new_handles = self._safe_send_command(doc, cmd)
-            for h in new_handles:
-                try:
-                    ent = doc.HandleToObject(h)
-                    if ent.ObjectName == "AcDbLine":
-                        return _entity_info(ent)
-                except Exception:
-                    continue
-            return _entity_info(doc.HandleToObject(handle1))
+            if d1 > reach1 or d2 > reach2:
+                raise RuntimeError(
+                    f"entity_chamfer: distances {d1:g}/{d2:g} exceed the available line lengths "
+                    f"({reach1:.3f}/{reach2:.3f} from the corner)."
+                )
+
+            p1 = (corner[0] + u1[0] * d1, corner[1] + u1[1] * d1)
+            p2 = (corner[0] + u2[0] * d2, corner[1] + u2[1] * d2)
+            try:
+                chamfer = _msp().AddLine(_apoint(p1[0], p1[1]), _apoint(p2[0], p2[1]))
+                chamfer.Layer = line1.Layer
+            except Exception as exc:
+                raise RuntimeError(
+                    f"entity_chamfer: AutoCAD refused the chamfer line "
+                    f"{p1[0]:.3f},{p1[1]:.3f} -> {p2[0]:.3f},{p2[1]:.3f} "
+                    f"(corner {corner[0]:.3f},{corner[1]:.3f}; layer {line1.Layer!r}): {exc}"
+                ) from exc
+            trimmed = 0
+            if trim:
+                trimmed += int(self._retrim_to_corner(line1, corner, u1, d1))
+                trimmed += int(self._retrim_to_corner(line2, corner, u2, d2))
+            _regen()
+            info = _entity_info(chamfer)
+            info.properties["lines_trimmed"] = trimmed
+            return info
 
         return await self._run(_sync)
 

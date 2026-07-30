@@ -345,6 +345,18 @@ async def draw_gear_section_aa(
     face_width: float,
 ) -> dict[str, Any]:
     """Side cross-section view: outer rectangle, bore lines, optional keyway notch, ANSI31 hatch."""
+    # The front-view tools return {"outline": ..., "metadata": {...}}, so callers
+    # routinely hand the whole payload over. Accept it instead of dying on a bare
+    # KeyError, and say what is missing when it really is the wrong dict.
+    if "outer_radius" not in gear_metadata and isinstance(gear_metadata.get("metadata"), dict):
+        gear_metadata = gear_metadata["metadata"]
+    missing = [k for k in ("outer_radius", "center") if k not in gear_metadata]
+    if missing:
+        raise RuntimeError(
+            f"gear_draw_section_aa: gear_metadata is missing {missing}. Pass the "
+            "'metadata' dict returned by gear_draw_spur_front_view / "
+            "gear_draw_helical_front_view (or that tool's whole result)."
+        )
     outer_r = float(gear_metadata["outer_radius"])
     cy = float(gear_metadata["center"][1])
     bore_d = gear_metadata.get("bore_diameter")

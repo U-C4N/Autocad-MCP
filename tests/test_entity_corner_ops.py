@@ -80,7 +80,8 @@ class TestExtend:
     async def test_extend_parallel_raises(self, backend):
         target = await backend.entity_create_line(0, 0, 50, 0)
         parallel = await backend.entity_create_line(0, 10, 50, 10)
-        with pytest.raises(RuntimeError, match="parallel"):
+        # V2 phrasing: a parallel boundary is simply never reached.
+        with pytest.raises(RuntimeError, match="never reaches"):
             await backend.entity_extend(target.handle, parallel.handle)
 
 

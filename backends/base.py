@@ -874,6 +874,17 @@ class AutoCADBackend(ABC):
         self._preflight_result = None
         self._gdt_datums_defined = set()
         self._gdt_datums_referenced = set()
+        # handle of a composite's first child -> handles of every child
+        self._composites: dict[str, list[str]] = {}
+
+    def _register_composite(self, handles: list[str]) -> None:
+        """Remember a multi-entity composite so single-handle ops can cascade."""
+        if handles:
+            self._composites[str(handles[0])] = [str(h) for h in handles]
+
+    def _composite_handles(self, handle) -> list[str]:
+        """Every handle belonging to `handle`'s composite (itself if standalone)."""
+        return list(getattr(self, "_composites", {}).get(str(handle), [str(handle)]))
 
     async def _ensure_document_state(self) -> None:
         """Allow live backends to detect an out-of-band document switch."""
