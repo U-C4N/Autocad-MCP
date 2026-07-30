@@ -1398,7 +1398,9 @@ async def entity_trim(
 )
 async def entity_extend(
     target_handle: Annotated[str, "Handle of the line being extended"],
-    boundary_handle: Annotated[str, "Handle of the boundary line"],
+    boundary_handle: Annotated[
+        str, "Handle of the boundary entity (LINE, ARC, CIRCLE or LWPOLYLINE)"
+    ],
     end_x: Annotated[float | None, "X of a point near the endpoint to extend (None = auto)"] = None,
     end_y: Annotated[float | None, "Y of a point near the endpoint to extend (None = auto)"] = None,
     ctx: Context = None,
@@ -1406,7 +1408,10 @@ async def entity_extend(
     """Extend `target` to meet `boundary`. If end_x/end_y is None, the target
     endpoint nearest the boundary is auto-selected.
 
-    V1 supports LINE+LINE only. Raises if the lines are parallel.
+    The extended entity must be a LINE; the boundary may be a LINE (treated as
+    infinite), ARC, CIRCLE or LWPOLYLINE (bulge segments honoured). Raises when
+    the extension never reaches the boundary, or when the boundary lies behind
+    the line (that is a trim, not an extend).
     """
     result = await _backend(ctx).entity_extend(target_handle, boundary_handle, end_x, end_y)
     return _dc(result)

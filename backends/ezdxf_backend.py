@@ -2468,34 +2468,143 @@ class EzdxfBackend(AutoCADBackend):
 
             target = self._get_entity(target_handle)
             boundary = self._get_entity(boundary_handle)
-            if target.dxftype() != "LINE" or boundary.dxftype() != "LINE":
+            if target.dxftype() != "LINE":
                 raise RuntimeError(
-                    f"entity_extend V1 supports LINE+LINE only "
-                    f"(got {target.dxftype()}+{boundary.dxftype()}). V2 will add LINE+ARC."
+                    f"entity_extend: the extended entity must be a LINE (got {target.dxftype()})."
+                )
+            b_type = boundary.dxftype()
+            if b_type not in ("LINE", "ARC", "CIRCLE", "LWPOLYLINE"):
+                raise RuntimeError(
+                    f"entity_extend supports LINE/ARC/CIRCLE/LWPOLYLINE boundaries (got {b_type})."
                 )
             if target_handle == boundary_handle:
                 raise RuntimeError("entity_extend: target and boundary cannot be the same entity.")
+
             t_start, t_end = self._line_endpoints(target)
-            b_start, b_end = self._line_endpoints(boundary)
-            ip = intersection_line_line_2d(
-                (Vec2(*t_start), Vec2(*t_end)),
-                (Vec2(*b_start), Vec2(*b_end)),
-                virtual=True,  # treat lines as infinite for extend
-            )
-            if ip is None:
-                raise RuntimeError(
-                    "entity_extend: target and boundary are parallel; no extension possible."
-                )
-            ix, iy = float(ip.x), float(ip.y)
+
+            # Which endpoint gets extended: the one nearest the pick point, or —
+            # in auto mode — nearest the boundary's centre of gravity.
             if end_x is None or end_y is None:
-                # auto: extend the endpoint nearest the boundary midpoint
-                b_mid = ((b_start[0] + b_end[0]) / 2, (b_start[1] + b_end[1]) / 2)
-                ref = b_mid
+                if b_type == "LINE":
+                    b_start, b_end = self._line_endpoints(boundary)
+                    ref = ((b_start[0] + b_end[0]) / 2, (b_start[1] + b_end[1]) / 2)
+                elif b_type in ("ARC", "CIRCLE"):
+                    c = boundary.dxf.center
+                    ref = (float(c[0]), float(c[1]))
+                else:  # LWPOLYLINE
+                    pts = [(float(p[0]), float(p[1])) for p in boundary.get_points()]
+                    ref = (
+                        sum(p[0] for p in pts) / len(pts),
+                        sum(p[1] for p in pts) / len(pts),
+                    )
             else:
                 ref = (float(end_x), float(end_y))
-            d_start = self._dist2(t_start, ref)
-            d_end = self._dist2(t_end, ref)
-            if d_start <= d_end:
+            extend_start = self._dist2(t_start, ref) <= self._dist2(t_end, ref)
+            anchor = t_end if extend_start else t_start  # stays in place
+            moving = t_start if extend_start else t_end  # gets extended
+
+            # Intersections of the target's infinite carrier line with the
+            # boundary, as parameters t along anchor→moving (t=1 is the moving
+            # endpoint; EXTEND only ever *lengthens*, so only t>1 qualifies).
+            dx, dy = moving[0] - anchor[0], moving[1] - anchor[1]
+            seg_len = math.hypot(dx, dy)
+            if seg_len < 1e-12:
+                raise RuntimeError("entity_extend: the target line has zero length.")
+
+            def _circle_params(center, radius) -> list[float]:
+                # |anchor + t*d - c|^2 = r^2 -> quadratic in t
+                acx, acy = anchor[0] - center[0], anchor[1] - center[1]
+                a = dx * dx + dy * dy
+                b = 2 * (acx * dx + acy * dy)
+                c = acx * acx + acy * acy - radius * radius
+                disc = b * b - 4 * a * c
+                if disc < 0:
+                    return []
+                root = math.sqrt(disc)
+                return [(-b - root) / (2 * a), (-b + root) / (2 * a)]
+
+            def _on_arc(pt, arc) -> bool:
+                c = arc.dxf.center
+                ang = math.degrees(math.atan2(pt[1] - c[1], pt[0] - c[0])) % 360.0
+                start = float(arc.dxf.start_angle) % 360.0
+                end = float(arc.dxf.end_angle) % 360.0
+                sweep = (end - start) % 360.0
+                return (ang - start) % 360.0 <= sweep + 1e-9
+
+            def _segment_param(p1, p2) -> float | None:
+                ip = intersection_line_line_2d(
+                    (Vec2(*anchor), Vec2(*moving)),
+                    (Vec2(*p1), Vec2(*p2)),
+                    virtual=True,
+                )
+                if ip is None:
+                    return None
+                # The boundary segment itself is finite: the hit must lie on it.
+                sdx, sdy = p2[0] - p1[0], p2[1] - p1[1]
+                s_len2 = sdx * sdx + sdy * sdy
+                if s_len2 < 1e-18:
+                    return None
+                u = ((ip.x - p1[0]) * sdx + (ip.y - p1[1]) * sdy) / s_len2
+                if u < -1e-9 or u > 1 + 1e-9:
+                    return None
+                return ((ip.x - anchor[0]) * dx + (ip.y - anchor[1]) * dy) / (seg_len * seg_len)
+
+            params: list[float] = []
+            if b_type == "LINE":
+                b_start, b_end = self._line_endpoints(boundary)
+                # V1 treated a LINE boundary as infinite; keep that behaviour.
+                ip = intersection_line_line_2d(
+                    (Vec2(*anchor), Vec2(*moving)),
+                    (Vec2(*b_start), Vec2(*b_end)),
+                    virtual=True,
+                )
+                if ip is not None:
+                    params.append(
+                        ((ip.x - anchor[0]) * dx + (ip.y - anchor[1]) * dy) / (seg_len * seg_len)
+                    )
+            elif b_type == "CIRCLE":
+                c = boundary.dxf.center
+                params.extend(
+                    _circle_params((float(c[0]), float(c[1])), float(boundary.dxf.radius))
+                )
+            elif b_type == "ARC":
+                c = boundary.dxf.center
+                for t in _circle_params((float(c[0]), float(c[1])), float(boundary.dxf.radius)):
+                    pt = (anchor[0] + t * dx, anchor[1] + t * dy)
+                    if _on_arc(pt, boundary):
+                        params.append(t)
+            else:  # LWPOLYLINE — decompose into virtual LINE/ARC pieces so bulge
+                # (arc) segments are honoured too.
+                for piece in boundary.virtual_entities():
+                    if piece.dxftype() == "LINE":
+                        p1 = (float(piece.dxf.start[0]), float(piece.dxf.start[1]))
+                        p2 = (float(piece.dxf.end[0]), float(piece.dxf.end[1]))
+                        t = _segment_param(p1, p2)
+                        if t is not None:
+                            params.append(t)
+                    elif piece.dxftype() == "ARC":
+                        c = piece.dxf.center
+                        for t in _circle_params(
+                            (float(c[0]), float(c[1])), float(piece.dxf.radius)
+                        ):
+                            pt = (anchor[0] + t * dx, anchor[1] + t * dy)
+                            if _on_arc(pt, piece):
+                                params.append(t)
+
+            ahead = [t for t in params if t > 1 + 1e-9]
+            if not ahead:
+                if params:
+                    raise RuntimeError(
+                        "entity_extend: the boundary lies behind or inside the target line; "
+                        "extending would shorten it (use entity_trim for that)."
+                    )
+                raise RuntimeError(
+                    "entity_extend: the target's extension never reaches the boundary."
+                )
+            t_hit = min(ahead)  # nearest crossing ahead of the moving endpoint
+            ix, iy = anchor[0] + t_hit * dx, anchor[1] + t_hit * dy
+
+            if extend_start:
                 target.dxf.start = (ix, iy, 0.0)
             else:
                 target.dxf.end = (ix, iy, 0.0)

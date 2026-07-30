@@ -561,3 +561,65 @@ def test_corner_trim_leaves_a_crossing_line_whole():
     assert trimmed is False
     assert crossing.StartPoint == (160.0, 0.0, 0.0)
     assert crossing.EndPoint == (160.0, 90.0, 0.0)
+
+
+# ── ezdxf: entity_extend V2 — ARC / CIRCLE / LWPOLYLINE boundaries ──────────
+
+
+@pytest.mark.asyncio
+async def test_extend_line_to_lwpolyline():
+    b = await _ezdxf_backend()
+    line = await b.entity_create_line(0, 40, 100, 40)
+    pl = await b.entity_create_polyline([[160, 0], [160, 90], [220, 90]], closed=False)
+
+    out = await b.entity_extend(line.handle, pl.handle)
+
+    s, e = sorted([out.properties["start"], out.properties["end"]])
+    assert math.isclose(e[0], 160.0, abs_tol=1e-6)  # reached the vertical segment
+    assert math.isclose(e[1], 40.0, abs_tol=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_extend_line_to_circle_picks_nearest_crossing():
+    b = await _ezdxf_backend()
+    line = await b.entity_create_line(0, 0, 50, 0)
+    circle = await b.entity_create_circle(100, 0, 20)
+
+    out = await b.entity_extend(line.handle, circle.handle)
+
+    xs = sorted(p[0] for p in (out.properties["start"], out.properties["end"]))
+    assert math.isclose(xs[1], 80.0, abs_tol=1e-6)  # near side of the circle, not 120
+
+
+@pytest.mark.asyncio
+async def test_extend_line_to_arc_respects_arc_sweep():
+    b = await _ezdxf_backend()
+    line = await b.entity_create_line(0, 0, 50, 0)
+    # Only the right half of the circle exists (270..90 deg through 0).
+    arc = await b.entity_create_arc(100, 0, 20, 270, 90)
+
+    out = await b.entity_extend(line.handle, arc.handle)
+
+    xs = sorted(p[0] for p in (out.properties["start"], out.properties["end"]))
+    # The near crossing (x=80, angle 180) is NOT on the arc; the far one is.
+    assert math.isclose(xs[1], 120.0, abs_tol=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_extend_refuses_boundary_behind_the_line():
+    b = await _ezdxf_backend()
+    line = await b.entity_create_line(0, 40, 300, 40)  # already past the polyline
+    pl = await b.entity_create_polyline([[160, 0], [160, 90]], closed=False)
+
+    with pytest.raises(RuntimeError, match="behind or inside"):
+        await b.entity_extend(line.handle, pl.handle, end_x=300, end_y=40)
+
+
+@pytest.mark.asyncio
+async def test_extend_refuses_unreachable_boundary():
+    b = await _ezdxf_backend()
+    line = await b.entity_create_line(0, 0, 50, 0)
+    pl = await b.entity_create_polyline([[200, 100], [300, 100]], closed=False)  # parallel, above
+
+    with pytest.raises(RuntimeError, match="never reaches"):
+        await b.entity_extend(line.handle, pl.handle)
