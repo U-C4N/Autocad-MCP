@@ -709,10 +709,11 @@ class ComBackend(AutoCADBackend):
         def _sync():
             app = _acad_app()
             if template:
-                doc = app.Documents.Add(template)
+                app.Documents.Add(template)
             else:
-                doc = app.Documents.Add()
-            return {"ok": True, "name": doc.Name}
+                app.Documents.Add()
+            # Add() returns a late-bound object without type info; re-fetch.
+            return {"ok": True, "name": app.ActiveDocument.Name}
 
         result = await self._run(_sync)
         await self._ensure_document_state()
@@ -721,7 +722,11 @@ class ComBackend(AutoCADBackend):
     async def drawing_open(self, path: str) -> dict:
         def _sync():
             app = _acad_app()
-            doc = app.Documents.Open(path)
+            app.Documents.Open(path)
+            # The object Open() returns is late-bound without type info (its
+            # first property read raises "Open.Name"); the ActiveDocument
+            # fetched afterwards is usable. Same defect family as _typed().
+            doc = app.ActiveDocument
             return {"ok": True, "name": doc.Name, "path": doc.FullName}
 
         result = await self._run(_sync)
