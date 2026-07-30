@@ -623,3 +623,38 @@ async def test_extend_refuses_unreachable_boundary():
 
     with pytest.raises(RuntimeError, match="never reaches"):
         await b.entity_extend(line.handle, pl.handle)
+
+
+@pytest.mark.asyncio
+async def test_dead_com_proxy_is_dropped_and_reconnected(monkeypatch):
+    """Закрытый AutoCAD = мёртвый прокси в кэше: сбросить и переподключиться,
+    а не отдавать «Сервер RPC недоступен» до перезапуска клиента."""
+    import backends.com_backend as module
+
+    monkeypatch.setattr(module.time, "sleep", lambda *_: None)
+    module._COM_STATE["app"] = "dead-proxy"
+    backend = ComBackend()
+    backend._executor = _InlineExecutor()
+
+    calls = {"n": 0}
+
+    def _flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise Exception(-2147023174, "Сервер RPC недоступен")  # 0x800706BA
+        return "reconnected"
+
+    assert await backend._run(_flaky) == "reconnected"
+    assert "app" not in module._COM_STATE  # кэш сброшен — следующий вызов re-Dispatch
+    assert calls["n"] == 2
+
+
+def test_com_error_codes_reads_nested_scode():
+    import backends.com_backend as module
+
+    class FakeComError(Exception):
+        hresult = -2147352567  # DISP_E_EXCEPTION — сверху бесполезный
+
+    exc = FakeComError(-2147352567, "err", (0, "src", "desc", None, 0, -2147023174), None)
+    codes = module._com_error_codes(exc)
+    assert -2147023174 in codes  # реальный scode достаётся из excepinfo

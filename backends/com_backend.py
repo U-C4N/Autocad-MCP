@@ -122,6 +122,34 @@ def _solid_3d_capability() -> FeatureCapability:
     return FeatureCapability(False, reason="opt_in_disabled:set ENABLE_3D=true")
 
 
+_BUSY_HRESULTS = {
+    -2147418111,  # RPC_E_CALL_REJECTED
+    -2147417846,  # RPC_E_SERVERCALL_RETRYLATER
+}
+_DEAD_PROXY_HRESULTS = {
+    -2147023174,  # RPC_E_SERVER_UNAVAILABLE (0x800706BA) — AutoCAD was closed
+    -2147417848,  # RPC_E_DISCONNECTED (0x80010108)
+    -2147220995,  # CO_E_OBJNOTCONNECTED
+}
+
+
+def _com_error_codes(exc) -> set:
+    """Every HRESULT hiding in a pywin32 com_error: top-level + nested scode."""
+    codes = set()
+    hr = getattr(exc, "hresult", None)
+    if isinstance(hr, int):
+        codes.add(hr)
+    args = getattr(exc, "args", ())
+    if args and isinstance(args[0], int):
+        codes.add(args[0])
+    # com_error args: (hresult, strerror, excepinfo, argerror); scode = excepinfo[5]
+    if len(args) >= 3 and isinstance(args[2], (tuple, list)) and len(args[2]) >= 6:
+        scode = args[2][5]
+        if isinstance(scode, int):
+            codes.add(scode)
+    return codes
+
+
 def _acad_app():
     """Return (or lazily create) the AutoCAD Application COM object.
     Must only be called from the COM executor thread."""
@@ -604,18 +632,30 @@ class ComBackend(AutoCADBackend):
         timeout = config.settings.com_call_timeout
 
         def _call():
-            # RPC_E_CALL_REJECTED / RPC_E_SERVERCALL_RETRYLATER mean "AutoCAD is
-            # busy right now" — typically while it is still starting up or
-            # finishing a redraw — not "the call failed". Retrying briefly turns
-            # a spurious error into a completed call. Note the operation may
-            # still have run, so retries live here rather than at the caller.
+            # Two families of retryable COM failures:
+            # * BUSY (RPC_E_CALL_REJECTED / RPC_E_SERVERCALL_RETRYLATER) —
+            #   AutoCAD cannot take the call right now (starting up, redrawing).
+            #   Retry with backoff; the operation may still have run.
+            # * DEAD PROXY (RPC_E_SERVER_UNAVAILABLE / RPC_E_DISCONNECTED /
+            #   CO_E_OBJNOTCONNECTED) — the user closed AutoCAD and the cached
+            #   Application object points at a dead process. Every call then
+            #   fails "Сервер RPC недоступен" forever. Drop the cache so
+            #   _acad_app() re-Dispatches (which relaunches AutoCAD) and retry.
             attempts = 6
             for attempt in range(attempts):
                 try:
                     return func(*args, **kwargs)
-                except Exception as exc:  # noqa: BLE001 - inspect COM HRESULT
-                    hresult = getattr(exc, "hresult", None) or getattr(exc, "args", [None])[0]
-                    if hresult not in (-2147418111, -2147417846) or attempt == attempts - 1:
+                except Exception as exc:  # noqa: BLE001 - inspect COM HRESULTs
+                    codes = _com_error_codes(exc)
+                    if codes & _DEAD_PROXY_HRESULTS and attempt < attempts - 1:
+                        log.warning(
+                            "AutoCAD COM proxy is dead (%s); dropping cache and reconnecting",
+                            sorted(codes & _DEAD_PROXY_HRESULTS),
+                        )
+                        _COM_STATE.pop("app", None)
+                        time.sleep(1.0)
+                        continue
+                    if not (codes & _BUSY_HRESULTS) or attempt == attempts - 1:
                         raise
                     log.debug("AutoCAD busy (attempt %d/%d), retrying", attempt + 1, attempts)
                     time.sleep(0.5 * (attempt + 1))
