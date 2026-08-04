@@ -1,5 +1,7 @@
 # AutoCAD MCP Pro
 
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2FU-C4N%2FAutocad-MCP.svg)](https://mcptoplist.com/server/glama%2FU-C4N%2FAutocad-MCP)
+
 Production-grade AutoCAD automation for AI agents — live through COM on
 Windows, or headless through ezdxf on any platform.
 
