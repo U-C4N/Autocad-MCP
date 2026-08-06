@@ -101,7 +101,7 @@ Tools are organized into sections (counts are indicative — `system_about` is a
 
 **Measuring:** never read vertices back and shoelace them — that loses 28.2% of the area on a semicircular edge, silently. `analysis_measure_entity(handle)` reads the real geometry, and its payload states its own accuracy: `exact`, `flatten_tolerance`, `assumed_closed`, `self_intersecting`. A HATCH reports the area it *fills* (outer loops minus islands) plus `hatch_style`; on a curved hatch edge `flatten_tolerance` is not the accuracy knob, because ezdxf hands boundaries over as cubic Beziers whose ~0.028% circle error is already baked in. `boundary_trace` / `boundary_from_entities` report the same number `analysis_measure_entity` gives for the polyline they just drew — if those ever diverge, one of them is approximating and neither says so.
 
-**Benchmark matrix:** `benchmarks/tasks_v3.py` is the current set (15 tasks; `--matrix v2` reproduces the v1.4 ten). The published competitor reports are pinned v1.4 runs against v2 and are **never** back-filled for the five v3 tasks — the chart shows them `not run`, not zero. `benchmarks/correctness_suite.py` (24 checks) is the release A/B gate: `python benchmarks/compare_versions.py v1.4.0`.
+**Benchmark matrix:** `benchmarks/tasks_v3.py` is the current set (15 tasks; `--matrix v2` reproduces the v1.4 ten). The published competitor reports are pinned v1.4 runs against v2 and are **never** back-filled for the five v3 tasks — the chart shows them `not run`, not zero. `benchmarks/correctness_suite.py` (26 checks) is the release A/B gate: `python benchmarks/compare_versions.py v1.4.0`.
 
 ### Adding a New Tool
 

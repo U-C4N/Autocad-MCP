@@ -69,7 +69,7 @@ AUTOCAD_MCP_BACKEND=com   autocad-mcp    # live AutoCAD (pip install "autocad-mc
 | *(none)* | `fastmcp`, `ezdxf`, `pydantic` | Headless DXF on any OS — **no rendering** |
 | `[com]` | `pywin32`, `Pillow` | Live AutoCAD control + window capture |
 | `[pdf]` | `matplotlib` | PDF export and headless PNG rendering, any platform |
-| `[full]` | everything above | Development and CI |
+| `[full]` | everything above | Live AutoCAD and rendering in one install |
 
 > [!NOTE]
 > The bare install **cannot draw pixels**. `ezdxf.addons.drawing.frontend` does an unconditional top-level `import PIL.Image`, so Pillow is required by *every* ezdxf render path — PNG screenshot and PDF export alike — not just by the COM window capture it is listed under. Add `[pdf]` (or `[full]`) if you want images on Linux or macOS.
@@ -106,13 +106,13 @@ Works with Claude Desktop, Cursor, or any stdio MCP host. For HTTP: `autocad-mcp
 <tr><td><b>Engineering generators</b></td><td>involute gears (front + section A-A), DIN 6885 keyed bores, ISO A3 title block</td></tr>
 <tr><td><b>Discovery</b> ✨</td><td><code>search_tools</code> ranked over an AutoCAD command and synonym corpus — <code>FILLET</code>, <code>BPOLY</code>, <code>QSELECT</code>, <code>WBLOCK</code>, <code>OVERKILL</code>, <code>CHSPACE</code> each rank <b>#1</b> of the 149-tool advertised catalog</td></tr>
 <tr><td><b>Batching</b> ✨</td><td><code>cad_batch</code> runs a whole step list in one round trip; <code>fields=</code> projects the response on 11 result-heavy tools (a closed, gated list)</td></tr>
-<tr><td><b>Paper space</b> ✨</td><td>tab lifecycle, viewports and <code>drawing_export_pdf(layout=...)</code> on both engines; <code>entity_change_space</code> (CHSPACE) headless only</td></tr>
-<tr><td><b>Selection</b> ✨</td><td>window vs crossing stated back to the caller; a polygon tested against its own shape, not its bounding box</td></tr>
-<tr><td><b>Boundaries</b> ✨</td><td><code>boundary_trace</code> (BOUNDARY/BPOLY) chains loose edges into one closed polyline, arcs kept as bulges — <i>headless engine only</i></td></tr>
+<tr><td><b>Paper space</b> ✨</td><td>8 of the 12 layout tools are new — <code>layout_delete/rename/copy</code>, <code>viewport_list/set_scale/lock/delete</code>, <code>entity_change_space</code> (CHSPACE, headless only); layout listing, creation and activation, <code>viewport_create</code> and <code>drawing_export_pdf(layout=...)</code> shipped in v1.4.0, which wrongly declared headless viewport rendering impossible</td></tr>
+<tr><td><b>Selection</b> ✨</td><td>window vs crossing stated back to the caller; the polygon is tested as a shape, not as its bounding box — the entity side is still <i>its</i> bounding box, on both engines</td></tr>
+<tr><td><b>Boundaries</b> ✨</td><td><code>boundary_trace</code> (BOUNDARY/BPOLY) chains loose edges into one closed polyline; ARC edges keep their exact bulges, while a bulged polyline segment or any other curved edge is chained as its chord — <i>headless engine only</i></td></tr>
 <tr><td><b>Measurement</b> ✨</td><td><code>analysis_measure_entity</code> measures what is <i>in</i> the drawing, by handle</td></tr>
 <tr><td><b>Hatch depth</b> ✨</td><td>gradients, in-place edits and island styles on both; typed edge boundaries headless only</td></tr>
 <tr><td><b>Annotation objects</b> ✨</td><td>WIPEOUT, REVCLOUD, MTEXT background masks — <i>headless only, ActiveX exposes no member</i> — plus text find/replace on both</td></tr>
-<tr><td><b>3D solids</b></td><td><code>solid_box/cylinder/extrude/revolve/boolean</code> on live AutoCAD (<code>ENABLE_3D=true</code>)</td></tr>
+<tr><td><b>3D solids</b></td><td><code>solid_box/cylinder/extrude/revolve/boolean</code> on live AutoCAD (<code>ENABLE_3D=true</code>) — <i>unverified against a live seat: they shipped in v1.4.0, and the v1.5.0 live run covered only what that release added</i></td></tr>
 <tr><td><b>Quality loop</b></td><td><code>drawing_preflight</code> → <code>drawing_plan</code> → <code>drawing_critique</code> → <code>drawing_refine</code> → <code>drawing_finalize</code> (0–100 score)</td></tr>
 <tr><td><b>Delivery</b></td><td><code>drawing_deliver</code>: DXF/PDF/PNG + SHA-256 manifest + reopen-parity checks</td></tr>
 </table>
@@ -123,7 +123,9 @@ Alongside the tools, **6 MCP resources** cost nothing in the tool budget and are
 
 ### Two rules worth knowing before you draw
 
-**Every coordinate in and out of a tool is WCS, on both engines** — with one deliberate exception. DXF stores CIRCLE / ARC / LWPOLYLINE / TEXT / INSERT geometry in a per-entity frame, and before v1.5.0 the word `extrusion` appeared nowhere in this codebase, so a mirrored or rotated entity reported coordinates that were quietly wrong. An entity in a plane tilted out of WCS XY now reports `plane_normal` and omits the fields xy cannot express, rather than answering with a number that looks fine. The exception is **TEXT `rotation`**, which stays in the entity frame on purpose: a mirrored TEXT is mirror-imaged, and no single scalar angle expresses that.
+**Coordinates come out in WCS, and the exceptions are declared rather than hidden.** DXF stores CIRCLE / ARC / LWPOLYLINE / TEXT / INSERT geometry in a per-entity frame, and before v1.5.0 the word `extrusion` appeared nowhere in this codebase, so a mirrored or rotated entity reported coordinates that were quietly wrong. An entity in a plane tilted out of WCS XY now reports `plane_normal` and omits the fields xy cannot express, rather than answering with a number that looks fine.
+
+Three things stay in the entity frame on purpose, and `system_capabilities`' `ocs_normalized` reason string is the live list: **TEXT `rotation`** (a mirrored TEXT is mirror-imaged, and no single scalar angle expresses that), **z components**, and **HATCH boundary geometry**. On the live backend that same reason string also records `2d_polyline_coordinates_not_verified_against_live_autocad` — read it at runtime rather than trusting this paragraph.
 
 **Never read vertices back and shoelace them.** That loses **28.2%** of the area on a semicircular edge, silently. `analysis_measure_entity(handle)` reads the real geometry and states its own accuracy: `exact`, `flatten_tolerance`, `assumed_closed`, `self_intersecting`.
 
@@ -137,7 +139,7 @@ There are **27 capability keys**. `system_capabilities` returns the live map, an
 |---|:---:|:---:|
 | Live document control | ✅ | — |
 | Cross-platform, no AutoCAD | — | ✅ |
-| Transactions and rollback | ✅ | ✅ |
+| Transactions and rollback | ✅ *undo mark; rollback sends `_UNDO B` and AutoCAD never confirms it landed — best-effort, not atomic* | ✅ *full DXF snapshot, restored synchronously* |
 | Paper-space layouts + viewports | ✅ | ✅ |
 | Viewport model-content rendering | ✅ | ✅ ᵐ *(no viewport borders)* |
 | Selection window / crossing / polygon | ✅ | ✅ |
@@ -152,18 +154,18 @@ There are **27 capability keys**. `system_capabilities` returns the live map, an
 | CHSPACE (`entity_change_space`) | — *unverified against a live seat* | ✅ ᶜ |
 | Undo history | ✅ | opt-in — `EZDXF_UNDO_DEPTH` defaults to `0` |
 | TABLE and MLEADER | Native | Portable composite |
-| Raw commands / AutoLISP | Opt-in | — |
+| Raw commands / AutoLISP | ✅ *on by default, denylist-sanitized — `DANGEROUS_COMMANDS_ENABLED=true` removes the denylist* | — *no live command line* |
 | Screenshots and PDF export | AutoCAD window capture | Matplotlib render ᵐ |
 
 <sub>ᵐ Needs matplotlib — the `[pdf]` or `[full]` extra. Without it `png`, `pdf`, `viewport_render` and `handle_overlay` all report unsupported on the headless engine.<br>
 ᶜ The headless CHSPACE carries four named restrictions in its own capability reason: top-view untwisted viewports only, dimensions refused unless frozen, ACIS/proxy/table refused, and viewport clipping reported rather than applied.</sub>
 
 > [!IMPORTANT]
-> Every COM path added in v1.5.0 was executed against a **live AutoCAD 2026** before release. That run found four defects no amount of reading would have caught — the largest being that `AcadPViewport` has no `ViewCenter` member, so the line setting it had been silently swallowed by a bare `except` since v1.4.
+> The COM paths added in v1.5.0 were executed against a **live AutoCAD 2026** before release — two documented exceptions aside: the `AcDbLWPolyline` OCS→WCS translation in `entity_get` and the COM half of `block_create_from_entities` ship unit-tested against a fake ActiveX object, not hardware-verified. The live run was 25 calls: 18 succeeded, 1 refused a specific argument, and 6 refused with the capability keys they declare. That run found four defects, three of which no amount of reading would have caught (the fourth was `analysis_list_properties` calling a helper that does not exist on `ComBackend`) — the largest being that `AcadPViewport` has no `ViewCenter` member, so the line setting it had been silently swallowed by a bare `except` since v1.4.
 
 ## Evidence
 
-Every number below is produced by a script in [`benchmarks/`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/) and rendered to SVG by Python. No hand-edited charts.
+Every chart below is rendered to SVG by Python from committed data — none is hand-edited. The numbers are not all script output, and the two exceptions are marked where they appear: **section 4** quotes timings collected by hand across separate runs, and **section 5** is a hand-assigned source review whose nine scores are literals in [`source_review.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/source_review.json) that the renderer validates and draws but does not compute.
 
 ### 1 · Live-run scores
 
@@ -178,13 +180,13 @@ Every number below is produced by a script in [`benchmarks/`](https://github.com
 > [!WARNING]
 > **Read the matrix column before the score column.** The five v3 tasks are new in v1.5.0; the competitor runs are from 2026-07-23 against pinned competitor commits, and were never put to them. Their scores are over the ten tasks they actually ran, and the five new rows render blank rather than as zeros — an invented zero is indistinguishable from a measured one. These bars do not share a denominator, which is why each one carries its matrix.
 
-Competitors are driven **black-box over MCP stdio** using their own documented tool contracts at the pinned commit, and every geometry claim is verified by re-opening the exported DXF with ezdxf inside the harness. No self-reporting. A capability refusal is recorded `unsupported`, not `fail` — "cannot reach this" and "got this wrong" are different findings.
+Competitors are driven **black-box over MCP stdio** against the tool contracts read from their pinned source, at **50% coverage on both**: five of the ten tasks per competitor are recorded `unsupported` — the operation is absent from that checkout, or refused by it — and those rows score zero against a denominator of ten, so 50.0 and 45.0 are coverage-weighted, not ten measured attempts. Over the tasks actually driven, beiming scores 100.0 and puran-water 90.0. Where a task does run, every geometry claim the competitor makes is re-derived by re-opening the exported DXF with ezdxf inside the harness — their own tool output is never the source of truth. This repo's row is not run that way: it runs in-process against the backend, and 13 of its 15 tasks assert on backend return values rather than on a re-opened DXF (only `dxf_roundtrip` and `auditable_delivery` write a file at all). What is independent there is the expected value — a closed-form area, entities placed on purpose, a token ceiling fixed before the measurement — not the observation. A capability refusal is recorded `unsupported`, not `fail` — "cannot reach this" and "got this wrong" are different findings. That classification is written into the adapter from the competitor's pinned source; a refusal that only appears at runtime becomes `unsupported` where the adapter recognises it (beiming's `E_UNSUPPORTED` on `transaction begin` is the one that did) and lands as `fail` otherwise.
 
 ### 2 · Task matrix — where the score comes from
 
 <img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/autocad-mcp-taskmatrix.svg" alt="Task matrix heatmap: 15 tasks against three servers" width="820">
 
-**v2 scored this repo 10/10, and that number carried no information**: every task in it exercised something the server was built around. v3 adds five tasks chosen because they *can* fail — and three of them did, while being written.
+**v2 scored this repo 10/10, and that number carried no information**: every task in it exercised something the server was built around. v3 adds five tasks chosen because they *can* fail — and two of them did, while being written: `hatch_islands` (a HATCH could not be measured at all) and `measure_from_handle` (the boundary tools and the measurement tool disagreed about the same shape). A third measurement defect fixed in the same release — a circle stored as two bulged vertices measured 0.0 — is carried by `two_vertex_circle_has_area` in the correctness suite, not by a benchmark task.
 
 | v3 task | Verified against |
 |---|---|
@@ -218,15 +220,17 @@ The 21 pre-existing checks are unchanged and all still pass: the discovery layer
 
 | Workload | Wall time | Result |
 |---|---:|---|
-| Create 2,000 lines (individual calls) | 0.32 s | ~6,300 entities/s |
-| 10,000 lines: build + DXF export + reopen | 2.16 s | ~4,600 entities/s end-to-end |
-| Region query over 10,000 entities | 0.89 s | 2,500 matched |
-| Premium pass (layers + part + dims + full critique) | 0.18 s | 0 issues |
+| Create 2,000 lines (individual calls) | 0.35 s | ~5,716 entities/s |
+| 10,000 lines: build + DXF export + reopen | 2.18 s | ~4,591 entities/s end-to-end |
+| Region query over 10,000 entities | 2.47 s | 2,500 matched |
+| Premium pass (layers + part + dims + full critique) | 0.26 s | 0 issues |
 
-Workloads call the same backend methods the MCP tools call, so server-side overhead is included. **Self-measurement only** — competitor servers pay an extra stdio serialization cost that in-process runs do not, so no cross-server timing claims are made.
+<sub>One run of each workload — `perf_suite` executes each exactly once per invocation, and these are the figures in the committed [`perf-ezdxf.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/perf-ezdxf.json). Run-to-run spread on this machine is wide enough to matter: treat them as an order of magnitude, not a stopwatch.</sub>
+
+Workloads call the same backend methods the MCP tools call, so the backend's own per-call overhead — worker-thread hand-off, document lock, the `EZDXF_CALL_TIMEOUT` guard — is included. The FastMCP layer above it is **not**: `perf_suite.py` never builds the server, so tool dispatch, argument validation, the five middleware and result serialization all sit outside the timer, and in-process they cost roughly an order of magnitude more than the backend call itself. Read these as backend-engine numbers, not per-tool-call latency. **Self-measurement only** — competitor servers pay an extra stdio serialization cost that in-process runs do not, so no cross-server timing claims are made.
 
 > [!CAUTION]
-> These are **not** an improvement over v1.4.0. Measured against v1.4.0 on the same interpreter, this release is **28% slower** at creating entities — see [what this release is bad at](#what-this-release-is-bad-at) for the number and its full attribution.
+> These are **not** an improvement over v1.4.0, and they are not the engine's floor. The per-call timeout guard costs about **21%** of entity-creation throughput — see [what this release is bad at](#what-this-release-is-bad-at) for the paired measurement and why the guard is kept.
 
 ### 5 · Source-review leaderboard
 
@@ -234,7 +238,7 @@ Workloads call the same backend methods the MCP tools call, so server-side overh
 
 Nine public AutoCAD MCP projects against a fixed 100-point rubric — CAD breadth (25), correctness and delivery (20), backends/platforms (15), engineering production (15), tests and maintenance (15), security and operations (10). Stars and raw tool counts score nothing. Data and dates in [`benchmarks/source_review.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/source_review.json).
 
-**This table is not re-scored per release.** This repository's row is still the one written against **v1.4.0**. Raising our own number for v1.5.0 would mean re-reviewing eight other projects the same day to keep it fair, and that has not been done — so the score stays where the evidence is.
+**This table is not re-scored per release** — no row is, including the other eight. This repository's row is still the one written against **v1.4.0**. Raising our own number for v1.5.0 would mean re-reviewing eight other projects the same day to keep it fair, and that has not been done — so the score stays where the evidence is.
 
 Method, caveats and boundaries for every lane: [`benchmarks/README.md`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/README.md).
 
@@ -242,17 +246,39 @@ Method, caveats and boundaries for every lane: [`benchmarks/README.md`](https://
 
 A page that only lists strengths is a page that has not been measured.
 
-**Entity creation is 28% slower than v1.4.0.** Measured on one interpreter, median of three runs: 2,000 lines went 245 ms → 315 ms, and the 10,000-line roundtrip 1,765 ms → 2,146 ms. Fully attributed — setting `EZDXF_CALL_TIMEOUT=0` returns v1.5.0 to **244.8 ms** and **1,679 ms**, which are v1.4.0's numbers exactly. The cost is the per-call `asyncio.wait_for` this release wrapped around every headless call so that one hung call can no longer wedge a server whose document lock is a single `asyncio.Lock`. A deliberate trade, with a documented knob, on the 1.6 roadmap to win back.
+**Entity creation is ~21% slower than it would be without the call timeout.**
+The timeout is what stops one hung ezdxf call wedging a server whose document
+lock is a single `asyncio.Lock`, and it is not free. Measured on one
+interpreter, three runs of each configuration with the median taken by hand
+(`perf_suite` runs each workload once per invocation — it cannot produce a
+median itself):
 
-> The v1.4 README printed *slower* numbers than the table above — 0.64 s and 13.9 s for the same two workloads. That looks like a 2–6× win and is not one: the old report was recorded on CPython 3.14 and this one on 3.11.15. Interpreter, not code. Comparing the two published files directly is the mistake this paragraph exists to stop.
+| Workload | `EZDXF_CALL_TIMEOUT=0` | default (120 s) | Cost |
+|---|---:|---:|---:|
+| 2,000 lines | 243.7 ms | 294.3 ms | +20.8% |
+| 10,000-line roundtrip | 1,709.6 ms | 2,049.2 ms | +19.9% |
 
-**Wave A shipped 13 tools of a planned 39.** Every cut is backed by a measurement. The REGION and 2D-boolean family went because `add_region()` produces a REGION with **zero ACIS bytes**, and the `greiner_hormann` substitute loses **28.2%** of the area on a square with one semicircular edge — shipping it would have re-created the exact class of silent error this release spent four milestones deleting. Most of the planned measurement family was already covered by the eight `analysis_*` tools that existed.
+v1.5.0 paid **28.6%** on the first workload; v1.5.1 rebuilt the wrapper around a
+single `asyncio.timeout_at` instead of two `asyncio.wait_for`s — `wait_for`
+wraps its awaitable in a Task, so the old shape created two extra Tasks and two
+timer handles on *every* call. That recovered about a third of the overhead and
+fixed a latent double-release, but it did not close the gap: the remaining cost
+is the Task the abandon-on-timeout design genuinely needs. The knob is
+documented rather than hidden, and the item stays open.
+
+> These figures are hand-collected across separate single-shot runs and have no
+> published artifact; `benchmarks/results/published/perf-ezdxf.json` records one
+> default-configuration run only.
+
+> The README on `main` through the v1.4 era printed *slower* numbers than the table above — 0.64 s and 13.9 s for the same two workloads. That looks like a 2–6× win and is not one: the old report was recorded on CPython 3.14 and this one on 3.11.15. Almost entirely the interpreter, not code — run on one interpreter, this release is *slower* than v1.4.0 on both workloads, not faster. Comparing the two published files directly is the mistake this paragraph exists to stop.
+
+**Wave A shipped 13 tools of a planned ~39.** Every cut is backed by a measurement. The REGION and 2D-boolean family went because `add_region()` produces a REGION with **zero ACIS bytes**, and the substitute, `greiner_hormann`, takes and returns flat vertex lists, so a bulged edge goes in as its chord: **28.2%** of the area on a square with one semicircular edge — shipping it would have re-created the exact class of silent error this release's honesty pass exists to delete. Of the planned measurement family only `analysis_measure_entity` shipped — measuring a drawn entity by handle, which neither backend could do — and the centroid and moment-of-inertia tools were cut with nothing replacing them. Of the eight `analysis_*` tools that already existed, the two tagged `measure` both measured points the caller typed in.
 
 **`system_run_command` / `system_run_lisp` are a guardrail, not a security boundary** — the rejection message clients receive says so in those words. A 36-verb command denylist and a 24-pattern AutoLISP denylist refuse the obviously destructive cases, but AutoCAD accepts hundreds of commands and any loaded ARX/LISP adds more, so the list cannot be complete, and `DANGEROUS_COMMANDS_ENABLED=true` switches both off entirely.
 
 **Path validation is per-tool, and unscoped until you scope it.** Nine tools call `validate_path`; nothing in the middleware enforces it server-wide. With `ALLOWED_PATHS` empty — the default — the only positive bound is a ten-entry system-directory denylist that does not include `C:/Users`, `/home`, `/root` or `/var`. **Set `ALLOWED_PATHS`.** It is the setting that actually scopes the filesystem.
 
-**Non-AutoCAD ProgIDs are unverified.** `CAD_PROGID` changes which COM application the backend attaches to, and nothing beyond the connection has been tested against BricsCAD, ZWCAD or GstarCAD. They are listed in `.env.example` commented out and marked UNVERIFIED.
+**Non-AutoCAD ProgIDs are unverified.** `CAD_PROGID` changes which COM application the backend attaches to — the configured ProgID is used at both `GetActiveObject` and `Dispatch`, and an unrecognised one fails loudly rather than falling back to AutoCAD. Nothing has been tested against BricsCAD, ZWCAD or GstarCAD, the connection included: no running seat of any of them was ever attached to. They are listed in `.env.example` commented out and marked UNVERIFIED.
 
 ## Configuration
 

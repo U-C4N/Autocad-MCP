@@ -14,22 +14,22 @@
         "entity_count": 2000
       },
       "metric": "entities_per_second",
-      "metric_value": 6343.1,
-      "wall_ms": 315.3,
+      "metric_value": 5715.8,
+      "wall_ms": 349.9,
       "workload_id": "create_lines_2k"
     },
     {
       "description": "Create 10,000 lines, export DXF, reopen and verify",
       "detail": {
-        "build_ms": 1574.1,
+        "build_ms": 1633.1,
         "entity_count": 10000,
-        "export_ms": 261.8,
+        "export_ms": 273.0,
         "file_bytes": 1369663,
-        "reopen_ms": 320.2
+        "reopen_ms": 272.1
       },
       "metric": "entities_per_second",
-      "metric_value": 4637.9,
-      "wall_ms": 2156.1,
+      "metric_value": 4590.8,
+      "wall_ms": 2178.3,
       "workload_id": "roundtrip_10k"
     },
     {
@@ -39,7 +39,7 @@
       },
       "metric": "entities_matched",
       "metric_value": 2500.0,
-      "wall_ms": 890.8,
+      "wall_ms": 2466.9,
       "workload_id": "region_query_10k"
     },
     {
@@ -49,7 +49,7 @@
       },
       "metric": "critique_issues",
       "metric_value": 0.0,
-      "wall_ms": 176.5,
+      "wall_ms": 255.7,
       "workload_id": "premium_pass"
     }
   ]

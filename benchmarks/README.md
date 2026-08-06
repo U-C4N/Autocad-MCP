@@ -60,7 +60,7 @@ written:
 
 | Task | Category | Verified against |
 |---|---|---|
-| `tool_discovery` | discovery | six AutoCAD command names, each ranking #1 of 154 tools |
+| `tool_discovery` | discovery | six AutoCAD command names, each found in the top 3 of the 154-tool registry the harness ranks — all six came back #1 in the published run |
 | `token_budget` | efficiency | 40,305 → 356 tokens advertised, against a 2,000 ceiling fixed in advance |
 | `hatch_islands` | hatch | 300 filled with the island, 400 ignoring it |
 | `selection_filter` | selection | window 1, crossing 2, bounding box 3, polygon 1 |
@@ -153,33 +153,36 @@ python -m benchmarks.perf_suite --out benchmarks/results/published/perf-ezdxf.js
 python -m benchmarks.render_perf_chart
 ```
 
-### v1.4.0 → v1.5.0, same interpreter
+### What the call-timeout guard costs
 
-The published v1.4 report was recorded on CPython 3.14 and the v1.5 one on
-3.11.15, so comparing the two files directly shows an apparent 2–6× speedup
-that is almost entirely the interpreter. The honest comparison re-runs v1.4.0
-in a `git worktree` with the *current* suite file — same instrument, different
-code under test, one interpreter. Median of three runs each:
+The published v1.4 report was recorded on CPython 3.14 and the later ones on
+3.11.15, so comparing those two files directly shows an apparent 2–6× speedup
+that is almost entirely the interpreter. The comparison that means something is
+the guard against no guard, on one interpreter, back to back. Three runs of
+each configuration, median taken by hand — `perf_suite` executes each workload
+once per invocation and cannot produce a median itself:
 
-| Workload | v1.4.0 | v1.5.0 | Change |
-|---|---:|---:|---|
-| `create_lines_2k` | 245 ms | 315 ms | **28% slower** |
-| `roundtrip_10k` | 1,765 ms | 2,146 ms | **22% slower** |
-| `region_query_10k` | 1,090 ms | 1,039 ms | within spread |
-| `premium_pass` | 375 ms | 44 ms | faster; the v1.4 spread (279–772 ms) is too wide to quantify |
+| Workload | `EZDXF_CALL_TIMEOUT=0` | default (120 s) | Cost |
+|---|---:|---:|---:|
+| `create_lines_2k` | 243.7 ms | 294.3 ms | **+20.8%** |
+| `roundtrip_10k` | 1,709.6 ms | 2,049.2 ms | **+19.9%** |
 
-Attributed rather than reported: `EZDXF_CALL_TIMEOUT=0` puts v1.5.0 back to
-244.8 ms and 1,679 ms, which are v1.4.0's numbers. The entire cost is the
-per-call `asyncio.wait_for` wrapped around every headless call in this release,
-so a single hung ezdxf call can no longer wedge a server whose document lock is
-one `asyncio.Lock`. Reproduce:
+v1.5.0 paid 28.6% on the first workload; v1.5.1 rebuilt the wrapper around a
+single `asyncio.timeout_at` instead of two `asyncio.wait_for`s — `wait_for`
+wraps its awaitable in a Task, so the old shape created two extra Tasks and two
+timer handles per call — which recovered about a third of the overhead. The
+rest is the Task the abandon-on-timeout design genuinely needs. The guard is
+what stops one hung ezdxf call wedging a server whose document lock is a single
+`asyncio.Lock`, so it stays; the knob is documented rather than hidden.
+
+These figures are hand-collected and have **no published artifact** —
+`perf-ezdxf.json` records one default-configuration run only. Reproduce:
 
 ```bash
-git worktree add /tmp/wt-v140 v1.4.0
-cp benchmarks/perf_suite.py /tmp/wt-v140/benchmarks/
-(cd /tmp/wt-v140 && PYTHONPATH=. python benchmarks/perf_suite.py --out /tmp/v140.json)
-python -m benchmarks.perf_suite --out /tmp/v150.json
-EZDXF_CALL_TIMEOUT=0 python -m benchmarks.perf_suite --out /tmp/v150-notimeout.json
+for i in 1 2 3; do
+  python -m benchmarks.perf_suite --out /tmp/on-$i.json
+  EZDXF_CALL_TIMEOUT=0 python -m benchmarks.perf_suite --out /tmp/off-$i.json
+done
 git worktree remove --force /tmp/wt-v140
 ```
 
@@ -201,20 +204,28 @@ python benchmarks/compare_versions.py --json results.json
 
 ### Result — v1.5.0 vs v1.4.0 (release gate)
 
-24 checks, ezdxf backend, one subprocess per check. Machine-readable report:
+26 checks, ezdxf backend, one subprocess per check. Machine-readable report:
 [`results/published/ab-v1.4.0-vs-v1.5.0.json`](results/published/ab-v1.4.0-vs-v1.5.0.json).
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---------|----------------|-----------|-------|-----------|
-| **v1.4.0** (baseline)     | 21 / 24 | 87.5 % | — | — |
-| **v1.5.0** (this release) | 24 / 24 | 100 % | 3 | **0** |
+| **v1.4.0** (baseline)     | 21 / 26 | 80.8 % | — | — |
+| **v1.5.0** (this release) | 26 / 26 | 100 % | 5 | **0** |
 
-Read the three "fixed" carefully: they are **new capability, not repaired
-regressions**. v1.4.0 has no `entity_measure` and no boundary tracing, so it
-misses `hatch_area_subtracts_its_island`, `boundary_area_agrees_with_measure`
-and `two_vertex_circle_has_area` by not having the method rather than by
-getting it wrong. They are in the suite because all three broke during v1.5.0
-development and nothing outside their own unit tests would have caught it.
+The pass rate is against the 26-check v1.5.0 suite; v1.4.0 passed 21/21 of the
+checks that existed when it shipped. The five splits into two kinds, and the
+difference is the whole reason this lane distinguishes `miss` from `fail`:
+
+* **Three are new capability.** v1.4.0 has no `entity_measure` and no boundary
+  tracing, so it misses `hatch_area_subtracts_its_island`,
+  `boundary_area_agrees_with_measure` and `two_vertex_circle_has_area` by not
+  having the method (`miss → pass`). They are in the suite because all three
+  broke during v1.5.0 development and nothing outside their own unit tests
+  would have caught it.
+* **Two are repaired defects.** v1.4.0 *has* `dimension_diameter` and
+  `dimension_radius` and gets them wrong (`fail → pass`): `leader_length`, a
+  text placement, was being measured as geometry, so at default settings every
+  diameter callout came out 2 × `leader_length` too large.
 
 The 21 pre-existing checks are unchanged and all still pass: the discovery
 layer, `cad_batch`, the 19-module contract split, the layout/viewport family
