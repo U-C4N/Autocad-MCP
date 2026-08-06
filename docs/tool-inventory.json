@@ -1,7 +1,7 @@
 {
   "_comment": "GENERATED FILE - do not edit by hand. Derived from the live FastMCP component registry; regenerate with `python scripts/generate_tool_inventory.py`.",
   "schema_version": 1,
-  "package_version": "1.5.0",
+  "package_version": "1.5.1",
   "totals": {
     "tools": 154,
     "resources": 6,

@@ -6599,9 +6599,47 @@ _HTTP_TRANSPORTS = {"http", "sse", "streamable-http"}
 _orig_run_async = mcp.run_async
 
 
+def _effective_http_host(kwargs: dict) -> str:
+    """The address that will actually be bound — not the one we hope for.
+
+    This used to read ``kwargs.get("host", "127.0.0.1")`` and treat an absent
+    kwarg as loopback. It is not: ``fastmcp run`` forwards ``host`` only when
+    ``--host`` was given, and otherwise fastmcp resolves it from
+    ``fastmcp.settings.host``, which is environment-backed. So
+    ``FASTMCP_HOST=0.0.0.0`` bound every interface while this guard inspected
+    the literal string ``"127.0.0.1"`` and let it through — the check failed
+    *open*, without a token, on the exact launch path it was written for.
+
+    If the setting cannot be resolved we fall back to loopback rather than
+    refusing to start, but we say so: a guard that cannot see the host is not
+    enforcing anything, and silence is how the original bug survived.
+    """
+    host = kwargs.get("host")
+    if host:
+        return str(host)
+    try:
+        import fastmcp
+
+        resolved = getattr(fastmcp.settings, "host", None)
+        if resolved:
+            return str(resolved)
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning(
+            "Could not resolve the effective HTTP host from fastmcp settings (%s); "
+            "assuming loopback. Pass --host explicitly to be sure of the bind guard.",
+            exc,
+        )
+        return "127.0.0.1"
+    log.warning(
+        "fastmcp exposes no resolvable host setting; assuming loopback. Pass "
+        "--host explicitly to be sure of the bind guard."
+    )
+    return "127.0.0.1"
+
+
 async def _guarded_run_async(transport=None, *args, **kwargs):
     if (transport in _HTTP_TRANSPORTS) or (kwargs.get("transport") in _HTTP_TRANSPORTS):
-        _validate_http_bind(kwargs.get("host", "127.0.0.1"))
+        _validate_http_bind(_effective_http_host(kwargs))
     return await _orig_run_async(transport, *args, **kwargs)
 
 

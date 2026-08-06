@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] — 2026-08-06
+
+A patch for three defects found *after* 1.5.0 went to PyPI, two of them by the
+adversarial pass over the rewritten README. 1.5.0 is yanked: its diameter and
+radius callouts put wrong numbers on drawings at default settings, and that is
+not something to leave installable.
+
+### Fixed
+
+- **The HTTP bind guard failed open on the launch path it was written for.**
+  `_guarded_run_async` read the bind address from the `host` kwarg and treated
+  an absent one as loopback. It is not: `fastmcp run` forwards that kwarg only
+  when `--host` was passed, and otherwise fastmcp resolves the host from
+  `fastmcp.settings.host`, which is environment-backed. So
+  `FASTMCP_HOST=0.0.0.0 fastmcp run server.py:mcp --transport http` bound every
+  interface — 149 tools including file open/save and AutoCAD command execution,
+  with no token — while the guard inspected the literal string `"127.0.0.1"`
+  and waved it through. v1.4.0's changelog claimed the guard "now fires on
+  every launch path"; it fired, and then looked at the wrong host. It now
+  resolves the effective host, and says so in a warning if it cannot.
+- **`[com]` and `[full]` could not be installed off Windows.** Both extras
+  listed `pywin32>=306` with no environment marker, and pywin32 publishes
+  Windows wheels and *no sdist* — so `pip install autocad-mcp-pro[full]` died
+  at resolution on Linux and macOS, and `[full]` is the extra this project's
+  own README recommended to contributors. CI never caught it because every
+  Linux lane installs `[pdf]` or syncs from `uv.lock`, whose resolution markers
+  hide the gap. Both entries now carry `; sys_platform == "win32"`, and a
+  release-consistency test fails if a Windows-only distribution loses its
+  marker again.
+- **`drawing_settings({"dimscale": ...})` reported success and changed nothing
+  headlessly.** It writes the `$DIMSCALE` header variable, which is what
+  AutoCAD consults when it draws a dimension — so the call worked on the live
+  backend. ezdxf renders from the dimstyle table entry and never reads the
+  header, so the same call produced two different drawings on the two engines
+  while both said `ok`. The header value is now folded into the per-dimension
+  override on all five dimension tools, including `dimension_aligned` and
+  `dimension_angular`, which do not share the tolerance-override path and were
+  missed by the obvious fix. DIMSCALE 1.0 writes no override.
+
+### Changed
+
+- README: the "What you get" table qualified every engine-conditional family
+  (boundary tracing, WIPEOUT/REVCLOUD/MTEXT masks, CHSPACE, typed hatch edge
+  paths, headless undo) instead of listing them as if both engines had them,
+  and the checkout install line no longer recommends an extra that cannot
+  resolve on the reader's platform.
+
 ## [1.5.0] — 2026-08-06
 
 ### Added

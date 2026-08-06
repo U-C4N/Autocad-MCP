@@ -29,7 +29,7 @@ Live through COM on Windows, or headless through ezdxf on any platform — one t
 
 ---
 
-> **v1.5 release snapshot:** 154 tools · 6 resources · 5 prompt templates · 1250 collected tests.
+> **v1.5 release snapshot:** 154 tools · 6 resources · 5 prompt templates · 1258 collected tests.
 > 154 is the **registered** count. A default install **advertises 149** over `tools/list`, because
 > `ENABLE_3D` is unset and the five `solid_*` tools stay hidden. `system_about` is the runtime authority.
 
@@ -74,7 +74,7 @@ AUTOCAD_MCP_BACKEND=com   autocad-mcp    # live AutoCAD (pip install "autocad-mc
 > [!NOTE]
 > The bare install **cannot draw pixels**. `ezdxf.addons.drawing.frontend` does an unconditional top-level `import PIL.Image`, so Pillow is required by *every* ezdxf render path — PNG screenshot and PDF export alike — not just by the COM window capture it is listed under. Add `[pdf]` (or `[full]`) if you want images on Linux or macOS.
 
-From a checkout: `pip install -e ".[full]"` then `python server.py`.
+From a checkout: `pip install -e ".[full]"` on Windows, or `pip install -e ".[pdf]"` elsewhere, then `python server.py`. (`[com]` and `[full]` carry a `sys_platform == "win32"` marker on `pywin32`, so they resolve everywhere — they simply install nothing Windows-specific off Windows.)
 
 ### Wire it to a client
 
@@ -100,18 +100,18 @@ Works with Claude Desktop, Cursor, or any stdio MCP host. For HTTP: `autocad-mcp
 
 <table>
 <tr><th align="left">Area</th><th align="left">What it does</th></tr>
-<tr><td><b>Drawing lifecycle</b></td><td>create, open, save, export DXF/PDF, audit <i>(now repairs)</i>, purge, undo/redo</td></tr>
+<tr><td><b>Drawing lifecycle</b></td><td>create, open, save, export DXF/PDF, audit <i>(now repairs)</i>, purge; undo/redo live on COM and opt-in headless via <code>EZDXF_UNDO_DEPTH</code></td></tr>
 <tr><td><b>Geometry</b></td><td>lines, arcs, polylines, splines, hatches, trim/extend/fillet/chamfer, handle-preserving edits</td></tr>
 <tr><td><b>Annotation</b></td><td>ISO 129 toleranced dimensions, ISO 286 fits (<code>fit="H7"</code>), TABLE, MLEADER, GD&amp;T frames and datums (ISO 1101)</td></tr>
 <tr><td><b>Engineering generators</b></td><td>involute gears (front + section A-A), DIN 6885 keyed bores, ISO A3 title block</td></tr>
 <tr><td><b>Discovery</b> ✨</td><td><code>search_tools</code> ranked over an AutoCAD command and synonym corpus — <code>FILLET</code>, <code>BPOLY</code>, <code>QSELECT</code>, <code>WBLOCK</code>, <code>OVERKILL</code>, <code>CHSPACE</code> each rank <b>#1</b> of the 149-tool advertised catalog</td></tr>
 <tr><td><b>Batching</b> ✨</td><td><code>cad_batch</code> runs a whole step list in one round trip; <code>fields=</code> projects the response on 11 result-heavy tools (a closed, gated list)</td></tr>
-<tr><td><b>Paper space</b> ✨</td><td>tab lifecycle, viewports, <code>entity_change_space</code> (CHSPACE), <code>drawing_export_pdf(layout=...)</code></td></tr>
+<tr><td><b>Paper space</b> ✨</td><td>tab lifecycle, viewports and <code>drawing_export_pdf(layout=...)</code> on both engines; <code>entity_change_space</code> (CHSPACE) headless only</td></tr>
 <tr><td><b>Selection</b> ✨</td><td>window vs crossing stated back to the caller; a polygon tested against its own shape, not its bounding box</td></tr>
-<tr><td><b>Boundaries</b> ✨</td><td><code>boundary_trace</code> (BOUNDARY/BPOLY) chains loose edges into one closed polyline, arcs kept as bulges</td></tr>
+<tr><td><b>Boundaries</b> ✨</td><td><code>boundary_trace</code> (BOUNDARY/BPOLY) chains loose edges into one closed polyline, arcs kept as bulges — <i>headless engine only</i></td></tr>
 <tr><td><b>Measurement</b> ✨</td><td><code>analysis_measure_entity</code> measures what is <i>in</i> the drawing, by handle</td></tr>
-<tr><td><b>Hatch depth</b> ✨</td><td>gradients, in-place edits, typed edge boundaries, island styles</td></tr>
-<tr><td><b>Annotation objects</b> ✨</td><td>WIPEOUT, REVCLOUD, MTEXT background masks, text find/replace</td></tr>
+<tr><td><b>Hatch depth</b> ✨</td><td>gradients, in-place edits and island styles on both; typed edge boundaries headless only</td></tr>
+<tr><td><b>Annotation objects</b> ✨</td><td>WIPEOUT, REVCLOUD, MTEXT background masks — <i>headless only, ActiveX exposes no member</i> — plus text find/replace on both</td></tr>
 <tr><td><b>3D solids</b></td><td><code>solid_box/cylinder/extrude/revolve/boolean</code> on live AutoCAD (<code>ENABLE_3D=true</code>)</td></tr>
 <tr><td><b>Quality loop</b></td><td><code>drawing_preflight</code> → <code>drawing_plan</code> → <code>drawing_critique</code> → <code>drawing_refine</code> → <code>drawing_finalize</code> (0–100 score)</td></tr>
 <tr><td><b>Delivery</b></td><td><code>drawing_deliver</code>: DXF/PDF/PNG + SHA-256 manifest + reopen-parity checks</td></tr>

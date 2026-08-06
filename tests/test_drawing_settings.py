@@ -78,3 +78,62 @@ async def test_server_tool_reads_and_writes(backend):
     assert write["ok"] is True
     read = await server.drawing_settings(ctx=ctx)
     assert read["settings"]["units"]["name"] == "mm"
+
+
+# ── DIMSCALE has to reach the dimension, not just the header ────────────────
+
+
+def _dim_text_heights(backend, handle) -> list[float]:
+    """The text heights actually rendered into the dimension's geometry block.
+
+    The override lands in the dimension's XDATA, not on `dim.dxf`, so the only
+    honest check is the drawing it produces.
+    """
+    dim = backend._doc.entitydb.get(handle)
+    block = backend._doc.blocks.get(dim.dxf.geometry)
+    heights = []
+    for entity in block:
+        if entity.dxftype() == "MTEXT":
+            heights.append(round(float(entity.dxf.char_height), 3))
+        elif entity.dxftype() == "TEXT":
+            heights.append(round(float(entity.dxf.height), 3))
+    return sorted(set(heights))
+
+
+async def test_dimscale_changes_the_dimension_it_is_set_before(backend):
+    """`drawing_settings({"dimscale": ...})` reported success and did nothing.
+
+    It writes the `$DIMSCALE` header variable, which is what AutoCAD reads when
+    it creates a dimension — so on the live backend the call worked. ezdxf
+    renders dimensions from the dimstyle table entry and never consults the
+    header, so headlessly the text stayed the same size however large the
+    number was: one call, one reported success, two different drawings.
+    """
+    plain = await backend.dimension_linear(0, 0, 100, 0, 50, -30)
+    await backend.drawing_settings({"dimscale": 4.0})
+    scaled = await backend.dimension_linear(0, 0, 100, 0, 50, -60)
+
+    before = _dim_text_heights(backend, plain.handle)
+    after = _dim_text_heights(backend, scaled.handle)
+    assert before and after
+    assert after == pytest.approx([h * 4.0 for h in before]), (
+        f"DIMSCALE=4 must scale the dimension text: {before} -> {after}"
+    )
+
+
+async def test_the_default_dimscale_adds_no_override(backend):
+    """DIMSCALE 1.0 is the default; it must not litter every dimension."""
+    plain = await backend.dimension_linear(0, 0, 100, 0, 50, -30)
+
+    dim = backend._doc.entitydb.get(plain.handle)
+    assert not dim.dxf.hasattr("dimscale") or dim.dxf.dimscale == pytest.approx(1.0)
+
+
+async def test_dimscale_reaches_aligned_and_angular_too(backend):
+    """Those two do not go through `build_dim_override`, so they were missed."""
+    await backend.drawing_settings({"dimscale": 3.0})
+    aligned = await backend.dimension_aligned(0, 0, 60, 60, 40, 70)
+    angular = await backend.dimension_angular(0, 0, 50, 0, 0, 50, 30, 30)
+
+    for handle in (aligned.handle, angular.handle):
+        assert _dim_text_heights(backend, handle) == pytest.approx([3.0])

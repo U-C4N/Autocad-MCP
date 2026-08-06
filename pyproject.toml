@@ -1,6 +1,6 @@
 [project]
 name = "autocad-mcp-pro"
-version = "1.5.0"
+version = "1.5.1"
 description = "Production-grade AutoCAD MCP server — COM API + ezdxf dual engine"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -74,7 +74,13 @@ Changelog = "https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md"
 # renders nothing. Install `[pdf]` (or `[full]`) for rendering on any platform:
 # Pillow comes in transitively as a matplotlib dependency.
 com = [
-    "pywin32>=306",
+    # pywin32 publishes Windows wheels and no sdist, so without this marker
+    # the extra cannot be resolved at all on Linux or macOS -- pip dies at
+    # "no matching distribution" before installing anything. The marker
+    # makes `pip install autocad-mcp-pro[com]` a no-op there instead of a
+    # hard failure, which is the honest outcome: the COM backend needs
+    # Windows, and the server already falls back to ezdxf.
+    'pywin32>=306; sys_platform == "win32"',
     # Win32 window capture for the live-AutoCAD screenshot path.
     "Pillow>=10.0",
 ]
@@ -83,7 +89,10 @@ pdf = [
     "matplotlib>=3.8",
 ]
 full = [
-    "pywin32>=306",
+    # Same marker as `com` above, and for the same reason: `[full]` is the
+    # extra this project recommends to contributors, and it was
+    # uninstallable on every non-Windows machine.
+    'pywin32>=306; sys_platform == "win32"',
     "Pillow>=10.0",
     "matplotlib>=3.8",
 ]

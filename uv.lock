@@ -67,7 +67,7 @@ wheels = [
 
 [[package]]
 name = "autocad-mcp-pro"
-version = "1.5.0"
+version = "1.5.1"
 source = { editable = "." }
 dependencies = [
     { name = "ezdxf" },
@@ -78,12 +78,12 @@ dependencies = [
 [package.optional-dependencies]
 com = [
     { name = "pillow" },
-    { name = "pywin32" },
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
 ]
 full = [
     { name = "matplotlib" },
     { name = "pillow" },
-    { name = "pywin32" },
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
 ]
 pdf = [
     { name = "matplotlib" },
@@ -106,8 +106,8 @@ requires-dist = [
     { name = "pillow", marker = "extra == 'com'", specifier = ">=10.0" },
     { name = "pillow", marker = "extra == 'full'", specifier = ">=10.0" },
     { name = "pydantic", specifier = ">=2.0,<3" },
-    { name = "pywin32", marker = "extra == 'com'", specifier = ">=306" },
-    { name = "pywin32", marker = "extra == 'full'", specifier = ">=306" },
+    { name = "pywin32", marker = "sys_platform == 'win32' and extra == 'com'", specifier = ">=306" },
+    { name = "pywin32", marker = "sys_platform == 'win32' and extra == 'full'", specifier = ">=306" },
 ]
 provides-extras = ["com", "pdf", "full"]
 

@@ -443,6 +443,30 @@ def _measure_hatch(ent, tolerance: float, result: dict) -> dict:
     return _round_measure(result)
 
 
+def _with_header_dimscale(doc, override: dict | None) -> dict | None:
+    """Carry `$DIMSCALE` onto the dimension being created.
+
+    `drawing_settings({"dimscale": ...})` writes the header variable, which is
+    what AutoCAD consults when it draws a dimension — so the call worked on the
+    live backend. ezdxf renders from the dimstyle table entry and never reads
+    the header, so headlessly the same call reported success and changed
+    nothing. Folding it into the per-dimension override makes one call mean one
+    thing on both engines.
+
+    1.0 is the default and is deliberately not written, so an untouched drawing
+    does not gain an override on every dimension.
+    """
+    try:
+        scale = float(doc.header.get("$DIMSCALE", 1.0) or 1.0)
+    except (AttributeError, TypeError, ValueError):
+        return override
+    if abs(scale - 1.0) < 1e-9:
+        return override
+    merged = dict(override or {})
+    merged.setdefault("dimscale", scale)
+    return merged
+
+
 def _round_measure(result: dict) -> dict:
     """Six decimal places, matching analysis_measure_distance."""
     result["area"] = round(float(result["area"]), 6)
@@ -2870,6 +2894,7 @@ class EzdxfBackend(AutoCADBackend):
             from engineering.tolerances import build_dim_override
 
             override, text = build_dim_override(tol_upper, tol_lower, tol_mode, text_override)
+            override = _with_header_dimscale(self._require_doc(), override)
             msp = self._msp()
             dim = msp.add_linear_dim(
                 base=(float(dim_x), float(dim_y)),
@@ -2906,6 +2931,7 @@ class EzdxfBackend(AutoCADBackend):
                 distance=math.sqrt(
                     (float(dim_x) - float(x1)) ** 2 + (float(dim_y) - float(y1)) ** 2
                 ),
+                override=_with_header_dimscale(self._require_doc(), None),
             )
             dim.render()
             ent = dim.dimension
@@ -2936,6 +2962,7 @@ class EzdxfBackend(AutoCADBackend):
                 line1=((vxf, vyf), (float(x1), float(y1))),
                 line2=((vxf, vyf), (float(x2), float(y2))),
                 location=(float(tx), float(ty)),
+                override=_with_header_dimscale(self._require_doc(), None),
             )
             dim.render()
             ent = dim.dimension
@@ -2963,6 +2990,7 @@ class EzdxfBackend(AutoCADBackend):
             from engineering.tolerances import build_dim_override
 
             override, text = build_dim_override(tol_upper, tol_lower, tol_mode, text_override)
+            override = _with_header_dimscale(self._require_doc(), override)
             msp = self._msp()
             cxf, cyf = float(cx), float(cy)
             radius = math.sqrt((chord_x - cxf) ** 2 + (chord_y - cyf) ** 2)
@@ -3006,6 +3034,7 @@ class EzdxfBackend(AutoCADBackend):
             from engineering.tolerances import build_dim_override
 
             override, text = build_dim_override(tol_upper, tol_lower, tol_mode, text_override)
+            override = _with_header_dimscale(self._require_doc(), override)
             msp = self._msp()
             x1f, y1f, x2f, y2f = float(x1), float(y1), float(x2), float(y2)
             cx = (x1f + x2f) / 2

@@ -179,3 +179,70 @@ def test_validate_http_bind_remote_with_token_logs_warning(caplog):
     finally:
         cfg.settings.allow_remote_http = old_remote
         cfg.settings.mcp_auth_token = old_token
+
+
+# ── the guard must read the host that will actually be bound ────────────────
+#
+# `_guarded_run_async` exists to cover the `fastmcp run server.py:mcp
+# --transport http` path, which the module docstring and CLAUDE.md both
+# advertise. It inferred the bind address from the `host` kwarg and treated an
+# absent one as loopback -- but fastmcp only forwards that kwarg when `--host`
+# was passed, and otherwise resolves the host from `fastmcp.settings.host`,
+# which is environment-backed (`FASTMCP_HOST`). So `FASTMCP_HOST=0.0.0.0`
+# bound every interface while the guard inspected the string "127.0.0.1" and
+# waved it through: the check failed OPEN, with no token required, on the one
+# path it was written for.
+
+
+def _guard_probe(monkeypatch, *, fastmcp_host, allow_remote=False, token=""):
+    """Drive `mcp.run_async` without starting a server."""
+    sys.modules.pop("server", None)
+    import fastmcp
+
+    import config as cfg
+    import server as srv
+
+    monkeypatch.setattr(fastmcp.settings, "host", fastmcp_host, raising=False)
+    monkeypatch.setattr(cfg.settings, "allow_remote_http", allow_remote, raising=False)
+    monkeypatch.setattr(cfg.settings, "mcp_auth_token", token, raising=False)
+
+    async def _never_runs(*args, **kwargs):
+        raise AssertionError("the server started despite the guard")
+
+    monkeypatch.setattr(srv, "_orig_run_async", _never_runs, raising=False)
+    return srv
+
+
+@pytest.mark.asyncio
+async def test_an_omitted_host_is_resolved_not_assumed_to_be_loopback(monkeypatch):
+    """FASTMCP_HOST=0.0.0.0 with no --host must still be refused."""
+    srv = _guard_probe(monkeypatch, fastmcp_host="0.0.0.0")
+
+    with pytest.raises(SystemExit, match="Refusing"):
+        await srv.mcp.run_async(transport="http")
+
+
+@pytest.mark.asyncio
+async def test_an_omitted_host_on_a_loopback_default_still_starts(monkeypatch):
+    """The fix must not refuse the ordinary case."""
+    srv = _guard_probe(monkeypatch, fastmcp_host="127.0.0.1")
+
+    with pytest.raises(AssertionError, match="the server started"):
+        await srv.mcp.run_async(transport="http")
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_host_still_wins_over_the_setting(monkeypatch):
+    """An explicit loopback --host must not be overridden by the env default."""
+    srv = _guard_probe(monkeypatch, fastmcp_host="0.0.0.0")
+
+    with pytest.raises(AssertionError, match="the server started"):
+        await srv.mcp.run_async(transport="http", host="127.0.0.1")
+
+
+@pytest.mark.asyncio
+async def test_stdio_never_consults_the_http_guard(monkeypatch):
+    srv = _guard_probe(monkeypatch, fastmcp_host="0.0.0.0")
+
+    with pytest.raises(AssertionError, match="the server started"):
+        await srv.mcp.run_async(transport="stdio")

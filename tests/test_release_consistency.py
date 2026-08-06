@@ -245,3 +245,26 @@ def test_dockerfile_copies_every_wheel_include() -> None:
     includes = _pyproject()["tool"]["hatch"]["build"]["targets"]["wheel"]["only-include"]
     missing = [name for name in includes if name not in copy_lines]
     assert not missing, f"Dockerfile COPY misses wheel-shipped paths: {missing}"
+
+
+def test_windows_only_dependencies_carry_a_platform_marker() -> None:
+    """`pip install autocad-mcp-pro[full]` must resolve on Linux and macOS.
+
+    pywin32 publishes Windows wheels and **no sdist**, so an unmarked
+    `pywin32>=306` in an extra makes that extra uninstallable everywhere else:
+    pip fails at resolution with "no matching distribution" before it reaches
+    anything else. `[full]` is the extra this project's own README recommends
+    to contributors, and CI never caught it because every Linux lane installs
+    `[pdf]` or uses uv.lock, whose resolution markers paper over the gap.
+    """
+    extras = _pyproject()["project"]["optional-dependencies"]
+    unmarked: list[str] = []
+    for extra, requirements in extras.items():
+        for requirement in requirements:
+            name = re.split(r"[<>=!~\[; ]", requirement, maxsplit=1)[0].strip().lower()
+            if name in {"pywin32"} and "sys_platform" not in requirement:
+                unmarked.append(f"{extra}: {requirement}")
+    assert not unmarked, (
+        'Windows-only distributions need `; sys_platform == "win32"` or the '
+        f"extra cannot be installed off Windows: {unmarked}"
+    )
