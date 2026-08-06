@@ -5,6 +5,21 @@
     "capabilities": {
       "backend": "ezdxf",
       "features": {
+        "audit_detail": {
+          "mode": "native",
+          "reason": null,
+          "supported": true
+        },
+        "boundary_trace": {
+          "mode": "computed",
+          "reason": "straight_edges_split_at_intersections;curved_edges_not_split",
+          "supported": true
+        },
+        "chspace": {
+          "mode": "computed",
+          "reason": "top_view_untwisted_viewports_only;dimensions_refused_unless_frozen;acis_proxy_table_refused;viewport_clipping_reported_not_applied",
+          "supported": true
+        },
         "delivery": {
           "mode": "shared",
           "reason": null,
@@ -15,7 +30,22 @@
           "reason": null,
           "supported": true
         },
+        "dwg": {
+          "mode": null,
+          "reason": "no_dwg_writer_requires_live_autocad",
+          "supported": false
+        },
         "dxf": {
+          "mode": "native",
+          "reason": null,
+          "supported": true
+        },
+        "handle_overlay": {
+          "mode": "rendered",
+          "reason": null,
+          "supported": true
+        },
+        "hatch_edge_paths": {
           "mode": "native",
           "reason": null,
           "supported": true
@@ -25,15 +55,35 @@
           "reason": "live_com_only",
           "supported": false
         },
+        "measure_area_acis": {
+          "mode": null,
+          "reason": "acis_evaluation_requires_live_autocad",
+          "supported": false
+        },
         "mleader": {
           "mode": "composite",
           "reason": null,
           "supported": true
         },
-        "paper_space": {
+        "mtext_background_color": {
+          "mode": "native",
+          "reason": null,
+          "supported": true
+        },
+        "ocs_normalized": {
+          "mode": "wcs",
+          "reason": "reported_xy_is_wcs;z_component_not_reported;text_rotation_stays_in_entity_frame;hatch_boundaries_not_reported",
+          "supported": true
+        },
+        "ocs_tilted_plane": {
           "mode": null,
-          "reason": "planned_1.4",
+          "reason": "2d_xy_cannot_address_a_tilted_plane",
           "supported": false
+        },
+        "paper_space": {
+          "mode": "native",
+          "reason": null,
+          "supported": true
         },
         "pdf": {
           "mode": "rendered",
@@ -55,9 +105,14 @@
           "reason": null,
           "supported": true
         },
+        "revcloud": {
+          "mode": "native",
+          "reason": "ezdxf_revcloud_helper",
+          "supported": true
+        },
         "solid_3d": {
           "mode": null,
-          "reason": "planned_1.5",
+          "reason": "acis_generation_requires_live_autocad",
           "supported": false
         },
         "table": {
@@ -69,6 +124,21 @@
           "mode": "snapshot",
           "reason": null,
           "supported": true
+        },
+        "undo_history": {
+          "mode": null,
+          "reason": "set_EZDXF_UNDO_DEPTH_to_enable",
+          "supported": false
+        },
+        "viewport_render": {
+          "mode": "rendered",
+          "reason": "viewport_borders_not_drawn",
+          "supported": true
+        },
+        "wipeout": {
+          "mode": "native",
+          "reason": null,
+          "supported": true
         }
       }
     }
@@ -76,15 +146,16 @@
   "environment": {
     "implementation": "CPython",
     "machine": "AMD64",
-    "platform": "Windows-11-10.0.26200-SP0",
-    "python": "3.14.0"
+    "platform": "Windows-10-10.0.26200-SP0",
+    "python": "3.11.15"
   },
-  "generated_at": "2026-07-23T11:39:04.277175+00:00",
-  "git_sha": "4a2e9d658f051cb756f92cb8fae945c64b8cc7d4",
+  "generated_at": "2026-08-06T06:27:59.080169+00:00",
+  "git_sha": "d5a0ff5109ddbd37d88371c10a1ed087201de4b5",
+  "matrix": "v3",
   "results": [
     {
       "artifacts": [],
-      "duration_ms": 8.14,
+      "duration_ms": 2.49,
       "message": "",
       "metrics": {
         "line_length": 5.0
@@ -97,7 +168,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 3.39,
+      "duration_ms": 1.41,
       "message": "",
       "metrics": {},
       "score": 100.0,
@@ -108,7 +179,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 8.11,
+      "duration_ms": 3.31,
       "message": "",
       "metrics": {},
       "score": 100.0,
@@ -119,7 +190,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 348.74,
+      "duration_ms": 17.55,
       "message": "",
       "metrics": {
         "entity_type": "DIMENSION"
@@ -132,7 +203,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 15.74,
+      "duration_ms": 3.7,
       "message": "",
       "metrics": {
         "representations": [
@@ -148,7 +219,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 28.95,
+      "duration_ms": 29.09,
       "message": "",
       "metrics": {
         "entity_count": 0
@@ -161,7 +232,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 2.5,
+      "duration_ms": 1.2,
       "message": "",
       "metrics": {},
       "score": 100.0,
@@ -172,7 +243,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 29.19,
+      "duration_ms": 8.42,
       "message": "",
       "metrics": {
         "final_score": 100.0,
@@ -215,11 +286,11 @@
       "artifacts": [
         {
           "filename": "roundtrip.dxf",
-          "sha256": "6413204a5baec19a5fbf551418eb56e30b1488ca5bb755e6a8709ac8e8ab0b22",
-          "size_bytes": 18442
+          "sha256": "d11dfce5eddaf849075c62854a8526efaaa3bbd779d374e4c287de77f361caf7",
+          "size_bytes": 18440
         }
       ],
-      "duration_ms": 16.66,
+      "duration_ms": 32.29,
       "message": "",
       "metrics": {
         "entity_count": 1
@@ -234,11 +305,11 @@
       "artifacts": [
         {
           "filename": "manifest.json",
-          "sha256": "38c2ee819b49b9c66b2311b952e856eff9e3a7565194cce2edea60a3211d233b",
-          "size_bytes": 3581
+          "sha256": "a74b2e96dbe7ea373717f26a8d26e58fe079a61370eb5d646f04a09f1b7cca2f",
+          "size_bytes": 5662
         }
       ],
-      "duration_ms": 4380.8,
+      "duration_ms": 305.81,
       "message": "",
       "metrics": {
         "score": {
@@ -255,16 +326,107 @@
       "stderr_summary": "",
       "stdout_summary": "",
       "task_id": "auditable_delivery"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 1149.77,
+      "message": "",
+      "metrics": {
+        "ranks": {
+          "BPOLY": 1,
+          "CHSPACE": 1,
+          "FILLET": 1,
+          "OVERKILL": 1,
+          "QSELECT": 1,
+          "WBLOCK": 1
+        },
+        "top_n": 3
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "tool_discovery"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 53.97,
+      "message": "",
+      "metrics": {
+        "advertised_tools": 2,
+        "catalog_tokens": 40305,
+        "catalog_tools": 149,
+        "ceiling": 2000,
+        "discovery_tokens": 356,
+        "reduction_x": 113.2,
+        "tokenizer": "ratio/v1 (estimate)"
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "token_budget"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 10.6,
+      "message": "",
+      "metrics": {
+        "area_ignoring_islands": 400.0,
+        "expected_filled": 300.0,
+        "filled_area": 300.0,
+        "hatch_style": "outer",
+        "path_count": 2
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "hatch_islands"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 8.0,
+      "message": "",
+      "metrics": {
+        "bounding_box": 3,
+        "by_layer": 1,
+        "crossing": 2,
+        "polygon": 1,
+        "window": 1
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "selection_filter"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 5.36,
+      "message": "",
+      "metrics": {
+        "boundary_agrees": true,
+        "fraction_lost_by_reading_points_back": 0.282,
+        "measured_area": 139.269908,
+        "true_area": 139.269908,
+        "vertex_shoelace_area": 100.0
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "measure_from_handle"
     }
   ],
   "schema_version": "2.0",
   "summary": {
-    "attempted": 10,
+    "attempted": 15,
     "coverage_percent": 100.0,
-    "passed": 10,
+    "passed": 15,
     "score": 100.0,
-    "supported": 10,
+    "supported": 15,
     "unsupported": 0
   },
-  "timeout_seconds": 30.0
+  "timeout_seconds": 180.0
 }

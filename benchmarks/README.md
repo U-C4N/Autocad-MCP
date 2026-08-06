@@ -11,7 +11,7 @@ This repository publishes two deliberately separate forms of evidence:
    delivery, backend reach, engineering production, tests, and security. The
    dated data lives in [`source_review.json`](source_review.json), and the README
    graphic is generated—not hand-edited—from that file.
-2. **Fixed-task runtime benchmark.** Adapters execute the same ten tasks and
+2. **Fixed-task runtime benchmark.** Adapters execute the same task matrix and
    return `pass`, `partial`, `unsupported`, `fail`, `timeout`, or `not_run`.
    AutoCAD MCP Pro currently has the reference adapter; other projects do not
    receive runtime scores until an adapter actually runs their public interface.
@@ -26,38 +26,80 @@ python -m benchmarks.render_chart
 The source-review chart is not presented as a shared live AutoCAD run. Review
 dates, evidence grades, project URLs, and the boundary are stored with the data.
 
-## Fixed-task runtime runner v2
+## Fixed-task runtime runner
 
-The v2 runner separates runtime evidence from the source-review rubric. Every
-adapter receives the same ten tasks and produces the same closed result enum:
+The runner separates runtime evidence from the source-review rubric. Every
+adapter receives the same tasks and produces the same closed result enum:
 `pass`, `partial`, `unsupported`, `fail`, `timeout`, or `not_run`. A timeout is
-reported per task. Execution is in-process, so adapters that delegate blocking
-work must provide cancellation-safe task implementations or be wrapped by an
-external process supervisor. Reports include commit SHA, Python/platform
-details, backend capability claims, durations, coverage, and hashes for returned
-artifacts. Unsupported tasks remain in the fixed-matrix denominator with score
-zero, preventing partial implementations from receiving an inflated score.
+reported per task, and a capability refusal is recorded `unsupported` rather
+than `fail` — "cannot reach this" and "got this wrong" are different findings.
+Execution is in-process, so adapters that delegate blocking work must provide
+cancellation-safe task implementations or be wrapped by an external process
+supervisor. Reports include commit SHA, Python/platform details, backend
+capability claims, durations, coverage, and hashes for returned artifacts.
+Unsupported tasks remain in the fixed-matrix denominator with score zero,
+preventing partial implementations from receiving an inflated score.
 
 ```bash
-python -m benchmarks.run_competitors --list
-python -m benchmarks.run_competitors --server autocad-mcp-pro --backend ezdxf --json
-python -m benchmarks.run_competitors --task table_mleader --task auditable_delivery --json
+python -m benchmarks.run_competitors --list --matrix v3
+python -m benchmarks.run_competitors --server autocad-mcp-pro --backend ezdxf --matrix v3 --json
+python -m benchmarks.run_competitors --task table_mleader --task hatch_islands --json
 ```
 
-The release-machine ezdxf self-check is **10/10 (100.0)**. Repository stars and
-raw tool counts do not contribute to the score. Adapter registration lives in
-`competitors.yaml`.
+The release-machine ezdxf self-check is **15/15 (100.0)** on the v3 matrix.
+Repository stars and raw tool counts do not contribute to the score. Adapter
+registration lives in `competitors.yaml`.
+
+### Matrix v3 (v1.5.0) — five tasks that can fail
+
+v2 scored this server 10/10, and that number carried no information: every task
+in it exercised something the server was designed around. `tasks_v3.py` keeps
+the v2 ten unchanged — their ids and weights key the published v1.4 reports —
+and adds five chosen because they *can* fail. Three of them did, while being
+written:
+
+| Task | Category | Verified against |
+|---|---|---|
+| `tool_discovery` | discovery | six AutoCAD command names, each ranking #1 of 154 tools |
+| `token_budget` | efficiency | 40,305 → 356 tokens advertised, against a 2,000 ceiling fixed in advance |
+| `hatch_islands` | hatch | 300 filled with the island, 400 ignoring it |
+| `selection_filter` | selection | window 1, crossing 2, bounding box 3, polygon 1 |
+| `measure_from_handle` | measurement | 139.2699 against the 100.0 a vertex shoelace gives |
+
+Token counts come from the offline ratio estimator and the report labels them
+`ratio/v1 (estimate)`; `token_suite.py --tokenizer anthropic` counts for real.
+
+**Two renames from the release plan, and they are the point.**
+`tool_discovery_bilingual` → `tool_discovery`: a Turkish query normalizer was
+written and then removed, because this repository is English throughout and the
+Turkish was inferred from the author's chat language rather than required by the
+product. `measurement_massprops` → `measure_from_handle`: no centroid or
+moment-of-inertia tool ships.
+
+**The competitor reports are not re-scored.** Those servers are pinned at v1.4
+commits and were run against the v2 matrix; they have never been asked these
+five questions. Their scores stand over the ten they ran, and the matrix chart
+leaves the five new rows blank (`not run`) instead of scoring them zero — a
+zero we invented would be indistinguishable from a zero we measured.
+
+`--matrix v2` stays available so a v1.4 report can be reproduced rather than
+only described, and `--publish` writes the artifact-path-free file that
+`results/published/` holds.
 
 ## Live competitor lane (v1.4)
 
 Two competitor adapters now execute the exact same task matrix, black-box over
 MCP stdio, against commits pinned in `competitors.yaml`:
 
-| Server | Pinned | Score | Pass | Coverage |
-|---|---|---:|---:|---:|
-| autocad-mcp-pro (reference) | working tree | 100.0 | 10/10 | 100% |
-| beiming183-cloud/AutoCAD-MCP | `11f7c47e` | 50.0 | 5/10 | 50% |
-| puran-water/autocad-mcp | `95476a33` | 45.0 | 4/10 | 50% |
+| Server | Matrix | Pinned | Score | Pass | Coverage |
+|---|---|---|---:|---:|---:|
+| autocad-mcp-pro (reference) | v3 (15) | working tree | 100.0 | 15/15 | 100% |
+| beiming183-cloud/AutoCAD-MCP | v2 (10) | `11f7c47e` | 50.0 | 5/10 | 50% |
+| puran-water/autocad-mcp | v2 (10) | `95476a33` | 45.0 | 4/10 | 50% |
+
+The competitor rows are the v1.4 runs, unchanged. Read the matrix column
+before the score column: the denominators differ because the five v3 tasks
+were added after those runs and have not been put to them.
 
 Method and boundaries:
 
@@ -84,11 +126,15 @@ live under [`results/published/`](results/published/); the README charts are
 regenerated from them:
 
 ```bash
-python -m benchmarks.run_competitors --server puran-water-autocad-mcp --backend ezdxf
-python -m benchmarks.run_competitors --server beiming183-autocad-mcp --backend ezdxf
+python -m benchmarks.run_competitors --server puran-water-autocad-mcp --backend ezdxf --matrix v2
+python -m benchmarks.run_competitors --server beiming183-autocad-mcp --backend ezdxf --matrix v2
 python -m benchmarks.render_live_chart     # score bars
 python -m benchmarks.render_matrix_chart   # tasks x servers status heatmap
 ```
+
+`--publish <path>` writes the same report with artifact paths reduced to
+filenames, which is how `results/published/` is produced; the sha256 stays,
+because that is what makes an artifact checkable.
 
 ## Headless performance lane
 
@@ -107,6 +153,36 @@ python -m benchmarks.perf_suite --out benchmarks/results/published/perf-ezdxf.js
 python -m benchmarks.render_perf_chart
 ```
 
+### v1.4.0 → v1.5.0, same interpreter
+
+The published v1.4 report was recorded on CPython 3.14 and the v1.5 one on
+3.11.15, so comparing the two files directly shows an apparent 2–6× speedup
+that is almost entirely the interpreter. The honest comparison re-runs v1.4.0
+in a `git worktree` with the *current* suite file — same instrument, different
+code under test, one interpreter. Median of three runs each:
+
+| Workload | v1.4.0 | v1.5.0 | Change |
+|---|---:|---:|---|
+| `create_lines_2k` | 245 ms | 315 ms | **28% slower** |
+| `roundtrip_10k` | 1,765 ms | 2,146 ms | **22% slower** |
+| `region_query_10k` | 1,090 ms | 1,039 ms | within spread |
+| `premium_pass` | 375 ms | 44 ms | faster; the v1.4 spread (279–772 ms) is too wide to quantify |
+
+Attributed rather than reported: `EZDXF_CALL_TIMEOUT=0` puts v1.5.0 back to
+244.8 ms and 1,679 ms, which are v1.4.0's numbers. The entire cost is the
+per-call `asyncio.wait_for` wrapped around every headless call in this release,
+so a single hung ezdxf call can no longer wedge a server whose document lock is
+one `asyncio.Lock`. Reproduce:
+
+```bash
+git worktree add /tmp/wt-v140 v1.4.0
+cp benchmarks/perf_suite.py /tmp/wt-v140/benchmarks/
+(cd /tmp/wt-v140 && PYTHONPATH=. python benchmarks/perf_suite.py --out /tmp/v140.json)
+python -m benchmarks.perf_suite --out /tmp/v150.json
+EZDXF_CALL_TIMEOUT=0 python -m benchmarks.perf_suite --out /tmp/v150-notimeout.json
+git worktree remove --force /tmp/wt-v140
+```
+
 ## Correctness A/B suite
 
 `correctness_suite.py` is a set of deterministic, headless (ezdxf-backend) checks
@@ -123,19 +199,36 @@ python benchmarks/compare_versions.py v1.0.0     # vs a tag/ref
 python benchmarks/compare_versions.py --json results.json
 ```
 
-### Result — v1.4.0 vs v1.3.0 (release gate)
+### Result — v1.5.0 vs v1.4.0 (release gate)
 
-21 checks, ezdxf backend, one subprocess per check. Machine-readable report:
+24 checks, ezdxf backend, one subprocess per check. Machine-readable report:
+[`results/published/ab-v1.4.0-vs-v1.5.0.json`](results/published/ab-v1.4.0-vs-v1.5.0.json).
+
+| Version | Checks passing | Pass rate | Fixed | Regressed |
+|---------|----------------|-----------|-------|-----------|
+| **v1.4.0** (baseline)     | 21 / 24 | 87.5 % | — | — |
+| **v1.5.0** (this release) | 24 / 24 | 100 % | 3 | **0** |
+
+Read the three "fixed" carefully: they are **new capability, not repaired
+regressions**. v1.4.0 has no `entity_measure` and no boundary tracing, so it
+misses `hatch_area_subtracts_its_island`, `boundary_area_agrees_with_measure`
+and `two_vertex_circle_has_area` by not having the method rather than by
+getting it wrong. They are in the suite because all three broke during v1.5.0
+development and nothing outside their own unit tests would have caught it.
+
+The 21 pre-existing checks are unchanged and all still pass: the discovery
+layer, `cad_batch`, the 19-module contract split, the layout/viewport family
+and Wave A landed with **zero correctness regressions**.
+
+### Result — v1.4.0 vs v1.3.0
+
+21 checks. Report:
 [`results/published/ab-v1.3.0-vs-v1.4.0.json`](results/published/ab-v1.3.0-vs-v1.4.0.json).
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---------|----------------|-----------|-------|-----------|
-| **v1.3.0** (baseline)     | 21 / 21 | 100 % | — | — |
-| **v1.4.0** (this release) | 21 / 21 | 100 % | 0 | **0** |
-
-The v1.4.0 feature and infrastructure work (CI, packaging, competitor lane,
-tool profiles, paper space, ISO 286 fits, opt-in solids) introduced **zero
-correctness regressions**.
+| **v1.3.0** (baseline) | 21 / 21 | 100 % | — | — |
+| **v1.4.0**            | 21 / 21 | 100 % | 0 | **0** |
 
 ### Result — v1.1.0 vs v1.0.0 (`origin/main`, commit 15fa2bc)
 

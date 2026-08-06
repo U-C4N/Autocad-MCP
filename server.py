@@ -14,7 +14,6 @@ import argparse
 import json
 import logging
 import math
-import os
 import sys
 import time
 from dataclasses import asdict
@@ -28,10 +27,14 @@ from fastmcp.server.middleware import Middleware, MiddlewareContext
 from fastmcp.server.middleware.error_handling import ErrorHandlingMiddleware
 from fastmcp.server.middleware.logging import LoggingMiddleware
 from fastmcp.server.middleware.timing import TimingMiddleware
+from fastmcp.tools.tool import ToolResult
 from pydantic import Field
 
 import config
+from backends.base import BlockInfo, EntityInfo, LayerInfo
+from discovery.aliases import aliases_for
 from engineering.fits import fit_lookup
+from engineering.measure import is_self_intersecting, polygon_area_perimeter
 from security import sanitize_command, sanitize_lisp, validate_path
 from version import __version__
 
@@ -75,7 +78,12 @@ def _detect_autocad_running() -> bool:
 
 async def _make_backend():
     """Create the best available backend."""
-    backend_env = os.environ.get("AUTOCAD_MCP_BACKEND", "auto").lower().strip()
+    # Through the setting, not straight off os.environ: reading the environment
+    # here is what let config.settings.backend drift into a control that
+    # controlled nothing, so a test believing it had pinned the headless engine
+    # could reach a live AutoCAD instead. The property reads the environment
+    # live, so nothing about startup ordering changes.
+    backend_env = config.settings.backend
 
     if backend_env == "ezdxf":
         from backends.ezdxf_backend import EzdxfBackend
@@ -152,12 +160,66 @@ class AuditMiddleware(Middleware):
         try:
             result = await call_next(context)
             elapsed = (time.monotonic() - start) * 1000
-            log.info("TOOL OK  %-40s %6.1fms", tool_name, elapsed)
+            # A refusal comes back as a *returned* error result, not a raise
+            # (see CapabilityRefusalMiddleware), so control flow alone would
+            # log it as TOOL OK.
+            if getattr(result, "is_error", False):
+                log.warning("TOOL ERR %-40s %6.1fms  (refused)", tool_name, elapsed)
+            else:
+                log.info("TOOL OK  %-40s %6.1fms", tool_name, elapsed)
             return result
         except Exception as exc:
             elapsed = (time.monotonic() - start) * 1000
             log.warning("TOOL ERR %-40s %6.1fms  %s", tool_name, elapsed, exc)
             raise
+
+
+def _backend_name_or_none(context) -> str | None:
+    """Which engine refused, for the refusal payload. Must never raise."""
+    try:
+        backend = context.fastmcp_context.lifespan_context.get("backend")
+        return getattr(backend, "name", None)
+    except Exception:  # a label is never worth breaking a refusal over
+        return None
+
+
+class CapabilityRefusalMiddleware(Middleware):
+    """Carry a typed capability refusal across the JSON-RPC boundary.
+
+    ``FastMCP.call_tool`` rewraps a non-``FastMCPError`` as
+    ``ToolError(f"Error calling tool {name!r}: {e}") from e``. The ``from e``
+    keeps the cause alive in-process — which is the only reason ``cad_batch``
+    can classify a refusal — but ``__cause__`` does not serialise, so a remote
+    client used to get an English sentence and had to substring-match it to tell
+    "this backend cannot" from "your arguments were wrong".
+
+    Middleware runs outside that wrap with the cause chain still intact, so this
+    is the last place the type is knowable. ``ToolResult(is_error=True)`` is the
+    only channel that carries both a machine-readable payload *and* the error
+    flag; rebasing the exception on ``FastMCPError`` carries neither, which is
+    why no tool function changes here.
+    """
+
+    async def on_call_tool(self, context: MiddlewareContext, call_next):
+        try:
+            return await call_next(context)
+        except Exception as exc:
+            capability = _batch_capability_of(exc)
+            if capability is None:
+                raise  # not ours — leave it byte-for-byte as it was
+            message = _refusal_message(exc)
+            return ToolResult(
+                content=message,  # prose-only clients still get a full sentence
+                structured_content={
+                    "ok": False,
+                    "kind": "unsupported",
+                    "capability": capability,
+                    "error": message,
+                    "tool": context.message.name,
+                    "backend": _backend_name_or_none(context),
+                },
+                is_error=True,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +292,63 @@ mcp.add_middleware(ErrorHandlingMiddleware())
 mcp.add_middleware(AuditMiddleware())
 mcp.add_middleware(TimingMiddleware())
 mcp.add_middleware(LoggingMiddleware())
+# Added last on purpose: first-added is outermost, so this sits innermost —
+# closest to the call_tool wrap, where the refusal's __cause__ chain is still
+# intact. Anywhere further out and AuditMiddleware would log the raise before
+# it becomes a result.
+mcp.add_middleware(CapabilityRefusalMiddleware())
+
+
+# ---------------------------------------------------------------------------
+# Tool discovery mode (DISCOVERY_MODE)
+# ---------------------------------------------------------------------------
+# "off"    the whole catalog is advertised (default, backwards compatible)
+# "search" list_tools returns a search tool + a call_tool proxy instead, and
+#          the catalog is reached through discovery/transform.py — which
+#          indexes each tool's AutoCAD command aliases as well as its
+#          description, so BPOLY/QSELECT/MATCHPROP resolve at all.
+#
+# Tool *counts* are unaffected: system_status / system_about / _tool_groups /
+# _apply_tool_profile all read the untransformed registry (_registered_tools).
+
+DISCOVERY_MODES = ("off", "search")
+
+_discovery_transform = None
+
+
+def _apply_discovery_mode(mode: str | None = None) -> str:
+    """Attach or detach the tool-search transform. Returns the mode applied.
+
+    Idempotent: re-applying removes the previous transform first, so a mode
+    switch never stacks two search interfaces on one server.
+    """
+    global _discovery_transform
+    selected = (mode or config.settings.discovery_mode or "off").lower().strip()
+    if selected not in DISCOVERY_MODES:
+        log.warning(
+            "Unknown DISCOVERY_MODE %r - falling back to 'off'. Valid modes: %s.",
+            selected,
+            ", ".join(DISCOVERY_MODES),
+        )
+        selected = "off"
+    if _discovery_transform is not None:
+        try:
+            mcp._transforms.remove(_discovery_transform)
+        except (AttributeError, ValueError) as exc:  # pragma: no cover - layout change
+            log.debug("Could not detach the discovery transform: %s", exc)
+        _discovery_transform = None
+    if selected == "search":
+        # Imported lazily so "off" never pays for it, matching how the backend
+        # modules are kept out of import time.
+        from discovery.transform import CadSearchTransform
+
+        _discovery_transform = CadSearchTransform()
+        mcp.add_transform(_discovery_transform)
+        log.info("Tool discovery: search transform attached (clients see search_tools/call_tool)")
+    return selected
+
+
+_apply_discovery_mode()
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +365,42 @@ def _backend(ctx: Context):
     return b
 
 
+def _backend_supports(backend, capability: str) -> bool:
+    """True unless `backend` explicitly reports `capability` as unsupported.
+
+    Unknown keys and probe failures answer True: a capability map that has not
+    heard of a feature is not evidence the feature is missing, and refusing on
+    that basis would break any backend older than the key.
+    """
+    try:
+        feature = backend.capabilities().features.get(capability)
+    except Exception as exc:  # a capability probe must never break a tool call
+        log.debug("capability probe for %r failed: %s", capability, exc)
+        return True
+    return feature is None or bool(feature.supported)
+
+
+def _is_dwg_path(path: str) -> bool:
+    """True when `path` names a DWG file. The extension is authoritative (N2)."""
+    from pathlib import Path as _P
+
+    return _P(path).suffix.lower() == ".dwg"
+
+
+# T0.2 — the read-side twin of the backend's DWG write refusal. ezdxf detects
+# format by content, so a DXF saved under a .dwg name (what pre-1.5.0
+# drawing_save produced) opens fine and gets reported as an opened DWG, while a
+# genuine DWG dies with ezdxf's "is not a DXF file" — which blames the file
+# instead of the backend. Refuse both, in the backend's own vocabulary.
+_DWG_READ_REFUSAL = (
+    "drawing_open: backend '{backend}' has no DWG support (capability 'dwg' is "
+    "unsupported), so '{path}' is refused rather than opened as something else: "
+    "a DXF saved under a .dwg name would be parsed and reported back as a DWG. "
+    "Open the .dxf instead, or switch to the live COM backend "
+    "(AUTOCAD_MCP_BACKEND=com, needs Windows + AutoCAD) to read real DWG."
+)
+
+
 def _dc(obj) -> dict:
     """Convert dataclass to dict (recursively)."""
     if hasattr(obj, "__dataclass_fields__"):
@@ -255,33 +410,263 @@ def _dc(obj) -> dict:
     return obj
 
 
-async def _registered_tools() -> list:
-    """Return the FunctionTool objects currently registered on the server.
+# ---------------------------------------------------------------------------
+# Result shaping — field projection + compact rows
+# ---------------------------------------------------------------------------
+#
+# Discovery cost is only half the token bill; this is the other half. A default
+# ``entity_list(limit=100)`` over a 300-entity drawing is ~24 kB of JSON the
+# model has to read, and roughly a third of it is the ``bounding_box`` inside
+# ``properties`` that nobody asked for.
+#
+# ONE mechanism, two parameters, spelled identically on every collection tool
+# (:data:`SHAPED_RESULT_TOOLS`) — a per-tool parameter set would rot, so
+# tests/test_result_projection.py gates the registry against that list in both
+# directions and compares the two parameter schemas across every carrier:
+#
+#   ``fields=[...]``  projection. Column subset, caller's order preserved,
+#                     validated against the row's dataclass. A typo is an error
+#                     naming the valid fields — a projection that answered
+#                     ``{"handel": null}`` a hundred times would read as "this
+#                     drawing has no handles", which is worse than no feature.
+#   ``compact=True``  columnar envelope instead of a list of dicts, so the key
+#                     names are paid for once rather than once per row. It is
+#                     also the only shape with somewhere to put ``total`` /
+#                     ``truncated`` / ``next_offset``.
+#
+# Omit both and the value is byte-identical to what 1.4.0 returned. That is the
+# compatibility contract, and every pre-existing test in the suite is its gate;
+# it is also why the honest-truncation metadata could not simply be bolted onto
+# the default list return.
+#
+# `_dc()` stays the only dataclass→dict step: shaping runs *after* it, over
+# plain dicts, so the convention is untouched and a backend that grows a field
+# gets it projectable for free.
 
-    R20: prefer the public FastMCP 3.0.1 accessor (``mcp._list_tools()``,
-    also exposed as ``mcp.list_tools()``) which returns a ``Sequence[Tool]``.
-    Only fall back to the private ``_local_provider._components`` registry if
-    the public path is unavailable. Never raises; returns [] when unknown so
-    callers can label/omit rather than surface a bogus count.
+#: Separator for reaching one key inside a row's nested ``properties`` payload.
+FIELD_PATH_SEP = "."
+
+#: The two parameters, in the order they appear in every shaped signature.
+RESULT_SHAPE_PARAMS = ("fields", "compact")
+
+#: Every tool carrying the mechanism. Closed on purpose and gated both ways:
+#: a shaped tool missing from here fails the gate, and a name here that is not
+#: a registered carrier fails it too.
+SHAPED_RESULT_TOOLS = (
+    "analysis_find_in_region",
+    "analysis_select_by_layer",
+    "analysis_select_by_type",
+    "block_find_references",
+    "block_list",
+    "entity_array_polar",
+    "entity_array_rectangular",
+    "entity_list",
+    "entity_select_smart",
+    "layer_list",
+    "selection_get",
+)
+
+# Both descriptions are paid once per tool in every uncached catalog, so they
+# are written to the shortest length that still prevents a wasted round trip.
+_FIELDS_DESC = (
+    "Project to these fields, in this order (e.g. ['handle','type','layer']); "
+    "'properties.<key>' reaches one nested value. Omit for the full record; an "
+    "unknown name errors and lists the valid ones."
+)
+_COMPACT_DESC = (
+    "Return a columnar {fields, rows, count, offset, total, truncated, next_offset} "
+    "envelope instead of dicts: much cheaper per row, and the only shape that "
+    "reports truncation."
+)
+
+#: Shared annotations so the two parameters cannot drift tool to tool.
+ResultFields = Annotated[list[str] | None, Field(default=None, description=_FIELDS_DESC)]
+ResultCompact = Annotated[bool, Field(default=False, description=_COMPACT_DESC)]
+
+
+def _nested_keys(rows: list[dict], root: str) -> list[str]:
+    """Every sub-key present under `root` anywhere in `rows`."""
+    keys: set[str] = set()
+    for row in rows:
+        value = row.get(root)
+        if isinstance(value, dict):
+            keys.update(value)
+    return sorted(keys)
+
+
+def _resolve_fields(fields: list[str], rows: list[dict], spec: type, tool: str) -> list[str]:
+    """Validate a projection against `spec`'s fields; return it de-duplicated.
+
+    Validation is the whole point: an unvalidated projection turns a typo into a
+    column of nulls, and a column of nulls reads like data.
+
+    Nested sub-keys are checked against the keys this result actually carries,
+    which is data-dependent by nature (a CIRCLE has ``radius``, a LINE does
+    not). A sub-key present on *some* rows is legitimate and yields null on the
+    rest; one present on *none* is the typo case and raises. An empty result is
+    exempt — there is no column there to misread.
+    """
+    roots = tuple(spec.__dataclass_fields__)
+    valid = ", ".join(roots)
+    resolved: list[str] = []
+    for raw in fields:
+        name = str(raw).strip()
+        root, sep, sub = name.partition(FIELD_PATH_SEP)
+        if root not in roots:
+            raise ToolError(
+                f"{tool}: unknown field {name!r}. Valid fields ({spec.__name__}): {valid}."
+            )
+        if sep:
+            if not sub:
+                raise ToolError(
+                    f"{tool}: field {name!r} names no sub-key. "
+                    f"Write '{root}.<key>', or just '{root}' for the whole object."
+                )
+            available = _nested_keys(rows, root)
+            if rows and sub not in available:
+                raise ToolError(
+                    f"{tool}: {root!r} carries no {sub!r} in this result. "
+                    f"Available {root} keys here: {', '.join(available) or '(none)'}. "
+                    f"Valid top-level fields: {valid}."
+                )
+        if name not in resolved:
+            resolved.append(name)
+    if not resolved:
+        raise ToolError(
+            f"{tool}: fields=[] would project nothing. Omit the parameter for the "
+            f"full record, or name fields: {valid}."
+        )
+    return resolved
+
+
+def _pluck(row: dict, name: str):
+    """One projected cell. Missing nested keys are null, never a KeyError."""
+    root, sep, sub = name.partition(FIELD_PATH_SEP)
+    value = row.get(root)
+    if not sep:
+        return value
+    return value.get(sub) if isinstance(value, dict) else None
+
+
+def _shape_rows(
+    rows,
+    *,
+    spec: type,
+    fields: list[str] | None,
+    compact: bool,
+    tool: str,
+    total: int | None = None,
+    offset: int = 0,
+) -> list[dict] | dict:
+    """Apply the shared projection/compaction to one collection result.
+
+    `rows` are backend dataclasses (or anything ``_dc`` handles); `spec` is the
+    dataclass they are, which is what makes the field validation possible on an
+    empty result — the valid names come from the type, not from the data.
+
+    `total` is the size of the matching set *before* paging or capping, so the
+    envelope can state ``truncated`` as a fact. Passing ``None`` (unknown) makes
+    ``truncated`` null rather than false: not knowing is not the same as knowing
+    there is nothing more, and only one of those is safe to read as complete.
+    """
+    dicts = [_dc(row) for row in rows]
+    # `is None` rather than falsiness: an explicit `fields=[]` is a caller
+    # mistake worth an error, not a silent fall-through to the full record.
+    if fields is None and not compact:
+        return dicts  # the 1.4.0 value, byte for byte
+    names = (
+        list(spec.__dataclass_fields__)
+        if fields is None
+        else _resolve_fields(fields, dicts, spec, tool)
+    )
+    projected = [{name: _pluck(row, name) for name in names} for row in dicts]
+    if not compact:
+        return projected
+    count = len(projected)
+    truncated = None if total is None else (offset + count) < total
+    return {
+        "fields": names,
+        "rows": [[row[name] for name in names] for row in projected],
+        "count": count,
+        "offset": offset,
+        "total": total,
+        "truncated": truncated,
+        "next_offset": offset + count if truncated else None,
+    }
+
+
+def _local_tool_components() -> list:
+    """Tool components straight out of the local registry, synchronously.
+
+    The untransformed source of truth for the whole file: ``_registered_tools``
+    reads it, and ``cad_tool`` needs it at import time (before any event loop
+    exists) to attach metadata to a just-registered tool.
+    """
+    components = mcp._local_provider._components
+    return [value for key, value in components.items() if key.startswith("tool:")]
+
+
+async def _registered_tools() -> list:
+    """Return the FunctionTool objects registered on the server, *untransformed*.
+
+    This deliberately reads the local component registry rather than any
+    ``list_tools`` accessor, so that "what is registered" stays independent of
+    every transform layer FastMCP can put in front of the catalog. There are two
+    such layers and they surface at different accessors:
+
+      * *server-level* — ``mcp.add_transform(...)``, which is what
+        ``_apply_discovery_mode("search")`` installs — is applied by the public
+        ``mcp.list_tools()``, i.e. at the wire, where a client sees
+        ``search_tools``/``call_tool`` in place of the catalog.
+        ``mcp._list_tools()`` sits upstream of that chain and still lists the
+        full inventory, so search mode as shipped does not move these counts.
+      * *provider-level* — ``provider.add_transform(...)`` — is applied inside
+        ``Provider.list_tools()``, which ``mcp._list_tools()`` aggregates. That
+        one *does* rewrite ``_list_tools()`` wholesale: a transform returning a
+        couple of synthetic entries makes it report a couple of tools.
+
+    The component registry sits below both, which is what every caller here
+    needs. Over a rewritten catalog, ``system_status`` / ``system_about`` would
+    report the advertised surface instead of the inventory, ``_tool_groups()``
+    would bucket only what survived the rewrite, and ``_apply_tool_profile()``
+    would compute a collapsed ``registered - enabled`` set, never call
+    ``mcp.disable()``, and silently turn TOOL_PROFILE into a no-op. Reading
+    pre-transform is what keeps "registered" and "advertised" two separate,
+    stable numbers under any transform layer, present or future.
+
+    Ordered fallbacks, both untransformed, then ``mcp._list_tools()`` as a last
+    resort should a future FastMCP rename the private layout — last precisely
+    because it is the one accessor here a provider-level transform can reach.
+    Never raises; returns [] when the registry is genuinely unknown so callers
+    can label/omit rather than surface a bogus count.
     """
     try:
-        tools = await mcp._list_tools()
-        return list(tools)
-    except Exception as exc:  # pragma: no cover - public path is the norm
-        log.debug("public _list_tools() failed, falling back: %s", exc)
-    try:
-        components = mcp._local_provider._components
-        return [v for k, v in components.items() if k.startswith("tool:")]
+        tools = _local_tool_components()
+        if tools:
+            return tools
     except Exception as exc:
-        log.debug("private tool registry unavailable: %s", exc)
+        log.debug("private tool registry unavailable, falling back: %s", exc)
+    try:
+        # Same source, different accessor: LocalProvider._list_tools() is the
+        # pre-transform base that Provider.list_tools() decorates.
+        tools = await mcp._local_provider._list_tools()
+        if tools:
+            return list(tools)
+    except Exception as exc:
+        log.debug("private local listing unavailable, falling back: %s", exc)
+    try:  # pragma: no cover - only reachable if both private paths break
+        return list(await mcp._list_tools())
+    except Exception as exc:
+        log.debug("public _list_tools() failed: %s", exc)
         return []
 
 
 async def _registered_tool_count() -> int | None:
     """Number of @mcp.tool registrations currently on the server.
 
-    R20: backed by the public accessor (see ``_registered_tools``). Returns
-    ``None`` (never -1) when the count is genuinely unknown so system_status /
+    Backed by the untransformed registry (see ``_registered_tools``), so a
+    search transform cannot shrink the reported inventory. Returns ``None``
+    (never -1) when the count is genuinely unknown so system_status /
     system_about can omit/label it rather than report a fake value.
     """
     tools = await _registered_tools()
@@ -367,17 +752,101 @@ async def _tool_groups() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Discovery metadata channel (@cad_tool)
+# ---------------------------------------------------------------------------
+
+# How much damage a call can do, for a client that wants to gate or colour-code
+# the surface before calling it:
+#   read        pure query, no document mutation
+#   safe        mutates, trivially reversible (settings, current layer, view)
+#   mutate      creates or edits geometry
+#   destructive deletes or overwrites geometry/files
+#   escape      raw AutoCAD command / LISP passthrough
+CAD_TOOL_COSTS = ("read", "safe", "mutate", "destructive", "escape")
+
+
+def cad_tool(*, summary: str, cost: str):
+    """Attach discovery metadata to the ``mcp.tool`` registration below it.
+
+    Usage — this decorator sits **above** the registration::
+
+        @cad_tool(summary="Open a rollback checkpoint.", cost="mutate")
+        @mcp.tool          # ... with its usual annotations= / tags= arguments
+        async def transaction_begin(ctx: Context = None) -> dict: ...
+
+    (The example spells the decorator without its argument list only because
+    the release-consistency gate counts literal registrations by scanning this
+    file's text, and a docstring example would inflate the count.)
+
+    The ordering is deliberate. ``tags=`` and ``annotations=`` stay on the
+    ``mcp.tool`` call, so this wrapper never receives them and cannot perturb
+    ``_tool_groups()`` — whose frozen 20-tag priority list feeds system_about.
+    It also leaves the registration itself literally intact for that gate.
+
+    Writes a single ``cad`` key into the tool's MCP ``meta`` channel:
+
+      ``summary``   one compact line, for a search hit's preview
+      ``cost``      one of :data:`CAD_TOOL_COSTS`
+      ``acad``      AutoCAD command names, from ``discovery.aliases``
+      ``synonyms``  natural-language phrasings, from ``discovery.aliases``
+
+    The alias corpus is imported, never restated here: one edit site, and the
+    coverage gate over all registered tools already lives with the corpus.
+    """
+    if cost not in CAD_TOOL_COSTS:
+        raise ValueError(f"cad_tool cost must be one of {CAD_TOOL_COSTS}, got {cost!r}")
+
+    def decorate(target):
+        # decorator_mode="function" (the default) hands back the function and
+        # registers the component; "object" hands back the component itself.
+        name = getattr(target, "name", None) or getattr(target, "__name__", "")
+        fastmcp_meta = getattr(target, "__fastmcp__", None)
+        name = getattr(fastmcp_meta, "name", None) or name
+        component = target if hasattr(target, "meta") else None
+        if component is None:
+            component = next((t for t in _local_tool_components() if t.name == name), None)
+        if component is None:
+            raise RuntimeError(
+                f"@cad_tool({name!r}): tool is not registered. cad_tool must be written "
+                "directly above the mcp.tool decorator, never below it or on a bare function."
+            )
+        record = aliases_for(name)
+        if record is None:
+            log.warning("No discovery aliases for tool %r; searches will miss it", name)
+        meta = dict(component.meta or {})
+        meta["cad"] = {
+            "summary": summary,
+            "cost": cost,
+            "acad": list(record.acad) if record else [],
+            "synonyms": list(record.synonyms) if record else [],
+        }
+        component.meta = meta
+        return target
+
+    return decorate
+
+
+# ---------------------------------------------------------------------------
 # Tool profiles (capability-aware discovery)
 # ---------------------------------------------------------------------------
 # Some MCP clients degrade (or hard-cap) when a server exposes 100+ tools.
 # TOOL_PROFILE selects how much of the surface is advertised:
 #   full — everything (default, backwards compatible)
-#   core — everything except raw escape hatches and long-tail tools
 #   lean — a curated ~46-tool drafting/inspection core
 # Disabled tools stay registered (system_about still reports the full
 # inventory) but are hidden from MCP list_tools and rejected if called.
 
-TOOL_PROFILES = ("lean", "core", "full")
+TOOL_PROFILES = ("lean", "full")
+
+# Profiles that used to exist, mapped to why they went away. Kept so an old
+# TOOL_PROFILE value still boots the server (falling back to "full") with a
+# warning that names the removed profile instead of a generic "unknown value".
+REMOVED_TOOL_PROFILES = {
+    "core": (
+        "the discovery layer (tool search + AutoCAD command aliases) now solves "
+        "the crowded-surface problem it existed for"
+    ),
+}
 
 LEAN_TOOL_NAMES = frozenset(
     {
@@ -436,26 +905,11 @@ LEAN_TOOL_NAMES = frozenset(
         "system_status",
         "system_about",
         "system_capabilities",
-    }
-)
-
-CORE_EXCLUDED_TOOL_NAMES = frozenset(
-    {
-        # raw escape hatches — deliberate opt-in only
-        "system_run_command",
-        "system_run_lisp",
-        # low-level variable access (drawing_settings covers the common cases)
-        "system_get_variable",
-        "system_set_variable",
-        # long-tail / niche tools
-        "selection_get",
-        "linetype_list",
-        "linetype_load",
-        "block_find_references",
-        "drawing_undo",
-        "drawing_redo",
-        "view_zoom_window",
-        "entity_create_point",
+        # batching — the profile exists for clients with tight tool caps, which
+        # are exactly the clients paying the most per turn. Measured, the big
+        # lever is turn elimination (9.07x), so a lean surface without cad_batch
+        # withholds the saving from the callers who need it most.
+        "cad_batch",
     }
 )
 
@@ -469,8 +923,6 @@ _active_tool_profile: dict | None = None
 def _profile_enabled_names(profile: str, registered: set[str]) -> set[str]:
     if profile == "lean":
         enabled = registered & LEAN_TOOL_NAMES
-    elif profile == "core":
-        enabled = registered - CORE_EXCLUDED_TOOL_NAMES
     else:
         enabled = set(registered)
     if not config.settings.enable_3d:
@@ -488,9 +940,22 @@ async def _apply_tool_profile(profile: str | None = None) -> dict:
     switches are idempotent.
     """
     global _active_tool_profile
-    selected = (profile or config.settings.tool_profile or "full").lower().strip()
+    requested = (profile or config.settings.tool_profile or "full").lower().strip()
+    selected = requested
     if selected not in TOOL_PROFILES:
-        log.warning("Unknown TOOL_PROFILE %r - falling back to 'full'", selected)
+        if selected in REMOVED_TOOL_PROFILES:
+            log.warning(
+                "TOOL_PROFILE %r was removed (%s) - falling back to 'full'. Valid profiles: %s.",
+                selected,
+                REMOVED_TOOL_PROFILES[selected],
+                ", ".join(TOOL_PROFILES),
+            )
+        else:
+            log.warning(
+                "Unknown TOOL_PROFILE %r - falling back to 'full'. Valid profiles: %s.",
+                selected,
+                ", ".join(TOOL_PROFILES),
+            )
         selected = "full"
     registered = {tool.name for tool in await _registered_tools() if getattr(tool, "name", None)}
     enabled = _profile_enabled_names(selected, registered)
@@ -506,6 +971,10 @@ async def _apply_tool_profile(profile: str | None = None) -> dict:
         "disabled_count": len(disabled),
         "disabled_tools": disabled,
     }
+    if requested != selected:
+        # Surface the fallback where an MCP client can actually see it: a
+        # warning on a STDIO server's stderr is routinely invisible.
+        _active_tool_profile["requested"] = requested
     log.info(
         "Tool profile '%s': %d enabled, %d hidden",
         selected,
@@ -520,6 +989,7 @@ async def _apply_tool_profile(profile: str | None = None) -> dict:
 # ---------------------------------------------------------------------------
 
 
+@cad_tool(summary="Read the current drawing's name, path, extents and object counts.", cost="read")
 @mcp.tool(
     annotations={"title": "Drawing Info", "readOnlyHint": True},
     tags={"drawing", "query"},
@@ -535,6 +1005,10 @@ async def drawing_info(ctx: Context) -> dict:
     return _dc(result)
 
 
+@cad_tool(
+    summary="Start a blank drawing, pre-seeded with the standard engineering layers.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "New Drawing", "destructiveHint": False},
     tags={"drawing"},
@@ -581,23 +1055,41 @@ async def drawing_new(
     return result
 
 
+@cad_tool(
+    summary="Load an existing DXF from disk (DWG only on the live AutoCAD backend).",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Open Drawing"},
     tags={"drawing"},
 )
 async def drawing_open(
-    path: Annotated[str, "Full path to the .dwg or .dxf file"],
+    path: Annotated[
+        str,
+        "Full path to the .dxf file. .dwg needs a backend that can read it "
+        "(the live COM backend); the headless ezdxf backend refuses it.",
+    ],
     ctx: Context = None,
 ) -> dict:
-    """Open an existing DWG or DXF drawing file."""
+    """Open an existing DXF drawing file (DWG too, on the live COM backend).
+
+    T0.2: a .dwg path is refused up front when the active backend has no `dwg`
+    capability. ezdxf sniffs content rather than extensions, so it would parse a
+    mislabelled DXF-in-a-.dwg and this tool would answer with a document that
+    does not exist in that format.
+    """
     validated = validate_path(path, allow_write=False)
+    backend = _backend(ctx)
+    if _is_dwg_path(str(validated)) and not _backend_supports(backend, "dwg"):
+        raise ToolError(_DWG_READ_REFUSAL.format(backend=backend.name, path=validated))
     await ctx.info(f"Opening drawing: {validated}")
     await ctx.report_progress(0, 100)
-    result = await _backend(ctx).drawing_open(str(validated))
+    result = await backend.drawing_open(str(validated))
     await ctx.report_progress(100, 100)
     return result
 
 
+@cad_tool(summary="Write the drawing back to its file, or to a path you give.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Save Drawing"},
     tags={"drawing"},
@@ -614,6 +1106,10 @@ async def drawing_save(
     return await _backend(ctx).drawing_save(path)
 
 
+@cad_tool(
+    summary="Save a copy under a new name; the extension picks DXF, DWG or DWT.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Save As"},
     tags={"drawing"},
@@ -642,6 +1138,7 @@ async def drawing_save_as(
     return await _backend(ctx).drawing_save_as(str(validated), fmt)
 
 
+@cad_tool(summary="Write a DXF interchange copy of the drawing.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Export DXF"},
     tags={"drawing", "export"},
@@ -656,6 +1153,7 @@ async def drawing_export_dxf(
     return await _backend(ctx).drawing_export_dxf(str(validated))
 
 
+@cad_tool(summary="Plot the drawing, or one paper-space layout, to PDF.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Export PDF"},
     tags={"drawing", "export"},
@@ -678,6 +1176,10 @@ async def drawing_export_pdf(
     return result
 
 
+@cad_tool(
+    summary="Strip unused layers, blocks, linetypes and styles out of the file.",
+    cost="destructive",
+)
 @mcp.tool(
     annotations={"title": "Purge Drawing"},
     tags={"drawing", "cleanup"},
@@ -688,16 +1190,25 @@ async def drawing_purge(ctx: Context = None) -> dict:
     return await _backend(ctx).drawing_purge()
 
 
+@cad_tool(summary="Scan the drawing for structural errors and repair what it finds.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Audit Drawing", "readOnlyHint": False},
     tags={"drawing", "cleanup"},
 )
 async def drawing_audit(ctx: Context = None) -> dict:
-    """Run an integrity audit on the drawing to detect and fix errors."""
+    """Audit the drawing: repair every fixable structural problem, and report it.
+
+    This mutates the drawing. `fixes` lists repairs that have ALREADY been
+    applied, so save afterwards to keep them; `errors` lists problems that could
+    not be repaired. On the live COM backend AutoCAD applies repairs but hands
+    back no counts, so they arrive as null with `detail: "unavailable"` rather
+    than as zero.
+    """
     await ctx.info("Auditing drawing")
     return await _backend(ctx).drawing_audit()
 
 
+@cad_tool(summary="Close the drawing, saving first unless you say otherwise.", cost="destructive")
 @mcp.tool(
     annotations={"title": "Close Drawing", "destructiveHint": True},
     tags={"drawing"},
@@ -713,29 +1224,48 @@ async def drawing_close(
     return await _backend(ctx).drawing_close(save)
 
 
+@cad_tool(summary="Step back one operation.", cost="safe")
 @mcp.tool(
     annotations={"title": "Undo", "destructiveHint": False, "idempotentHint": False},
     tags={"drawing", "undo"},
 )
 async def drawing_undo(ctx: Context = None) -> dict:
-    """Undo the last drawing operation."""
+    """Undo the last drawing operation.
+
+    On the live COM backend this is AutoCAD's own undo. The headless backend has
+    no journal, so a step is a full DXF snapshot and history is **off by
+    default** — set `EZDXF_UNDO_DEPTH` to the number of steps you want. Measured
+    cost of switching it on: 37x on entity creation (0.18 -> 6.65 ms per call).
+    For a single checkpoint around a risky sequence, `transaction_begin` /
+    `transaction_rollback` is far cheaper.
+
+    Drawing something after an undo discards the redo branch, as in AutoCAD.
+    """
     return await _backend(ctx).drawing_undo()
 
 
+@cad_tool(summary="Reapply the operation you just undid.", cost="safe")
 @mcp.tool(
     annotations={"title": "Redo", "destructiveHint": False},
     tags={"drawing", "undo"},
 )
 async def drawing_redo(ctx: Context = None) -> dict:
-    """Redo the last undone drawing operation."""
+    """Reapply the operation you just undid.
+
+    Same history as `drawing_undo`, so the headless backend needs
+    `EZDXF_UNDO_DEPTH` set. Anything drawn after an undo discards the redo
+    branch — otherwise redo would restore a state that never existed, with
+    geometry you had removed reappearing beside geometry you drew afterwards.
+    """
     return await _backend(ctx).drawing_redo()
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 2: Entity Creation (14 tools) ───────────────────────────────────
+# ── SECTION 2: Entity Creation (19 tools) ───────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
+@cad_tool(summary="Draw a straight line between two points.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Create Line", "readOnlyHint": False},
     tags={"entity", "create"},
@@ -758,6 +1288,7 @@ async def entity_create_line(
     return _dc(result)
 
 
+@cad_tool(summary="Draw a circle: a hole, a bore, a pitch circle.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Create Circle", "readOnlyHint": False},
     tags={"entity", "create"},
@@ -776,6 +1307,7 @@ async def entity_create_circle(
     return _dc(result)
 
 
+@cad_tool(summary="Draw a circular arc from a centre, a radius and two angles.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Create Arc", "readOnlyHint": False},
     tags={"entity", "create"},
@@ -798,6 +1330,10 @@ async def entity_create_arc(
     return _dc(result)
 
 
+@cad_tool(
+    summary="Draw a connected outline or closed profile through a list of points.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Create Polyline", "readOnlyHint": False},
     tags={"entity", "create"},
@@ -818,6 +1354,7 @@ async def entity_create_polyline(
     return _dc(result)
 
 
+@cad_tool(summary="Draw a closed rectangle from two opposite corners.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Create Rectangle", "readOnlyHint": False, "idempotentHint": False},
     tags={"entity", "create"},
@@ -841,6 +1378,7 @@ async def entity_create_rectangle(
     return _dc(result)
 
 
+@cad_tool(summary="Place a single-line text label.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Create Text", "readOnlyHint": False},
     tags={"entity", "create", "annotation"},
@@ -861,6 +1399,7 @@ async def entity_create_text(
     return _dc(result)
 
 
+@cad_tool(summary="Place a wrapped paragraph note in a text box of a given width.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Create MText", "readOnlyHint": False},
     tags={"entity", "create", "annotation"},
@@ -886,6 +1425,10 @@ async def entity_create_mtext(
     return _dc(result)
 
 
+@cad_tool(
+    summary="Place a parts list, BOM or schedule as a table with headers and rows.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Create Table", "readOnlyHint": False},
     tags={"entity", "create", "annotation", "table"},
@@ -909,6 +1452,7 @@ async def entity_create_table(
     return _dc(result)
 
 
+@cad_tool(summary="Add a callout: an arrow with a note on the end.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Create Multileader", "readOnlyHint": False},
     tags={"entity", "create", "annotation", "leader"},
@@ -929,6 +1473,10 @@ async def leader_create_mleader(
     return _dc(result)
 
 
+@cad_tool(
+    summary="Fill a closed boundary with a section pattern such as ANSI31 or SOLID.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Create Hatch", "readOnlyHint": False},
     tags={"entity", "create"},
@@ -950,6 +1498,7 @@ async def entity_create_hatch(
     return _dc(result)
 
 
+@cad_tool(summary="Draw a smooth NURBS curve through fit points.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Create Spline", "readOnlyHint": False},
     tags={"entity", "create"},
@@ -966,6 +1515,10 @@ async def entity_create_spline(
     return _dc(result)
 
 
+@cad_tool(
+    summary="Draw an ellipse from its centre, major axis vector and axis ratio.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Create Ellipse", "readOnlyHint": False},
     tags={"entity", "create"},
@@ -992,6 +1545,7 @@ async def entity_create_ellipse(
     return _dc(result)
 
 
+@cad_tool(summary="Place a point marker (node) at a coordinate.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Create Point", "readOnlyHint": False},
     tags={"entity", "create"},
@@ -1008,6 +1562,10 @@ async def entity_create_point(
     return _dc(result)
 
 
+@cad_tool(
+    summary="Drop an instance of an existing block definition into the drawing.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Insert Block Reference", "readOnlyHint": False},
     tags={"entity", "create", "block"},
@@ -1028,6 +1586,121 @@ async def entity_create_block_ref(
         name, x, y, scale_x, scale_y, rotation, layer
     )
     return _dc(result)
+
+
+@cad_tool(summary="Replace a hatch's fill with a two-colour gradient.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Set Hatch Gradient", "destructiveHint": False},
+    tags={"entity", "create"},
+)
+async def hatch_set_gradient(
+    handle: Annotated[str, "Handle of an existing HATCH."],
+    color1: Annotated[list[int], "Start colour as [r, g, b]."],
+    color2: Annotated[list[int], "End colour as [r, g, b]."],
+    rotation: Annotated[float, "Gradient angle in degrees."] = 0.0,
+    centered: Annotated[float, "0 = one-sided, 1 = centred."] = 0.0,
+    one_color: Annotated[bool, "Blend color1 towards the background instead of color2."] = False,
+    tint: Annotated[float, "Tint value used with one_color (0-1)."] = 0.0,
+    name: Annotated[str, "Gradient name: LINEAR, CYLINDER, CURVED, SPHERICAL, HEMISPHERICAL."] = (
+        "LINEAR"
+    ),
+    ctx: Context = None,
+) -> dict:
+    """Fill a hatch with a gradient instead of a pattern."""
+    return await _backend(ctx).hatch_set_gradient(
+        handle, color1, color2, rotation, centered, one_color, tint, name
+    )
+
+
+@cad_tool(summary="Change a hatch's pattern, scale, angle, colour or island style.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Edit Hatch", "destructiveHint": False},
+    tags={"entity", "create"},
+)
+async def hatch_edit(
+    handle: Annotated[str, "Handle of an existing HATCH."],
+    pattern: Annotated[str, "New pattern name. Empty leaves it alone."] = "",
+    scale: Annotated[float | None, "New pattern scale (> 0)."] = None,
+    angle: Annotated[float | None, "New pattern angle in degrees."] = None,
+    color: Annotated[int | None, "New ACI colour."] = None,
+    style: Annotated[str, "Island style: normal, outer or ignore. Empty leaves it alone."] = "",
+    ctx: Context = None,
+) -> dict:
+    """Edit an existing hatch in place.
+
+    Omitted parameters are left alone — a partial edit that resets the rest is
+    data loss. `changed` reports which attributes actually moved, so re-setting
+    a value to what it already was comes back as an empty list rather than a
+    false positive.
+    """
+    return await _backend(ctx).hatch_edit(handle, pattern, scale, angle, color, style)
+
+
+@cad_tool(summary="Add a boundary path to a hatch, arcs and ellipses included.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Add Hatch Boundary", "destructiveHint": False},
+    tags={"entity", "create"},
+)
+async def hatch_add_boundary(
+    handle: Annotated[str, "Handle of an existing HATCH."],
+    edges: Annotated[
+        list[dict],
+        "Typed edges: {'type':'line','start':[x,y],'end':[x,y]} | "
+        "{'type':'arc','center':[x,y],'radius':r,'start_angle':a,'end_angle':b,'ccw':true} | "
+        "{'type':'ellipse','center':[x,y],'major_axis':[x,y],'ratio':r}",
+    ],
+    ctx: Context = None,
+) -> dict:
+    """Add one boundary path built from typed edges.
+
+    Typed edges exist because a boundary that only accepts vertex lists
+    silently straightens every curve it is given. Every edge is validated
+    before any is written, so a malformed list refuses instead of leaving a
+    half-built path.
+    """
+    return await _backend(ctx).hatch_add_boundary(handle, edges)
+
+
+@cad_tool(summary="Mask whatever is behind a closed polygon on the sheet.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Create Wipeout", "destructiveHint": False},
+    tags={"entity", "create"},
+)
+async def entity_create_wipeout(
+    points: Annotated[list[list[float]], "Closed polygon as [[x, y], ...]; at least 3 points."],
+    layer: Annotated[str, "Target layer. Empty uses the current layer."] = "",
+    ctx: Context = None,
+) -> dict:
+    """Create a WIPEOUT that hides drawing content behind its outline.
+
+    Refuses fewer than three points: a zero-area mask hides nothing while
+    reporting success.
+    """
+    return await _backend(ctx).entity_create_wipeout(points, layer or None)
+
+
+@cad_tool(summary="Draw a revision cloud around an area.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Create Revision Cloud", "destructiveHint": False},
+    tags={"entity", "create"},
+)
+async def entity_create_revcloud(
+    points: Annotated[list[list[float]], "Path corners as [[x, y], ...]."],
+    segment_length: Annotated[
+        float,
+        Field(gt=0, description="Approximate arc length of each cloud bump, in drawing units."),
+    ],
+    layer: Annotated[str, "Target layer. Empty uses the current layer."] = "",
+    closed: Annotated[bool, "Close the path back to the first point."] = True,
+    ctx: Context = None,
+) -> dict:
+    """Draw a revision cloud: a polyline whose every segment carries an arc.
+
+    A `segment_length` longer than the shortest edge is refused — the result
+    would carry no arcs at all and would be a plain polyline reported as a
+    cloud.
+    """
+    return await _backend(ctx).entity_create_revcloud(points, segment_length, layer or None, closed)
 
 
 # ---------------------------------------------------------------------------
@@ -1065,6 +1738,10 @@ def _fit_to_tolerances(
     )
 
 
+@cad_tool(
+    summary="Dimension a horizontal or vertical size, with an ISO 129 tolerance or ISO 286 fit.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Linear Dimension", "readOnlyHint": False},
     tags={"annotation", "dimension"},
@@ -1121,6 +1798,7 @@ async def dimension_linear(
     return _dc(result)
 
 
+@cad_tool(summary="Dimension the true distance between two points, along a slope.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Aligned Dimension", "readOnlyHint": False},
     tags={"annotation", "dimension"},
@@ -1140,6 +1818,7 @@ async def dimension_aligned(
     return _dc(result)
 
 
+@cad_tool(summary="Dimension the included angle between two rays from a vertex.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Angular Dimension", "readOnlyHint": False},
     tags={"annotation", "dimension"},
@@ -1163,6 +1842,7 @@ async def dimension_angular(
     return _dc(result)
 
 
+@cad_tool(summary="Call out the radius of a circle or arc, optionally toleranced.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Radius Dimension", "readOnlyHint": False},
     tags={"annotation", "dimension"},
@@ -1212,6 +1892,10 @@ async def dimension_radius(
     return _dc(result)
 
 
+@cad_tool(
+    summary="Call out a hole or shaft diameter, optionally to a fit such as H7.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Diameter Dimension", "readOnlyHint": False},
     tags={"annotation", "dimension"},
@@ -1263,10 +1947,11 @@ async def dimension_diameter(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 4: Entity Modification (16 tools) ───────────────────────────────
+# ── SECTION 4: Entity Modification (18 tools) ───────────────────────────────
 # ---------------------------------------------------------------------------
 
 
+@cad_tool(summary="Shift an entity by a displacement vector.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Move Entity", "readOnlyHint": False, "destructiveHint": False},
     tags={"entity", "modify"},
@@ -1283,6 +1968,7 @@ async def entity_move(
     return await _backend(ctx).entity_move(handle, dx, dy, dz)
 
 
+@cad_tool(summary="Duplicate an entity and offset the copy.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Copy Entity", "readOnlyHint": False, "destructiveHint": False},
     tags={"entity", "modify"},
@@ -1300,6 +1986,7 @@ async def entity_copy(
     return _dc(result)
 
 
+@cad_tool(summary="Turn an entity about a base point by an angle in degrees.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Rotate Entity", "readOnlyHint": False, "destructiveHint": False},
     tags={"entity", "modify"},
@@ -1316,6 +2003,7 @@ async def entity_rotate(
     return await _backend(ctx).entity_rotate(handle, base_x, base_y, angle_deg)
 
 
+@cad_tool(summary="Resize an entity uniformly about a base point.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Scale Entity", "readOnlyHint": False, "destructiveHint": False},
     tags={"entity", "modify"},
@@ -1331,6 +2019,10 @@ async def entity_scale(
     return await _backend(ctx).entity_scale(handle, base_x, base_y, factor)
 
 
+@cad_tool(
+    summary="Reflect an entity across a mirror line, keeping or dropping the original.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Mirror Entity", "readOnlyHint": False, "destructiveHint": False},
     tags={"entity", "modify"},
@@ -1349,6 +2041,10 @@ async def entity_mirror(
     return _dc(result)
 
 
+@cad_tool(
+    summary="Make a parallel copy of a line, circle or polyline at a set distance.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Offset Entity", "readOnlyHint": False, "destructiveHint": False},
     tags={"entity", "modify"},
@@ -1368,6 +2064,10 @@ async def entity_offset(
 # ── corner operations (trim/extend/fillet/chamfer) ──────────────────────────
 
 
+@cad_tool(
+    summary="Cut a line back to where another crosses it, keeping the side you point at.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Trim Entity", "readOnlyHint": False, "destructiveHint": False},
     tags={"entity", "modify", "corner"},
@@ -1388,6 +2088,7 @@ async def entity_trim(
     return _dc(result)
 
 
+@cad_tool(summary="Lengthen a line until it meets a boundary line.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Extend Entity", "readOnlyHint": False, "destructiveHint": False},
     tags={"entity", "modify", "corner"},
@@ -1408,6 +2109,7 @@ async def entity_extend(
     return _dc(result)
 
 
+@cad_tool(summary="Round a corner between two lines with a tangent arc.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Fillet Two Entities", "readOnlyHint": False, "destructiveHint": False},
     tags={"entity", "modify", "corner"},
@@ -1429,6 +2131,7 @@ async def entity_fillet(
     return _dc(result)
 
 
+@cad_tool(summary="Bevel a corner between two lines by two setback distances.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Chamfer Two Entities", "readOnlyHint": False, "destructiveHint": False},
     tags={"entity", "modify", "corner"},
@@ -1451,6 +2154,7 @@ async def entity_chamfer(
     return _dc(result)
 
 
+@cad_tool(summary="Erase one entity by handle.", cost="destructive")
 @mcp.tool(
     annotations={"title": "Delete Entity", "readOnlyHint": False, "destructiveHint": True},
     tags={"entity", "modify"},
@@ -1464,6 +2168,7 @@ async def entity_delete(
     return await _backend(ctx).entity_delete(handle)
 
 
+@cad_tool(summary="Repeat an entity in a grid of rows and columns.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Rectangular Array", "readOnlyHint": False},
     tags={"entity", "modify", "array"},
@@ -1474,19 +2179,37 @@ async def entity_array_rectangular(
     cols: Annotated[int, Field(description="Number of columns", ge=1)],
     row_spacing: Annotated[float, "Spacing between rows (Y direction)"],
     col_spacing: Annotated[float, "Spacing between columns (X direction)"],
+    fields: ResultFields = None,
+    compact: ResultCompact = False,
     ctx: Context = None,
-) -> list[dict]:
-    """Create a rectangular array of copies. Returns info of all created copies."""
+) -> list[dict] | dict:
+    """Create a rectangular array of copies. Returns info of all created copies.
+
+    rows x cols is unbounded, so this is a result-heavy tool despite being a
+    create: a 40x40 grid hands back 1600 full records. fields=["handle"] is
+    usually all a caller needs from it.
+    """
     await ctx.info(f"Creating {rows}×{cols} rectangular array of entity {handle}")
-    total = rows * cols
-    await ctx.report_progress(0, total)
+    made = rows * cols
+    await ctx.report_progress(0, made)
     result = await _backend(ctx).entity_array_rectangular(
         handle, rows, cols, row_spacing, col_spacing
     )
-    await ctx.report_progress(total, total)
-    return [_dc(e) for e in result]
+    await ctx.report_progress(made, made)
+    return _shape_rows(
+        result,
+        spec=EntityInfo,
+        fields=fields,
+        compact=compact,
+        tool="entity_array_rectangular",
+        total=len(result),
+    )
 
 
+@cad_tool(
+    summary="Repeat an entity around a centre: a bolt circle or radial pattern.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Polar Array", "readOnlyHint": False},
     tags={"entity", "modify", "array"},
@@ -1497,14 +2220,31 @@ async def entity_array_polar(
     fill_angle: Annotated[float, "Total angle to fill in degrees (360 for full circle)"],
     center_x: Annotated[float, "Array center X"],
     center_y: Annotated[float, "Array center Y"],
+    fields: ResultFields = None,
+    compact: ResultCompact = False,
     ctx: Context = None,
-) -> list[dict]:
-    """Create a polar (circular) array of copies around a center point."""
+) -> list[dict] | dict:
+    """Create a polar (circular) array of copies around a center point.
+
+    `count` is unbounded, so the same result-shaping applies as for the
+    rectangular array: fields=["handle"] when the geometry is already known.
+    """
     await ctx.info(f"Creating polar array of {count} items around ({center_x},{center_y})")
     result = await _backend(ctx).entity_array_polar(handle, count, fill_angle, center_x, center_y)
-    return [_dc(e) for e in result]
+    return _shape_rows(
+        result,
+        spec=EntityInfo,
+        fields=fields,
+        compact=compact,
+        tool="entity_array_polar",
+        total=len(result),
+    )
 
 
+@cad_tool(
+    summary="Change an entity's layer, colour, linetype, lineweight or visibility.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Set Entity Properties", "readOnlyHint": False, "destructiveHint": False},
     tags={"entity", "modify"},
@@ -1527,6 +2267,10 @@ async def entity_set_properties(
     )
 
 
+@cad_tool(
+    summary="Reword a label, or change its height or rotation, keeping its handle.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Edit Text", "readOnlyHint": False, "destructiveHint": False},
     tags={"entity", "modify"},
@@ -1548,6 +2292,58 @@ async def entity_edit_text(
     return _dc(result)
 
 
+@cad_tool(summary="Put an opaque background box behind an MTEXT.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Set Text Background", "destructiveHint": False},
+    tags={"entity", "modify"},
+)
+async def text_set_background(
+    handle: Annotated[str, "Handle of an MTEXT entity."],
+    enabled: Annotated[bool, "False removes the background box."] = True,
+    color: Annotated[int, "ACI background colour (1-255). 0 uses the drawing background."] = 0,
+    scale: Annotated[
+        float,
+        Field(ge=1.0, description="Box size as a multiple of the text box; must be >= 1."),
+    ] = 1.5,
+    ctx: Context = None,
+) -> dict:
+    """Mask what is behind an MTEXT so it stays readable over hatch or geometry.
+
+    MTEXT only: TEXT has no background-fill attribute, so setting one on it
+    would report success and change nothing.
+    """
+    return await _backend(ctx).text_set_background(handle, enabled, color or None, scale)
+
+
+@cad_tool(summary="Find and replace text across the drawing.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Find and Replace Text", "destructiveHint": False},
+    tags={"entity", "modify"},
+)
+async def text_find_replace(
+    find: Annotated[str, "Literal text to search for (not a regex)."],
+    replace: Annotated[str, "Replacement text."],
+    layer: Annotated[str, "Restrict to one layer. Empty searches every layer."] = "",
+    match_case: Annotated[bool, "Case-sensitive search."] = True,
+    dry_run: Annotated[bool, "Report what would change without changing it."] = False,
+    ctx: Context = None,
+) -> dict:
+    """Replace text in TEXT, MTEXT and block attributes (ATTRIB and ATTDEF).
+
+    `searched_types` is on the response because "no matches" and "that type was
+    never searched" are different answers. Block *definitions* are included, so
+    the next insert does not reintroduce the old text. DIMENSION text is out of
+    scope: its text field holds the `<>` override placeholder rather than the
+    measurement, so editing it would break the association.
+    """
+    await ctx.info(f"Replacing {find!r} with {replace!r}{' (dry run)' if dry_run else ''}")
+    return await _backend(ctx).text_find_replace(find, replace, layer or None, match_case, dry_run)
+
+
+@cad_tool(
+    summary="Change a circle's radius, a line's endpoints or an arc's angles in place.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Edit Geometry", "readOnlyHint": False, "destructiveHint": False},
     tags={"entity", "modify"},
@@ -1587,10 +2383,84 @@ async def entity_edit_geometry(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 5: Entity Query (4 tools) ───────────────────────────────────────
+# ── SECTION 5: Entity Query (7 tools) ───────────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
+@cad_tool(summary="Select entities inside or crossing a rectangle.", cost="read")
+@mcp.tool(
+    annotations={"title": "Select by Window", "readOnlyHint": True},
+    tags={"entity", "query"},
+)
+async def selection_window(
+    x1: Annotated[float, "First corner X."],
+    y1: Annotated[float, "First corner Y."],
+    x2: Annotated[float, "Opposite corner X."],
+    y2: Annotated[float, "Opposite corner Y."],
+    mode: Annotated[
+        str,
+        Field(
+            default="window",
+            description="window = wholly inside only; crossing = also entities straddling the "
+            "edge.",
+        ),
+    ] = "window",
+    entity_type: Annotated[str, "Restrict to a DXF type, e.g. CIRCLE. Empty means any."] = "",
+    layer: Annotated[str, "Restrict to a layer. Empty means any."] = "",
+    ctx: Context = None,
+) -> dict:
+    """AutoCAD's ssget window/crossing selection.
+
+    Corners may be given in any order. Selection is by *drawn* position, so an
+    entity in a mirrored frame is found where `entity_get` reports it. A
+    zero-area box is refused rather than answered with an empty list.
+    """
+    return await _backend(ctx).selection_window(x1, y1, x2, y2, mode, entity_type, layer)
+
+
+@cad_tool(summary="Select entities inside or crossing an arbitrary polygon.", cost="read")
+@mcp.tool(
+    annotations={"title": "Select by Polygon", "readOnlyHint": True},
+    tags={"entity", "query"},
+)
+async def selection_polygon(
+    points: Annotated[list[list[float]], "Polygon vertices as [[x, y], ...]; at least 3."],
+    mode: Annotated[
+        str,
+        Field(default="window", description="window = wholly inside only; crossing = touching."),
+    ] = "window",
+    entity_type: Annotated[str, "Restrict to a DXF type. Empty means any."] = "",
+    layer: Annotated[str, "Restrict to a layer. Empty means any."] = "",
+    ctx: Context = None,
+) -> dict:
+    """Window or crossing selection against a polygon rather than a rectangle."""
+    return await _backend(ctx).selection_polygon(points, mode, entity_type, layer)
+
+
+@cad_tool(summary="Select entities by layer, type, colour, linetype or minimum area.", cost="read")
+@mcp.tool(
+    annotations={"title": "Select by Properties", "readOnlyHint": True},
+    tags={"entity", "query"},
+)
+async def selection_filter(
+    entity_type: Annotated[str, "DXF type, e.g. LWPOLYLINE. Empty means any."] = "",
+    layer: Annotated[str, "Layer name. Empty means any."] = "",
+    color: Annotated[int | None, "ACI colour to match."] = None,
+    linetype: Annotated[str, "Linetype name. Empty means any."] = "",
+    min_area: Annotated[float | None, "Keep only closed shapes with at least this area."] = None,
+    ctx: Context = None,
+) -> dict:
+    """AutoCAD's QSELECT: filter the drawing by properties.
+
+    Named parameters rather than a query string, deliberately — a mistyped
+    attribute name in a query language comes back as an empty result, which is
+    indistinguishable from "no matches". `filtered_by` reports which filters
+    actually ran.
+    """
+    return await _backend(ctx).selection_filter(entity_type, layer, color, linetype, min_area)
+
+
+@cad_tool(summary="Inspect one entity by handle: type, layer, colour and geometry.", cost="read")
 @mcp.tool(
     annotations={"title": "Get Entity", "readOnlyHint": True},
     tags={"entity", "query"},
@@ -1604,6 +2474,10 @@ async def entity_get(
     return _dc(result)
 
 
+@cad_tool(
+    summary="Browse the drawing's entities and their handles, filtered by type or layer.",
+    cost="read",
+)
 @mcp.tool(
     annotations={"title": "List Entities", "readOnlyHint": True},
     tags={"entity", "query"},
@@ -1616,12 +2490,24 @@ async def entity_list(
     layer_filter: Annotated[str | None, "Filter by layer name"] = None,
     limit: Annotated[int, Field(description="Maximum entities to return", ge=1, le=1000)] = 100,
     offset: Annotated[int, Field(description="Number of entities to skip", ge=0)] = 0,
+    fields: ResultFields = None,
+    compact: ResultCompact = False,
     ctx: Context = None,
-) -> list[dict]:
+) -> list[dict] | dict:
     """List entities in the drawing with optional type and layer filters.
 
     Returns handle, type, layer, color, and type-specific properties.
     Use handles with entity_get, entity_move, entity_delete, etc.
+
+    This is the most expensive result on the server — the full record runs
+    ~250 characters per entity, and `properties.bounding_box` alone is about a
+    third of it. When all you need is handles, say so::
+
+        entity_list(layer_filter="GEOMETRY", fields=["handle", "type"], compact=True)
+
+    Paging honesty: a plain list has nowhere to say that more entities followed
+    the page, so `compact=True` is the only mode that reports `total`,
+    `truncated` and `next_offset` — all measured against the same filters.
     """
     capped = min(int(limit), config.settings.max_list_limit)
     if capped < limit:
@@ -1629,10 +2515,34 @@ async def entity_list(
             f"limit {limit} exceeds MAX_LIST_LIMIT={config.settings.max_list_limit}; capped"
         )
     await ctx.info(f"Listing entities type={type_filter} layer={layer_filter} limit={capped}")
-    result = await _backend(ctx).entity_list(type_filter, layer_filter, capped, offset)
-    return [_dc(e) for e in result]
+    b = _backend(ctx)
+    result = await b.entity_list(type_filter, layer_filter, capped, offset)
+    total = None
+    if compact:
+        # Only counted when there is a field to report it in; the default path
+        # must not grow a second full pass over the drawing.
+        total = await b.entity_count(type_filter, layer_filter)
+    elif len(result) >= capped:
+        # A full page is the one case where the plain list is indistinguishable
+        # from a complete answer. The value cannot say so without breaking the
+        # compatibility contract, so say it in the log and name the mode that can.
+        await ctx.warning(
+            f"entity_list returned a full page of {capped}; more entities may follow. "
+            "Re-run with compact=True for total/truncated/next_offset, or page with "
+            f"offset={offset + len(result)}."
+        )
+    return _shape_rows(
+        result,
+        spec=EntityInfo,
+        fields=fields,
+        compact=compact,
+        tool="entity_list",
+        total=total,
+        offset=offset,
+    )
 
 
+@cad_tool(summary="Erase a whole list of entities in one call.", cost="destructive")
 @mcp.tool(
     annotations={
         "title": "Delete Multiple Entities",
@@ -1661,11 +2571,19 @@ async def entity_delete_many(
     return {"ok": True, "deleted": deleted, "errors": errors}
 
 
+@cad_tool(
+    summary="Read what the user already picked in the AutoCAD viewport (COM backend).",
+    cost="read",
+)
 @mcp.tool(
     annotations={"title": "Get Viewport Selection", "readOnlyHint": True},
     tags={"entity", "query"},
 )
-async def selection_get(ctx: Context = None) -> dict:
+async def selection_get(
+    fields: ResultFields = None,
+    compact: ResultCompact = False,
+    ctx: Context = None,
+) -> dict:
     """Read the entities the user pre-selected in the AutoCAD viewport (COM backend only).
 
     Returns the implied "pickfirst" selection — the entities highlighted with
@@ -1685,6 +2603,11 @@ async def selection_get(ctx: Context = None) -> dict:
 
     On the ezdxf headless backend there is no viewport, so this returns
     ok=False with an empty handles list.
+
+    `fields` / `compact` shape the "entities" collection — this tool already
+    returns an object, so the columnar envelope lands *under* that key rather
+    than replacing the result. `handles` is unaffected, so a caller that only
+    wants handles can pass fields=["handle"] and still read `handles` directly.
     """
     result = await _backend(ctx).selection_get()
     if result.get("ok"):
@@ -1693,7 +2616,15 @@ async def selection_get(ctx: Context = None) -> dict:
         await ctx.warning(result.get("error", "selection_get returned not-ok"))
     # The backend places EntityInfo dataclasses under "entities"; serialize them.
     result = dict(result)
-    result["entities"] = [_dc(e) for e in result.get("entities", [])]
+    entities = result.get("entities", [])
+    result["entities"] = _shape_rows(
+        entities,
+        spec=EntityInfo,
+        fields=fields,
+        compact=compact,
+        tool="selection_get",
+        total=len(entities),
+    )
     return result
 
 
@@ -1702,16 +2633,33 @@ async def selection_get(ctx: Context = None) -> dict:
 # ---------------------------------------------------------------------------
 
 
+@cad_tool(summary="List every layer with its colour, linetype and visibility state.", cost="read")
 @mcp.tool(
     annotations={"title": "List Layers", "readOnlyHint": True},
     tags={"layer", "query"},
 )
-async def layer_list(ctx: Context = None) -> list[dict]:
-    """List all layers with their properties (color, linetype, frozen, locked, visibility)."""
+async def layer_list(
+    fields: ResultFields = None,
+    compact: ResultCompact = False,
+    ctx: Context = None,
+) -> list[dict] | dict:
+    """List all layers with their properties (color, linetype, frozen, locked, visibility).
+
+    Never truncated — a drawing's whole layer table is returned — so a compact
+    envelope here always reports truncated=false.
+    """
     result = await _backend(ctx).layer_list()
-    return [_dc(lyr) for lyr in result]
+    return _shape_rows(
+        result,
+        spec=LayerInfo,
+        fields=fields,
+        compact=compact,
+        tool="layer_list",
+        total=len(result),
+    )
 
 
+@cad_tool(summary="Add a layer with a colour, linetype and lineweight.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Create Layer", "readOnlyHint": False},
     tags={"layer"},
@@ -1731,6 +2679,7 @@ async def layer_create(
     return _dc(result)
 
 
+@cad_tool(summary="Remove an empty layer from the drawing.", cost="destructive")
 @mcp.tool(
     annotations={"title": "Delete Layer", "readOnlyHint": False, "destructiveHint": True},
     tags={"layer"},
@@ -1744,6 +2693,7 @@ async def layer_delete(
     return await _backend(ctx).layer_delete(name)
 
 
+@cad_tool(summary="Choose the layer that new geometry lands on.", cost="safe")
 @mcp.tool(
     annotations={"title": "Set Current Layer", "readOnlyHint": False, "destructiveHint": False},
     tags={"layer"},
@@ -1757,6 +2707,7 @@ async def layer_set_current(
     return await _backend(ctx).layer_set_current(name)
 
 
+@cad_tool(summary="Change an existing layer's colour, linetype or lineweight.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Modify Layer", "readOnlyHint": False, "destructiveHint": False},
     tags={"layer"},
@@ -1773,6 +2724,7 @@ async def layer_modify(
     return _dc(result)
 
 
+@cad_tool(summary="Freeze a layer so it stops drawing and regenerating.", cost="safe")
 @mcp.tool(annotations={"title": "Freeze Layer"}, tags={"layer"})
 async def layer_freeze(
     name: Annotated[str, "Layer name to freeze"],
@@ -1782,6 +2734,7 @@ async def layer_freeze(
     return await _backend(ctx).layer_freeze(name)
 
 
+@cad_tool(summary="Bring a frozen layer back into view.", cost="safe")
 @mcp.tool(annotations={"title": "Thaw Layer"}, tags={"layer"})
 async def layer_thaw(
     name: Annotated[str, "Layer name to thaw"],
@@ -1791,6 +2744,7 @@ async def layer_thaw(
     return await _backend(ctx).layer_thaw(name)
 
 
+@cad_tool(summary="Lock a layer so its entities can be seen but not edited.", cost="safe")
 @mcp.tool(annotations={"title": "Lock Layer"}, tags={"layer"})
 async def layer_lock(
     name: Annotated[str, "Layer name to lock"],
@@ -1800,6 +2754,7 @@ async def layer_lock(
     return await _backend(ctx).layer_lock(name)
 
 
+@cad_tool(summary="Unlock a layer so its entities can be edited again.", cost="safe")
 @mcp.tool(annotations={"title": "Unlock Layer"}, tags={"layer"})
 async def layer_unlock(
     name: Annotated[str, "Layer name to unlock"],
@@ -1809,6 +2764,7 @@ async def layer_unlock(
     return await _backend(ctx).layer_unlock(name)
 
 
+@cad_tool(summary="Turn a layer off so its entities stop showing.", cost="safe")
 @mcp.tool(annotations={"title": "Hide Layer"}, tags={"layer"})
 async def layer_hide(
     name: Annotated[str, "Layer name to turn off"],
@@ -1818,6 +2774,7 @@ async def layer_hide(
     return await _backend(ctx).layer_hide(name)
 
 
+@cad_tool(summary="Turn a layer that was switched off back on.", cost="safe")
 @mcp.tool(annotations={"title": "Show Layer"}, tags={"layer"})
 async def layer_show(
     name: Annotated[str, "Layer name to turn on"],
@@ -1827,6 +2784,7 @@ async def layer_show(
     return await _backend(ctx).layer_show(name)
 
 
+@cad_tool(summary="Hide every layer except one, to work on it alone.", cost="safe")
 @mcp.tool(
     annotations={"title": "Isolate Layer", "readOnlyHint": False},
     tags={"layer"},
@@ -1847,6 +2805,7 @@ async def layer_isolate(
     return {"ok": True, "isolated": name, "hidden_count": len(hidden), "hidden_layers": hidden}
 
 
+@cad_tool(summary="List the dash patterns currently loaded in the drawing.", cost="read")
 @mcp.tool(
     annotations={"title": "List Loaded Linetypes", "readOnlyHint": True},
     tags={"layer", "linetype"},
@@ -1856,6 +2815,10 @@ async def linetype_list(ctx: Context = None) -> list[str]:
     return await _backend(ctx).linetype_list()
 
 
+@cad_tool(
+    summary="Load a linetype such as CENTER or HIDDEN, without the FILEDIA dialog trap.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Load Linetype", "readOnlyHint": False},
     tags={"layer", "linetype"},
@@ -1885,16 +2848,33 @@ async def linetype_load(
 # ---------------------------------------------------------------------------
 
 
+@cad_tool(summary="List the block definitions the drawing already carries.", cost="read")
 @mcp.tool(
     annotations={"title": "List Blocks", "readOnlyHint": True},
     tags={"block", "query"},
 )
-async def block_list(ctx: Context = None) -> list[dict]:
-    """List all block definitions in the drawing (name, origin, attribute count, entity count)."""
+async def block_list(
+    fields: ResultFields = None,
+    compact: ResultCompact = False,
+    ctx: Context = None,
+) -> list[dict] | dict:
+    """List all block definitions in the drawing (name, origin, attribute count, entity count).
+
+    Never truncated — the whole block table is returned — so a compact envelope
+    here always reports truncated=false.
+    """
     result = await _backend(ctx).block_list()
-    return [_dc(b) for b in result]
+    return _shape_rows(
+        result,
+        spec=BlockInfo,
+        fields=fields,
+        compact=compact,
+        tool="block_list",
+        total=len(result),
+    )
 
 
+@cad_tool(summary="Place a block, filling in its attribute values as you go.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Insert Block", "readOnlyHint": False},
     tags={"block"},
@@ -1918,6 +2898,7 @@ async def block_insert(
     return _dc(result)
 
 
+@cad_tool(summary="Break a block reference apart into its component entities.", cost="destructive")
 @mcp.tool(
     annotations={"title": "Explode Block", "readOnlyHint": False, "destructiveHint": True},
     tags={"block"},
@@ -1931,6 +2912,7 @@ async def block_explode(
     return await _backend(ctx).block_explode(handle)
 
 
+@cad_tool(summary="Read the tag/value pairs off a block reference.", cost="read")
 @mcp.tool(
     annotations={"title": "Get Block Attributes", "readOnlyHint": True},
     tags={"block", "query"},
@@ -1943,6 +2925,10 @@ async def block_get_attributes(
     return await _backend(ctx).block_get_attributes(handle)
 
 
+@cad_tool(
+    summary="Fill in a block reference's attributes, such as title-block fields.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Set Block Attributes", "readOnlyHint": False},
     tags={"block"},
@@ -1956,6 +2942,10 @@ async def block_set_attributes(
     return await _backend(ctx).block_set_attributes(handle, attributes)
 
 
+@cad_tool(
+    summary="Turn existing entities into a reusable block definition.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Create Block From Entities", "readOnlyHint": False},
     tags={"block"},
@@ -1969,33 +2959,116 @@ async def block_create_from_entities(
 ) -> dict:
     """Create a new block definition from existing entities in the drawing.
 
-    Note: This tool works by using AutoCAD's BLOCK command (COM backend only).
-    For ezdxf backend, entities must be added to a block definition directly.
+    Works on both engines. The originals stay in model space — this defines a
+    reusable block from them rather than consuming them the way AutoCAD's BLOCK
+    command does; use `block_insert` to place copies, and delete the originals
+    yourself if you want the command's behaviour.
+
+    Handles that do not resolve are listed in `skipped` rather than silently
+    dropped, and a call where none resolve fails instead of leaving an empty
+    definition behind.
     """
     await ctx.info(f"Creating block '{name}' from {len(handles)} entities")
     return await _backend(ctx).block_create_from_entities(name, handles, base_x, base_y)
 
 
+@cad_tool(summary="Find every place a given block is inserted.", cost="read")
 @mcp.tool(
     annotations={"title": "Find Blocks By Name", "readOnlyHint": True},
     tags={"block", "query"},
 )
 async def block_find_references(
     name: Annotated[str, "Block definition name to search for"],
+    fields: ResultFields = None,
+    compact: ResultCompact = False,
     ctx: Context = None,
-) -> list[dict]:
-    """Find all insert references to a specific block definition."""
+) -> list[dict] | dict:
+    """Find all insert references to a specific block definition.
+
+    Bounded by the backend's own default entity_list page (200 INSERTs scanned),
+    which is a pre-existing limit, not a new one: the compact envelope's `total`
+    counts the references found within that scan.
+    """
     await ctx.info(f"Finding all references to block '{name}'")
     result = await _backend(ctx).entity_list(type_filter="INSERT")
-    refs = [_dc(e) for e in result if e.properties.get("block_name") == name]
-    return refs
+    refs = [e for e in result if e.properties.get("block_name") == name]
+    return _shape_rows(
+        refs,
+        spec=EntityInfo,
+        fields=fields,
+        compact=compact,
+        tool="block_find_references",
+        total=len(refs),
+    )
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 8: Analysis & Query (8 tools) ───────────────────────────────────
+# ── SECTION 8: Analysis & Query (12 tools) ──────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
+@cad_tool(summary="Trace the closed boundary around a point, like BOUNDARY.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Trace Boundary", "destructiveHint": False},
+    tags={"analysis"},
+)
+async def boundary_trace(
+    x: Annotated[float, "Seed point X, inside the region to trace."],
+    y: Annotated[float, "Seed point Y, inside the region to trace."],
+    layer: Annotated[str, "Only consider edges on this layer. Empty considers all."] = "",
+    tolerance: Annotated[float, "Gap tolerance for joining edges."] = 1e-9,
+    ctx: Context = None,
+) -> dict:
+    """AutoCAD's BOUNDARY/BPOLY: create a closed polyline around a seed point.
+
+    Returns the *nearest enclosing* loop, so a seed inside an island gives the
+    island rather than the outer region. Straight edges are split where they
+    cross, so a line drawn across a shape divides it the way it looks like it
+    should. A seed with no enclosing loop is refused, and the error names the
+    gap when the edges nearly close.
+    """
+    await ctx.info(f"Tracing the boundary around ({x}, {y})")
+    return await _backend(ctx).boundary_trace(x, y, layer or None, tolerance)
+
+
+@cad_tool(summary="Join named entities into one closed boundary polyline.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Boundary from Entities", "destructiveHint": False},
+    tags={"analysis"},
+)
+async def boundary_from_entities(
+    handles: Annotated[list[str], "Handles of the 2D entities that form the loop."],
+    tolerance: Annotated[float, "Gap tolerance for joining endpoints."] = 1e-9,
+    ctx: Context = None,
+) -> dict:
+    """Chain the given entities into one closed polyline.
+
+    The handles may arrive in any order — putting them in chain order is the
+    tool's job. A chain that does not close is refused, and the error names the
+    coordinates of the gap.
+    """
+    return await _backend(ctx).boundary_from_entities(handles, tolerance)
+
+
+@cad_tool(summary="Dump every DXF property of one entity, like LIST.", cost="read")
+@mcp.tool(
+    annotations={"title": "List Entity Properties", "readOnlyHint": True},
+    tags={"analysis", "query"},
+)
+async def analysis_list_properties(
+    handle: Annotated[str, "Handle of the entity to dump."],
+    ctx: Context = None,
+) -> dict:
+    """AutoCAD's LIST: the full DXF attribute set for one handle.
+
+    `dxf_attributes` is the raw attribute set `entity_get` deliberately does
+    not carry. Coordinates in it are WCS, like everywhere else in this server,
+    and `extrusion` is reported so the entity's own frame is still visible.
+    """
+    return await _backend(ctx).analysis_list_properties(handle)
+
+
+@cad_tool(summary="Count the drawing's objects, broken down by type and by layer.", cost="read")
 @mcp.tool(
     annotations={"title": "Entity Statistics", "readOnlyHint": True},
     tags={"analysis", "query"},
@@ -2010,6 +3083,7 @@ async def analysis_entity_stats(ctx: Context = None) -> dict:
     return await _backend(ctx).analysis_stats()
 
 
+@cad_tool(summary="List everything that falls inside a rectangular window.", cost="read")
 @mcp.tool(
     annotations={"title": "Find Entities in Region", "readOnlyHint": True},
     tags={"analysis", "query"},
@@ -2019,14 +3093,28 @@ async def analysis_find_in_region(
     y1: Annotated[float, "Region minimum Y"],
     x2: Annotated[float, "Region maximum X"],
     y2: Annotated[float, "Region maximum Y"],
+    fields: ResultFields = None,
+    compact: ResultCompact = False,
     ctx: Context = None,
-) -> list[dict]:
-    """Find all entities within a rectangular region (crossing selection)."""
+) -> list[dict] | dict:
+    """Find all entities within a rectangular region (crossing selection).
+
+    Uncapped: a window over a busy drawing returns every hit. Project with
+    `fields` and/or `compact` before widening the window.
+    """
     await ctx.info(f"Finding entities in region ({x1},{y1}) → ({x2},{y2})")
     result = await _backend(ctx).analysis_entities_in_region(x1, y1, x2, y2)
-    return [_dc(e) for e in result]
+    return _shape_rows(
+        result,
+        spec=EntityInfo,
+        fields=fields,
+        compact=compact,
+        tool="analysis_find_in_region",
+        total=len(result),
+    )
 
 
+@cad_tool(summary="Measure the gap between two points: distance, dx/dy and angle.", cost="read")
 @mcp.tool(
     annotations={"title": "Measure Distance", "readOnlyHint": True, "idempotentHint": True},
     tags={"analysis", "measure"},
@@ -2051,33 +3139,87 @@ async def analysis_measure_distance(
     }
 
 
+@cad_tool(summary="Measure a polygon's area and perimeter from its vertices.", cost="read")
 @mcp.tool(
     annotations={"title": "Measure Area", "readOnlyHint": True, "idempotentHint": True},
     tags={"analysis", "measure"},
 )
 async def analysis_measure_area(
-    points: Annotated[list[list[float]], "Polygon vertices as list of [x, y] points (min 3)"],
+    points: Annotated[
+        list[list[float]],
+        "Polygon vertices, min 3. Each is [x, y] or [x, y, bulge] — the bulge "
+        "(DXF convention) makes the edge leaving that vertex a circular arc.",
+    ],
     ctx: Context = None,
 ) -> dict:
-    """Calculate the area of a polygon defined by vertices using the shoelace formula."""
+    """Area and perimeter of a polygon you supply the vertices for.
+
+    This measures the numbers in the call, NOT the drawing. To measure something
+    that exists, use `analysis_measure_entity(handle)` — it reads the real
+    geometry, including curvature this tool can only see if you pass it.
+
+    Straight-edged polygons are exact. Pass a third `bulge` element per vertex
+    for arc edges; omitting it on curved geometry under-reports (28% on a
+    semicircular edge), which is why `assumes` says what was taken on faith.
+    """
     if len(points) < 3:
         raise ToolError("At least 3 points are required to calculate area.")
-    area = await _backend(ctx).analysis_measure_area(points)
-    # Also compute perimeter
-    perimeter = sum(
-        math.sqrt(
-            (points[(i + 1) % len(points)][0] - points[i][0]) ** 2
-            + (points[(i + 1) % len(points)][1] - points[i][1]) ** 2
-        )
-        for i in range(len(points))
-    )
+    vertices = [(float(p[0]), float(p[1]), float(p[2]) if len(p) > 2 else 0.0) for p in points]
+    area, perimeter = polygon_area_perimeter(vertices, closed=True)
+    curved = any(abs(v[2]) > 1e-12 for v in vertices)
     return {
         "area": round(area, 6),
         "perimeter": round(perimeter, 6),
         "vertex_count": len(points),
+        "exact": True,
+        "assumes": (
+            "the vertices given are the whole boundary and it is closed"
+            if curved
+            else "every edge is straight, and the vertices given are the whole "
+            "closed boundary — pass [x, y, bulge] if any edge is an arc"
+        ),
+        "self_intersecting": is_self_intersecting([(v[0], v[1]) for v in vertices]),
     }
 
 
+@cad_tool(
+    summary="Area and perimeter of an existing entity, by handle.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Measure Entity", "readOnlyHint": True, "idempotentHint": True},
+    tags={"analysis", "measure"},
+)
+async def analysis_measure_entity(
+    handle: Annotated[str, "Entity handle (hex string) from create/list/select"],
+    flatten_tolerance: Annotated[
+        float, "Max chord deviation when geometry has no closed form (splines, partial ellipses)"
+    ] = 0.001,
+    ctx: Context = None,
+) -> dict:
+    """Measure something already in the drawing, by handle.
+
+    Reads the real geometry, so polyline bulges (arc edges) are included —
+    reading vertices back and shoelacing them yourself loses 28% of the area on
+    a semicircular edge, silently.
+
+    Measurable: LWPOLYLINE, 2D POLYLINE, CIRCLE, ELLIPSE, SPLINE, HATCH, SOLID,
+    TRACE, 3DFACE. REGION and 3DSOLID need the live COM backend (their area is
+    in ACIS data ezdxf cannot evaluate) and refuse with
+    `capability: "measure_area_acis"`. LINE/TEXT/INSERT bound no area on any
+    engine and are a plain error, not a capability gap.
+
+    The payload states its own accuracy: `exact` is false when the shape had to
+    be flattened (then `flatten_tolerance` says how finely), `assumed_closed` is
+    true when an open boundary was closed the way AutoCAD's AREA does, and
+    `self_intersecting` warns when the shoelace cancelled crossed lobes — a
+    bowtie measures 0.0 and that number is worse than useless unflagged.
+    """
+    await ctx.debug(f"Measuring entity {handle}")
+    return await _backend(ctx).entity_measure(handle, flatten_tolerance)
+
+
+@cad_tool(summary="Get the overall extents of everything drawn.", cost="read")
 @mcp.tool(
     annotations={"title": "Drawing Bounding Box", "readOnlyHint": True},
     tags={"analysis", "query"},
@@ -2087,24 +3229,45 @@ async def analysis_bounding_box(ctx: Context = None) -> dict:
     return await _backend(ctx).analysis_bounding_box()
 
 
+@cad_tool(summary="Grab the handles of everything sitting on one layer.", cost="read")
 @mcp.tool(
     annotations={"title": "Select Entities By Layer", "readOnlyHint": True},
     tags={"analysis", "query"},
 )
 async def analysis_select_by_layer(
     layer_name: Annotated[str, "Layer name to select entities from"],
+    fields: ResultFields = None,
+    compact: ResultCompact = False,
     ctx: Context = None,
-) -> list[dict]:
-    """Get all entities on a specific layer. Returns entity list with handles."""
+) -> list[dict] | dict:
+    """Get all entities on a specific layer. Returns entity list with handles.
+
+    Capped at MAX_LIST_LIMIT (default 5000). The plain list cannot say it was
+    capped — the warning goes to the log stream, which most clients never show
+    the model — so use `compact=True` when the count matters: its `total` is the
+    layer's real population and `truncated` states whether the cap fired.
+    """
     await ctx.info(f"Selecting all entities on layer '{layer_name}'")
     result = await _backend(ctx).analysis_select_by_layer(layer_name)
+    total = len(result)
     cap = config.settings.max_list_limit
-    if len(result) > cap:
-        await ctx.warning(f"Layer has {len(result)} entities; truncated to {cap}")
+    if total > cap:
+        await ctx.warning(f"Layer has {total} entities; truncated to {cap}")
         result = result[:cap]
-    return [_dc(e) for e in result]
+    return _shape_rows(
+        result,
+        spec=EntityInfo,
+        fields=fields,
+        compact=compact,
+        tool="analysis_select_by_layer",
+        total=total,
+    )
 
 
+@cad_tool(
+    summary="Grab the handles of every entity of one type: all the circles, all the lines.",
+    cost="read",
+)
 @mcp.tool(
     annotations={"title": "Select Entities By Type", "readOnlyHint": True},
     tags={"analysis", "query"},
@@ -2114,18 +3277,33 @@ async def analysis_select_by_type(
         str,
         "Entity type: LINE, CIRCLE, ARC, LWPOLYLINE, TEXT, MTEXT, INSERT, HATCH, SPLINE, ELLIPSE",
     ],
+    fields: ResultFields = None,
+    compact: ResultCompact = False,
     ctx: Context = None,
-) -> list[dict]:
-    """Get all entities of a specific type. Returns entity list with handles."""
+) -> list[dict] | dict:
+    """Get all entities of a specific type. Returns entity list with handles.
+
+    Capped at MAX_LIST_LIMIT (default 5000); as with analysis_select_by_layer,
+    `compact=True` is the only shape that reports `total` and `truncated`.
+    """
     await ctx.info(f"Selecting all {entity_type} entities")
     result = await _backend(ctx).analysis_select_by_type(entity_type)
+    total = len(result)
     cap = config.settings.max_list_limit
-    if len(result) > cap:
-        await ctx.warning(f"Found {len(result)} entities of type {entity_type}; truncated to {cap}")
+    if total > cap:
+        await ctx.warning(f"Found {total} entities of type {entity_type}; truncated to {cap}")
         result = result[:cap]
-    return [_dc(e) for e in result]
+    return _shape_rows(
+        result,
+        spec=EntityInfo,
+        fields=fields,
+        compact=compact,
+        tool="analysis_select_by_type",
+        total=total,
+    )
 
 
+@cad_tool(summary="Report how many entities, and which types, sit on each layer.", cost="read")
 @mcp.tool(
     annotations={"title": "Layer Statistics", "readOnlyHint": True},
     tags={"analysis", "query", "layer"},
@@ -2157,10 +3335,930 @@ async def analysis_layer_stats(ctx: Context = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 8b: Batch Operations (2 tools) ───────────────────────────────
+# ── SECTION 8b: Batch Operations (3 tools) ───────────────────────────────
 # ---------------------------------------------------------------------------
+#
+# Three tools, two jobs, no overlap:
+#
+#   cad_batch            ordered, heterogeneous, any tool, with binding between
+#                        steps. The general executor.
+#   entity_batch_create  one dense dict per entity ({"type": "line", ...}) with
+#   entity_batch_modify  no per-step tool name and no binding. Roughly 30 fewer
+#                        characters per entity than the equivalent cad_batch
+#                        step, which is real money at a few hundred entities.
+#
+# They compose rather than compete: a cad_batch step may call
+# entity_batch_create for the bulk half of a drawing. What must never happen is
+# a second general executor — hence cad_batch is on its own deny set and cannot
+# nest inside itself.
 
 
+# ── cad_batch: the ordered multi-tool executor ──────────────────────────────
+
+#: What ``on_error`` accepts. ``stop`` is the default because it is the only
+#: mode whose guarantee is identical on both backends (see
+#: :func:`_batch_rollback_guarantee`).
+BATCH_ON_ERROR_MODES = ("stop", "continue", "rollback")
+
+#: Every ``error.kind`` a step row can carry. Closed on purpose: a client that
+#: branches on the taxonomy needs it to be enumerable.
+BATCH_ERROR_KINDS = (
+    "denied",  # on cad_batch's deny set; never executed
+    "malformed_step",  # not a {tool, args, bind} object
+    "unknown_tool",  # not registered, or hidden by TOOL_PROFILE / ENABLE_3D
+    "invalid_args",  # rejected by the tool's own JSON Schema
+    "unresolved_ref",  # a $reference that no earlier step successfully bound
+    "unsupported",  # this backend cannot do it (carries `capability`)
+    "refused",  # the tool declined on purpose (path/command validation, ...)
+    "failed",  # attempted and broke
+)
+
+#: What a rollback is actually worth, per backend transaction implementation.
+BATCH_ROLLBACK_GUARANTEES = ("snapshot", "best_effort_undo", "unverified", "none")
+
+#: A hard ceiling on one batch. Steps run sequentially inside a single tool
+#: call that no client can cancel midway, so an unbounded list is a foot-gun
+#: rather than a feature.
+MAX_BATCH_STEPS = 250
+
+#: Reference sigil. ``$name`` / ``$name.path.0``; ``$$`` escapes a literal ``$``.
+_BATCH_REF_SIGIL = "$"
+
+#: Stands in for an unresolved reference while a step is validated against the
+#: real JSON Schema. A bound value's *type* is only knowable at run time, so
+#: errors reported against this exact scalar are dropped and everything else
+#: (required keys, unknown keys, the types of every literal argument) still
+#: applies. NUL-delimited so no real argument can collide with it.
+_BATCH_REF_SENTINEL = "\x00cad_batch:unresolved-reference\x00"
+
+#: Step-row messages are compacted to this many characters. A pydantic failure
+#: prints four paragraphs; re-emitting that per step would hand back the tokens
+#: the batch just saved.
+_BATCH_MESSAGE_CHARS = 240
+
+_MISSING = object()
+
+
+class BatchReferenceError(ValueError):
+    """A ``$reference`` that cannot be resolved against the current bindings."""
+
+
+def _batch_denied_tools() -> frozenset[str]:
+    """Tools ``cad_batch`` will never call, derived from the live registry.
+
+    A single ``cad_batch`` grant would otherwise reach *every* tool, including
+    ``system_run_command`` / ``system_run_lisp`` — defeating a client's per-tool
+    allowlist and routing around the point of having the raw escape hatches be
+    separately opt-in in the first place. The set is derived from the
+    ``@cad_tool(cost="escape")`` cards rather than hand-listed, so a future
+    escape hatch is denied the day it is registered, not the day someone
+    remembers this function exists.
+
+    The denial is unconditional. ``DANGEROUS_COMMANDS_ENABLED`` governs whether
+    :mod:`security` will *sanitize* a command string; it says nothing about
+    which tool a client may reach, and reusing it here would let one env var
+    silently re-open the escalation path. The escape hatches stay fully
+    available — called directly, where their own gate applies.
+
+    ``cad_batch`` denies itself too: no recursion, and no laundering a denied
+    step through a nested executor.
+    """
+    denied = {"cad_batch"}
+    for tool in _local_tool_components():
+        cad = (getattr(tool, "meta", None) or {}).get("cad") or {}
+        if cad.get("cost") == "escape":
+            denied.add(tool.name)
+    return frozenset(denied)
+
+
+def _batch_read_only_tools() -> frozenset[str]:
+    """Tools whose ``ok: False`` is a *finding*, not a failure to act.
+
+    ``validation_check`` / ``drawing_critique`` / ``drawing_preflight`` are
+    ``readOnlyHint=True`` and answer ``{"ok": len(issues) == 0}``, so on any
+    drawing with something to report they return ``ok: False`` having worked
+    perfectly. A mutator answering ``ok: False`` means the opposite — it did not
+    mutate. Reading both the same way made a read-only check trigger a rollback
+    that destroyed the geometry the batch had just drawn, so the discriminator
+    is the annotation the tool already publishes.
+    """
+    return frozenset(
+        tool.name
+        for tool in _local_tool_components()
+        if getattr(getattr(tool, "annotations", None), "readOnlyHint", None) is True
+    )
+
+
+# ── error typing ────────────────────────────────────────────────────────────
+#
+# `ctx.fastmcp.call_tool` re-raises FastMCP's own exceptions untouched but wraps
+# everything else as `ToolError(f"Error calling tool {name!r}: {e}") from e`. The
+# `from e` is what makes a typed taxonomy possible: the real exception is still
+# on the `__cause__` chain, so nothing here ever has to read message text. It
+# must not, either — "this backend cannot write DWG" and a RuntimeError that
+# happens to say the same words are different facts, and only the type knows.
+
+_BATCH_CAUSE_CHAIN_LIMIT = 8
+
+_capability_error_types: tuple[type, ...] | None = None
+
+
+def _capability_refusal_types() -> tuple[type, ...]:
+    """Backend exception classes meaning "this engine cannot do that".
+
+    Imported lazily, exactly as the backends themselves are: server.py must
+    still import on a box where a backend's dependencies are missing.
+    """
+    global _capability_error_types
+    if _capability_error_types is None:
+        found: list[type] = []
+        try:
+            from backends.ezdxf_backend import UnsupportedCapabilityError
+
+            found.append(UnsupportedCapabilityError)
+        except Exception as exc:  # pragma: no cover - ezdxf is a core dependency
+            log.debug("capability refusal type unavailable: %s", exc)
+        _capability_error_types = tuple(found)
+    return _capability_error_types
+
+
+def _batch_cause_chain(exc: BaseException) -> list[BaseException]:
+    """``exc`` and its ``__cause__`` ancestors, outermost first, bounded."""
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and len(chain) < _BATCH_CAUSE_CHAIN_LIMIT:
+        if id(current) in seen:
+            break
+        seen.add(id(current))
+        chain.append(current)
+        current = current.__cause__
+    return chain
+
+
+def _batch_capability_of(exc: BaseException) -> str | None:
+    """The backend capability ``exc`` refuses, or None.
+
+    Recognised by type, and — because a backend may ship its own refusal class —
+    also by the contract every such refusal implements: a non-empty
+    ``capability`` string plus the ``to_dict()`` that carries the
+    ``{ok, error, capability}`` payload. Structural, not textual.
+    """
+    types = _capability_refusal_types()
+    for error in _batch_cause_chain(exc):
+        if types and isinstance(error, types):
+            return str(getattr(error, "capability", "") or "unknown")
+        capability = getattr(error, "capability", None)
+        if isinstance(capability, str) and capability and callable(getattr(error, "to_dict", None)):
+            return capability
+    return None
+
+
+def _refusal_message(exc: BaseException) -> str:
+    """The most specific message on the cause chain, in full.
+
+    Deliberately not ``_batch_message``: that truncates to
+    ``_BATCH_MESSAGE_CHARS`` for a compact step row, and a refusal that gets cut
+    off mid-word ("...or switc") loses the escape hatch it was pointing at.
+    """
+    for error in reversed(_batch_cause_chain(exc)):
+        text = " ".join(str(error).split())
+        if text:
+            return text
+    return type(exc).__name__
+
+
+def _compact_batch_message(text: str) -> str:
+    """One short line, for a step row that sits alongside dozens of others."""
+    text = " ".join(text.split())
+    if len(text) > _BATCH_MESSAGE_CHARS:
+        text = text[: _BATCH_MESSAGE_CHARS - 3].rstrip() + "..."
+    return text
+
+
+def _batch_message(exc: BaseException) -> str:
+    """The most specific message on the chain, collapsed onto one short line."""
+    chain = _batch_cause_chain(exc)
+    text = ""
+    for error in reversed(chain):
+        text = str(error).strip()
+        if text:
+            break
+    return _compact_batch_message(text) or type(chain[0]).__name__
+
+
+def _classify_batch_error(exc: BaseException) -> dict:
+    """Turn an exception from a nested tool call into a typed step error."""
+    from fastmcp.exceptions import NotFoundError
+    from fastmcp.exceptions import ValidationError as FastMCPValidationError
+    from pydantic import ValidationError as PydanticValidationError
+
+    capability = _batch_capability_of(exc)
+    if capability:
+        return {
+            "kind": "unsupported",
+            "capability": capability,
+            "message": _batch_message(exc),
+        }
+    chain = _batch_cause_chain(exc)
+    if any(isinstance(error, NotFoundError) for error in chain):
+        return {"kind": "unknown_tool", "message": _batch_message(exc)}
+    if any(isinstance(error, (FastMCPValidationError, PydanticValidationError)) for error in chain):
+        return {"kind": "invalid_args", "message": _batch_message(exc)}
+    if isinstance(chain[-1], ToolError):
+        # call_tool re-raises a FastMCPError untouched, so an *unwrapped*
+        # ToolError is the tool itself declining on purpose: a rejected path, a
+        # sanitized command, an unavailable backend.
+        return {"kind": "refused", "message": _batch_message(exc)}
+    return {"kind": "failed", "message": _batch_message(exc)}
+
+
+# ── $references ─────────────────────────────────────────────────────────────
+
+
+def _batch_ref_name(value: Any) -> str | None:
+    """The binding name a value references, or None.
+
+    Only a string that is *entirely* a reference counts. Partial interpolation
+    ("part-$edge") is deliberately unsupported: it cannot be told apart from a
+    text string that happens to contain a dollar sign, and silently rewriting
+    drawing text would be worse than not offering the feature.
+    """
+    if not isinstance(value, str) or not value.startswith(_BATCH_REF_SIGIL):
+        return None
+    if value.startswith(_BATCH_REF_SIGIL * 2):  # "$$" escapes a literal "$"
+        return None
+    body = value[1:]
+    if not body:
+        return None
+    return body.split(".", 1)[0]
+
+
+def _resolve_batch_ref(value: str, bindings: dict[str, Any]) -> Any:
+    """Resolve one whole-string ``$reference`` against ``bindings``."""
+    name, _, path = value[1:].partition(".")
+    if name not in bindings:
+        raise BatchReferenceError(
+            f"'{value}' references an unbound name: no earlier step bound {name!r}. "
+            f"Bound so far: {sorted(bindings) or 'nothing'}."
+        )
+    current = bindings[name]
+    if not path:
+        if isinstance(current, dict):
+            handle = current.get("handle", _MISSING)
+            if handle is _MISSING:
+                raise BatchReferenceError(
+                    f"'{value}' asks for the handle of step bound as {name!r}, but that "
+                    f"step returned no 'handle' (keys: {sorted(current)}). Reference a "
+                    f"field instead, e.g. '{value}.{sorted(current)[0]}'."
+                    if current
+                    else f"'{value}' asks for a handle, but step {name!r} returned nothing."
+                )
+            return handle
+        return current
+    for segment in path.split("."):
+        if isinstance(current, dict) and segment in current:
+            current = current[segment]
+            continue
+        if isinstance(current, (list, tuple)) and segment.lstrip("-").isdigit():
+            index = int(segment)
+            if -len(current) <= index < len(current):
+                current = current[index]
+                continue
+        raise BatchReferenceError(
+            f"'{value}' cannot be resolved: {segment!r} is not present in the result "
+            f"bound as {name!r}."
+        )
+    return current
+
+
+def _substitute_batch_refs(value: Any, bindings: dict[str, Any]) -> Any:
+    """Replace every whole-string reference inside an argument tree."""
+    if isinstance(value, str):
+        if value.startswith(_BATCH_REF_SIGIL * 2):
+            return value[1:]
+        if _batch_ref_name(value) is not None:
+            return _resolve_batch_ref(value, bindings)
+        return value
+    if isinstance(value, dict):
+        return {key: _substitute_batch_refs(item, bindings) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_substitute_batch_refs(item, bindings) for item in value]
+    return value
+
+
+def _batch_refs_in(value: Any, found: set[str] | None = None) -> set[str]:
+    """Every binding name referenced anywhere in an argument tree."""
+    found = set() if found is None else found
+    name = _batch_ref_name(value)
+    if name is not None:
+        found.add(name)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _batch_refs_in(item, found)
+    elif isinstance(value, list):
+        for item in value:
+            _batch_refs_in(item, found)
+    return found
+
+
+def _batch_sentinel_refs(value: Any) -> Any:
+    """Replace references with the validation sentinel, leaving the rest intact."""
+    if isinstance(value, str):
+        if value.startswith(_BATCH_REF_SIGIL * 2):
+            return value[1:]
+        return _BATCH_REF_SENTINEL if _batch_ref_name(value) is not None else value
+    if isinstance(value, dict):
+        return {key: _batch_sentinel_refs(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_batch_sentinel_refs(item) for item in value]
+    return value
+
+
+# ── schema validation (dry_run, and the pre-flight of every real run) ───────
+
+
+def _validate_batch_args(schema: dict, args: dict) -> str | None:
+    """Validate ``args`` against a tool's real JSON Schema. Returns a problem, or None.
+
+    ``jsonschema`` ships with the ``mcp`` package this server already depends on,
+    so it is always importable in practice; a missing one degrades to "no schema
+    check" rather than to a bogus pass, and says so.
+
+    References are validated as a wildcard: errors reported against the sentinel
+    scalar are dropped, because a bound value's type is genuinely unknown until
+    the step that produces it has run. Everything else still applies — required
+    keys, unknown keys, and the type of every literal argument.
+    """
+    try:
+        import jsonschema
+    except ImportError:  # pragma: no cover - jsonschema arrives with `mcp`
+        return None
+    instance = _batch_sentinel_refs(args)
+    try:
+        validator = jsonschema.Draft202012Validator(schema)
+        problems = [
+            error
+            for error in validator.iter_errors(instance)
+            if error.instance != _BATCH_REF_SENTINEL
+        ]
+    except Exception as exc:  # a malformed schema must not take the batch down
+        log.debug("schema validation skipped: %s", exc)
+        return None
+    if not problems:
+        return None
+    problems.sort(key=lambda error: list(error.absolute_path))
+    first = problems[0]
+    where = "/".join(str(part) for part in first.absolute_path)
+    detail = " ".join(str(first.message).split())
+    text = f"{where}: {detail}" if where else detail
+    if len(problems) > 1:
+        text = f"{text} (+{len(problems) - 1} more)"
+    return text[:_BATCH_MESSAGE_CHARS]
+
+
+# ── atomicity ───────────────────────────────────────────────────────────────
+
+_BATCH_GUARANTEE_NOTES = {
+    "snapshot": (
+        "Rollback restores a full document snapshot taken before step 1; the restore "
+        "is a synchronous document replacement that raises if it fails, and the "
+        "before/after fingerprint below is checked. Cost: the checkpoint writes the "
+        "whole document to a temporary DXF, so it scales with drawing size."
+    ),
+    "best_effort_undo": (
+        "Rollback ends the AutoCAD undo mark and sends '_UNDO B' to the command line. "
+        "AutoCAD executes that asynchronously and does not confirm it landed, so this "
+        "is best-effort, NOT atomic. The before/after fingerprint below is the only "
+        "evidence available; treat a mismatch as 'the undo has not landed (yet)' and "
+        "check the drawing."
+    ),
+    "unverified": (
+        "This backend reports a transaction implementation this server does not "
+        "recognise, so no claim is made about what rollback restores. The before/after "
+        "fingerprint below is the only evidence."
+    ),
+    "none": (
+        "This backend does not support transactions, so on_error='rollback' cannot be "
+        "honoured. Use on_error='stop' and read `results` for what landed."
+    ),
+}
+
+_BATCH_NO_CLAIM_NOTE = "on_error={mode!r}: whatever ran stays applied; `results` is the record."
+
+
+def _batch_rollback_guarantee(backend) -> tuple[str, str]:
+    """What a rollback on this backend is actually worth, and the honest note.
+
+    Keyed off the backend's own ``transactions`` capability *mode* rather than
+    its name, so a third backend gets classified by what it declares it does.
+    """
+    try:
+        feature = backend.capabilities().features.get("transactions")
+    except Exception as exc:  # a capability probe must never break a tool call
+        log.debug("transaction capability probe failed: %s", exc)
+        return "unverified", _BATCH_GUARANTEE_NOTES["unverified"]
+    if feature is None or not feature.supported:
+        return "none", _BATCH_GUARANTEE_NOTES["none"]
+    guarantee = {"snapshot": "snapshot", "undo_mark": "best_effort_undo"}.get(
+        feature.mode or "", "unverified"
+    )
+    return guarantee, _BATCH_GUARANTEE_NOTES[guarantee]
+
+
+def _batch_transaction_ok(outcome) -> tuple[bool, str | None]:
+    """Did the backend actually perform the commit/rollback we asked for?
+
+    Both backends answer with a dict carrying ``ok``; the headless one returns
+    ``{"ok": False, "error": "No active transaction to rollback"}`` when the
+    checkpoint stack is empty. Returns ``(performed, declined_reason)`` so the
+    payload can report the refusal instead of silently claiming the happy path.
+    A non-dict answer is treated as success — that is the pre-existing contract
+    for backends that return nothing meaningful.
+    """
+    if not isinstance(outcome, dict):
+        return True, None
+    if outcome.get("ok", True):
+        return True, None
+    return False, str(outcome.get("error") or "backend declined")
+
+
+async def _batch_fingerprint(backend) -> dict | None:
+    """A cheap, backend-neutral summary of document state.
+
+    Counts plus extents: enough to *evidence* that a rollback landed rather than
+    merely assert it. Necessary, not sufficient — an in-place edit that changes
+    neither a count nor the extents would pass — which the payload says.
+    """
+    try:
+        info = _dc(await backend.drawing_info())
+    except Exception as exc:
+        log.debug("batch fingerprint unavailable: %s", exc)
+        return None
+    return {
+        "entity_count": info.get("entity_count"),
+        "layer_count": info.get("layer_count"),
+        "block_count": info.get("block_count"),
+        "extents_min": [round(float(v), 6) for v in (info.get("extents_min") or ())],
+        "extents_max": [round(float(v), 6) for v in (info.get("extents_max") or ())],
+    }
+
+
+# ── result compaction ───────────────────────────────────────────────────────
+
+
+def _compact_batch_result(result: Any, verbose: bool) -> Any:
+    """Trim a step result to what is not recoverable from the drawing.
+
+    A dict carrying a ``handle`` is an EntityInfo (or an insert/copy that
+    returns one): every other field of it is one ``entity_get`` away, and
+    re-emitting all of them per step gives back exactly the tokens batching
+    just saved. Anything without a handle — a score, a report, a measured
+    value, a point — is kept whole, because nothing else can produce it.
+    """
+    if verbose or not isinstance(result, dict):
+        return result
+    handle = result.get("handle", _MISSING)
+    if handle is _MISSING:
+        return result
+    return {"handle": handle}
+
+
+_BATCH_CHECK_NOTE = (
+    "document fingerprint (entity/layer/block counts + extents) captured before "
+    "step 1 and re-read after the rollback. Equality is evidence, not proof: an "
+    "edit changing neither a count nor the extents would pass it."
+)
+
+
+def _batch_atomicity(*, transaction: bool = False, **fields) -> dict:
+    """The atomicity block.
+
+    ``mode`` / ``guarantee`` / ``transaction`` / ``rolled_back`` are always
+    present — those are what a caller branches on. The evidence keys
+    (``committed``, ``verified``, ``before``, ``after``, ``check``) appear only
+    when a checkpoint was actually opened: on a ``stop``/``continue`` batch they
+    would be four nulls and two paragraphs describing a rollback that was never
+    on the table, and that boilerplate measured 61% of a short batch's whole
+    reply — a token bill for saying nothing.
+    """
+    block: dict[str, Any] = {
+        "mode": "stop",
+        "guarantee": "none",
+        "transaction": transaction,
+        "rolled_back": False,
+        "note": "",
+    }
+    if transaction:
+        block.update(
+            {"committed": False, "verified": None, "before": None, "after": None},
+        )
+        block["check"] = _BATCH_CHECK_NOTE
+    block.update(fields)
+    return block
+
+
+@cad_tool(
+    summary="Run an ordered list of tool calls in one round trip, binding results between steps.",
+    cost="destructive",
+)
+@mcp.tool(
+    annotations={"title": "Batch: Run Tools", "readOnlyHint": False, "destructiveHint": True},
+    tags={"batch"},
+)
+async def cad_batch(
+    steps: Annotated[
+        list[dict],
+        Field(
+            description=(
+                "Ordered steps. Each: {'tool': <tool name>, 'args': {...}, "
+                "'bind': <optional name>}. 'bind' names this step's result so a later "
+                "step can reference it as '$name' (its handle), '$name.field' or "
+                "'$name.list.0'. '$$' is a literal dollar sign."
+            )
+        ),
+    ],
+    on_error: Annotated[
+        str,
+        Field(
+            description=(
+                "stop (default): halt at the first failure, keep what already ran. "
+                "continue: run every step. rollback: open a checkpoint first and undo "
+                "on failure - read the returned `atomicity` block for what that is "
+                "worth on this backend."
+            )
+        ),
+    ] = "stop",
+    dry_run: Annotated[
+        bool,
+        "Validate every step against its tool's real JSON Schema and execute nothing.",
+    ] = False,
+    verbose: Annotated[
+        bool,
+        "Return each step's full result instead of just its handle.",
+    ] = False,
+    ctx: Context = None,
+) -> dict:
+    """Execute an ordered list of tool calls in ONE round trip.
+
+    N calls collapse into one request/response pair, and `bind` lets a later
+    step reference an earlier step's result so handles never have to be echoed
+    back through the model.
+
+        steps=[
+          {"tool": "entity_create_line",  "args": {...}, "bind": "edge"},
+          {"tool": "point_from_snap",     "args": {"handle": "$edge", "snap": "mid"},
+                                          "bind": "mid"},
+          {"tool": "entity_create_circle","args": {"cx": "$mid.x", "cy": "$mid.y",
+                                                   "radius": 4}},
+        ]
+
+    Successful steps report only their handle; pass verbose=True for the full
+    result. Anything without a handle is returned whole.
+
+    VALIDATION runs first, always: an unknown tool, a schema-invalid argument or
+    a reference no earlier step binds refuses the whole batch before anything
+    executes. `on_error` governs run-time failures only. dry_run=True returns
+    that validation report and executes nothing.
+
+    ERRORS are typed, never text: each failed step carries error.kind - one of
+    unsupported (with the backend `capability`), invalid_args, refused, failed,
+    unknown_tool, unresolved_ref, denied, malformed_step.
+
+    ATOMICITY is reported, not assumed. Read the `atomicity` block: on the
+    headless backend rollback restores a full document snapshot; on live AutoCAD
+    it sends an UNDO whose landing AutoCAD never confirms. The default
+    on_error="stop" claims nothing and is exact on both.
+
+    NOT CALLABLE from a batch: the raw command/LISP escape hatches, and
+    cad_batch itself. Call those directly.
+
+    For a few hundred entities of the same kind, entity_batch_create is denser
+    still (no per-step tool name) - and it can be one step of a cad_batch.
+    """
+    mode = (on_error or "stop").lower().strip()
+    if mode not in BATCH_ON_ERROR_MODES:
+        raise ToolError(
+            f"cad_batch: on_error must be one of {BATCH_ON_ERROR_MODES}, got {on_error!r}."
+        )
+    if not steps:
+        raise ToolError("cad_batch: `steps` is empty; there is nothing to run.")
+    if len(steps) > MAX_BATCH_STEPS:
+        raise ToolError(
+            f"cad_batch: {len(steps)} steps exceeds the {MAX_BATCH_STEPS}-step ceiling. "
+            "Steps run sequentially inside one uncancellable call - split the work."
+        )
+
+    denied = _batch_denied_tools()
+    read_only = _batch_read_only_tools()
+    plans: list[dict] = []
+    bound_names: set[str] = set()
+    problems: list[str] = []
+
+    for index, step in enumerate(steps):
+        row: dict = {"i": index, "tool": None, "status": "valid"}
+
+        def _invalid(kind: str, message: str, row: dict = row, index: int = index) -> None:
+            row["status"] = "invalid"
+            row["error"] = {"kind": kind, "message": message}
+            problems.append(f"step {index}: {message}")
+
+        if not isinstance(step, dict):
+            _invalid("malformed_step", f"step {index} is {type(step).__name__}, not an object")
+            plans.append(row)
+            continue
+        name = step.get("tool")
+        args = step.get("args") if step.get("args") is not None else {}
+        bind = step.get("bind")
+        row["tool"] = name if isinstance(name, str) else None
+        unknown_keys = sorted(set(step) - {"tool", "args", "bind"})
+        if not isinstance(name, str) or not name:
+            _invalid("malformed_step", f"step {index} has no 'tool' name")
+        elif not isinstance(args, dict):
+            _invalid("malformed_step", f"step {index} 'args' is not an object")
+        elif bind is not None and (not isinstance(bind, str) or not bind):
+            _invalid("malformed_step", f"step {index} 'bind' must be a non-empty string")
+        elif unknown_keys:
+            _invalid(
+                "malformed_step",
+                f"step {index} has unexpected key(s) {unknown_keys}; a step is "
+                "{'tool', 'args', 'bind'}",
+            )
+        elif name in denied:
+            _invalid(
+                "denied",
+                f"{name!r} is denied inside cad_batch: one batch grant must not reach "
+                "the raw escape hatches (or another batch executor). Call it directly, "
+                "where its own gate applies.",
+            )
+        else:
+            tool = await ctx.fastmcp.get_tool(name)
+            card = (getattr(tool, "meta", None) or {}).get("cad") or {}
+            if tool is None:
+                _invalid(
+                    "unknown_tool",
+                    f"{name!r} is not a callable tool here (unregistered, or hidden by "
+                    "the active TOOL_PROFILE / ENABLE_3D gate).",
+                )
+            elif card.get("cost") == "escape":
+                # The deny set is computed from the local registry; this repeats
+                # the check against the *resolved* tool, which is what actually
+                # runs. A mounted or transformed provider can supply a tool the
+                # local snapshot never saw.
+                _invalid(
+                    "denied",
+                    f"{name!r} is an escape-hatch tool (cost='escape') and is denied "
+                    "inside cad_batch. Call it directly, where its own gate applies.",
+                )
+            elif not card:
+                # Fail closed on unknown provenance. This is not a nicety: under
+                # DISCOVERY_MODE=search the advertised surface is search_tools +
+                # `call_tool`, and `call_tool` invokes any tool by name. It is a
+                # general-purpose proxy living in the same server as this
+                # denylist, and being card-less is the ONLY thing that stops
+                # cad_batch -> call_tool -> system_run_command. The deny set
+                # above cannot see it: it is transform-supplied, not a local
+                # component with a cost card.
+                #
+                # So: giving `call_tool` a @cad_tool card - reasonable-sounding,
+                # since it would make the proxy costed and discoverable -
+                # reopens the escalation path. Do that only alongside an
+                # explicit denial for it. tests/test_cad_batch.py pins this.
+                _invalid(
+                    "denied",
+                    f"{name!r} carries no @cad_tool discovery card, so cad_batch cannot "
+                    "tell what it costs and will not run it blind. Call it directly.",
+                )
+            else:
+                missing = sorted(_batch_refs_in(args) - bound_names)
+                if missing:
+                    _invalid(
+                        "unresolved_ref",
+                        f"step {index} references {missing} which no earlier step binds "
+                        f"(bound by step {index}: {sorted(bound_names) or 'nothing'}).",
+                    )
+                else:
+                    detail = _validate_batch_args(tool.parameters or {}, args)
+                    if detail:
+                        _invalid("invalid_args", f"{name}: {detail}")
+                    else:
+                        row["_args"] = args
+                        row["_bind"] = bind
+                        if bind:
+                            bound_names.add(bind)
+        plans.append(row)
+
+    if dry_run:
+        invalid = sum(1 for row in plans if row["status"] == "invalid")
+        guarantee, note = ("none", _BATCH_NO_CLAIM_NOTE.format(mode=mode))
+        if mode == "rollback":
+            guarantee, note = _batch_rollback_guarantee(_backend(ctx))
+            note = f"Planned only - a dry run opens no checkpoint. {note}"
+        return {
+            "ok": invalid == 0,
+            "dry_run": True,
+            "on_error": mode,
+            "steps": len(steps),
+            "executed": 0,
+            "valid": len(plans) - invalid,
+            "invalid": invalid,
+            "bindings": sorted(bound_names),
+            "results": [{k: v for k, v in row.items() if not k.startswith("_")} for row in plans],
+            "atomicity": _batch_atomicity(mode=mode, guarantee=guarantee, note=note),
+            "note": (
+                "Validated against each tool's real JSON Schema; nothing was executed. "
+                "A '$reference' validates as a wildcard because its type is only known "
+                "once the step that binds it has run."
+            ),
+        }
+
+    if problems:
+        raise ToolError(
+            f"cad_batch refused all {len(steps)} steps - nothing was executed. "
+            + "; ".join(problems[:5])
+            + ("" if len(problems) <= 5 else f" (+{len(problems) - 5} more)")
+        )
+
+    backend = _backend(ctx)
+    guarantee, note = "none", _BATCH_NO_CLAIM_NOTE.format(mode=mode)
+    transaction = False
+    before = None
+    if mode == "rollback":
+        guarantee, note = _batch_rollback_guarantee(backend)
+        if guarantee == "none":
+            raise ToolError(f"cad_batch: on_error='rollback' is unavailable here. {note}")
+        before = await _batch_fingerprint(backend)
+        opened = await backend.transaction_begin()
+        if not (isinstance(opened, dict) and opened.get("ok")):
+            reason = (opened or {}).get("error", "transaction_begin declined")
+            return {
+                "ok": False,
+                "dry_run": False,
+                "on_error": mode,
+                "steps": len(steps),
+                "executed": 0,
+                "succeeded": 0,
+                "failed": 0,
+                "skipped": len(steps),
+                "bindings": [],
+                "results": [
+                    {"i": row["i"], "tool": row["tool"], "status": "skipped", "reason": reason}
+                    for row in plans
+                ],
+                "atomicity": _batch_atomicity(
+                    mode=mode,
+                    guarantee=guarantee,
+                    note=(
+                        f"No checkpoint was opened ({reason}), so nothing ran: a "
+                        "transaction this call did not open is not one it can roll back "
+                        f"to. {note}"
+                    ),
+                ),
+            }
+        transaction = True
+
+    bindings: dict[str, Any] = {}
+    results: list[dict] = []
+    succeeded = failed = executed = 0
+    total = len(plans)
+    await ctx.info(f"cad_batch: {total} step(s), on_error={mode}")
+
+    for position, plan in enumerate(plans):
+        await ctx.report_progress(position, total)
+        name = plan["tool"]
+        row: dict = {"i": plan["i"], "tool": name}
+        if failed and mode == "stop":
+            row["status"] = "skipped"
+            row["reason"] = "an earlier step failed (on_error='stop')"
+            results.append(row)
+            continue
+        try:
+            args = _substitute_batch_refs(plan["_args"], bindings)
+        except BatchReferenceError as exc:
+            failed += 1
+            row["status"] = "error"
+            row["error"] = {"kind": "unresolved_ref", "message": _batch_message(exc)}
+            log.warning("BATCH %d/%d %-38s unresolved_ref", position + 1, total, name)
+            results.append(row)
+            continue
+        try:
+            # run_middleware=False: the cad_batch call itself is already through
+            # the audit/timing chain, and skipping it keeps the error one wrap
+            # deep instead of three, which is what makes the taxonomy above
+            # readable. Each step is logged here instead, tagged as a batch step.
+            outcome = await ctx.fastmcp.call_tool(name, args, run_middleware=False)
+        except Exception as exc:
+            failed += 1
+            executed += 1
+            row["status"] = "error"
+            row["error"] = _classify_batch_error(exc)
+            log.warning("BATCH %d/%d %-38s %s", position + 1, total, name, row["error"]["kind"])
+            results.append(row)
+            if mode == "rollback":
+                break
+            continue
+        executed += 1
+        structured = getattr(outcome, "structured_content", None)
+        # A tool may decline *by value* instead of raising: an `is_error` result
+        # from the refusal middleware, or an `{"ok": False, ...}` payload. Both
+        # mean the step did not do its work, and counting either as succeeded is
+        # the same class of lie as the DWG bytes and the unverified rollback —
+        # the batch would report succeeded:1 over work that never happened.
+        #
+        # `ok: False` only carries that meaning for a tool that was supposed to
+        # ACT. On a read-only checker it means "I looked and found something",
+        # and treating that as a refusal is how a `validation_check` step came
+        # to trigger a rollback that destroyed the batch's own geometry.
+        refused = bool(getattr(outcome, "is_error", False)) or (
+            name not in read_only and isinstance(structured, dict) and structured.get("ok") is False
+        )
+        if refused:
+            failed += 1
+            declined_payload = structured if isinstance(structured, dict) else {}
+            capability = declined_payload.get("capability")
+            row["status"] = "error"
+            row["error"] = {
+                "kind": "unsupported" if capability else "refused",
+                **({"capability": capability} if capability else {}),
+                "message": _compact_batch_message(
+                    str(declined_payload.get("error") or "the tool declined")
+                ),
+            }
+            log.warning("BATCH %d/%d %-38s %s", position + 1, total, name, row["error"]["kind"])
+            results.append(row)
+            # `failed` is what on_error='stop' reads at the top of the loop, so
+            # incrementing it above is the whole stop mechanism.
+            if mode == "rollback":
+                break
+            continue
+        succeeded += 1
+        if plan["_bind"]:
+            bindings[plan["_bind"]] = structured
+            row["bind"] = plan["_bind"]
+        row["status"] = "ok"
+        row["result"] = _compact_batch_result(structured, verbose)
+        log.info("BATCH %d/%d %-38s ok", position + 1, total, name)
+        results.append(row)
+
+    await ctx.report_progress(total, total)
+
+    committed = rolled_back = False
+    verified = None
+    after = None
+    declined = None
+    if transaction:
+        if failed:
+            await ctx.warning("cad_batch: rolling back")
+            # Read the backend's answer instead of asserting success from
+            # control flow. A step is free to call transaction_commit and pop
+            # the checkpoint out from under us, in which case the headless
+            # backend returns {"ok": False, "error": "No active transaction to
+            # rollback"} and the caller's work is still there. Reporting
+            # rolled_back=True off the bare await would be the same class of
+            # lie as writing DXF bytes into a .dwg.
+            rolled_back, declined = _batch_transaction_ok(await backend.transaction_rollback())
+            after = await _batch_fingerprint(backend)
+            verified = None if (before is None or after is None) else before == after
+        else:
+            committed, declined = _batch_transaction_ok(await backend.transaction_commit())
+
+    ok = failed == 0
+    atomicity = _batch_atomicity(
+        mode=mode, guarantee=guarantee, transaction=transaction, rolled_back=rolled_back, note=note
+    )
+    if transaction:
+        atomicity.update(
+            {"committed": committed, "verified": verified, "before": before, "after": after}
+        )
+    payload = {
+        "ok": ok,
+        "dry_run": False,
+        "on_error": mode,
+        "steps": total,
+        "executed": executed,
+        "succeeded": succeeded,
+        "failed": failed,
+        "skipped": sum(1 for row in results if row["status"] == "skipped"),
+        "bindings": sorted(bindings),
+        "results": results,
+        "atomicity": atomicity,
+    }
+    if declined:
+        payload["atomicity"]["note"] = (
+            f"BACKEND DECLINED THE {'ROLLBACK' if failed else 'COMMIT'} ({declined}). "
+            "The checkpoint was gone before we reached it - most likely a step called "
+            "transaction_commit or transaction_rollback itself. Nothing was undone; "
+            f"the steps that succeeded are still in the document. {note}"
+        )
+    elif rolled_back and verified is False:
+        payload["atomicity"]["note"] = (
+            "ROLLBACK NOT VERIFIED - the document fingerprint differs from the one "
+            f"taken before step 1. {note}"
+        )
+    return payload
+
+
+@cad_tool(summary="Draw many entities in one call instead of one round trip each.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Batch Create Entities", "readOnlyHint": False},
     tags={"entity", "create", "batch"},
@@ -2176,6 +4274,10 @@ async def entity_batch_create(
 
     Each entity dict must have a 'type' key and the parameters for that type.
     Example: [{"type": "line", "x1": 0, "y1": 0, "x2": 100, "y2": 0}, {"type": "circle", "cx": 50, "cy": 50, "radius": 25}]
+
+    Denser than cad_batch for many entities of the same kind (no per-step tool
+    name), and usable as one step *of* a cad_batch. Use cad_batch when the calls
+    differ, must be ordered, or must feed each other.
     """
     b = _backend(ctx)
     results = []
@@ -2216,6 +4318,10 @@ async def entity_batch_create(
     return {"created": len(results), "errors": errors, "entities": results}
 
 
+@cad_tool(
+    summary="Move, rotate, scale, restyle or delete many entities in one call.",
+    cost="destructive",
+)
 @mcp.tool(
     annotations={"title": "Batch Modify Entities", "readOnlyHint": False},
     tags={"entity", "modify", "batch"},
@@ -2230,6 +4336,9 @@ async def entity_batch_modify(
     """Apply multiple modifications in a single call.
 
     Example: [{"handle": "1A", "action": "move", "dx": 10, "dy": 20}, {"handle": "2B", "action": "delete"}]
+
+    Covers move/rotate/scale/delete/set_properties only. For anything else, for
+    ordering, or to feed one step's result into the next, use cad_batch.
     """
     b = _backend(ctx)
     results = []
@@ -2324,6 +4433,10 @@ _LAYER_TEMPLATES = {
 }
 
 
+@cad_tool(
+    summary="Create a standard layer set: architectural, mechanical, electrical or piping.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Apply Layer Template", "readOnlyHint": False},
     tags={"template", "layer"},
@@ -2359,6 +4472,7 @@ async def template_apply_layers(
     return {"ok": True, "template": template_key, "layers_created": created, "count": len(created)}
 
 
+@cad_tool(summary="Show the available layer templates and the layers in each.", cost="read")
 @mcp.tool(
     annotations={"title": "List Available Templates", "readOnlyHint": True},
     tags={"template", "query"},
@@ -2379,6 +4493,10 @@ async def template_list(ctx: Context = None) -> dict:
 # ---------------------------------------------------------------------------
 
 
+@cad_tool(
+    summary="Sanity-check the drawing for empty layers, zero-length lines and duplicates.",
+    cost="read",
+)
 @mcp.tool(
     annotations={"title": "Validate Drawing", "readOnlyHint": True},
     tags={"analysis", "validation"},
@@ -2451,6 +4569,7 @@ async def validation_check(
 # ---------------------------------------------------------------------------
 
 
+@cad_tool(summary="Zoom out until every entity fits on screen.", cost="safe")
 @mcp.tool(
     annotations={"title": "Zoom Extents", "readOnlyHint": False, "destructiveHint": False},
     tags={"view"},
@@ -2460,6 +4579,7 @@ async def view_zoom_extents(ctx: Context = None) -> dict:
     return await _backend(ctx).view_zoom_extents()
 
 
+@cad_tool(summary="Zoom in on a rectangular region of the drawing.", cost="safe")
 @mcp.tool(
     annotations={"title": "Zoom Window", "readOnlyHint": False, "destructiveHint": False},
     tags={"view"},
@@ -2475,15 +4595,30 @@ async def view_zoom_window(
     return await _backend(ctx).view_zoom_window(x1, y1, x2, y2)
 
 
+@cad_tool(summary="Capture a PNG picture of the drawing as it currently looks.", cost="read")
 @mcp.tool(
     annotations={"title": "Screenshot", "readOnlyHint": True},
     tags={"view", "screenshot"},
 )
-async def view_screenshot(ctx: Context = None):
+async def view_screenshot(
+    overlay_handles: Annotated[
+        bool,
+        "Label each entity with its handle, so what you see maps to what you "
+        "can modify. Headless backend only.",
+    ] = False,
+    ctx: Context = None,
+):
     """Capture a screenshot of the current drawing view.
 
     COM backend: captures live AutoCAD window at current view.
     ezdxf backend: renders via matplotlib to PNG.
+
+    With `overlay_handles`, each entity is labelled with its handle at its own
+    centre — every modify tool takes a handle, and without the labels there is
+    nothing connecting "the circle at the top-left" to a hex string you can act
+    on. Crowded drawings are capped and the image says how many of how many were
+    labelled. Live AutoCAD captures its own window, so there is no render to
+    label there; it refuses with `capability: "handle_overlay"`.
 
     Returns an Image content block with the PNG data.
     """
@@ -2493,7 +4628,7 @@ async def view_screenshot(ctx: Context = None):
     await ctx.report_progress(0, 100)
 
     b = _backend(ctx)
-    png_bytes = await b.view_screenshot()
+    png_bytes = await b.view_screenshot(overlay_handles=overlay_handles)
 
     await ctx.report_progress(100, 100)
 
@@ -2507,6 +4642,10 @@ async def view_screenshot(ctx: Context = None):
     return Image(data=png_bytes, format="png")
 
 
+@cad_tool(
+    summary="Fit the drawing on screen, then capture it: the quickest visual check.",
+    cost="read",
+)
 @mcp.tool(
     annotations={"title": "Zoom and Screenshot", "readOnlyHint": True},
     tags={"view", "screenshot"},
@@ -2548,6 +4687,7 @@ async def view_zoom_and_screenshot(
 # ---------------------------------------------------------------------------
 
 
+@cad_tool(summary="Open a rollback checkpoint before a risky edit.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Begin Transaction", "readOnlyHint": False, "destructiveHint": False},
     tags={"transaction"},
@@ -2567,6 +4707,7 @@ async def transaction_begin(ctx: Context = None) -> dict:
     return await _backend(ctx).transaction_begin()
 
 
+@cad_tool(summary="Keep the changes and drop the checkpoint.", cost="safe")
 @mcp.tool(
     annotations={"title": "Commit Transaction", "readOnlyHint": False, "destructiveHint": False},
     tags={"transaction"},
@@ -2581,6 +4722,10 @@ async def transaction_commit(ctx: Context = None) -> dict:
     return await _backend(ctx).transaction_commit()
 
 
+@cad_tool(
+    summary="Throw away every change made since transaction_begin.",
+    cost="destructive",
+)
 @mcp.tool(
     annotations={"title": "Rollback Transaction", "readOnlyHint": False, "destructiveHint": True},
     tags={"transaction"},
@@ -2602,6 +4747,10 @@ async def transaction_rollback(ctx: Context = None) -> dict:
 # ---------------------------------------------------------------------------
 
 
+@cad_tool(
+    summary="Check the connection: which engine is live and what document is open.",
+    cost="read",
+)
 @mcp.tool(
     annotations={"title": "Server Status", "readOnlyHint": True},
     tags={"system"},
@@ -2640,6 +4789,7 @@ async def system_status(ctx: Context = None) -> dict:
     return status
 
 
+@cad_tool(summary="Ask the active backend which features it really supports.", cost="read")
 @mcp.tool(
     annotations={"title": "Backend Capabilities", "readOnlyHint": True},
     tags={"system", "query"},
@@ -2649,6 +4799,7 @@ async def system_capabilities(ctx: Context = None) -> dict:
     return _backend(ctx).capabilities().to_dict()
 
 
+@cad_tool(summary="Read one AutoCAD system variable, such as DIMSCALE or LTSCALE.", cost="read")
 @mcp.tool(
     annotations={"title": "Get System Variable", "readOnlyHint": True},
     tags={"system"},
@@ -2664,6 +4815,7 @@ async def system_get_variable(
     return {"variable": name, "value": value}
 
 
+@cad_tool(summary="Set one AutoCAD system variable by name.", cost="safe")
 @mcp.tool(
     annotations={"title": "Set System Variable", "readOnlyHint": False},
     tags={"system"},
@@ -2677,6 +4829,10 @@ async def system_set_variable(
     return await _backend(ctx).system_set_variable(name, value)
 
 
+@cad_tool(
+    summary="Read or change drawing units, precision, linetype and dimension scale by name.",
+    cost="safe",
+)
 @mcp.tool(
     annotations={
         "title": "Drawing Settings (read / change)",
@@ -2712,6 +4868,10 @@ async def drawing_settings(
     return await _backend(ctx).drawing_settings(settings)
 
 
+@cad_tool(
+    summary="Send a raw command string to the AutoCAD command line (COM only).",
+    cost="escape",
+)
 @mcp.tool(
     annotations={"title": "Run AutoCAD Command", "readOnlyHint": False},
     tags={"system"},
@@ -2728,12 +4888,19 @@ async def system_run_command(
     -STYLE return to '[?/Create/Load/Set]:' after their action) need an EXTRA
     blank line or '_X\\n' to exit, otherwise AutoCAD stays at a prompt and the
     next COM call will deadlock. Example: '_-LINETYPE _LOAD CENTER acad.lin\\n\\n'.
+
+    A verb denylist refuses obviously destructive commands, but it is a guardrail
+    against issuing `ERASE ALL` by accident, NOT a security boundary — AutoCAD
+    accepts hundreds of commands and any loaded ARX/LISP adds more. Prefer the
+    typed tools (entity_delete, drawing_save_as, block_insert, drawing_purge):
+    they validate their arguments, which a free-text command string cannot.
     """
     sanitize_command(command)
     await ctx.warning(f"Running command: {command}")
     return await _backend(ctx).system_run_command(command)
 
 
+@cad_tool(summary="Evaluate an AutoLISP expression inside AutoCAD (COM only).", cost="escape")
 @mcp.tool(
     annotations={"title": "Execute AutoLISP", "readOnlyHint": False},
     tags={"system"},
@@ -2745,12 +4912,21 @@ async def system_run_lisp(
     """Execute an AutoLISP expression (COM backend only).
 
     Example: '(setvar \"DIMSCALE\" 1.0)'
+
+    A symbol denylist refuses the known code-execution and file-I/O channels;
+    text inside double quotes is treated as data, so drawing notes are not
+    mistaken for code. It is a guardrail, NOT a security boundary — AutoLISP has
+    more write channels than any denylist enumerates. Prefer the typed tools.
     """
     sanitize_lisp(expression)
     await ctx.warning(f"Running LISP: {expression[:80]}")
     return await _backend(ctx).system_run_lisp(expression)
 
 
+@cad_tool(
+    summary="See what this server can do: version, tool groups and active profile.",
+    cost="read",
+)
 @mcp.tool(
     annotations={"title": "Backend Info", "readOnlyHint": True},
     tags={"system"},
@@ -2786,6 +4962,10 @@ async def system_about(ctx: Context = None) -> dict:
 # ---------------------------------------------------------------------------
 
 
+@cad_tool(
+    summary="Draw a helical gear front view: true involute teeth, circles, bore and keyway.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Gear: Helical Front View", "destructiveHint": False},
     tags={"engineering", "gear"},
@@ -2846,6 +5026,10 @@ async def gear_draw_helical_front_view(
     )
 
 
+@cad_tool(
+    summary="Draw a straight-tooth spur gear front view with true involute teeth.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Gear: Spur Front View", "destructiveHint": False},
     tags={"engineering", "gear"},
@@ -2878,6 +5062,10 @@ async def gear_draw_spur_front_view(
     )
 
 
+@cad_tool(
+    summary="Draw the hatched side cross-section A-A of a gear you already drew.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Gear: Section A-A View", "destructiveHint": False},
     tags={"engineering", "gear"},
@@ -2908,6 +5096,10 @@ async def gear_draw_section_aa(
     )
 
 
+@cad_tool(
+    summary="Draw a bore with a DIN 6885 keyway, auto-sized from the bore diameter.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Keyway: Keyed Bore (front view)", "destructiveHint": False},
     tags={"engineering", "keyway"},
@@ -2935,6 +5127,7 @@ async def keyway_draw_keyed_bore(
     )
 
 
+@cad_tool(summary="Draw the side cross-section of a keyed bore.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Keyway: Side Section", "destructiveHint": False},
     tags={"engineering", "keyway"},
@@ -2962,6 +5155,10 @@ async def keyway_draw_section(
     )
 
 
+@cad_tool(
+    summary="Stamp an ISO 7200 title block and sheet frame onto an A3 drawing.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "TitleBlock: ISO A3", "destructiveHint": False},
     tags={"engineering", "titleblock"},
@@ -2981,9 +5178,20 @@ async def titleblock_apply_iso_a3(
     company: Annotated[str, Field(default="Anka-Makine")] = "Anka-Makine",
     origin_x: Annotated[float, Field(default=0.0)] = 0.0,
     origin_y: Annotated[float, Field(default=0.0)] = 0.0,
+    layout: Annotated[
+        str,
+        "Paper-space layout to draw the sheet on (create it with layout_create). "
+        "Empty draws in the current space, as before.",
+    ] = "",
     ctx: Context = None,
 ) -> dict:
-    """ISO 7200 / A3 (420x297 mm) title block. Title text is used verbatim."""
+    """ISO 7200 / A3 (420x297 mm) title block. Title text is used verbatim.
+
+    Pass `layout` to put the sheet on a paper-space layout, which is where a
+    title block belongs — the border frames the printed sheet, not the model.
+    Your current space is restored afterwards, so asking for a border does not
+    move you onto the sheet.
+    """
     from engineering import TitleBlockMetadata, apply_iso_a3_titleblock
 
     backend = _backend(ctx)
@@ -3001,9 +5209,18 @@ async def titleblock_apply_iso_a3(
         revision=revision,
         company=company,
     )
-    return await apply_iso_a3_titleblock(backend, metadata=metadata, origin=(origin_x, origin_y))
+    return await apply_iso_a3_titleblock(
+        backend,
+        metadata=metadata,
+        origin=(origin_x, origin_y),
+        layout=layout or None,
+    )
 
 
+@cad_tool(
+    summary="Finish the drawing: validate, critique, save, screenshot and score it.",
+    cost="destructive",
+)
 @mcp.tool(
     annotations={
         "title": "Drawing: Finalize (validate + save + screenshot)",
@@ -3117,6 +5334,10 @@ async def drawing_finalize(
     return payload
 
 
+@cad_tool(
+    summary="Hand the drawing off: a hashed, validated bundle of files plus a manifest.",
+    cost="destructive",
+)
 @mcp.tool(
     annotations={
         "title": "Drawing: Deliver Auditable Bundle",
@@ -3174,6 +5395,10 @@ async def drawing_deliver(
 # See `.claude/skills/autocad-mcp-premium/` for the full discipline.
 
 
+@cad_tool(
+    summary="Check the brief before you draw: units, part type, tolerances, missing inputs.",
+    cost="read",
+)
 @mcp.tool(
     annotations={"title": "Drawing: Preflight", "readOnlyHint": True},
     tags={"premium", "planning", "validation"},
@@ -3212,6 +5437,10 @@ async def drawing_preflight(
     return result.to_dict()
 
 
+@cad_tool(
+    summary="Commit sheet size, scale, layer set and dimension style before any geometry.",
+    cost="safe",
+)
 @mcp.tool(
     annotations={"title": "Drawing: Plan (commit intent before drawing)", "destructiveHint": False},
     tags={"premium", "planning"},
@@ -3260,6 +5489,10 @@ async def drawing_plan(
     return _dc(plan)
 
 
+@cad_tool(
+    summary="Review the drawing for drafting mistakes: must come back empty before finalize.",
+    cost="read",
+)
 @mcp.tool(
     annotations={
         "title": "Drawing: Critique (premium quality checks)",
@@ -3287,6 +5520,10 @@ async def drawing_critique(
     return [_dc(i) for i in issues]
 
 
+@cad_tool(
+    summary="Auto-repair what the critique found, then re-check, up to three rounds.",
+    cost="destructive",
+)
 @mcp.tool(
     annotations={"title": "Drawing: Refine", "destructiveHint": True},
     tags={"premium", "validation", "modify"},
@@ -3315,6 +5552,10 @@ async def drawing_refine(
     return result.to_dict()
 
 
+@cad_tool(
+    summary="Get an exact endpoint, midpoint, centre, quadrant or perpendicular foot.",
+    cost="read",
+)
 @mcp.tool(
     annotations={"title": "Point: Snap (deterministic OSNAP)", "readOnlyHint": True},
     tags={"premium", "snap"},
@@ -3335,6 +5576,7 @@ async def point_from_snap(
     return {"x": float(pt[0]), "y": float(pt[1])}
 
 
+@cad_tool(summary="Find where two lines or circles cross, exactly.", cost="read")
 @mcp.tool(
     annotations={"title": "Point: Intersection (deterministic)", "readOnlyHint": True},
     tags={"premium", "snap"},
@@ -3356,6 +5598,7 @@ async def point_intersection(
     return {"x": float(pt[0]), "y": float(pt[1])}
 
 
+@cad_tool(summary="Find where a line from an outside point touches a circle.", cost="read")
 @mcp.tool(
     annotations={"title": "Point: Tangent from external point", "readOnlyHint": True},
     tags={"premium", "snap"},
@@ -3377,6 +5620,7 @@ async def point_tangent(
     return {"x": float(pt[0]), "y": float(pt[1])}
 
 
+@cad_tool(summary="Lay down an infinite guide line to build geometry against.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Construction: XLine (infinite reference)", "destructiveHint": False},
     tags={"premium", "construction"},
@@ -3395,6 +5639,10 @@ async def construction_xline(
     return _dc(result)
 
 
+@cad_tool(
+    summary="Wipe the construction scaffolding off the drawing before finalize.",
+    cost="destructive",
+)
 @mcp.tool(
     annotations={"title": "Construction: Clear (delete scaffold)", "destructiveHint": True},
     tags={"premium", "construction"},
@@ -3409,6 +5657,10 @@ async def construction_clear(
     return await _backend(ctx).construction_clear(layer)
 
 
+@cad_tool(
+    summary="Set up a standard ISO layer set with the right colours and lineweights.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Drawing: Apply ISO Layer Set (bootstrap)", "destructiveHint": False},
     tags={"premium", "layers"},
@@ -3429,6 +5681,10 @@ async def drawing_apply_iso_layers(
     return await _backend(ctx).drawing_apply_iso_layers(standard)
 
 
+@cad_tool(
+    summary="Dimension a set of entities at once, as a chain, baseline or ordinate run.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={
         "title": "Dimension: Auto (chain / baseline / ordinate)",
@@ -3453,6 +5709,10 @@ async def dimension_auto(
     return [_dc(e) for e in result]
 
 
+@cad_tool(
+    summary="Pick every entity matching a description: type, layer, colour, length, location.",
+    cost="read",
+)
 @mcp.tool(
     annotations={"title": "Entity: Smart Select (semantic predicate)", "readOnlyHint": True},
     tags={"premium", "select"},
@@ -3468,11 +5728,24 @@ async def entity_select_smart(
             )
         ),
     ],
+    fields: ResultFields = None,
+    compact: ResultCompact = False,
     ctx: Context = None,
-) -> list[dict]:
-    """Select entities by semantic predicate instead of memorising handles."""
+) -> list[dict] | dict:
+    """Select entities by semantic predicate instead of memorising handles.
+
+    Uncapped. The usual next step is dimension_auto(handles), so
+    fields=["handle"] is normally all this needs to return.
+    """
     result = await _backend(ctx).entity_select_smart(predicate)
-    return [_dc(e) for e in result]
+    return _shape_rows(
+        result,
+        spec=EntityInfo,
+        fields=fields,
+        compact=compact,
+        tool="entity_select_smart",
+        total=len(result),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3483,6 +5756,10 @@ async def entity_select_smart(
 # consistency rule is enforced by the `gdt` critique focus at finalize time.
 
 
+@cad_tool(
+    summary="Draw an ISO 1101 feature control frame: symbol, tolerance zone and datums.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "GD&T: Feature Control Frame (ISO 1101)", "destructiveHint": False},
     tags={"engineering", "gdt"},
@@ -3542,6 +5819,10 @@ async def gd_frame(
     )
 
 
+@cad_tool(
+    summary="Mark a datum on a feature: filled triangle plus the boxed datum letter.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "GD&T: Datum Feature (ISO 1101)", "destructiveHint": False},
     tags={"engineering", "gdt"},
@@ -3563,10 +5844,11 @@ async def datum_feature(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 15: Layouts & Paper Space (4 tools) ─────────────────────────────
+# ── SECTION 15: Layouts & Paper Space (12 tools) ────────────────────────────
 # ---------------------------------------------------------------------------
 
 
+@cad_tool(summary="List the sheet tabs: Model plus every paper-space layout.", cost="read")
 @mcp.tool(
     annotations={"title": "List Layouts", "readOnlyHint": True},
     tags={"layout", "query"},
@@ -3576,6 +5858,7 @@ async def layout_list(ctx: Context = None) -> dict:
     return await _backend(ctx).layout_list()
 
 
+@cad_tool(summary="Add a new paper-space sheet tab to the drawing.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Create Layout", "destructiveHint": False},
     tags={"layout"},
@@ -3589,6 +5872,7 @@ async def layout_create(
     return await _backend(ctx).layout_create(name)
 
 
+@cad_tool(summary="Switch to a sheet tab, or back to model space.", cost="safe")
 @mcp.tool(
     annotations={"title": "Set Current Layout"},
     tags={"layout"},
@@ -3601,6 +5885,10 @@ async def layout_set_current(
     return await _backend(ctx).layout_set_current(name)
 
 
+@cad_tool(
+    summary="Put a scaled window onto model space on a sheet, at 1:1, 1:2 and so on.",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Create Viewport", "destructiveHint": False},
     tags={"layout"},
@@ -3630,6 +5918,178 @@ async def viewport_create(
     )
 
 
+@cad_tool(summary="Delete a sheet tab and everything drawn on it.", cost="destructive")
+@mcp.tool(
+    annotations={"title": "Delete Layout", "destructiveHint": True},
+    tags={"layout"},
+)
+async def layout_delete(
+    name: Annotated[str, "Paper-space layout tab to delete (never 'Model')."],
+    ctx: Context = None,
+) -> dict:
+    """Delete a paper-space layout and every entity on it.
+
+    Refuses model space, a blank name, and the last remaining sheet. If the
+    deleted tab was the current one, the returned `current` is where geometry
+    goes next — and handles from the deleted sheet stop resolving.
+    """
+    await ctx.info(f"Deleting layout {name}")
+    return await _backend(ctx).layout_delete(name)
+
+
+@cad_tool(summary="Rename a sheet tab, keeping its geometry and handles.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Rename Layout", "destructiveHint": False},
+    tags={"layout"},
+)
+async def layout_rename(
+    old_name: Annotated[str, "Existing layout tab name."],
+    new_name: Annotated[str, "New name; must not be blank or contain / \\ * ? : ; , = `"],
+    ctx: Context = None,
+) -> dict:
+    """Rename a paper-space layout. Entity handles are unaffected."""
+    return await _backend(ctx).layout_rename(old_name, new_name)
+
+
+@cad_tool(summary="Duplicate a sheet with its page setup and geometry.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Copy Layout", "destructiveHint": False},
+    tags={"layout"},
+)
+async def layout_copy(
+    source: Annotated[str, "Layout tab to copy from (never 'Model')."],
+    new_name: Annotated[str, "Name for the new layout tab."],
+    ctx: Context = None,
+) -> dict:
+    """Copy a paper-space layout: page setup, plot settings and all geometry.
+
+    `skipped` names any DXF types that could not be cloned — check it rather
+    than trusting `ok` alone. Associative hatch boundaries are re-pointed at the
+    cloned entities; `associativity_dropped` counts those that referenced
+    something outside the source layout and had to be cleared.
+    """
+    await ctx.info(f"Copying layout {source} to {new_name}")
+    return await _backend(ctx).layout_copy(source, new_name)
+
+
+@cad_tool(summary="List the viewports on a sheet with their scales and locks.", cost="read")
+@mcp.tool(
+    annotations={"title": "List Viewports", "readOnlyHint": True},
+    tags={"layout", "query"},
+)
+async def viewport_list(
+    layout: Annotated[
+        str,
+        "Restrict to one paper-space layout. Empty covers every sheet.",
+    ] = "",
+    ctx: Context = None,
+) -> dict:
+    """List paper-space viewports: handle, geometry, scale and lock state.
+
+    The layout's own main viewport is included with `is_main: true` — it is the
+    tab's pan/zoom state rather than a drafting viewport, and it is what remains
+    after every drafting viewport is deleted. `scale` and `locked` are null on
+    documents that cannot store them (R12) rather than fabricated.
+    """
+    return await _backend(ctx).viewport_list(layout or None)
+
+
+@cad_tool(summary="Set a viewport's scale, e.g. 1:2 or 1:50.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Set Viewport Scale", "destructiveHint": False},
+    tags={"layout"},
+)
+async def viewport_set_scale(
+    handle: Annotated[str, "Viewport entity handle (from viewport_list)."],
+    scale: Annotated[
+        float,
+        Field(gt=0, description="Paper:model scale (1.0 = 1:1, 0.5 = 1:2, 0.02 = 1:50)."),
+    ],
+    ctx: Context = None,
+) -> dict:
+    """Rescale a viewport by adjusting its view height.
+
+    Geometric scale only: annotative text and dimensions do not resize with it.
+    Refuses the layout's main viewport, whose view height is the tab's own
+    pan/zoom state rather than a drafting scale.
+    """
+    return await _backend(ctx).viewport_set_scale(handle, scale)
+
+
+@cad_tool(summary="Lock a viewport so its scale cannot be zoomed away.", cost="safe")
+@mcp.tool(
+    annotations={"title": "Lock Viewport"},
+    tags={"layout"},
+)
+async def viewport_lock(
+    handle: Annotated[str, "Viewport entity handle (from viewport_list)."],
+    locked: Annotated[bool, "True to lock the display scale, False to unlock."] = True,
+    ctx: Context = None,
+) -> dict:
+    """Lock or unlock a viewport's display scale."""
+    return await _backend(ctx).viewport_lock(handle, locked)
+
+
+@cad_tool(summary="Remove a viewport from a sheet.", cost="destructive")
+@mcp.tool(
+    annotations={"title": "Delete Viewport", "destructiveHint": True},
+    tags={"layout"},
+)
+async def viewport_delete(
+    handle: Annotated[str, "Viewport entity handle (from viewport_list)."],
+    force: Annotated[bool, "Allow deleting the layout's main viewport."] = False,
+    ctx: Context = None,
+) -> dict:
+    """Delete a viewport.
+
+    The layout's main viewport needs `force=true`; deleting it removes the tab's
+    own view state, and the layout's current-viewport pointer is repaired so the
+    file does not carry a dangling reference that only CAD would notice.
+    """
+    return await _backend(ctx).viewport_delete(handle, force)
+
+
+@cad_tool(
+    summary="Move entities between model space and a sheet through a viewport.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Change Space", "destructiveHint": False},
+    tags={"layout", "modify"},
+)
+async def entity_change_space(
+    handles: Annotated[list[str], "Entity handles to move."],
+    viewport_handle: Annotated[str, "Viewport that defines the model-to-paper mapping."],
+    direction: Annotated[
+        str,
+        Field(
+            default="to_paper",
+            description="to_paper (model -> sheet) or to_model (sheet -> model).",
+        ),
+    ] = "to_paper",
+    freeze_dimensions: Annotated[
+        bool,
+        "Bake each dimension's current measurement into its text before scaling.",
+    ] = False,
+    ctx: Context = None,
+) -> dict:
+    """AutoCAD's CHSPACE: move entities across spaces, rescaled by the viewport.
+
+    Geometry is transformed by the viewport's own matrix so it stays the same
+    size on screen — a move without that transform would leave a 100 mm feature
+    as 100 mm of paper inside a 1:2 viewport.
+
+    Refused per entity for dimensions (unless `freeze_dimensions`), ACIS solids,
+    tables and proxies, viewports, and entities already in the target space;
+    refused outright for a twisted or non-plan viewport. Entities that end up
+    outside the viewport or off the sheet are moved and flagged, not refused.
+    """
+    await ctx.info(f"Changing space for {len(handles)} entities ({direction})")
+    return await _backend(ctx).entity_change_space(
+        handles, viewport_handle, direction, freeze_dimensions
+    )
+
+
 # ---------------------------------------------------------------------------
 # ── SECTION 16: 3D Solids (5 tools) — opt-in via ENABLE_3D ──────────────────
 # ---------------------------------------------------------------------------
@@ -3644,6 +6104,7 @@ def _require_3d() -> None:
         )
 
 
+@cad_tool(summary="Create a 3D solid box (live AutoCAD, opt-in via ENABLE_3D).", cost="mutate")
 @mcp.tool(
     annotations={"title": "Solid: Box", "destructiveHint": False},
     tags={"solid"},
@@ -3662,6 +6123,10 @@ async def solid_box(
     return await _backend(ctx).solid_box(cx, cy, cz, length, width, height)
 
 
+@cad_tool(
+    summary="Create a 3D solid cylinder or shaft (live AutoCAD, opt-in via ENABLE_3D).",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Solid: Cylinder", "destructiveHint": False},
     tags={"solid"},
@@ -3679,6 +6144,10 @@ async def solid_cylinder(
     return await _backend(ctx).solid_cylinder(cx, cy, cz, radius, height)
 
 
+@cad_tool(
+    summary="Pull a closed profile up into a 3D solid (live AutoCAD, opt-in via ENABLE_3D).",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Solid: Extrude", "destructiveHint": False},
     tags={"solid"},
@@ -3696,6 +6165,10 @@ async def solid_extrude(
     return await _backend(ctx).solid_extrude(profile_handle, height, taper_angle)
 
 
+@cad_tool(
+    summary="Spin a closed profile around an axis into a 3D solid (opt-in via ENABLE_3D).",
+    cost="mutate",
+)
 @mcp.tool(
     annotations={"title": "Solid: Revolve", "destructiveHint": False},
     tags={"solid"},
@@ -3718,6 +6191,10 @@ async def solid_revolve(
     )
 
 
+@cad_tool(
+    summary="Union, subtract or intersect two 3D solids; the tool solid is consumed.",
+    cost="destructive",
+)
 @mcp.tool(
     annotations={"title": "Solid: Boolean", "destructiveHint": True},
     tags={"solid"},

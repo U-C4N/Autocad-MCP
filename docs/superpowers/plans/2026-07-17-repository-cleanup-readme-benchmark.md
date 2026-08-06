@@ -448,10 +448,7 @@ def render_chart(data: dict[str, Any], output: Path) -> None:
     labels = [item["repository"] for item in projects]
     scores = [item["score"] for item in projects]
     grades = [item["evidence_grade"] for item in projects]
-    colors = [
-        "#0969da" if label == "U-C4N/Autocad-MCP" else "#6e7781"
-        for label in labels
-    ]
+    colors = ["#0969da" if label == "U-C4N/Autocad-MCP" else "#6e7781" for label in labels]
 
     fig, ax = plt.subplots(figsize=(12, 6.4), constrained_layout=True)
     fig.patch.set_facecolor("#f6f8fa")

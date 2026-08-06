@@ -2,20 +2,24 @@ from __future__ import annotations
 
 import pytest
 
+import config
 from engineering.refiner import RepairRegistry, refine_drawing
 
 pytestmark = pytest.mark.asyncio
 
 
-async def test_transaction_stack_is_separate_from_drawing_undo(backend):
+async def test_transaction_stack_is_separate_from_drawing_undo(backend, monkeypatch):
+    """An undo must not consume a transaction checkpoint, or vice versa."""
+    monkeypatch.setattr(config.settings, "ezdxf_undo_depth", 4)
+    await backend.drawing_new()
     await backend.entity_create_line(0, 0, 10, 0)
     await backend.transaction_begin()
 
     undo = await backend.drawing_undo()
     status = await backend.system_status()
 
-    assert undo["ok"] is False
-    assert status["transaction_depth"] == 1
+    assert undo["ok"] is True, "undo walks its own history"
+    assert status["transaction_depth"] == 1, "and leaves the checkpoint standing"
     await backend.transaction_rollback()
 
 

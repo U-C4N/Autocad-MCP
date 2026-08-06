@@ -10,6 +10,10 @@ on:
   schedule:
     - cron: "17 5 * * 1"
 
+env:
+  # Keep in step with ci.yml; all three workflows read the same uv.lock.
+  LOCKED_UV_VERSION: "0.12.1"
+
 jobs:
   headless-matrix:
     runs-on: ubuntu-latest
@@ -23,13 +27,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        id: python
         with:
           python-version: "3.12"
-      - name: Install
-        run: pip install -e ".[pdf]"
+      - run: pip install "uv==${{ env.LOCKED_UV_VERSION }}"
+      - name: Install the locked harness environment
+        # This lane publishes evidence, so the harness must not float: an ezdxf
+        # release would otherwise move our own numbers between runs and the
+        # diff would be unattributable. Competitors keep their own pinned
+        # checkouts and venvs (benchmarks/competitors_env.py) either way.
+        run: uv sync --locked --extra pdf --python "${{ steps.python.outputs.python-path }}"
       - name: Run benchmark (ezdxf lane)
         run: |
-          python -m benchmarks.run_competitors \
+          uv run --no-sync python -m benchmarks.run_competitors \
             --server "${{ matrix.server }}" \
             --backend ezdxf \
             --artifact-dir "benchmarks/results/ci/${{ matrix.server }}" \

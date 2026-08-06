@@ -51,6 +51,50 @@ def test_preflight_normalizes_complete_spec_and_hash_is_deterministic():
     assert first.spec_hash == second.spec_hash
 
 
+def test_preflight_question_text_is_english():
+    """drawing_preflight returns this text to every user of a public English
+    package; it shipped in Turkish through v1.4."""
+    result = preflight_drawing("L bracket", requirements={})
+    by_code = {q.code: q.question for q in result.questions}
+
+    assert by_code["MISSING_UNITS"] == "What drawing units should be used?"
+    assert by_code["MISSING_PART_TYPE"] == "What kind of part or drawing is being produced?"
+    assert by_code["MISSING_DIMENSIONS"] == "What are the main production dimensions?"
+    assert by_code["MISSING_TOLERANCE_POLICY"] == "Which tolerance policy should apply?"
+
+
+def test_preflight_conflict_message_is_english():
+    requirements = _complete_requirements()
+    requirements["constraints"] = [
+        {"field": "dimensions.width", "value": 80},
+        {"field": "dimensions.width", "value": 90},
+    ]
+
+    result = preflight_drawing("L bracket", requirements=requirements)
+
+    assert result.conflicts[0].message == ("Conflicting values were supplied for dimensions.width.")
+
+
+def test_preflight_user_facing_text_is_ascii():
+    """Guard against any future non-English string leaking back into the tool
+    surface — codes and field names stay machine-readable, prose stays ASCII."""
+    requirements = _complete_requirements()
+    requirements["constraints"] = [
+        {"field": "dimensions.width", "value": 80},
+        {"field": "dimensions.width", "value": 90},
+    ]
+    empty = preflight_drawing("L bracket", requirements={})
+    conflicting = preflight_drawing("L bracket", requirements=requirements)
+
+    prose = [q.question for q in empty.questions]
+    prose += [choice for q in empty.questions for choice in q.choices]
+    prose += [c.message for c in conflicting.conflicts]
+
+    assert prose, "expected some user-facing text to check"
+    for text in prose:
+        assert text.isascii(), f"non-ASCII user-facing text: {text!r}"
+
+
 def test_preflight_detects_conflicting_constraints():
     requirements = _complete_requirements()
     requirements["constraints"] = [

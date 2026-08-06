@@ -59,10 +59,49 @@ async def apply_iso_a3_titleblock(
     *,
     metadata: TitleBlockMetadata,
     origin: tuple[float, float] = (0.0, 0.0),
+    layout: str | None = None,
 ) -> dict:
-    """Draw a 420x297 ISO 7200 title block at `origin` (lower-left of sheet)."""
+    """Draw a 420x297 ISO 7200 title block at `origin` (lower-left of sheet).
+
+    With `layout`, the sheet is drawn on that paper-space layout — which is
+    where a title block belongs, since the border frames the printed sheet
+    rather than the model. The caller's current space is restored afterwards, so
+    asking for a sheet border does not silently move them onto the sheet.
+    Without `layout` it draws in whatever space is current, as it always did.
+    """
 
     ox, oy = float(origin[0]), float(origin[1])
+
+    previous_space = "Model"
+    if layout is not None:
+        listing = await backend.layout_list()
+        names = {str(entry) for entry in (listing.get("layouts") or [])}
+        if layout not in names:
+            raise RuntimeError(
+                f"apply_iso_a3_titleblock: layout {layout!r} does not exist "
+                f"(have: {', '.join(sorted(str(n) for n in names))}). Create it with "
+                "layout_create first."
+            )
+        previous_space = getattr(backend, "_current_space", "Model")
+        switched = await backend.layout_set_current(layout)
+        if not switched.get("ok", True):
+            raise RuntimeError(f"apply_iso_a3_titleblock: {switched.get('error')}")
+
+    try:
+        return await _draw_titleblock(backend, metadata=metadata, ox=ox, oy=oy, layout=layout)
+    finally:
+        if layout is not None:
+            await backend.layout_set_current(previous_space)
+
+
+async def _draw_titleblock(
+    backend: AutoCADBackend,
+    *,
+    metadata: TitleBlockMetadata,
+    ox: float,
+    oy: float,
+    layout: str | None,
+) -> dict:
 
     # ---- outer + inner borders -------------------------------------------------
     outer_pts = [
@@ -263,6 +302,8 @@ async def apply_iso_a3_titleblock(
     )
 
     return {
+        "ok": True,
+        "layout": layout or "Model",
         "outer_border": outer.handle,
         "inner_border": inner.handle,
         "titleblock_lines": titleblock_lines,

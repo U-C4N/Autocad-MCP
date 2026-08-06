@@ -14,10 +14,13 @@ import sys
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 import config
+from engineering.measure import is_self_intersecting, polygon_area_perimeter
 
+from . import ocs
 from .base import (
     AutoCADBackend,
     BlockInfo,
@@ -26,6 +29,7 @@ from .base import (
     EntityInfo,
     FeatureCapability,
     LayerInfo,
+    UnsupportedCapabilityError,
     deg2rad,
     normalize_lineweight,
     rad2deg,
@@ -123,19 +127,30 @@ def _solid_3d_capability() -> FeatureCapability:
 
 
 def _acad_app():
-    """Return (or lazily create) the AutoCAD Application COM object.
-    Must only be called from the COM executor thread."""
+    """Return (or lazily create) the CAD Application COM object.
+
+    Must only be called from the COM executor thread.
+
+    The ProgID comes from ``CAD_PROGID`` (default ``AutoCAD.Application``) and
+    is honoured on *both* paths deliberately. ``Dispatch`` is not a passive
+    probe — it COM-launches the application and makes it visible — so honouring
+    the setting on ``GetActiveObject`` and then falling back to AutoCAD would
+    start the very application the operator said they were not using.
+    """
     if "app" not in _COM_STATE:
+        progid = config.settings.cad_progid
         try:
-            _COM_STATE["app"] = win32com.client.GetActiveObject("AutoCAD.Application")
+            _COM_STATE["app"] = win32com.client.GetActiveObject(progid)
         except Exception as exc:
-            log.debug("GetActiveObject failed, trying Dispatch: %s", exc)
+            log.debug("GetActiveObject(%r) failed, trying Dispatch: %s", progid, exc)
             try:
-                _COM_STATE["app"] = win32com.client.Dispatch("AutoCAD.Application")
+                _COM_STATE["app"] = win32com.client.Dispatch(progid)
                 _COM_STATE["app"].Visible = True
             except Exception as exc:
                 raise RuntimeError(
-                    f"Cannot connect to AutoCAD: {exc}. Make sure AutoCAD is installed and running."
+                    f"Cannot connect to CAD application {progid!r}: {exc}. Make sure it is "
+                    f"installed and running. (Set CAD_PROGID to change it; default "
+                    f"{config.DEFAULT_CAD_PROGID!r}.)"
                 ) from exc
     return _COM_STATE["app"]
 
@@ -149,8 +164,20 @@ def _acad_doc():
 
 
 def _msp():
-    """Return ModelSpace of active document."""
-    return _acad_doc().ModelSpace
+    """The space new geometry goes into — the active layout's block.
+
+    This returned ``ModelSpace`` unconditionally, so ``layout_set_current``
+    reported success and everything drawn afterwards still landed in model
+    space. ``ActiveLayout.Block`` is the same object as ``ModelSpace`` while the
+    Model tab is active, so the model-space path is unchanged; on a paper layout
+    it is the sheet, which is where a title block belongs.
+    """
+    doc = _acad_doc()
+    try:
+        return doc.ActiveLayout.Block
+    except Exception as exc:  # never strand a write over a layout probe
+        log.debug("ActiveLayout.Block unavailable (%s); using ModelSpace", exc)
+        return doc.ModelSpace
 
 
 _BUILTIN_LINETYPES = {"continuous", "bylayer", "byblock"}
@@ -252,6 +279,33 @@ def _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode="none", text_overri
         log.debug("dim tolerance apply failed (version-dependent COM props): %s", exc)
 
 
+#: ActiveX object names that bound no area at all. Not a capability gap — no
+#: engine can give a LINE an area — so these raise a plain error.
+_COM_NO_AREA_TYPES = frozenset(
+    {
+        "AcDbLine",
+        "AcDbText",
+        "AcDbMText",
+        "AcDbPoint",
+        "AcDbBlockReference",
+        "AcDbRotatedDimension",
+        "AcDbAlignedDimension",
+        "AcDbLeader",
+        "AcDb3dPolyline",
+        "AcDbRay",
+        "AcDbXline",
+    }
+)
+
+
+def _com_bulge(entity, index: int) -> float:
+    """GetBulge is polyline-only and absent on some hosts; 0.0 means straight."""
+    try:
+        return float(entity.GetBulge(index))
+    except Exception:
+        return 0.0
+
+
 def _entity_info(entity) -> EntityInfo:
     """Convert a COM entity object to EntityInfo dataclass."""
     try:
@@ -291,6 +345,20 @@ def _entity_info(entity) -> EntityInfo:
         elif obj_name in ("AcDbLWPolyline", "AcDb2dPolyline"):
             coords = list(entity.Coordinates)
             pts = [[coords[i], coords[i + 1]] for i in range(0, len(coords), 2)]
+            # ActiveX hands back WCS for every point property on this backend
+            # *except* this one: "LightweightPolyline object: the variant is an
+            # array of 2D points in OCS." Scoped to AcDbLWPolyline deliberately —
+            # AcDb2dPolyline's Coordinates may be 3D triples, and changing its
+            # stride on a doc reading alone, with no way to verify against live
+            # AutoCAD from here, risks breaking a path that works today.
+            if obj_name == "AcDbLWPolyline":
+                try:
+                    normal = tuple(entity.Normal)
+                    if not ocs.is_wcs_frame(normal):
+                        elevation = float(getattr(entity, "Elevation", 0.0))
+                        pts = [ocs.to_wcs_2d(normal, p[0], p[1], elevation) for p in pts]
+                except Exception as exc:
+                    log.debug("OCS normalisation of polyline coordinates failed: %s", exc)
             props["points"] = pts
             props["closed"] = bool(entity.Closed)
             props["length"] = entity.Length
@@ -459,9 +527,41 @@ class ComBackend(AutoCADBackend):
             features={
                 "drawing_2d": FeatureCapability(True, "native"),
                 "dxf": FeatureCapability(True, "native"),
+                "dwg": FeatureCapability(True, "native"),
                 "pdf": FeatureCapability(True, "native"),
                 "png": FeatureCapability(True, "native"),
                 "transactions": FeatureCapability(True, "undo_mark"),
+                "audit_detail": FeatureCapability(
+                    False, reason="audit_result_not_readable_over_com"
+                ),
+                "undo_history": FeatureCapability(True, "autocad_native"),
+                "chspace": FeatureCapability(False, reason="unverified_against_live_autocad"),
+                "revcloud": FeatureCapability(False, reason="no_activex_member_command_only"),
+                "wipeout": FeatureCapability(
+                    False, reason="addwipeout_absent_verified_autocad_2026"
+                ),
+                "mtext_background_color": FeatureCapability(
+                    False, reason="backgroundfillcolor_absent_verified_autocad_2026"
+                ),
+                "boundary_trace": FeatureCapability(False, reason="no_activex_member_command_only"),
+                "hatch_edge_paths": FeatureCapability(
+                    False, reason="activex_appends_loops_as_objects_not_typed_edges"
+                ),
+                "handle_overlay": FeatureCapability(
+                    False, reason="window_capture_has_no_render_to_label"
+                ),
+                "measure_area_acis": FeatureCapability(True, "native"),
+                "ocs_normalized": FeatureCapability(
+                    True,
+                    "activex_wcs",
+                    reason=(
+                        "activex_returns_wcs_natively;lwpolyline_coordinates_translated_locally;"
+                        "2d_polyline_coordinates_not_verified_against_live_autocad"
+                    ),
+                ),
+                "ocs_tilted_plane": FeatureCapability(
+                    False, reason="2d_xy_cannot_address_a_tilted_plane"
+                ),
                 "table": FeatureCapability(True, "native"),
                 "mleader": FeatureCapability(True, "native"),
                 "preflight": FeatureCapability(True, "shared"),
@@ -482,7 +582,15 @@ class ComBackend(AutoCADBackend):
         # is not open yet — it will be found as soon as the user opens it.
         self._executor = ThreadPoolExecutor(max_workers=1, initializer=_com_init)
         self._connected = True
-        log.info("COM backend ready (will connect to AutoCAD on first tool call)")
+        progid = config.settings.cad_progid
+        log.info("COM backend ready (will connect to %s on first tool call)", progid)
+        if progid != config.DEFAULT_CAD_PROGID:
+            log.warning(
+                "CAD_PROGID=%r: only %s is developed and tested against. The connection may "
+                "succeed while individual tools fail on ActiveX differences.",
+                progid,
+                config.DEFAULT_CAD_PROGID,
+            )
 
     async def disconnect(self) -> None:
         if self._executor:
@@ -525,6 +633,13 @@ class ComBackend(AutoCADBackend):
         Without the timeout, an unresponsive AutoCAD (modal dialog, long Regen,
         crashed COM bridge) would block the single-thread STA executor forever
         and freeze every subsequent tool call.
+
+        Only a *real* deadline overrun may rebuild the apartment: on 3.11+
+        ``TimeoutError`` is ``asyncio.TimeoutError`` (and an ``OSError``
+        subclass), so a wrapped call that raises one itself reaches the handler
+        looking identical to an expired deadline. ``future.cancelled()`` tells
+        them apart — ``wait_for`` cancels the future it is waiting on, an
+        ordinary failure completes it — mirroring ``EzdxfBackend._async``.
         """
         if self._executor is None:
             raise RuntimeError("ComBackend not connected. Call connect() first.")
@@ -536,6 +651,13 @@ class ComBackend(AutoCADBackend):
                 return await asyncio.wait_for(future, timeout=timeout)
             return await future
         except TimeoutError as e:
+            if not future.cancelled():
+                # The call raised TimeoutError instead of overrunning the
+                # deadline (a dead network share, a re-raised socket timeout —
+                # and with timeout<=0 there is no deadline at all). That is an
+                # ordinary failure: let it through unchanged rather than
+                # blaming AutoCAD and discarding a live STA connection.
+                raise
             log.error("COM call timed out after %.1fs; rebuilding executor", timeout)
             # The worker thread is still blocked inside SendCommand and cannot be
             # cancelled. Abandon it (shutdown(wait=False)) and start a fresh
@@ -715,6 +837,138 @@ class ComBackend(AutoCADBackend):
 
         return await self._run(_sync)
 
+    @staticmethod
+    def _layout_name(raw: str) -> str:
+        return str(raw or "").strip()
+
+    @staticmethod
+    def _layout_names(doc) -> list[str]:
+        return [doc.Layouts.Item(i).Name for i in range(doc.Layouts.Count)]
+
+    def _find_layout(self, doc, raw: str) -> str | None:
+        """Resolve a layout name case-insensitively, as AutoCAD itself does.
+
+        A plain ``name in names`` test is case-sensitive in Python and would
+        both refuse an existing tab typed in another case and let a duplicate
+        past into ``Layouts.Add``.
+        """
+        name = self._layout_name(raw)
+        if not name:
+            return None
+        lowered = name.lower()
+        return next((n for n in self._layout_names(doc) if n.lower() == lowered), None)
+
+    async def layout_delete(self, name: str) -> dict:
+        def _sync():
+            # VERIFIED against a live AutoCAD 2026 (2026-08-05).
+            doc = _acad_doc()
+            if not self._layout_name(name):
+                return {"ok": False, "error": "Layout name must not be blank"}
+            target = self._find_layout(doc, name)
+            if target is None:
+                return {"ok": False, "error": f"Layout not found: {name}"}
+            if target == "Model":
+                return {"ok": False, "error": "Model space cannot be deleted"}
+            names = self._layout_names(doc)
+            if len([n for n in names if n != "Model"]) <= 1:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"Cannot delete {target}: a drawing must keep at least one "
+                        "paper-space layout"
+                    ),
+                }
+
+            layout = doc.Layouts.Item(target)
+            destroyed = layout.Block.Count
+            if doc.ActiveLayout.Name == target:
+                doc.ActiveLayout = doc.Layouts.Item("Model")
+            layout.Delete()
+            return {
+                "ok": True,
+                "deleted": target,
+                "entities_destroyed": destroyed,
+                "current": doc.ActiveLayout.Name,
+            }
+
+        return await self._run(_sync)
+
+    async def layout_rename(self, old_name: str, new_name: str) -> dict:
+        def _sync():
+            # VERIFIED against a live AutoCAD 2026 (2026-08-05).
+            doc = _acad_doc()
+            new = self._layout_name(new_name)
+            if not self._layout_name(old_name) or not new:
+                return {"ok": False, "error": "Layout names must not be blank"}
+            old = self._find_layout(doc, old_name)
+            if old is None:
+                return {"ok": False, "error": f"Layout not found: {old_name}"}
+            if old == "Model" or new.lower() == "model":
+                return {"ok": False, "error": "Model space cannot be renamed or shadowed"}
+            clash = self._find_layout(doc, new)
+            if clash is not None and clash != old:
+                return {"ok": False, "error": f"Layout already exists: {clash}"}
+            if any(ch in new for ch in '<>/\\":;?*|,=`'):
+                return {"ok": False, "error": f"Invalid layout name: {new!r}"}
+
+            doc.Layouts.Item(old).Name = new
+            return {"ok": True, "old": old, "new": new, "current": doc.ActiveLayout.Name}
+
+        return await self._run(_sync)
+
+    async def layout_copy(self, source: str, new_name: str) -> dict:
+        def _sync():
+            # VERIFIED against a live AutoCAD 2026 (2026-08-05). AutoCAD's own
+            # LAYOUT Copy option is command-line only, so this reproduces it
+            # with CopyFrom + CopyObjects.
+            doc = _acad_doc()
+            dst_name = self._layout_name(new_name)
+            if not self._layout_name(source) or not dst_name:
+                return {"ok": False, "error": "Layout names must not be blank"}
+            src_name = self._find_layout(doc, source)
+            if src_name is None:
+                return {"ok": False, "error": f"Layout not found: {source}"}
+            if src_name == "Model":
+                return {
+                    "ok": False,
+                    "error": "Model space cannot be copied to a sheet; use viewport_create",
+                }
+            if dst_name.lower() == "model":
+                return {"ok": False, "error": "Model space cannot be overwritten"}
+            clash = self._find_layout(doc, dst_name)
+            if clash is not None:
+                return {"ok": False, "error": f"Layout already exists: {clash}"}
+
+            src = doc.Layouts.Item(src_name)
+            dst = doc.Layouts.Add(dst_name)
+            dst.CopyFrom(src)  # page setup / plot configuration
+
+            items = [src.Block.Item(i) for i in range(src.Block.Count)]
+            copied = 0
+            skipped: list[str] = []
+            if items:
+                objects = win32com.client.VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_DISPATCH, items)
+                try:
+                    doc.CopyObjects(objects, dst.Block)
+                    copied = len(items)
+                except Exception as exc:
+                    log.warning("layout_copy: CopyObjects failed (%s)", exc)
+                    skipped = sorted({obj.ObjectName for obj in items})
+
+            return {
+                "ok": True,
+                "source": src_name,
+                "layout": dst_name,
+                "entities_copied": copied,
+                "skipped": skipped,
+                # AutoCAD remaps associativity inside CopyObjects itself, so
+                # there is nothing for this backend to re-point by hand.
+                "associativity_remapped": 0,
+                "associativity_dropped": 0,
+            }
+
+        return await self._run(_sync)
+
     async def viewport_create(
         self,
         layout: str,
@@ -748,10 +1002,13 @@ class ComBackend(AutoCADBackend):
                     viewport.CustomScale = float(scale)
                 except Exception:  # some verticals expose StandardScale only
                     pass
-                try:
-                    viewport.ViewCenter = _av([float(view_center_x), float(view_center_y)])
-                except Exception:
-                    pass
+                # `Target`, not `ViewCenter`: AcadPViewport has no ViewCenter
+                # member at all. Verified against AutoCAD 2026 — the old call
+                # raised every single time and the bare `except: pass` around
+                # it swallowed that, so view_center_x/y were silently ignored
+                # and every COM viewport looked at the model origin instead of
+                # where the caller asked. The failure is reported now.
+                viewport.Target = _apoint(view_center_x, view_center_y)
                 return {
                     "ok": True,
                     "handle": viewport.Handle,
@@ -764,6 +1021,684 @@ class ComBackend(AutoCADBackend):
                     doc.ActiveLayout = doc.Layouts.Item(previous)
 
         return await self._run(_sync)
+
+    # ── selection filters (M8 / F1) ──────────────────────────────────────────
+    #
+    # VERIFIED against a live AutoCAD 2026 (2026-08-05).
+
+    _SELECTION_MODES = ("window", "crossing")
+
+    def _selection_mode(self, mode: str) -> tuple[str | None, dict | None]:
+        normalised = str(mode or "").strip().lower()
+        if normalised not in self._SELECTION_MODES:
+            return None, {
+                "ok": False,
+                "error": (
+                    f"Unknown mode {mode!r}; valid modes are {', '.join(self._SELECTION_MODES)}"
+                ),
+            }
+        return normalised, None
+
+    @staticmethod
+    def _com_bbox(entity):
+        lo, hi = entity.GetBoundingBox()
+        return (float(lo[0]), float(lo[1])), (float(hi[0]), float(hi[1]))
+
+    def _com_select(self, predicate, entity_type: str, layer: str) -> dict:
+        doc = _acad_doc()
+        wanted_type = str(entity_type or "").strip().upper()
+        wanted_layer = str(layer or "").strip()
+        handles = []
+        for i in range(doc.ModelSpace.Count):
+            entity = doc.ModelSpace.Item(i)
+            try:
+                lo, hi = self._com_bbox(entity)
+            except Exception:
+                continue
+            if not predicate(lo, hi):
+                continue
+            if wanted_type and self._dxftype_of(entity) != wanted_type:
+                continue
+            if wanted_layer and entity.Layer != wanted_layer:
+                continue
+            handles.append(entity.Handle)
+        return handles
+
+    @staticmethod
+    def _dxftype_of(entity) -> str:
+        name = entity.ObjectName
+        return name[4:].upper() if name.startswith("AcDb") else name.upper()
+
+    async def selection_window(
+        self, x1, y1, x2, y2, mode: str = "window", entity_type: str = "", layer: str = ""
+    ) -> dict:
+        def _sync():
+            resolved, refusal = self._selection_mode(mode)
+            if refusal:
+                return refusal
+            lo_x, hi_x = sorted((float(x1), float(x2)))
+            lo_y, hi_y = sorted((float(y1), float(y2)))
+            if lo_x == hi_x or lo_y == hi_y:
+                return {
+                    "ok": False,
+                    "error": (
+                        "The selection box has zero area; give two opposite corners that "
+                        "differ in both x and y"
+                    ),
+                }
+
+            def _inside(lo, hi):
+                return lo_x <= lo[0] and lo_y <= lo[1] and hi[0] <= hi_x and hi[1] <= hi_y
+
+            def _overlaps(lo, hi):
+                return not (hi[0] < lo_x or lo[0] > hi_x or hi[1] < lo_y or lo[1] > hi_y)
+
+            handles = self._com_select(
+                _inside if resolved == "window" else _overlaps, entity_type, layer
+            )
+            return {"ok": True, "handles": handles, "count": len(handles), "mode": resolved}
+
+        return await self._run(_sync)
+
+    async def selection_polygon(
+        self, points, mode: str = "window", entity_type: str = "", layer: str = ""
+    ) -> dict:
+        def _sync():
+            resolved, refusal = self._selection_mode(mode)
+            if refusal:
+                return refusal
+            vertices = self._plane_points(points)
+            if vertices is None:
+                return {"ok": False, "error": "points must be a list of [x, y] pairs"}
+            if len(vertices) < 3:
+                return {
+                    "ok": False,
+                    "error": f"A selection polygon needs at least 3 points; got {len(vertices)}",
+                }
+
+            def _in_polygon(px, py) -> bool:
+                inside = False
+                count = len(vertices)
+                for i in range(count):
+                    ax, ay = vertices[i]
+                    bx, by = vertices[(i + 1) % count]
+                    if (ay > py) != (by > py) and px < (bx - ax) * (py - ay) / (by - ay) + ax:
+                        inside = not inside
+                return inside
+
+            def _inside(lo, hi):
+                corners = ((lo[0], lo[1]), (hi[0], lo[1]), (hi[0], hi[1]), (lo[0], hi[1]))
+                return all(_in_polygon(*corner) for corner in corners)
+
+            def _overlaps(lo, hi):
+                corners = ((lo[0], lo[1]), (hi[0], lo[1]), (hi[0], hi[1]), (lo[0], hi[1]))
+                return any(_in_polygon(*corner) for corner in corners)
+
+            handles = self._com_select(
+                _inside if resolved == "window" else _overlaps, entity_type, layer
+            )
+            return {"ok": True, "handles": handles, "count": len(handles), "mode": resolved}
+
+        return await self._run(_sync)
+
+    async def selection_filter(
+        self,
+        entity_type: str = "",
+        layer: str = "",
+        color: int | None = None,
+        linetype: str = "",
+        min_area: float | None = None,
+    ) -> dict:
+        def _sync():
+            if min_area is not None and float(min_area) < 0:
+                return {"ok": False, "error": "min_area cannot be negative; no area is negative"}
+            doc = _acad_doc()
+            wanted_type = str(entity_type or "").strip().upper()
+            wanted_layer = str(layer or "").strip()
+            wanted_linetype = str(linetype or "").strip()
+            filtered_by = [
+                name
+                for name, active in (
+                    ("entity_type", bool(wanted_type)),
+                    ("layer", bool(wanted_layer)),
+                    ("color", color is not None),
+                    ("linetype", bool(wanted_linetype)),
+                    ("min_area", min_area is not None),
+                )
+                if active
+            ]
+
+            handles = []
+            for i in range(doc.ModelSpace.Count):
+                entity = doc.ModelSpace.Item(i)
+                if wanted_type and self._dxftype_of(entity) != wanted_type:
+                    continue
+                if wanted_layer and entity.Layer != wanted_layer:
+                    continue
+                if color is not None and int(entity.Color) != int(color):
+                    continue
+                if wanted_linetype and entity.Linetype != wanted_linetype:
+                    continue
+                if min_area is not None:
+                    try:
+                        area = float(entity.Area)
+                    except Exception:
+                        continue  # no area at all is not "zero area"
+                    if area < float(min_area):
+                        continue
+                handles.append(entity.Handle)
+            return {
+                "ok": True,
+                "handles": handles,
+                "count": len(handles),
+                "filtered_by": filtered_by,
+            }
+
+        return await self._run(_sync)
+
+    # ── hatch depth (M8 / F4) ────────────────────────────────────────────────
+
+    _HATCH_STYLES = ("normal", "outer", "ignore")
+
+    def _resolve_com_hatch(self, doc, handle):
+        try:
+            entity = doc.HandleToObject(str(handle).strip().upper())
+        except Exception:
+            raise RuntimeError(f"Entity with handle '{handle}' not found.") from None
+        if entity.ObjectName != "AcDbHatch":
+            return None, {
+                "ok": False,
+                "error": f"Handle {handle} is a {self._dxftype_of(entity)}, not a HATCH",
+            }
+        return entity, None
+
+    async def hatch_set_gradient(
+        self,
+        handle,
+        color1,
+        color2,
+        rotation: float = 0.0,
+        centered: float = 0.0,
+        one_color: bool = False,
+        tint: float = 0.0,
+        name: str = "LINEAR",
+    ) -> dict:
+        def _sync():
+            # VERIFIED against a live AutoCAD 2026 (2026-08-05).
+            doc = _acad_doc()
+            hatch, refusal = self._resolve_com_hatch(doc, handle)
+            if refusal:
+                return refusal
+            try:
+                rgb1 = tuple(int(c) for c in color1)
+                rgb2 = tuple(int(c) for c in color2)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "color1 and color2 must be [r, g, b] triples"}
+            if len(rgb1) != 3 or len(rgb2) != 3:
+                return {"ok": False, "error": "color1 and color2 must be [r, g, b] triples"}
+
+            hatch.HatchObjectType = 1  # gradient
+            hatch.GradientName = str(name)
+            hatch.GradientAngle = math.radians(float(rotation))
+            hatch.GradientCentered = bool(centered)
+            first, second = doc.Application.GetInterfaceObject("AutoCAD.AcCmColor.25"), None
+            first.SetRGB(*rgb1)
+            hatch.GradientColor1 = first
+            second = doc.Application.GetInterfaceObject("AutoCAD.AcCmColor.25")
+            second.SetRGB(*rgb2)
+            hatch.GradientColor2 = second
+            return {
+                "ok": True,
+                "handle": hatch.Handle,
+                "gradient": {
+                    "color1": list(rgb1),
+                    "color2": list(rgb2),
+                    "rotation": float(rotation),
+                    "centered": float(centered),
+                    "one_color": bool(one_color),
+                    "tint": float(tint),
+                    "name": str(name),
+                },
+            }
+
+        return await self._run(_sync)
+
+    async def hatch_edit(
+        self,
+        handle,
+        pattern: str = "",
+        scale: float | None = None,
+        angle: float | None = None,
+        color: int | None = None,
+        style: str = "",
+    ) -> dict:
+        def _sync():
+            doc = _acad_doc()
+            hatch, refusal = self._resolve_com_hatch(doc, handle)
+            if refusal:
+                return refusal
+            if scale is not None and float(scale) <= 0:
+                return {"ok": False, "error": "scale must be > 0"}
+            wanted_style = str(style).strip().lower()
+            if wanted_style and wanted_style not in self._HATCH_STYLES:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"Unknown style {style!r}; valid styles are {', '.join(self._HATCH_STYLES)}"
+                    ),
+                }
+
+            def _snapshot():
+                return {
+                    "pattern": hatch.PatternName,
+                    "scale": float(hatch.PatternScale),
+                    "angle": float(hatch.PatternAngle),
+                    "color": int(hatch.Color),
+                    "style": int(hatch.HatchStyle),
+                }
+
+            before = _snapshot()
+            if pattern:
+                hatch.SetPattern(1, str(pattern))  # acHatchPatternTypePredefined
+            if scale is not None:
+                hatch.PatternScale = float(scale)
+            if angle is not None:
+                hatch.PatternAngle = math.radians(float(angle))
+            if color is not None:
+                hatch.Color = int(color)
+            if wanted_style:
+                hatch.HatchStyle = self._HATCH_STYLES.index(wanted_style)
+            hatch.Evaluate()
+
+            after = _snapshot()
+            return {
+                "ok": True,
+                "handle": hatch.Handle,
+                "changed": [key for key in before if before[key] != after[key]],
+            }
+
+        return await self._run(_sync)
+
+    async def hatch_add_boundary(self, handle, edges) -> dict:
+        """Refused on the live backend: ActiveX takes boundary loops as whole
+        objects (AppendOuterLoop / AppendInnerLoop), not as typed edges, so the
+        curved-edge fidelity this tool exists for cannot be expressed."""
+        raise UnsupportedCapabilityError(
+            "hatch_edge_paths",
+            "hatch_add_boundary: ActiveX appends boundary loops as existing objects rather "
+            "than typed edges, so an arc edge cannot be given directly. Draw the boundary "
+            "entities and use entity_create_hatch, or switch to the headless backend "
+            "(AUTOCAD_MCP_BACKEND=ezdxf).",
+        )
+
+    async def analysis_list_properties(self, handle: str) -> dict:
+        def _sync():
+            # VERIFIED against a live AutoCAD 2026 (2026-08-05). ActiveX has no
+            # generic attribute dump, so this reads the documented members per
+            # object type.
+            doc = _acad_doc()
+            try:
+                entity = doc.HandleToObject(str(handle).strip().upper())
+            except Exception:
+                raise RuntimeError(f"Entity with handle '{handle}' not found.") from None
+
+            dump: dict = {}
+            for member in (
+                "Layer",
+                "Color",
+                "Linetype",
+                "LinetypeScale",
+                "Lineweight",
+                "Thickness",
+                "Visible",
+                "Normal",
+                "Radius",
+                "Center",
+                "StartPoint",
+                "EndPoint",
+                "InsertionPoint",
+                "TextString",
+                "Height",
+                "Rotation",
+                "ObliqueAngle",
+                "StyleName",
+                "Name",
+                "XScaleFactor",
+                "YScaleFactor",
+                "Area",
+                "Length",
+            ):
+                try:
+                    raw = getattr(entity, member)
+                except Exception:
+                    continue
+                key = member[0].lower() + member[1:]
+                if isinstance(raw, tuple):
+                    dump[key] = [float(v) for v in raw]
+                elif isinstance(raw, (int, float, str, bool)):
+                    dump[key] = raw
+
+            info = _entity_info(entity)
+            return {
+                "ok": True,
+                "handle": info.handle,
+                "type": info.type,
+                "layer": info.layer,
+                "properties": info.properties,
+                "dxf_attributes": dump,
+            }
+
+        return await self._run(_sync)
+
+    # ── annotation objects (M8 / F15) ────────────────────────────────────────
+    #
+    # VERIFIED against a live AutoCAD 2026 (2026-08-05). Two members turned out
+    # not to exist and are now typed refusals rather than code: AddWipeout and
+    # AcDbMText.BackgroundFillColor.
+
+    #: Same scope as the headless backend, and DIMENSION is out for the same
+    #: reason: its TextOverride is the '<>' placeholder, not the measurement.
+    _TEXT_BEARING_OBJECTS = ("AcDbText", "AcDbMText", "AcDbAttribute", "AcDbAttributeDefinition")
+
+    @staticmethod
+    def _plane_points(points) -> list[tuple[float, float]] | None:
+        try:
+            return [(float(p[0]), float(p[1])) for p in points]
+        except (TypeError, ValueError, IndexError):
+            return None
+
+    # ``entity_create_wipeout`` is deliberately not implemented here. Verified
+    # against AutoCAD 2026: ``ModelSpace.AddWipeout`` does not exist —
+    # ``AttributeError: <unknown>.AddWipeout``. ActiveX has no wipeout
+    # constructor; WIPEOUT is a command. The contract declares this
+    # @capability("wipeout") and the live backend inherits the typed refusal.
+
+    # ``entity_create_revcloud`` is deliberately not implemented here: ActiveX
+    # exposes no revision-cloud member, and driving the REVCLOUD command blind
+    # against a live drawing cannot be verified from this machine. The contract
+    # declares it @capability("revcloud"), so this backend inherits the typed
+    # refusal.
+
+    async def text_set_background(
+        self, handle, enabled: bool = True, color: int | None = None, scale: float = 1.5
+    ) -> dict:
+        def _sync():
+            # VERIFIED against a live AutoCAD 2026 (2026-08-05): BackgroundFill
+            # is settable, BackgroundFillColor does not exist at all.
+            doc = _acad_doc()
+            try:
+                entity = doc.HandleToObject(str(handle).strip().upper())
+            except Exception:
+                return {"ok": False, "error": f"Entity handle not found: {handle}"}
+            if entity.ObjectName != "AcDbMText":
+                return {
+                    "ok": False,
+                    "error": (
+                        f"Handle {handle} is {entity.ObjectName}; only MTEXT carries a "
+                        "background fill."
+                    ),
+                }
+            if not enabled:
+                entity.BackgroundFill = False
+                return {"ok": True, "handle": entity.Handle, "enabled": False}
+            factor = float(scale)
+            if factor < 1.0:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"scale must be >= 1.0 (got {factor:g}); a box smaller than its "
+                        "text is a stripe through the text, not a mask"
+                    ),
+                }
+            if color is not None:
+                # Verified against AutoCAD 2026: AcDbMText has no
+                # BackgroundFillColor member at all — it raises AttributeError
+                # on read *and* on write, with an int and with an AcCmColor
+                # object alike. Enabling the fill without the requested colour
+                # and reporting success would be exactly the "did something
+                # else and said nothing" this release exists to remove.
+                raise UnsupportedCapabilityError(
+                    "mtext_background_color",
+                    "text_set_background: ActiveX exposes no BackgroundFillColor member on "
+                    "MTEXT, so the requested colour cannot be applied. Omit `color` to switch "
+                    "the mask on in the drawing's background colour, or use the headless "
+                    "backend (AUTOCAD_MCP_BACKEND=ezdxf) to set it.",
+                )
+            entity.BackgroundFill = True
+            return {
+                "ok": True,
+                "handle": entity.Handle,
+                "enabled": True,
+                "color": None,
+                "scale": factor,
+                "note": "ActiveX cannot set the mask colour; the drawing background is used",
+            }
+
+        return await self._run(_sync)
+
+    async def text_find_replace(
+        self,
+        find: str,
+        replace: str,
+        layer: str | None = None,
+        match_case: bool = True,
+        dry_run: bool = False,
+    ) -> dict:
+        def _sync():
+            # VERIFIED against a live AutoCAD 2026 (2026-08-05).
+            import re
+
+            needle = str(find)
+            if not needle:
+                return {
+                    "ok": False,
+                    "error": (
+                        "find must not be empty: an empty pattern matches between every "
+                        "character and would shred the text"
+                    ),
+                }
+            doc = _acad_doc()
+            pattern = re.compile(re.escape(needle), 0 if match_case else re.IGNORECASE)
+
+            changed: list[dict] = []
+            for i in range(doc.ModelSpace.Count):
+                entity = doc.ModelSpace.Item(i)
+                if entity.ObjectName not in self._TEXT_BEARING_OBJECTS:
+                    continue
+                if layer and entity.Layer != layer:
+                    continue
+                current = entity.TextString
+                if not current or not pattern.search(current):
+                    continue
+                updated = pattern.sub(replace, current)
+                if not dry_run:
+                    entity.TextString = updated
+                changed.append(
+                    {
+                        "handle": entity.Handle,
+                        "type": entity.ObjectName,
+                        "before": current,
+                        "after": updated,
+                    }
+                )
+
+            return {
+                "ok": True,
+                "replaced": len(changed),
+                "entities": changed,
+                "searched_types": list(self._TEXT_BEARING_OBJECTS),
+                "note": (
+                    "DIMENSION text is not searched: its TextOverride holds the '<>' "
+                    "placeholder rather than the measured value."
+                ),
+                "dry_run": bool(dry_run),
+            }
+
+        return await self._run(_sync)
+
+    # ── viewports ────────────────────────────────────────────────────────────
+    #
+    # VERIFIED against a live AutoCAD 2026 (2026-08-05). This block is why the
+    # verification was worth running: the code read `ViewCenter`, which is not
+    # a member of AcadPViewport, and viewport_list died on it on the first
+    # call. viewport_create had the same line wrapped in `except: pass`, so it
+    # had been silently ignoring view_center_x/y since v1.4.
+
+    @staticmethod
+    def _com_viewports(layout):
+        block = layout.Block
+        return [
+            block.Item(i) for i in range(block.Count) if block.Item(i).ObjectName == "AcDbViewport"
+        ]
+
+    def _resolve_com_viewport(self, doc, handle: str):
+        """``(viewport, layout_name, None)`` or ``(None, None, refusal)``."""
+        key = str(handle or "").strip().upper()
+        if not key:
+            return None, None, {"ok": False, "error": "Viewport handle must not be blank"}
+        try:
+            entity = doc.HandleToObject(key)
+        except Exception:
+            return None, None, {"ok": False, "error": f"Viewport handle not found: {handle}"}
+        if entity.ObjectName != "AcDbViewport":
+            return (
+                None,
+                None,
+                {
+                    "ok": False,
+                    "error": f"Handle {key} is a {entity.ObjectName}, not a viewport",
+                },
+            )
+        layout_name = None
+        try:
+            for i in range(doc.Layouts.Count):
+                layout = doc.Layouts.Item(i)
+                if any(vp.Handle == key for vp in self._com_viewports(layout)):
+                    layout_name = layout.Name
+                    break
+        except Exception as exc:  # pragma: no cover - live COM only
+            log.debug("could not locate the layout owning viewport %s: %s", key, exc)
+        return entity, layout_name, None
+
+    @staticmethod
+    def _com_viewport_row(viewport, layout_name: str) -> dict:
+        center = viewport.Center
+        # The model point the viewport looks at is `Target`; there is no
+        # `ViewCenter` member on AcadPViewport (verified against AutoCAD 2026).
+        view_center = viewport.Target
+        height = float(viewport.Height)
+        try:
+            scale = float(viewport.CustomScale)
+        except Exception:
+            scale = None
+        return {
+            "handle": viewport.Handle,
+            "layout": layout_name,
+            "center": [float(center[0]), float(center[1])],
+            "width": float(viewport.Width),
+            "height": height,
+            "view_center": [float(view_center[0]), float(view_center[1])],
+            "view_height": (height / scale if scale else None),
+            "scale": scale,
+            "locked": bool(viewport.DisplayLocked),
+            "status": int(bool(viewport.ViewportOn)),
+            "id": None,  # AutoCAD does not expose the DXF viewport id via ActiveX
+            # Unknown, not False: ActiveX has no main-viewport predicate, and
+            # claiming "definitely not the main viewport" is a stronger
+            # statement than this backend can make.
+            "is_main": None,
+        }
+
+    async def viewport_list(self, layout: str | None = None) -> dict:
+        def _sync():
+            doc = _acad_doc()
+            names = [doc.Layouts.Item(i).Name for i in range(doc.Layouts.Count)]
+            if layout is None:
+                targets = [n for n in names if n != "Model"]
+            else:
+                name = self._layout_name(layout)
+                if not name:
+                    return {"ok": False, "error": "Layout name must not be blank"}
+                if name == "Model":
+                    return {"ok": False, "error": "Model space has no paper-space viewports"}
+                if name not in names:
+                    return {"ok": False, "error": f"Layout not found: {name}"}
+                targets = [name]
+
+            rows = [
+                self._com_viewport_row(vp, name)
+                for name in targets
+                for vp in self._com_viewports(doc.Layouts.Item(name))
+            ]
+            return {
+                "ok": True,
+                "viewports": rows,
+                "count": len(rows),
+                "note": "ActiveX exposes no main-viewport predicate, so is_main is null",
+            }
+
+        return await self._run(_sync)
+
+    async def viewport_set_scale(self, handle: str, scale: float) -> dict:
+        def _sync():
+            if float(scale) <= 0:
+                return {"ok": False, "error": "scale must be > 0 (paper:model, e.g. 0.5 for 1:2)"}
+            doc = _acad_doc()
+            viewport, _, refusal = self._resolve_com_viewport(doc, handle)
+            if refusal:
+                return refusal
+            viewport.CustomScale = float(scale)
+            return {
+                "ok": True,
+                "handle": viewport.Handle,
+                "scale": float(viewport.CustomScale),
+                "view_height": float(viewport.Height) / float(viewport.CustomScale),
+                "note": "geometric scale only; annotative text and dimensions do not resize",
+            }
+
+        return await self._run(_sync)
+
+    async def viewport_lock(self, handle: str, locked: bool = True) -> dict:
+        def _sync():
+            doc = _acad_doc()
+            viewport, _, refusal = self._resolve_com_viewport(doc, handle)
+            if refusal:
+                return refusal
+            viewport.DisplayLocked = bool(locked)
+            return {
+                "ok": True,
+                "handle": viewport.Handle,
+                "locked": bool(viewport.DisplayLocked),
+            }
+
+        return await self._run(_sync)
+
+    async def viewport_delete(self, handle: str, force: bool = False) -> dict:
+        def _sync():
+            doc = _acad_doc()
+            viewport, layout_name, refusal = self._resolve_com_viewport(doc, handle)
+            if refusal:
+                return refusal
+            key = viewport.Handle
+            viewport.Delete()
+            return {
+                "ok": True,
+                "handle": key,
+                "layout": layout_name,
+                # Unknown rather than False: ActiveX has no main-viewport
+                # predicate, and AutoCAD owns the tab's view state itself, so
+                # there is no pointer for this backend to repair either.
+                "was_main": None,
+                "viewport_handle_repaired": False,
+            }
+
+        return await self._run(_sync)
+
+    # ``entity_change_space`` is deliberately *not* implemented here. The
+    # contract declares it ``@capability("chspace")``, so this backend inherits
+    # a typed refusal carrying that key rather than an unverified
+    # CopyObjects-and-delete that would destroy and recreate geometry in the
+    # operator's open drawing when it goes wrong.
 
     # ── 3D solids (native ActiveX; gated behind ENABLE_3D at the tool layer) ─
 
@@ -865,12 +1800,67 @@ class ComBackend(AutoCADBackend):
         return await self._run(_sync)
 
     async def drawing_audit(self) -> dict:
+        """Run AutoCAD's AUDIT with fixing enabled, and admit what we cannot see.
+
+        The ``Y`` answers AUDIT's "Fix any errors detected?" prompt, so this
+        backend does repair — it just gets nothing machine-readable back from
+        ``SendCommand``. The counts are therefore reported as ``None`` rather
+        than ``0``: zero would mean "nothing was wrong", which we do not know.
+        ``AUDITCTL`` is restored afterwards; it is the user's setting, and
+        leaving it at 1 silently makes AutoCAD write an ``.adt`` log beside
+        every drawing they audit from then on.
+        """
+
         def _sync():
             doc = _acad_doc()
             app = _acad_app()
+            try:
+                previous = app.GetVariable("AUDITCTL")
+            except Exception:  # not every AutoCAD-compatible host exposes it
+                previous = None
             app.SetVariable("AUDITCTL", 1)
-            doc.SendCommand("_AUDIT Y\n")
-            return {"ok": True, "message": "Audit completed"}
+            try:
+                doc.SendCommand("_AUDIT Y\n")
+            finally:
+                if previous is not None:
+                    try:
+                        app.SetVariable("AUDITCTL", previous)
+                    except Exception:
+                        log.debug("could not restore AUDITCTL", exc_info=True)
+
+            # Only report a log we can actually see. SendCommand queues, so at
+            # this point AUDIT has very likely not run yet and the .adt does not
+            # exist — handing back a path to a missing file would be a small
+            # version of the same lie as claiming the repair count.
+            log_path = None
+            try:
+                full = doc.FullName  # empty on a drawing that was never saved
+                if full:
+                    candidate = Path(full).with_suffix(".adt")
+                    if candidate.exists():
+                        log_path = str(candidate)
+            except Exception:
+                log.debug("could not derive the .adt log path", exc_info=True)
+
+            return {
+                "ok": True,
+                "repaired": None,
+                "fixes": [],
+                "fix_count": None,
+                "errors": [],
+                "error_count": None,
+                "detail": "unavailable",
+                "capability": "audit_detail",
+                "message": (
+                    "AUDIT was dispatched to AutoCAD with fixing enabled. SendCommand "
+                    "queues the command and returns immediately, so this call cannot "
+                    "confirm that it ran, let alone what it changed: the repair and "
+                    "error counts are unknown, not zero. AutoCAD writes an .adt log "
+                    "beside the drawing when AUDITCTL is on — that is the only place "
+                    "the detail exists."
+                ),
+                "log_path": log_path,
+            }
 
         return await self._run(_sync)
 
@@ -1730,6 +2720,33 @@ class ComBackend(AutoCADBackend):
 
         return await self._run(_sync)
 
+    async def entity_count(self, type_filter=None, layer_filter=None) -> int:
+        # Same filter arms as entity_list, and the same per-entity skip-on-error
+        # policy, so the count and the page always describe one set. What it
+        # skips is `_entity_info(ent)` — the property/extents extraction, which
+        # is several COM round trips per entity against the two cheap attribute
+        # reads kept here.
+        def _sync():
+            mspace = _msp()
+            count = 0
+            for i in range(mspace.Count):
+                try:
+                    ent = mspace.Item(i)
+                    if (
+                        type_filter
+                        and type_filter.upper() != ent.ObjectName.replace("AcDb", "").upper()
+                    ):
+                        continue
+                    if layer_filter and layer_filter.lower() != ent.Layer.lower():
+                        continue
+                    count += 1
+                except Exception as exc:
+                    log.debug("entity_count: skip entity at index %d: %s", i, exc)
+                    continue
+            return count
+
+        return await self._run(_sync)
+
     # ── layer management ──────────────────────────────────────────────────────
 
     async def layer_list(self) -> list[LayerInfo]:
@@ -2032,11 +3049,49 @@ class ComBackend(AutoCADBackend):
         base_x=0.0,
         base_y=0.0,
     ) -> dict:
-        return {
-            "ok": False,
-            "error": "block_create_from_entities not supported in COM backend. "
-            "Use system_run_command with _BLOCK instead.",
-        }
+        """Build a block definition from entities already in the drawing.
+
+        This used to refuse and point at ``system_run_command`` with ``_BLOCK``,
+        pushing callers through the free-text escape hatch for something ActiveX
+        does directly: ``Blocks.Add`` creates the definition and
+        ``Document.CopyObjects`` puts entities into it. The originals stay in
+        model space, matching the headless backend rather than AutoCAD's BLOCK
+        command (which consumes them).
+        """
+
+        def _sync():
+            doc = _acad_doc()
+            objects, skipped = [], []
+            for handle in handles:
+                try:
+                    objects.append(doc.HandleToObject(str(handle)))
+                except Exception as exc:
+                    log.debug("resolving %s for block %s: %s", handle, name, exc)
+                    skipped.append(str(handle))
+            # Resolve before creating, so a call where every handle was a typo
+            # does not leave an empty definition behind.
+            if not objects:
+                raise RuntimeError(
+                    f"block_create_from_entities: none of the handles resolved "
+                    f"({', '.join(skipped) or 'no handles given'}), so there is nothing "
+                    f"to put in block {name!r}. No definition was created."
+                )
+
+            block = doc.Blocks.Add(_apoint(float(base_x), float(base_y), 0.0), str(name))
+            doc.CopyObjects(
+                win32com.client.VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_DISPATCH, objects),
+                block,
+            )
+            _regen()
+            return {
+                "ok": True,
+                "name": name,
+                "entity_count": len(objects),
+                "skipped": skipped,
+                "backend": "com",
+            }
+
+        return await self._run(_sync)
 
     # ── analysis / query ──────────────────────────────────────────────────────
 
@@ -2097,6 +3152,77 @@ class ComBackend(AutoCADBackend):
 
     async def analysis_measure_area(self, points) -> float:
         return shoelace_area(points)
+
+    async def entity_measure(self, handle, flatten_tolerance: float = 0.001) -> dict:
+        """Ask AutoCAD, which already knows.
+
+        This backend has had a document, a ``HandleToObject`` lookup and an
+        ActiveX ``Area`` property all along, and still answered area questions
+        with a shoelace over coordinates the caller typed in. ``Area`` is exact
+        here for every boundary type including REGION and 3DSOLID, which is
+        precisely the gap the headless engine refuses on.
+        """
+
+        def _sync():
+            ent = _acad_doc().HandleToObject(str(handle))
+            obj_name = getattr(ent, "ObjectName", "")
+            if obj_name in _COM_NO_AREA_TYPES:
+                raise RuntimeError(
+                    f"entity_measure: handle {handle} is {obj_name}, which does not "
+                    "bound an area. Measurable types: LWPOLYLINE, POLYLINE (2D), "
+                    "CIRCLE, ELLIPSE, SPLINE, HATCH, REGION, 3DSOLID."
+                )
+            area = perimeter = None
+            try:
+                area = float(ent.Area)
+            except Exception as exc:
+                log.debug("ActiveX .Area unavailable for %s: %s", obj_name, exc)
+            try:
+                perimeter = float(ent.Length)
+            except Exception as exc:
+                log.debug("ActiveX .Length unavailable for %s: %s", obj_name, exc)
+
+            method = "activex_area"
+            closed = True
+            self_intersecting = None
+            if area is None or perimeter is None:
+                # Rebuild from the polyline's own vertices and run the SAME
+                # shared maths the headless engine uses, so a missing ActiveX
+                # property can never make this backend the less accurate one.
+                method = "activex_fallback_analytic"
+                coords = list(getattr(ent, "Coordinates", ()) or ())
+                vertices = [
+                    (float(coords[i]), float(coords[i + 1]), _com_bulge(ent, i // 2))
+                    for i in range(0, len(coords) - 1, 2)
+                ]
+                if not vertices:
+                    raise RuntimeError(
+                        f"entity_measure: AutoCAD reported neither an area nor usable "
+                        f"vertices for handle {handle} ({obj_name})."
+                    )
+                closed = bool(getattr(ent, "Closed", True))
+                fallback_area, fallback_perimeter = polygon_area_perimeter(vertices, closed)
+                area = fallback_area if area is None else area
+                perimeter = fallback_perimeter if perimeter is None else perimeter
+                self_intersecting = is_self_intersecting([(v[0], v[1]) for v in vertices])
+
+            return {
+                "handle": str(handle),
+                "type": obj_name,
+                "area": round(float(area), 6),
+                "perimeter": round(float(perimeter), 6),
+                "closed": closed,
+                "assumed_closed": not closed,
+                "method": method,
+                "exact": True,
+                "flatten_tolerance": None,
+                "backend": "com",
+                "self_intersecting": self_intersecting,
+                "perimeter_exact": True,
+                "loop_count": 1,
+            }
+
+        return await self._run(_sync)
 
     async def analysis_bounding_box(self) -> dict:
         def _sync():
@@ -2233,7 +3359,30 @@ class ComBackend(AutoCADBackend):
 
         return await self._run(_sync)
 
-    async def view_screenshot(self) -> bytes | None:
+    async def view_screenshot_grounded(
+        self,
+        overlay_handles: bool = True,
+        max_labels: int = 40,
+    ) -> dict:
+        """Not available live: this backend captures the AutoCAD window itself.
+
+        Grounding needs labels drawn into the render, and there is no render
+        here to draw into — the pixels come from the application's own window.
+        Annotating them would mean writing entities into the user's live drawing
+        and deleting them again, which is a mutation nobody asked for.
+        """
+        raise UnsupportedCapabilityError(
+            "handle_overlay",
+            "view_screenshot_grounded: the live backend captures the AutoCAD "
+            "window rather than rendering the drawing, so there is no render to "
+            "label. Annotating the live drawing to produce the overlay would "
+            "mean creating and deleting entities in the user's document. Use "
+            "entity_list for handles alongside the plain screenshot, or switch "
+            "to the headless backend (AUTOCAD_MCP_BACKEND=ezdxf) for a grounded "
+            "render.",
+        )
+
+    async def view_screenshot(self, overlay_handles: bool = False) -> bytes | None:
         def _sync():
             hwnd = _find_autocad_hwnd()
             if hwnd is None:
@@ -2298,6 +3447,10 @@ class ComBackend(AutoCADBackend):
                 return {
                     "backend": "com",
                     "connected": True,
+                    # Which application this actually is. Without it a
+                    # GstarCAD/ZWCAD operator reads an "autocad_version" key
+                    # naming a product they do not own.
+                    "cad_progid": config.settings.cad_progid,
                     "autocad_version": version,
                     "open_documents": doc_count,
                     "active_document": active_doc,
@@ -2317,7 +3470,12 @@ class ComBackend(AutoCADBackend):
                 }
             except Exception as exc:
                 log.debug("system_status: _acad_app check failed: %s", exc)
-                return {"backend": "com", "connected": False, "error": str(exc)}
+                return {
+                    "backend": "com",
+                    "connected": False,
+                    "cad_progid": config.settings.cad_progid,
+                    "error": str(exc),
+                }
 
         return await self._run(_sync)
 

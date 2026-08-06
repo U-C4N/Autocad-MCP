@@ -108,13 +108,18 @@ def preflight_drawing(
 
     questions: list[PreflightQuestion] = []
     required = (
-        ("units", "MISSING_UNITS", "Çizim birimi nedir?", ["mm", "inch"]),
-        ("part_type", "MISSING_PART_TYPE", "Üretilecek parça/çizim türü nedir?", []),
-        ("dimensions", "MISSING_DIMENSIONS", "Ana üretim ölçüleri nelerdir?", []),
+        ("units", "MISSING_UNITS", "What drawing units should be used?", ["mm", "inch"]),
+        (
+            "part_type",
+            "MISSING_PART_TYPE",
+            "What kind of part or drawing is being produced?",
+            [],
+        ),
+        ("dimensions", "MISSING_DIMENSIONS", "What are the main production dimensions?", []),
         (
             "tolerance_policy",
             "MISSING_TOLERANCE_POLICY",
-            "Hangi tolerans politikası kullanılmalı?",
+            "Which tolerance policy should apply?",
             ["ISO 2768-m", "explicit", "none"],
         ),
     )
@@ -138,7 +143,7 @@ def preflight_drawing(
                     "CONFLICTING_REQUIREMENT",
                     field_name,
                     [seen_constraints[field_name], value],
-                    f"{field_name} için birbiriyle çelişen değerler verildi.",
+                    f"Conflicting values were supplied for {field_name}.",
                 )
             )
         else:

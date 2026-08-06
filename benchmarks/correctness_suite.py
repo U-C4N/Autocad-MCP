@@ -223,6 +223,52 @@ async def center_linetype_applied():
     return info.linetype.upper() == "CENTER"
 
 
+# ── Measurement (v1.5.0) ───────────────────────────────────────────────────────
+#
+# These three are NEW capability, not repaired regressions: v1.4.0 has no
+# `entity_measure` and no boundary tracing, so it misses them by not having the
+# method rather than by getting it wrong. They are here because all three broke
+# during v1.5.0 development and nothing outside their own unit tests would have
+# noticed.
+
+
+async def hatch_area_subtracts_its_island():
+    """A section view is mostly holes; counting them is a 33% error here."""
+    b = await _b()
+    h = await b.entity_create_hatch("ANSI31", [[0, 0], [20, 0], [20, 20], [0, 20]])
+    await b.hatch_add_boundary(
+        h.handle,
+        [
+            {"type": "line", "start": [5, 5], "end": [15, 5]},
+            {"type": "line", "start": [15, 5], "end": [15, 15]},
+            {"type": "line", "start": [15, 15], "end": [5, 15]},
+            {"type": "line", "start": [5, 15], "end": [5, 5]},
+        ],
+    )
+    return abs((await b.entity_measure(h.handle))["area"] - 300.0) < 1e-6
+
+
+async def boundary_area_agrees_with_measure():
+    """Two tools, one shape, one number."""
+    b = await _b()
+    await b.entity_create_line(0, 0, 10, 0)
+    await b.entity_create_line(10, 0, 10, 10)
+    await b.entity_create_line(0, 10, 0, 0)
+    await b.entity_create_arc(5, 10, 5, 0, 180)
+    loop = await b.boundary_trace(5.0, 5.0)
+    measured = await b.entity_measure(loop["handle"])
+    true_area = 100.0 + math.pi * 25.0 / 2.0
+    return abs(loop["area"] - measured["area"]) < 1e-9 and abs(measured["area"] - true_area) < 1e-5
+
+
+async def two_vertex_circle_has_area():
+    """DXF's most compact circle. The shoelace over its two points is 0."""
+    from engineering.measure import polygon_area_perimeter
+
+    area, _ = polygon_area_perimeter([(-10.0, 0.0, 1.0), (10.0, 0.0, 1.0)], closed=True)
+    return abs(area - math.pi * 100.0) < 1e-9
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -245,6 +291,9 @@ CHECKS = {
     "construction_left_iso_caught": (construction_left_iso_caught, "Quality gate"),
     "gear_no_self_overlap": (gear_no_self_overlap, "Engineering"),
     "center_linetype_applied": (center_linetype_applied, "Entities"),
+    "hatch_area_subtracts_its_island": (hatch_area_subtracts_its_island, "Measurement"),
+    "boundary_area_agrees_with_measure": (boundary_area_agrees_with_measure, "Measurement"),
+    "two_vertex_circle_has_area": (two_vertex_circle_has_area, "Measurement"),
 }
 
 

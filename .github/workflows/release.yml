@@ -13,20 +13,29 @@ on:
   push:
     tags: ["v*"]
 
+env:
+  # Keep in step with ci.yml; both read the same uv.lock.
+  LOCKED_UV_VERSION: "0.12.1"
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        id: python
         with:
           python-version: "3.11"
-      - name: Install dependencies
-        run: |
-          pip install -e ".[pdf]"
-          pip install pytest pytest-asyncio ruff
-      - run: ruff check .
-      - run: pytest -q
+      - run: pip install "uv==${{ env.LOCKED_UV_VERSION }}"
+      - name: Install the locked environment
+        # `--locked` refuses to re-resolve, so the artifact that goes to PyPI is
+        # gated by the exact dependency set the suite was run against — not by
+        # whatever the index happens to serve at tag time. ruff's version comes
+        # from [dependency-groups] dev via the lock; it is not restated here.
+        run: uv sync --locked --extra pdf --python "${{ steps.python.outputs.python-path }}"
+      - run: uv run --no-sync ruff check .
+      - run: uv run --no-sync ruff format --check .
+      - run: uv run --no-sync pytest -q
 
   build:
     needs: test

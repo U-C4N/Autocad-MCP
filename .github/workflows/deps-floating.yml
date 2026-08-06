@@ -1,0 +1,47 @@
+name: Floating deps
+
+# The counterweight to a locked CI.
+#
+# ci.yml installs from uv.lock, so a PR can never be broken by an upstream
+# release. That is the point — and it is also a blind spot: a new fastmcp,
+# ezdxf or pydantic inside the ranges declared in pyproject.toml would go
+# unnoticed here until a user hit it, because the only unlocked job in CI
+# (`package`) merely imports the wheel and never runs the suite.
+#
+# This job is the deliberate opposite: resolve the declared ranges fresh and
+# run the full suite against whatever the index serves today. It runs on a
+# schedule and on demand only, so it never gates a pull request — a red run
+# here means "the ceiling needs a look", not "your change is broken".
+#
+# Lint is intentionally absent: ruff's formatter output moves between minors,
+# so a floating ruff would fail on unchanged source and say nothing about the
+# runtime dependencies this job exists to watch.
+
+on:
+  schedule:
+    # Mondays, 06:17 UTC. Off the hour so it does not queue behind the
+    # every-cron-on-the-hour crowd.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  floating:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install from the declared ranges (uv.lock deliberately ignored)
+        run: |
+          pip install -e ".[pdf]"
+          pip install pytest pytest-asyncio
+      - name: Record what actually resolved
+        # Printed unconditionally: when this job fails, the version list is the
+        # first thing needed to tell which upstream moved.
+        run: pip list
+      - run: pytest -q

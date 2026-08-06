@@ -1,0 +1,2347 @@
+{
+  "_comment": "GENERATED FILE - do not edit by hand. Derived from the live FastMCP component registry; regenerate with `python scripts/generate_tool_inventory.py`.",
+  "schema_version": 1,
+  "package_version": "1.5.0",
+  "totals": {
+    "tools": 154,
+    "resources": 6,
+    "prompts": 5,
+    "groups": 19
+  },
+  "groups": {
+    "analysis": 12,
+    "batch": 3,
+    "blocks": 8,
+    "corner_ops": 4,
+    "dimensions": 5,
+    "drawing": 11,
+    "engineering": 10,
+    "entity_creation": 18,
+    "entity_modification": 15,
+    "entity_query": 8,
+    "layers": 14,
+    "layouts": 12,
+    "premium": 12,
+    "solids": 5,
+    "system": 7,
+    "templates": 2,
+    "transactions": 3,
+    "validation": 1,
+    "view": 4
+  },
+  "tools": [
+    {
+      "name": "analysis_bounding_box",
+      "group": "analysis",
+      "cost": "read",
+      "summary": "Get the overall extents of everything drawn.",
+      "tags": [
+        "analysis",
+        "query"
+      ],
+      "annotations": {
+        "title": "Drawing Bounding Box",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "analysis_entity_stats",
+      "group": "analysis",
+      "cost": "read",
+      "summary": "Count the drawing's objects, broken down by type and by layer.",
+      "tags": [
+        "analysis",
+        "query"
+      ],
+      "annotations": {
+        "title": "Entity Statistics",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "analysis_find_in_region",
+      "group": "analysis",
+      "cost": "read",
+      "summary": "List everything that falls inside a rectangular window.",
+      "tags": [
+        "analysis",
+        "query"
+      ],
+      "annotations": {
+        "title": "Find Entities in Region",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "analysis_layer_stats",
+      "group": "analysis",
+      "cost": "read",
+      "summary": "Report how many entities, and which types, sit on each layer.",
+      "tags": [
+        "analysis",
+        "layer",
+        "query"
+      ],
+      "annotations": {
+        "title": "Layer Statistics",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "analysis_list_properties",
+      "group": "analysis",
+      "cost": "read",
+      "summary": "Dump every DXF property of one entity, like LIST.",
+      "tags": [
+        "analysis",
+        "query"
+      ],
+      "annotations": {
+        "title": "List Entity Properties",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "analysis_measure_area",
+      "group": "analysis",
+      "cost": "read",
+      "summary": "Measure a polygon's area and perimeter from its vertices.",
+      "tags": [
+        "analysis",
+        "measure"
+      ],
+      "annotations": {
+        "title": "Measure Area",
+        "readOnlyHint": true,
+        "idempotentHint": true
+      }
+    },
+    {
+      "name": "analysis_measure_distance",
+      "group": "analysis",
+      "cost": "read",
+      "summary": "Measure the gap between two points: distance, dx/dy and angle.",
+      "tags": [
+        "analysis",
+        "measure"
+      ],
+      "annotations": {
+        "title": "Measure Distance",
+        "readOnlyHint": true,
+        "idempotentHint": true
+      }
+    },
+    {
+      "name": "analysis_measure_entity",
+      "group": "analysis",
+      "cost": "read",
+      "summary": "Area and perimeter of an existing entity, by handle.",
+      "tags": [
+        "analysis",
+        "measure"
+      ],
+      "annotations": {
+        "title": "Measure Entity",
+        "readOnlyHint": true,
+        "idempotentHint": true
+      }
+    },
+    {
+      "name": "analysis_select_by_layer",
+      "group": "analysis",
+      "cost": "read",
+      "summary": "Grab the handles of everything sitting on one layer.",
+      "tags": [
+        "analysis",
+        "query"
+      ],
+      "annotations": {
+        "title": "Select Entities By Layer",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "analysis_select_by_type",
+      "group": "analysis",
+      "cost": "read",
+      "summary": "Grab the handles of every entity of one type: all the circles, all the lines.",
+      "tags": [
+        "analysis",
+        "query"
+      ],
+      "annotations": {
+        "title": "Select Entities By Type",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "block_create_from_entities",
+      "group": "blocks",
+      "cost": "mutate",
+      "summary": "Turn existing entities into a reusable block definition.",
+      "tags": [
+        "block"
+      ],
+      "annotations": {
+        "title": "Create Block From Entities",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "block_explode",
+      "group": "blocks",
+      "cost": "destructive",
+      "summary": "Break a block reference apart into its component entities.",
+      "tags": [
+        "block"
+      ],
+      "annotations": {
+        "title": "Explode Block",
+        "readOnlyHint": false,
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "block_find_references",
+      "group": "blocks",
+      "cost": "read",
+      "summary": "Find every place a given block is inserted.",
+      "tags": [
+        "block",
+        "query"
+      ],
+      "annotations": {
+        "title": "Find Blocks By Name",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "block_get_attributes",
+      "group": "blocks",
+      "cost": "read",
+      "summary": "Read the tag/value pairs off a block reference.",
+      "tags": [
+        "block",
+        "query"
+      ],
+      "annotations": {
+        "title": "Get Block Attributes",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "block_insert",
+      "group": "blocks",
+      "cost": "mutate",
+      "summary": "Place a block, filling in its attribute values as you go.",
+      "tags": [
+        "block"
+      ],
+      "annotations": {
+        "title": "Insert Block",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "block_list",
+      "group": "blocks",
+      "cost": "read",
+      "summary": "List the block definitions the drawing already carries.",
+      "tags": [
+        "block",
+        "query"
+      ],
+      "annotations": {
+        "title": "List Blocks",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "block_set_attributes",
+      "group": "blocks",
+      "cost": "mutate",
+      "summary": "Fill in a block reference's attributes, such as title-block fields.",
+      "tags": [
+        "block"
+      ],
+      "annotations": {
+        "title": "Set Block Attributes",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "boundary_from_entities",
+      "group": "analysis",
+      "cost": "mutate",
+      "summary": "Join named entities into one closed boundary polyline.",
+      "tags": [
+        "analysis"
+      ],
+      "annotations": {
+        "title": "Boundary from Entities",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "boundary_trace",
+      "group": "analysis",
+      "cost": "mutate",
+      "summary": "Trace the closed boundary around a point, like BOUNDARY.",
+      "tags": [
+        "analysis"
+      ],
+      "annotations": {
+        "title": "Trace Boundary",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "cad_batch",
+      "group": "batch",
+      "cost": "destructive",
+      "summary": "Run an ordered list of tool calls in one round trip, binding results between steps.",
+      "tags": [
+        "batch"
+      ],
+      "annotations": {
+        "title": "Batch: Run Tools",
+        "readOnlyHint": false,
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "construction_clear",
+      "group": "premium",
+      "cost": "destructive",
+      "summary": "Wipe the construction scaffolding off the drawing before finalize.",
+      "tags": [
+        "construction",
+        "premium"
+      ],
+      "annotations": {
+        "title": "Construction: Clear (delete scaffold)",
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "construction_xline",
+      "group": "premium",
+      "cost": "mutate",
+      "summary": "Lay down an infinite guide line to build geometry against.",
+      "tags": [
+        "construction",
+        "premium"
+      ],
+      "annotations": {
+        "title": "Construction: XLine (infinite reference)",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "datum_feature",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Mark a datum on a feature: filled triangle plus the boxed datum letter.",
+      "tags": [
+        "engineering",
+        "gdt"
+      ],
+      "annotations": {
+        "title": "GD&T: Datum Feature (ISO 1101)",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "dimension_aligned",
+      "group": "dimensions",
+      "cost": "mutate",
+      "summary": "Dimension the true distance between two points, along a slope.",
+      "tags": [
+        "annotation",
+        "dimension"
+      ],
+      "annotations": {
+        "title": "Aligned Dimension",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "dimension_angular",
+      "group": "dimensions",
+      "cost": "mutate",
+      "summary": "Dimension the included angle between two rays from a vertex.",
+      "tags": [
+        "annotation",
+        "dimension"
+      ],
+      "annotations": {
+        "title": "Angular Dimension",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "dimension_auto",
+      "group": "premium",
+      "cost": "mutate",
+      "summary": "Dimension a set of entities at once, as a chain, baseline or ordinate run.",
+      "tags": [
+        "dimension",
+        "premium"
+      ],
+      "annotations": {
+        "title": "Dimension: Auto (chain / baseline / ordinate)",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "dimension_diameter",
+      "group": "dimensions",
+      "cost": "mutate",
+      "summary": "Call out a hole or shaft diameter, optionally to a fit such as H7.",
+      "tags": [
+        "annotation",
+        "dimension"
+      ],
+      "annotations": {
+        "title": "Diameter Dimension",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "dimension_linear",
+      "group": "dimensions",
+      "cost": "mutate",
+      "summary": "Dimension a horizontal or vertical size, with an ISO 129 tolerance or ISO 286 fit.",
+      "tags": [
+        "annotation",
+        "dimension"
+      ],
+      "annotations": {
+        "title": "Linear Dimension",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "dimension_radius",
+      "group": "dimensions",
+      "cost": "mutate",
+      "summary": "Call out the radius of a circle or arc, optionally toleranced.",
+      "tags": [
+        "annotation",
+        "dimension"
+      ],
+      "annotations": {
+        "title": "Radius Dimension",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "drawing_apply_iso_layers",
+      "group": "premium",
+      "cost": "mutate",
+      "summary": "Set up a standard ISO layer set with the right colours and lineweights.",
+      "tags": [
+        "layers",
+        "premium"
+      ],
+      "annotations": {
+        "title": "Drawing: Apply ISO Layer Set (bootstrap)",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "drawing_audit",
+      "group": "drawing",
+      "cost": "mutate",
+      "summary": "Scan the drawing for structural errors and repair what it finds.",
+      "tags": [
+        "cleanup",
+        "drawing"
+      ],
+      "annotations": {
+        "title": "Audit Drawing",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "drawing_close",
+      "group": "drawing",
+      "cost": "destructive",
+      "summary": "Close the drawing, saving first unless you say otherwise.",
+      "tags": [
+        "drawing"
+      ],
+      "annotations": {
+        "title": "Close Drawing",
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "drawing_critique",
+      "group": "premium",
+      "cost": "read",
+      "summary": "Review the drawing for drafting mistakes: must come back empty before finalize.",
+      "tags": [
+        "premium",
+        "validation"
+      ],
+      "annotations": {
+        "title": "Drawing: Critique (premium quality checks)",
+        "readOnlyHint": true,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "drawing_deliver",
+      "group": "engineering",
+      "cost": "destructive",
+      "summary": "Hand the drawing off: a hashed, validated bundle of files plus a manifest.",
+      "tags": [
+        "delivery",
+        "drawing",
+        "engineering",
+        "validation"
+      ],
+      "annotations": {
+        "title": "Drawing: Deliver Auditable Bundle",
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "drawing_export_dxf",
+      "group": "drawing",
+      "cost": "mutate",
+      "summary": "Write a DXF interchange copy of the drawing.",
+      "tags": [
+        "drawing",
+        "export"
+      ],
+      "annotations": {
+        "title": "Export DXF"
+      }
+    },
+    {
+      "name": "drawing_export_pdf",
+      "group": "drawing",
+      "cost": "mutate",
+      "summary": "Plot the drawing, or one paper-space layout, to PDF.",
+      "tags": [
+        "drawing",
+        "export"
+      ],
+      "annotations": {
+        "title": "Export PDF"
+      }
+    },
+    {
+      "name": "drawing_finalize",
+      "group": "engineering",
+      "cost": "destructive",
+      "summary": "Finish the drawing: validate, critique, save, screenshot and score it.",
+      "tags": [
+        "drawing",
+        "engineering",
+        "validation"
+      ],
+      "annotations": {
+        "title": "Drawing: Finalize (validate + save + screenshot)",
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "drawing_info",
+      "group": "entity_query",
+      "cost": "read",
+      "summary": "Read the current drawing's name, path, extents and object counts.",
+      "tags": [
+        "drawing",
+        "query"
+      ],
+      "annotations": {
+        "title": "Drawing Info",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "drawing_new",
+      "group": "drawing",
+      "cost": "mutate",
+      "summary": "Start a blank drawing, pre-seeded with the standard engineering layers.",
+      "tags": [
+        "drawing"
+      ],
+      "annotations": {
+        "title": "New Drawing",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "drawing_open",
+      "group": "drawing",
+      "cost": "mutate",
+      "summary": "Load an existing DXF from disk (DWG only on the live AutoCAD backend).",
+      "tags": [
+        "drawing"
+      ],
+      "annotations": {
+        "title": "Open Drawing"
+      }
+    },
+    {
+      "name": "drawing_plan",
+      "group": "premium",
+      "cost": "safe",
+      "summary": "Commit sheet size, scale, layer set and dimension style before any geometry.",
+      "tags": [
+        "planning",
+        "premium"
+      ],
+      "annotations": {
+        "title": "Drawing: Plan (commit intent before drawing)",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "drawing_preflight",
+      "group": "premium",
+      "cost": "read",
+      "summary": "Check the brief before you draw: units, part type, tolerances, missing inputs.",
+      "tags": [
+        "planning",
+        "premium",
+        "validation"
+      ],
+      "annotations": {
+        "title": "Drawing: Preflight",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "drawing_purge",
+      "group": "drawing",
+      "cost": "destructive",
+      "summary": "Strip unused layers, blocks, linetypes and styles out of the file.",
+      "tags": [
+        "cleanup",
+        "drawing"
+      ],
+      "annotations": {
+        "title": "Purge Drawing"
+      }
+    },
+    {
+      "name": "drawing_redo",
+      "group": "drawing",
+      "cost": "safe",
+      "summary": "Reapply the operation you just undid.",
+      "tags": [
+        "drawing",
+        "undo"
+      ],
+      "annotations": {
+        "title": "Redo",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "drawing_refine",
+      "group": "premium",
+      "cost": "destructive",
+      "summary": "Auto-repair what the critique found, then re-check, up to three rounds.",
+      "tags": [
+        "modify",
+        "premium",
+        "validation"
+      ],
+      "annotations": {
+        "title": "Drawing: Refine",
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "drawing_save",
+      "group": "drawing",
+      "cost": "mutate",
+      "summary": "Write the drawing back to its file, or to a path you give.",
+      "tags": [
+        "drawing"
+      ],
+      "annotations": {
+        "title": "Save Drawing"
+      }
+    },
+    {
+      "name": "drawing_save_as",
+      "group": "drawing",
+      "cost": "mutate",
+      "summary": "Save a copy under a new name; the extension picks DXF, DWG or DWT.",
+      "tags": [
+        "drawing"
+      ],
+      "annotations": {
+        "title": "Save As"
+      }
+    },
+    {
+      "name": "drawing_settings",
+      "group": "system",
+      "cost": "safe",
+      "summary": "Read or change drawing units, precision, linetype and dimension scale by name.",
+      "tags": [
+        "system"
+      ],
+      "annotations": {
+        "title": "Drawing Settings (read / change)",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "drawing_undo",
+      "group": "drawing",
+      "cost": "safe",
+      "summary": "Step back one operation.",
+      "tags": [
+        "drawing",
+        "undo"
+      ],
+      "annotations": {
+        "title": "Undo",
+        "destructiveHint": false,
+        "idempotentHint": false
+      }
+    },
+    {
+      "name": "entity_array_polar",
+      "group": "entity_modification",
+      "cost": "mutate",
+      "summary": "Repeat an entity around a centre: a bolt circle or radial pattern.",
+      "tags": [
+        "array",
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Polar Array",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "entity_array_rectangular",
+      "group": "entity_modification",
+      "cost": "mutate",
+      "summary": "Repeat an entity in a grid of rows and columns.",
+      "tags": [
+        "array",
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Rectangular Array",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "entity_batch_create",
+      "group": "batch",
+      "cost": "mutate",
+      "summary": "Draw many entities in one call instead of one round trip each.",
+      "tags": [
+        "batch",
+        "create",
+        "entity"
+      ],
+      "annotations": {
+        "title": "Batch Create Entities",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "entity_batch_modify",
+      "group": "batch",
+      "cost": "destructive",
+      "summary": "Move, rotate, scale, restyle or delete many entities in one call.",
+      "tags": [
+        "batch",
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Batch Modify Entities",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "entity_chamfer",
+      "group": "corner_ops",
+      "cost": "mutate",
+      "summary": "Bevel a corner between two lines by two setback distances.",
+      "tags": [
+        "corner",
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Chamfer Two Entities",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "entity_change_space",
+      "group": "layouts",
+      "cost": "mutate",
+      "summary": "Move entities between model space and a sheet through a viewport.",
+      "tags": [
+        "layout",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Change Space",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "entity_copy",
+      "group": "entity_modification",
+      "cost": "mutate",
+      "summary": "Duplicate an entity and offset the copy.",
+      "tags": [
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Copy Entity",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "entity_create_arc",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Draw a circular arc from a centre, a radius and two angles.",
+      "tags": [
+        "create",
+        "entity"
+      ],
+      "annotations": {
+        "title": "Create Arc",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "entity_create_block_ref",
+      "group": "blocks",
+      "cost": "mutate",
+      "summary": "Drop an instance of an existing block definition into the drawing.",
+      "tags": [
+        "block",
+        "create",
+        "entity"
+      ],
+      "annotations": {
+        "title": "Insert Block Reference",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "entity_create_circle",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Draw a circle: a hole, a bore, a pitch circle.",
+      "tags": [
+        "create",
+        "entity"
+      ],
+      "annotations": {
+        "title": "Create Circle",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "entity_create_ellipse",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Draw an ellipse from its centre, major axis vector and axis ratio.",
+      "tags": [
+        "create",
+        "entity"
+      ],
+      "annotations": {
+        "title": "Create Ellipse",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "entity_create_hatch",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Fill a closed boundary with a section pattern such as ANSI31 or SOLID.",
+      "tags": [
+        "create",
+        "entity"
+      ],
+      "annotations": {
+        "title": "Create Hatch",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "entity_create_line",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Draw a straight line between two points.",
+      "tags": [
+        "create",
+        "entity"
+      ],
+      "annotations": {
+        "title": "Create Line",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "entity_create_mtext",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Place a wrapped paragraph note in a text box of a given width.",
+      "tags": [
+        "annotation",
+        "create",
+        "entity"
+      ],
+      "annotations": {
+        "title": "Create MText",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "entity_create_point",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Place a point marker (node) at a coordinate.",
+      "tags": [
+        "create",
+        "entity"
+      ],
+      "annotations": {
+        "title": "Create Point",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "entity_create_polyline",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Draw a connected outline or closed profile through a list of points.",
+      "tags": [
+        "create",
+        "entity"
+      ],
+      "annotations": {
+        "title": "Create Polyline",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "entity_create_rectangle",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Draw a closed rectangle from two opposite corners.",
+      "tags": [
+        "create",
+        "entity"
+      ],
+      "annotations": {
+        "title": "Create Rectangle",
+        "readOnlyHint": false,
+        "idempotentHint": false
+      }
+    },
+    {
+      "name": "entity_create_revcloud",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Draw a revision cloud around an area.",
+      "tags": [
+        "create",
+        "entity"
+      ],
+      "annotations": {
+        "title": "Create Revision Cloud",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "entity_create_spline",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Draw a smooth NURBS curve through fit points.",
+      "tags": [
+        "create",
+        "entity"
+      ],
+      "annotations": {
+        "title": "Create Spline",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "entity_create_table",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Place a parts list, BOM or schedule as a table with headers and rows.",
+      "tags": [
+        "annotation",
+        "create",
+        "entity",
+        "table"
+      ],
+      "annotations": {
+        "title": "Create Table",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "entity_create_text",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Place a single-line text label.",
+      "tags": [
+        "annotation",
+        "create",
+        "entity"
+      ],
+      "annotations": {
+        "title": "Create Text",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "entity_create_wipeout",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Mask whatever is behind a closed polygon on the sheet.",
+      "tags": [
+        "create",
+        "entity"
+      ],
+      "annotations": {
+        "title": "Create Wipeout",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "entity_delete",
+      "group": "entity_modification",
+      "cost": "destructive",
+      "summary": "Erase one entity by handle.",
+      "tags": [
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Delete Entity",
+        "readOnlyHint": false,
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "entity_delete_many",
+      "group": "entity_modification",
+      "cost": "destructive",
+      "summary": "Erase a whole list of entities in one call.",
+      "tags": [
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Delete Multiple Entities",
+        "readOnlyHint": false,
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "entity_edit_geometry",
+      "group": "entity_modification",
+      "cost": "mutate",
+      "summary": "Change a circle's radius, a line's endpoints or an arc's angles in place.",
+      "tags": [
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Edit Geometry",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "entity_edit_text",
+      "group": "entity_modification",
+      "cost": "mutate",
+      "summary": "Reword a label, or change its height or rotation, keeping its handle.",
+      "tags": [
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Edit Text",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "entity_extend",
+      "group": "corner_ops",
+      "cost": "mutate",
+      "summary": "Lengthen a line until it meets a boundary line.",
+      "tags": [
+        "corner",
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Extend Entity",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "entity_fillet",
+      "group": "corner_ops",
+      "cost": "mutate",
+      "summary": "Round a corner between two lines with a tangent arc.",
+      "tags": [
+        "corner",
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Fillet Two Entities",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "entity_get",
+      "group": "entity_query",
+      "cost": "read",
+      "summary": "Inspect one entity by handle: type, layer, colour and geometry.",
+      "tags": [
+        "entity",
+        "query"
+      ],
+      "annotations": {
+        "title": "Get Entity",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "entity_list",
+      "group": "entity_query",
+      "cost": "read",
+      "summary": "Browse the drawing's entities and their handles, filtered by type or layer.",
+      "tags": [
+        "entity",
+        "query"
+      ],
+      "annotations": {
+        "title": "List Entities",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "entity_mirror",
+      "group": "entity_modification",
+      "cost": "mutate",
+      "summary": "Reflect an entity across a mirror line, keeping or dropping the original.",
+      "tags": [
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Mirror Entity",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "entity_move",
+      "group": "entity_modification",
+      "cost": "mutate",
+      "summary": "Shift an entity by a displacement vector.",
+      "tags": [
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Move Entity",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "entity_offset",
+      "group": "entity_modification",
+      "cost": "mutate",
+      "summary": "Make a parallel copy of a line, circle or polyline at a set distance.",
+      "tags": [
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Offset Entity",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "entity_rotate",
+      "group": "entity_modification",
+      "cost": "mutate",
+      "summary": "Turn an entity about a base point by an angle in degrees.",
+      "tags": [
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Rotate Entity",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "entity_scale",
+      "group": "entity_modification",
+      "cost": "mutate",
+      "summary": "Resize an entity uniformly about a base point.",
+      "tags": [
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Scale Entity",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "entity_select_smart",
+      "group": "premium",
+      "cost": "read",
+      "summary": "Pick every entity matching a description: type, layer, colour, length, location.",
+      "tags": [
+        "premium",
+        "select"
+      ],
+      "annotations": {
+        "title": "Entity: Smart Select (semantic predicate)",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "entity_set_properties",
+      "group": "entity_modification",
+      "cost": "mutate",
+      "summary": "Change an entity's layer, colour, linetype, lineweight or visibility.",
+      "tags": [
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Set Entity Properties",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "entity_trim",
+      "group": "corner_ops",
+      "cost": "mutate",
+      "summary": "Cut a line back to where another crosses it, keeping the side you point at.",
+      "tags": [
+        "corner",
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Trim Entity",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "gd_frame",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Draw an ISO 1101 feature control frame: symbol, tolerance zone and datums.",
+      "tags": [
+        "engineering",
+        "gdt"
+      ],
+      "annotations": {
+        "title": "GD&T: Feature Control Frame (ISO 1101)",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "gear_draw_helical_front_view",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Draw a helical gear front view: true involute teeth, circles, bore and keyway.",
+      "tags": [
+        "engineering",
+        "gear"
+      ],
+      "annotations": {
+        "title": "Gear: Helical Front View",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "gear_draw_section_aa",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Draw the hatched side cross-section A-A of a gear you already drew.",
+      "tags": [
+        "engineering",
+        "gear"
+      ],
+      "annotations": {
+        "title": "Gear: Section A-A View",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "gear_draw_spur_front_view",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Draw a straight-tooth spur gear front view with true involute teeth.",
+      "tags": [
+        "engineering",
+        "gear"
+      ],
+      "annotations": {
+        "title": "Gear: Spur Front View",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "hatch_add_boundary",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Add a boundary path to a hatch, arcs and ellipses included.",
+      "tags": [
+        "create",
+        "entity"
+      ],
+      "annotations": {
+        "title": "Add Hatch Boundary",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "hatch_edit",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Change a hatch's pattern, scale, angle, colour or island style.",
+      "tags": [
+        "create",
+        "entity"
+      ],
+      "annotations": {
+        "title": "Edit Hatch",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "hatch_set_gradient",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Replace a hatch's fill with a two-colour gradient.",
+      "tags": [
+        "create",
+        "entity"
+      ],
+      "annotations": {
+        "title": "Set Hatch Gradient",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "keyway_draw_keyed_bore",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Draw a bore with a DIN 6885 keyway, auto-sized from the bore diameter.",
+      "tags": [
+        "engineering",
+        "keyway"
+      ],
+      "annotations": {
+        "title": "Keyway: Keyed Bore (front view)",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "keyway_draw_section",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Draw the side cross-section of a keyed bore.",
+      "tags": [
+        "engineering",
+        "keyway"
+      ],
+      "annotations": {
+        "title": "Keyway: Side Section",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "layer_create",
+      "group": "layers",
+      "cost": "mutate",
+      "summary": "Add a layer with a colour, linetype and lineweight.",
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "Create Layer",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "layer_delete",
+      "group": "layers",
+      "cost": "destructive",
+      "summary": "Remove an empty layer from the drawing.",
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "Delete Layer",
+        "readOnlyHint": false,
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "layer_freeze",
+      "group": "layers",
+      "cost": "safe",
+      "summary": "Freeze a layer so it stops drawing and regenerating.",
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "Freeze Layer"
+      }
+    },
+    {
+      "name": "layer_hide",
+      "group": "layers",
+      "cost": "safe",
+      "summary": "Turn a layer off so its entities stop showing.",
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "Hide Layer"
+      }
+    },
+    {
+      "name": "layer_isolate",
+      "group": "layers",
+      "cost": "safe",
+      "summary": "Hide every layer except one, to work on it alone.",
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "Isolate Layer",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "layer_list",
+      "group": "layers",
+      "cost": "read",
+      "summary": "List every layer with its colour, linetype and visibility state.",
+      "tags": [
+        "layer",
+        "query"
+      ],
+      "annotations": {
+        "title": "List Layers",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "layer_lock",
+      "group": "layers",
+      "cost": "safe",
+      "summary": "Lock a layer so its entities can be seen but not edited.",
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "Lock Layer"
+      }
+    },
+    {
+      "name": "layer_modify",
+      "group": "layers",
+      "cost": "mutate",
+      "summary": "Change an existing layer's colour, linetype or lineweight.",
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "Modify Layer",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "layer_set_current",
+      "group": "layers",
+      "cost": "safe",
+      "summary": "Choose the layer that new geometry lands on.",
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "Set Current Layer",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "layer_show",
+      "group": "layers",
+      "cost": "safe",
+      "summary": "Turn a layer that was switched off back on.",
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "Show Layer"
+      }
+    },
+    {
+      "name": "layer_thaw",
+      "group": "layers",
+      "cost": "safe",
+      "summary": "Bring a frozen layer back into view.",
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "Thaw Layer"
+      }
+    },
+    {
+      "name": "layer_unlock",
+      "group": "layers",
+      "cost": "safe",
+      "summary": "Unlock a layer so its entities can be edited again.",
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "Unlock Layer"
+      }
+    },
+    {
+      "name": "layout_copy",
+      "group": "layouts",
+      "cost": "mutate",
+      "summary": "Duplicate a sheet with its page setup and geometry.",
+      "tags": [
+        "layout"
+      ],
+      "annotations": {
+        "title": "Copy Layout",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "layout_create",
+      "group": "layouts",
+      "cost": "mutate",
+      "summary": "Add a new paper-space sheet tab to the drawing.",
+      "tags": [
+        "layout"
+      ],
+      "annotations": {
+        "title": "Create Layout",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "layout_delete",
+      "group": "layouts",
+      "cost": "destructive",
+      "summary": "Delete a sheet tab and everything drawn on it.",
+      "tags": [
+        "layout"
+      ],
+      "annotations": {
+        "title": "Delete Layout",
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "layout_list",
+      "group": "layouts",
+      "cost": "read",
+      "summary": "List the sheet tabs: Model plus every paper-space layout.",
+      "tags": [
+        "layout",
+        "query"
+      ],
+      "annotations": {
+        "title": "List Layouts",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "layout_rename",
+      "group": "layouts",
+      "cost": "mutate",
+      "summary": "Rename a sheet tab, keeping its geometry and handles.",
+      "tags": [
+        "layout"
+      ],
+      "annotations": {
+        "title": "Rename Layout",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "layout_set_current",
+      "group": "layouts",
+      "cost": "safe",
+      "summary": "Switch to a sheet tab, or back to model space.",
+      "tags": [
+        "layout"
+      ],
+      "annotations": {
+        "title": "Set Current Layout"
+      }
+    },
+    {
+      "name": "leader_create_mleader",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Add a callout: an arrow with a note on the end.",
+      "tags": [
+        "annotation",
+        "create",
+        "entity",
+        "leader"
+      ],
+      "annotations": {
+        "title": "Create Multileader",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "linetype_list",
+      "group": "layers",
+      "cost": "read",
+      "summary": "List the dash patterns currently loaded in the drawing.",
+      "tags": [
+        "layer",
+        "linetype"
+      ],
+      "annotations": {
+        "title": "List Loaded Linetypes",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "linetype_load",
+      "group": "layers",
+      "cost": "mutate",
+      "summary": "Load a linetype such as CENTER or HIDDEN, without the FILEDIA dialog trap.",
+      "tags": [
+        "layer",
+        "linetype"
+      ],
+      "annotations": {
+        "title": "Load Linetype",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "point_from_snap",
+      "group": "premium",
+      "cost": "read",
+      "summary": "Get an exact endpoint, midpoint, centre, quadrant or perpendicular foot.",
+      "tags": [
+        "premium",
+        "snap"
+      ],
+      "annotations": {
+        "title": "Point: Snap (deterministic OSNAP)",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "point_intersection",
+      "group": "premium",
+      "cost": "read",
+      "summary": "Find where two lines or circles cross, exactly.",
+      "tags": [
+        "premium",
+        "snap"
+      ],
+      "annotations": {
+        "title": "Point: Intersection (deterministic)",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "point_tangent",
+      "group": "premium",
+      "cost": "read",
+      "summary": "Find where a line from an outside point touches a circle.",
+      "tags": [
+        "premium",
+        "snap"
+      ],
+      "annotations": {
+        "title": "Point: Tangent from external point",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "selection_filter",
+      "group": "entity_query",
+      "cost": "read",
+      "summary": "Select entities by layer, type, colour, linetype or minimum area.",
+      "tags": [
+        "entity",
+        "query"
+      ],
+      "annotations": {
+        "title": "Select by Properties",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "selection_get",
+      "group": "entity_query",
+      "cost": "read",
+      "summary": "Read what the user already picked in the AutoCAD viewport (COM backend).",
+      "tags": [
+        "entity",
+        "query"
+      ],
+      "annotations": {
+        "title": "Get Viewport Selection",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "selection_polygon",
+      "group": "entity_query",
+      "cost": "read",
+      "summary": "Select entities inside or crossing an arbitrary polygon.",
+      "tags": [
+        "entity",
+        "query"
+      ],
+      "annotations": {
+        "title": "Select by Polygon",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "selection_window",
+      "group": "entity_query",
+      "cost": "read",
+      "summary": "Select entities inside or crossing a rectangle.",
+      "tags": [
+        "entity",
+        "query"
+      ],
+      "annotations": {
+        "title": "Select by Window",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "solid_boolean",
+      "group": "solids",
+      "cost": "destructive",
+      "summary": "Union, subtract or intersect two 3D solids; the tool solid is consumed.",
+      "tags": [
+        "solid"
+      ],
+      "annotations": {
+        "title": "Solid: Boolean",
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "solid_box",
+      "group": "solids",
+      "cost": "mutate",
+      "summary": "Create a 3D solid box (live AutoCAD, opt-in via ENABLE_3D).",
+      "tags": [
+        "solid"
+      ],
+      "annotations": {
+        "title": "Solid: Box",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "solid_cylinder",
+      "group": "solids",
+      "cost": "mutate",
+      "summary": "Create a 3D solid cylinder or shaft (live AutoCAD, opt-in via ENABLE_3D).",
+      "tags": [
+        "solid"
+      ],
+      "annotations": {
+        "title": "Solid: Cylinder",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "solid_extrude",
+      "group": "solids",
+      "cost": "mutate",
+      "summary": "Pull a closed profile up into a 3D solid (live AutoCAD, opt-in via ENABLE_3D).",
+      "tags": [
+        "solid"
+      ],
+      "annotations": {
+        "title": "Solid: Extrude",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "solid_revolve",
+      "group": "solids",
+      "cost": "mutate",
+      "summary": "Spin a closed profile around an axis into a 3D solid (opt-in via ENABLE_3D).",
+      "tags": [
+        "solid"
+      ],
+      "annotations": {
+        "title": "Solid: Revolve",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "system_about",
+      "group": "system",
+      "cost": "read",
+      "summary": "See what this server can do: version, tool groups and active profile.",
+      "tags": [
+        "system"
+      ],
+      "annotations": {
+        "title": "Backend Info",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "system_capabilities",
+      "group": "entity_query",
+      "cost": "read",
+      "summary": "Ask the active backend which features it really supports.",
+      "tags": [
+        "query",
+        "system"
+      ],
+      "annotations": {
+        "title": "Backend Capabilities",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "system_get_variable",
+      "group": "system",
+      "cost": "read",
+      "summary": "Read one AutoCAD system variable, such as DIMSCALE or LTSCALE.",
+      "tags": [
+        "system"
+      ],
+      "annotations": {
+        "title": "Get System Variable",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "system_run_command",
+      "group": "system",
+      "cost": "escape",
+      "summary": "Send a raw command string to the AutoCAD command line (COM only).",
+      "tags": [
+        "system"
+      ],
+      "annotations": {
+        "title": "Run AutoCAD Command",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "system_run_lisp",
+      "group": "system",
+      "cost": "escape",
+      "summary": "Evaluate an AutoLISP expression inside AutoCAD (COM only).",
+      "tags": [
+        "system"
+      ],
+      "annotations": {
+        "title": "Execute AutoLISP",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "system_set_variable",
+      "group": "system",
+      "cost": "safe",
+      "summary": "Set one AutoCAD system variable by name.",
+      "tags": [
+        "system"
+      ],
+      "annotations": {
+        "title": "Set System Variable",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "system_status",
+      "group": "system",
+      "cost": "read",
+      "summary": "Check the connection: which engine is live and what document is open.",
+      "tags": [
+        "system"
+      ],
+      "annotations": {
+        "title": "Server Status",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "template_apply_layers",
+      "group": "templates",
+      "cost": "mutate",
+      "summary": "Create a standard layer set: architectural, mechanical, electrical or piping.",
+      "tags": [
+        "layer",
+        "template"
+      ],
+      "annotations": {
+        "title": "Apply Layer Template",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "template_list",
+      "group": "templates",
+      "cost": "read",
+      "summary": "Show the available layer templates and the layers in each.",
+      "tags": [
+        "query",
+        "template"
+      ],
+      "annotations": {
+        "title": "List Available Templates",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "text_find_replace",
+      "group": "entity_modification",
+      "cost": "mutate",
+      "summary": "Find and replace text across the drawing.",
+      "tags": [
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Find and Replace Text",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "text_set_background",
+      "group": "entity_modification",
+      "cost": "mutate",
+      "summary": "Put an opaque background box behind an MTEXT.",
+      "tags": [
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Set Text Background",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "titleblock_apply_iso_a3",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Stamp an ISO 7200 title block and sheet frame onto an A3 drawing.",
+      "tags": [
+        "engineering",
+        "titleblock"
+      ],
+      "annotations": {
+        "title": "TitleBlock: ISO A3",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "transaction_begin",
+      "group": "transactions",
+      "cost": "mutate",
+      "summary": "Open a rollback checkpoint before a risky edit.",
+      "tags": [
+        "transaction"
+      ],
+      "annotations": {
+        "title": "Begin Transaction",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "transaction_commit",
+      "group": "transactions",
+      "cost": "safe",
+      "summary": "Keep the changes and drop the checkpoint.",
+      "tags": [
+        "transaction"
+      ],
+      "annotations": {
+        "title": "Commit Transaction",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "transaction_rollback",
+      "group": "transactions",
+      "cost": "destructive",
+      "summary": "Throw away every change made since transaction_begin.",
+      "tags": [
+        "transaction"
+      ],
+      "annotations": {
+        "title": "Rollback Transaction",
+        "readOnlyHint": false,
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "validation_check",
+      "group": "validation",
+      "cost": "read",
+      "summary": "Sanity-check the drawing for empty layers, zero-length lines and duplicates.",
+      "tags": [
+        "analysis",
+        "validation"
+      ],
+      "annotations": {
+        "title": "Validate Drawing",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "view_screenshot",
+      "group": "view",
+      "cost": "read",
+      "summary": "Capture a PNG picture of the drawing as it currently looks.",
+      "tags": [
+        "screenshot",
+        "view"
+      ],
+      "annotations": {
+        "title": "Screenshot",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "view_zoom_and_screenshot",
+      "group": "view",
+      "cost": "read",
+      "summary": "Fit the drawing on screen, then capture it: the quickest visual check.",
+      "tags": [
+        "screenshot",
+        "view"
+      ],
+      "annotations": {
+        "title": "Zoom and Screenshot",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "view_zoom_extents",
+      "group": "view",
+      "cost": "safe",
+      "summary": "Zoom out until every entity fits on screen.",
+      "tags": [
+        "view"
+      ],
+      "annotations": {
+        "title": "Zoom Extents",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "view_zoom_window",
+      "group": "view",
+      "cost": "safe",
+      "summary": "Zoom in on a rectangular region of the drawing.",
+      "tags": [
+        "view"
+      ],
+      "annotations": {
+        "title": "Zoom Window",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "viewport_create",
+      "group": "layouts",
+      "cost": "mutate",
+      "summary": "Put a scaled window onto model space on a sheet, at 1:1, 1:2 and so on.",
+      "tags": [
+        "layout"
+      ],
+      "annotations": {
+        "title": "Create Viewport",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "viewport_delete",
+      "group": "layouts",
+      "cost": "destructive",
+      "summary": "Remove a viewport from a sheet.",
+      "tags": [
+        "layout"
+      ],
+      "annotations": {
+        "title": "Delete Viewport",
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "viewport_list",
+      "group": "layouts",
+      "cost": "read",
+      "summary": "List the viewports on a sheet with their scales and locks.",
+      "tags": [
+        "layout",
+        "query"
+      ],
+      "annotations": {
+        "title": "List Viewports",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "viewport_lock",
+      "group": "layouts",
+      "cost": "safe",
+      "summary": "Lock a viewport so its scale cannot be zoomed away.",
+      "tags": [
+        "layout"
+      ],
+      "annotations": {
+        "title": "Lock Viewport"
+      }
+    },
+    {
+      "name": "viewport_set_scale",
+      "group": "layouts",
+      "cost": "mutate",
+      "summary": "Set a viewport's scale, e.g. 1:2 or 1:50.",
+      "tags": [
+        "layout"
+      ],
+      "annotations": {
+        "title": "Set Viewport Scale",
+        "destructiveHint": false
+      }
+    }
+  ],
+  "resources": [
+    {
+      "uri": "autocad://blocks",
+      "name": "Block Library",
+      "description": "All block definitions in the current drawing",
+      "mime_type": "application/json",
+      "tags": [
+        "block"
+      ],
+      "templated": false,
+      "parameters": []
+    },
+    {
+      "uri": "autocad://drawing/info",
+      "name": "Current Drawing Info",
+      "description": "Metadata for the currently open drawing",
+      "mime_type": "application/json",
+      "tags": [
+        "drawing"
+      ],
+      "templated": false,
+      "parameters": []
+    },
+    {
+      "uri": "autocad://entities/stats",
+      "name": "Entity Statistics",
+      "description": "Entity counts by type and layer",
+      "mime_type": "application/json",
+      "tags": [
+        "analysis"
+      ],
+      "templated": false,
+      "parameters": []
+    },
+    {
+      "uri": "autocad://entities/{layer_name}",
+      "name": "Entities By Layer",
+      "description": "List all entities on a specific layer",
+      "mime_type": "application/json",
+      "tags": [
+        "entity",
+        "layer"
+      ],
+      "templated": true,
+      "parameters": [
+        "layer_name"
+      ]
+    },
+    {
+      "uri": "autocad://layers",
+      "name": "Layer List",
+      "description": "All layers in the current drawing with properties",
+      "mime_type": "application/json",
+      "tags": [
+        "layer"
+      ],
+      "templated": false,
+      "parameters": []
+    },
+    {
+      "uri": "autocad://system/status",
+      "name": "Server Status",
+      "description": "AutoCAD MCP Pro server and backend status",
+      "mime_type": "application/json",
+      "tags": [
+        "system"
+      ],
+      "templated": false,
+      "parameters": []
+    }
+  ],
+  "prompts": [
+    {
+      "name": "prompt_electrical_schematic",
+      "description": "Generate a prompt for creating an electrical schematic diagram.",
+      "tags": [
+        "electrical",
+        "template"
+      ],
+      "arguments": [
+        {
+          "name": "circuit_name",
+          "required": false
+        },
+        {
+          "name": "voltage",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "prompt_floor_plan",
+      "description": "Generate a prompt for creating a floor plan drawing.",
+      "tags": [
+        "architectural",
+        "template"
+      ],
+      "arguments": [
+        {
+          "name": "building_name",
+          "required": false
+        },
+        {
+          "name": "scale",
+          "required": false
+        },
+        {
+          "name": "units",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "prompt_mechanical_drawing",
+      "description": "Generate a prompt for creating a mechanical engineering drawing.",
+      "tags": [
+        "mechanical",
+        "template"
+      ],
+      "arguments": [
+        {
+          "name": "part_name",
+          "required": false
+        },
+        {
+          "name": "material",
+          "required": false
+        },
+        {
+          "name": "scale",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "prompt_pid_diagram",
+      "description": "Generate a prompt for creating a P&ID (Piping and Instrumentation Diagram).",
+      "tags": [
+        "pid",
+        "template"
+      ],
+      "arguments": [
+        {
+          "name": "project_name",
+          "required": false
+        },
+        {
+          "name": "revision",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "prompt_quick_drawing",
+      "description": "Generate step-by-step instructions for creating a drawing from a description.",
+      "tags": [
+        "template",
+        "utility"
+      ],
+      "arguments": [
+        {
+          "name": "description",
+          "required": true
+        }
+      ]
+    }
+  ]
+}

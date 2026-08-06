@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from fastmcp.exceptions import ToolError
 
-from security import sanitize_command, sanitize_lisp, validate_path
+from security import command_verbs, sanitize_command, sanitize_lisp, validate_path
 
 # ---------------------------------------------------------------------------
 # Path validation tests
@@ -276,3 +278,117 @@ class TestSanitizerBypassVectors:
 
     def test_lisp_legitimate_not_overblocked(self):
         assert sanitize_lisp("(setq x (* 2 3))") == "(setq x (* 2 3))"
+
+
+# ── T0.8-A — what the guards actually guard ────────────────────────────────
+
+
+class TestNonLocalPathAnchors:
+    r"""Windows accepts several spellings of the same file that compare unequal.
+
+    ``_BLOCKED_PATH_PATTERNS`` rejects the backslash forms, but ``Path.resolve()``
+    normalises the *forward-slash* spellings into them afterwards — so
+    ``//?/C:/Windows/win.ini`` slipped past the pattern check and then compared
+    unequal to ``C:/Windows`` in the system-directory loop. Proven: it returned a
+    handle that ``os.path.samefile``'d ``C:\Windows\win.ini``.
+    """
+
+    @pytest.mark.skipif(os.name != "nt", reason="drive anchors are a Windows concept")
+    def test_extended_length_prefix_is_rejected(self):
+        with pytest.raises(ToolError, match="not a plain local drive path"):
+            validate_path("//?/C:/Windows/win.ini")
+
+    @pytest.mark.skipif(os.name != "nt", reason="drive anchors are a Windows concept")
+    def test_unc_forward_slash_form_is_rejected(self):
+        with pytest.raises(ToolError, match="not a plain local drive path"):
+            validate_path("//localhost/C$/Windows/win.ini")
+
+    @pytest.mark.skipif(os.name != "nt", reason="drive anchors are a Windows concept")
+    def test_device_form_still_reaches_the_system_directory_check(self):
+        """``//./C:/...`` normalises to a plain drive path — it must be caught
+        by the system-directory rule, not by the anchor rule, or the anchor
+        check would be masking rather than adding a guard."""
+        with pytest.raises(ToolError, match="system directory"):
+            validate_path("//./C:/Windows/win.ini")
+
+    @pytest.mark.skipif(os.name != "nt", reason="drive anchors are a Windows concept")
+    def test_an_ordinary_path_is_unaffected(self, tmp_path):
+        assert validate_path(str(tmp_path / "part.dxf"))
+
+
+class TestLispStringLiteralsAreData:
+    """A quoted literal is drawing text, not code.
+
+    Reading inside quotes made the server refuse its own domain vocabulary: an
+    engineering CAD server that rejects ``"Max load 500 kg"`` because the word
+    "load" appears in a note is broken for the job it exists to do.
+    """
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            '(setq desc "Max load 500 kg")',
+            '(entmakex (list (cons 0 "TEXT") (cons 1 "LOAD CASE 1")))',
+            '(setq layer "C:CENTER")',
+            '(setq note "Design load = 12 kN")',
+        ],
+    )
+    def test_engineering_text_is_not_mistaken_for_code(self, expression):
+        assert sanitize_lisp(expression) == expression
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            '(load "malicious.lsp")',
+            '(vl-catch-all-apply (quote command) (list "ERASE"))',
+            '(startapp "cmd")',
+            "(eval (read user-input))",
+        ],
+    )
+    def test_the_dangerous_vectors_still_block(self, expression):
+        with pytest.raises(ToolError):
+            sanitize_lisp(expression)
+
+
+class TestCommandVerbScoping:
+    """Match the command, not the characters.
+
+    ``\b(ERASE|...)\b`` over the whole string refused ``MTEXT 0,0 10,10 Do not
+    erase this part`` — annotation text, not a command — while missing spellings
+    AutoCAD accepts. SendCommand takes a macro: segments split on newline or
+    ``;``, and only a segment's FIRST token is a verb.
+    """
+
+    def test_the_repos_own_safe_fixture_still_passes(self):
+        assert sanitize_command("_ZOOM E") == "_ZOOM E"
+
+    def test_zoom_extents_as_a_macro_passes(self):
+        """``E`` here is the Extents *option*, not the ERASE alias. Blocking the
+        canonical zoom-extents macro is why single-letter aliases stay out of
+        the verb set."""
+        assert sanitize_command("_ZOOM\nE\n") == "_ZOOM\nE\n"
+
+    def test_annotation_text_mentioning_a_verb_passes(self):
+        text = "MTEXT 0,0 10,10 Do not erase this part"
+        assert sanitize_command(text) == text
+
+    def test_a_linetype_load_macro_passes(self):
+        macro = "_-LINETYPE _LOAD CENTER acad.lin\n\n"
+        assert sanitize_command(macro) == macro
+
+    @pytest.mark.parametrize(
+        "command",
+        ["ERASE ALL", "_ZOOM E\n_ERASE", "SAVE", "VBASTMT", "ARX", ".SHELL", "'SCRIPT x.scr"],
+    )
+    def test_dangerous_verbs_are_blocked_in_every_decoration(self, command):
+        with pytest.raises(ToolError):
+            sanitize_command(command)
+
+    def test_the_refusal_names_the_offending_verb(self):
+        """Without this a user whose annotation was refused cannot tell why."""
+        with pytest.raises(ToolError, match="ERASE"):
+            sanitize_command("_ZOOM E\n_ERASE")
+
+    def test_command_verbs_strips_every_decorator(self):
+        assert command_verbs("_-PURGE") == ["PURGE"]
+        assert command_verbs("'_ZOOM E;.REGEN") == ["ZOOM", "REGEN"]

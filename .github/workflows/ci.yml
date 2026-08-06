@@ -11,6 +11,25 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Two deliberately different installation paths run in this file:
+#
+#   lint / test-*  install from uv.lock with `--locked`. Every version, down to
+#                  the transitive graph, is the one the suite was last run
+#                  against; `--locked` *fails* rather than re-resolving if
+#                  uv.lock has drifted from pyproject.toml. A release upstream
+#                  can no longer turn main red on its own schedule.
+#   package        installs the built wheel with plain pip, from the dependency
+#                  ranges in pyproject.toml — on purpose. That is the path a
+#                  user gets from PyPI, and it is the only job that exercises
+#                  it, so it must not be locked.
+#
+# Locked CI is blind to upstream drift by construction; deps-floating.yml is the
+# deliberate counterweight that resolves the ranges fresh on a schedule.
+env:
+  # Pinned for the same reason ruff is: the tool that reads the lockfile is part
+  # of the reproducible environment. Bump this and re-run `uv lock` together.
+  LOCKED_UV_VERSION: "0.12.1"
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -19,9 +38,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install ruff
-      - run: ruff check .
-      - run: ruff format --check .
+      - run: pip install "uv==${{ env.LOCKED_UV_VERSION }}"
+      # Dev group only: ruff comes from the lock, the project is not built.
+      # The ruff version lives in [dependency-groups] dev in pyproject.toml and
+      # nowhere else — the formatter's output changes between minors, so a
+      # floating ruff fails `ruff format --check .` on unchanged code.
+      - run: uv sync --locked --only-group dev
+      - run: uv run --no-sync ruff check .
+      - run: uv run --no-sync ruff format --check .
 
   test-linux:
     runs-on: ubuntu-latest
@@ -32,14 +56,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        id: python
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install dependencies
-        run: |
-          pip install -e ".[pdf]"
-          pip install pytest pytest-asyncio pytest-cov
+      - run: pip install "uv==${{ env.LOCKED_UV_VERSION }}"
+      - name: Install the locked environment
+        # uv.lock is a universal resolution over requires-python >=3.11, so the
+        # same file serves both matrix legs; --python keeps uv on the
+        # interpreter setup-python just provisioned instead of picking its own.
+        run: uv sync --locked --extra pdf --python "${{ steps.python.outputs.python-path }}"
       - name: Run tests
-        run: pytest --cov=. --cov-report=xml --cov-report=term-missing -v
+        run: uv run --no-sync pytest --cov=. --cov-report=xml --cov-report=term-missing -v
       - name: Upload coverage
         if: matrix.python-version == '3.11'
         uses: actions/upload-artifact@v4
@@ -54,14 +81,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        id: python
         with:
           python-version: "3.11"
-      - name: Install dependencies
-        run: |
-          pip install -e ".[full]"
-          pip install pytest pytest-asyncio pytest-cov
+      - run: pip install "uv==${{ env.LOCKED_UV_VERSION }}"
+      - name: Install the locked environment
+        run: uv sync --locked --extra full --python "${{ steps.python.outputs.python-path }}"
       - name: Run tests
-        run: pytest -v
+        run: uv run --no-sync pytest -v
 
   package:
     runs-on: ubuntu-latest
@@ -75,6 +102,9 @@ jobs:
           pip install build twine
           python -m build
           twine check dist/*
+      # Unlocked on purpose: this resolves the published dependency ranges the
+      # way a user's `pip install autocad-mcp-pro` does. Locking it would mean
+      # nothing in CI ever proves those ranges are installable.
       - name: Install wheel in a clean venv and smoke test
         run: |
           python -m venv /tmp/smoke

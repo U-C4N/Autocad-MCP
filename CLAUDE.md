@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AutoCAD MCP Pro is a FastMCP 3.0 server that exposes ~131 tools, 6 resources, and 5 prompt templates for AutoCAD automation. (The exact tool count is reported dynamically by `system_status` / `system_about` — never hardcode it.) It runs with a dual-engine architecture: a live COM backend (Windows/AutoCAD required) and a headless ezdxf backend (works anywhere).
+AutoCAD MCP Pro is a FastMCP 3.0 server that exposes ~154 tools, 6 resources, and 5 prompt templates for AutoCAD automation. (The exact tool count is reported dynamically by `system_status` / `system_about` — never hardcode it.) It runs with a dual-engine architecture: a live COM backend (Windows/AutoCAD required) and a headless ezdxf backend (works anywhere).
 
 ## Running the Server
 
@@ -53,7 +53,9 @@ Uses `pytest-asyncio` for async test support.
 
 The server uses a strategy pattern with an abstract base:
 
-- `backends/base.py` — `AutoCADBackend` ABC defining the full interface + shared dataclasses (`EntityInfo`, `LayerInfo`, `BlockInfo`, `DrawingInfo`)
+- `backends/contracts/` — the interface, one module per domain (`drawing.py`, `layouts.py`, `entity_creation.py`, …). Split in v1.5.0 out of a single 1854-line ABC; some slices (premium, gdt, settings) also carry shared *concrete* implementations, so they are mixins rather than pure interfaces.
+- `backends/capability.py` — the refusal vocabulary (`UnsupportedCapabilityError`) plus `@capability(key, reason=...)`, which marks a contract method optional and gives it a default that **raises** that refusal. Use it only for genuine engine boundaries, never for an unfinished method; `@abstractmethod` stays the default. Every key used must be declared in *both* capability maps — `tests/test_capability_contract.py` fails otherwise, which is what stops the decorator becoming a way to ship undeclared holes.
+- `backends/base.py` — shared dataclasses (`EntityInfo`, `LayerInfo`, `BlockInfo`, `DrawingInfo`, `CapabilityMap`) and the `AutoCADBackend` composition of every contract. Import surface is unchanged: `from backends.base import AutoCADBackend, UnsupportedCapabilityError` still works.
 - `backends/ezdxf_backend.py` — `EzdxfBackend`: file-based DXF operations using the `ezdxf` library. All sync ezdxf calls are wrapped with `asyncio.to_thread` via `_async()`. Transactions are implemented as full DXF snapshots on an `_undo_stack`.
 - `backends/com_backend.py` — `ComBackend`: live AutoCAD control via `pywin32` COM. All COM calls are routed through a `ThreadPoolExecutor` with a single thread to satisfy AutoCAD's STA (Single-Threaded Apartment) COM requirement.
 
@@ -84,10 +86,12 @@ Tools are organized into sections (counts are indicative — `system_about` is a
 12. Engineering / Deterministic CAD (8 tools): `gear_draw_*`, `keyway_draw_*`, `titleblock_apply_iso_a3`, `drawing_finalize`
 13. Premium meta-tools (12): `drawing_preflight`, `drawing_plan`, `drawing_critique`, `drawing_refine`, `drawing_deliver`, `point_from_snap/intersection/tangent`, `construction_*`, `drawing_apply_iso_layers`, `dimension_auto`, `entity_select_smart`
 14. GD&T (ISO 1101 / ASME Y14.5): `gd_frame` (feature control frames), `datum_feature` — enforced by the `gdt` critique focus
-15. Layouts & Paper Space (4 tools): `layout_list/create/set_current`, `viewport_create` (scaled model viewports); `drawing_export_pdf` takes an optional `layout` param. Viewport model-content projection is COM-only (`viewport_render` capability).
+15. Layouts & Paper Space (12 tools): tab lifecycle `layout_list/create/set_current/delete/rename/copy`, viewports `viewport_create/list/set_scale/lock/delete`, and `entity_change_space` (CHSPACE — tagged `layout` *and* `modify`, and `layout` wins the group priority, so it files here). `drawing_export_pdf` takes an optional `layout` param and **does** project model content through viewports on both engines (`viewport_render` — v1.4 declared this COM-only and was wrong; the headless renderer only omits the viewport borders). `entity_change_space` is the mirror case — ezdxf-only (`chspace`), because ActiveX exposes no change-space member and the COM route is unverified.
 16. 3D Solids (5 tools, opt-in via `ENABLE_3D=true`, COM only): `solid_box/cylinder/extrude/revolve/boolean` — hidden from discovery and rejected while disabled; ezdxf reports `solid_3d` as unsupported (no headless ACIS).
 
-**Tool profiles:** `TOOL_PROFILE=lean|core|full` (default `full`) controls the advertised surface — `lean` ≈ 46 curated drafting tools, `core` hides raw escape hatches (`system_run_command/lisp`, low-level variables, long-tail tools). Applied in the lifespan; reported by `system_about`.
+**Tool profiles:** `TOOL_PROFILE=lean|full` (default `full`) controls the advertised surface — `lean` ≈ 47 curated drafting tools (including `cad_batch`, since a client with a tight tool cap is exactly the client paying most per turn). Applied in the lifespan; reported by `system_about`. The `core` profile was removed in v1.5.0 (the discovery layer replaced it); `TOOL_PROFILE=core` falls back to `full` with a warning.
+
+**Tool discovery:** `DISCOVERY_MODE=off|search` (default `off`). `search` replaces the advertised catalog with `search_tools` + `call_tool`, ranking hits over an AutoCAD command / synonym corpus (`discovery/aliases.py`) layered on fastmcp's BM25 index.
 
 **ISO 129 tolerances:** `dimension_linear` / `dimension_radius` / `dimension_diameter` take `tol_upper` / `tol_lower` / `tol_mode` (`symmetric` ± / `deviation` +a/-b / `limit` / `basic`) and `text_override` (e.g. `⌀20 H7`). Prefer these over hand-drawn tolerance text.
 
@@ -95,9 +99,13 @@ Tools are organized into sections (counts are indicative — `system_about` is a
 
 **Drawing score:** `drawing_finalize` returns `payload["score"]` — a 0-100 scalar + `invalidity_ratio` + A-F `grade` over the validator + critique union. Use it as the objective quality metric.
 
+**Measuring:** never read vertices back and shoelace them — that loses 28.2% of the area on a semicircular edge, silently. `analysis_measure_entity(handle)` reads the real geometry, and its payload states its own accuracy: `exact`, `flatten_tolerance`, `assumed_closed`, `self_intersecting`. A HATCH reports the area it *fills* (outer loops minus islands) plus `hatch_style`; on a curved hatch edge `flatten_tolerance` is not the accuracy knob, because ezdxf hands boundaries over as cubic Beziers whose ~0.028% circle error is already baked in. `boundary_trace` / `boundary_from_entities` report the same number `analysis_measure_entity` gives for the polyline they just drew — if those ever diverge, one of them is approximating and neither says so.
+
+**Benchmark matrix:** `benchmarks/tasks_v3.py` is the current set (15 tasks; `--matrix v2` reproduces the v1.4 ten). The published competitor reports are pinned v1.4 runs against v2 and are **never** back-filled for the five v3 tasks — the chart shows them `not run`, not zero. `benchmarks/correctness_suite.py` (24 checks) is the release A/B gate: `python benchmarks/compare_versions.py v1.4.0`.
+
 ### Adding a New Tool
 
-1. Add the abstract method to `AutoCADBackend` in `backends/base.py`
+1. Add the method to the matching module in `backends/contracts/` — `@abstractmethod` if both engines must have it, `@capability("key", reason=...)` only if it is a real engine boundary (and then declare `key` in both capability maps, or the gate fails)
 2. Implement it in `EzdxfBackend` (`backends/ezdxf_backend.py`) using the `_async(func)` wrapper
 3. Implement it in `ComBackend` (`backends/com_backend.py`) using `self._com(func)`
 4. Register the tool in `server.py` with `@mcp.tool(...)` calling `_backend(ctx).your_method(...)`
@@ -107,6 +115,12 @@ Tools are organized into sections (counts are indicative — `system_about` is a
 
 - **Entity handles**: hex strings (e.g. `"1A2B"`). Always returned from create/copy operations; required by all modify/query operations.
 - **Coordinates**: drawing units (mm by default); angles in degrees, counter-clockwise from X axis.
+  **Every coordinate in or out of a tool is WCS on both engines.** DXF stores
+  CIRCLE/ARC/LWPOLYLINE/TEXT/INSERT geometry in a per-entity frame (`extrusion`);
+  `backends/ocs.py` translates at the backend boundary, so OCS never reaches a
+  tool. An entity in a plane tilted out of WCS XY reports `plane_normal` and omits
+  the fields xy cannot express; writing an xy into such an entity is refused with
+  `capability: "ocs_tilted_plane"` — use `entity_move` instead.
 - **ACI colors**: 1–255 for specific colors, 256=ByLayer, 0=ByBlock.
 - **COM backend only**: `system_run_command`, `system_run_lisp`, and `view_zoom_extents/window` (view ops are no-ops in ezdxf).
 - **Screenshot**: COM uses Win32 window capture (Pillow required); ezdxf renders via matplotlib.

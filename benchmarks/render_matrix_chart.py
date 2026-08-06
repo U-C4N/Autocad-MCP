@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from benchmarks.tasks_v2 import TASKS_V2
+from benchmarks.tasks_v3 import TASKS_V3
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INPUT_DIR = ROOT / "benchmarks" / "results" / "published"
@@ -66,8 +66,8 @@ def render_chart(reports: list[dict[str, Any]], output: Path) -> None:
 
     matplotlib.rcParams["svg.hashsalt"] = "autocad-mcp-taskmatrix-v1"
 
-    task_ids = [task.task_id for task in TASKS_V2]
-    task_labels = [f"{task.task_id}  ({task.category})" for task in TASKS_V2]
+    task_ids = [task.task_id for task in TASKS_V3]
+    task_labels = [f"{task.task_id}  ({task.category})" for task in TASKS_V3]
     servers = [report["adapter"] for report in reports]
     status_by_server = {
         report["adapter"]: {item["task_id"]: item["status"] for item in report["results"]}
@@ -132,12 +132,17 @@ def render_chart(reports: list[dict[str, Any]], output: Path) -> None:
         Patch(facecolor=STATUS_COLORS["partial"], label="partial"),
         Patch(facecolor=STATUS_COLORS["fail"], label="fail"),
         Patch(facecolor=STATUS_COLORS["unsupported"], label="unsupported (no equivalent)"),
+        # Real rows now, not a theoretical state: the competitor reports were
+        # pinned and run against the v2 matrix, so the five v3 tasks were
+        # never put to them. An invented zero would look identical to a
+        # measured one, so they stay blank and say why.
+        Patch(facecolor=STATUS_COLORS["not_run"], edgecolor="#30363d", label="not run"),
     ]
     ax.legend(
         handles=legend_handles,
         loc="upper left",
         bbox_to_anchor=(0, -0.02),
-        ncol=4,
+        ncol=5,
         frameon=False,
         fontsize=9,
         labelcolor="#e6edf3",

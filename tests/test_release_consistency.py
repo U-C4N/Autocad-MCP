@@ -6,13 +6,28 @@ none of them can drift again:
 
 - pyproject version == CHANGELOG top release == README snapshot major.minor
 - version.py fallback parser returns the pyproject version
-- README snapshot tool/resource/prompt counts == live @mcp.* decorator counts
+- README snapshot tool/resource/prompt counts == the generated tool inventory
 - every ``SECTION n: ... (N tools)`` header matches the decorators below it
+- server.json version == pyproject, and the README carries the mcp-name marker
 - every wheel ``only-include`` entry is COPY'd into the Docker image
+
+Two of these used to count the literal text ``@mcp.tool(`` in server.py, which
+made that string load-bearing in prose: an example in a docstring inflated the
+count. Neither does any more.
+
+* The README snapshot counts now come from ``docs/tool-inventory.json``, which
+  ``tests/test_tool_inventory.py`` holds equal to the live component registry —
+  so the chain README -> inventory -> registry is closed without this module
+  having to import the server.
+* The section-header gate stays (a "SECTION n" is a fact about server.py's
+  layout that no runtime registry can see) but counts *parsed* decorators
+  instead of matched text.
 """
 
 from __future__ import annotations
 
+import ast
+import json
 import re
 import tomllib
 from pathlib import Path
@@ -90,31 +105,76 @@ def test_readme_snapshot_matches_pyproject_minor() -> None:
 
 
 def test_readme_snapshot_counts_match_registrations() -> None:
-    src = _server_source()
-    tools = len(re.findall(r"@mcp\.tool\(", src))
-    resources = len(re.findall(r"@mcp\.resource\(", src))
-    prompts = len(re.findall(r"@mcp\.prompt\(", src))
+    """README snapshot == the surface, via the generated inventory.
+
+    The counts used to be a regex tally of ``@mcp.tool(`` / ``@mcp.resource(`` /
+    ``@mcp.prompt(`` in server.py's text. They now come from
+    ``docs/tool-inventory.json``, which is built from the live component
+    registry and gated against it by tests/test_tool_inventory.py — so this
+    still fails when a registration is added without updating the README, but
+    it can no longer be moved by prose that merely *mentions* a decorator.
+    """
+    inventory = json.loads((ROOT / "docs" / "tool-inventory.json").read_text(encoding="utf-8"))
+    totals = inventory["totals"]
+    live = (totals["tools"], totals["resources"], totals["prompts"])
     _, readme_tools, readme_resources, readme_prompts = _readme_snapshot()
-    assert (readme_tools, readme_resources, readme_prompts) == (tools, resources, prompts), (
+    assert (readme_tools, readme_resources, readme_prompts) == live, (
         f"README snapshot says {readme_tools}/{readme_resources}/{readme_prompts} "
-        f"(tools/resources/prompts) but server.py registers {tools}/{resources}/{prompts}"
+        f"(tools/resources/prompts) but the server registers {live[0]}/{live[1]}/{live[2]} "
+        "(per docs/tool-inventory.json; regenerate it with "
+        "`python scripts/generate_tool_inventory.py` if that is the stale one)"
     )
 
 
+def _tool_decorator_lines(src: str) -> list[int]:
+    """Line number of every ``mcp.tool`` decorator, parsed rather than matched.
+
+    Parsing is what keeps the *string* ``@mcp.tool(`` from being load-bearing:
+    an occurrence in a docstring or comment is not a decorator node, so it
+    cannot inflate a section's count.
+    """
+    lines: list[int] = []
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in node.decorator_list:
+            # Both spellings count: `@mcp.tool` and `@mcp.tool(...)`.
+            target = decorator.func if isinstance(decorator, ast.Call) else decorator
+            if (
+                isinstance(target, ast.Attribute)
+                and target.attr == "tool"
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "mcp"
+            ):
+                lines.append(decorator.lineno)
+    return sorted(lines)
+
+
 def test_section_header_counts_match_decorators() -> None:
+    """Kept, and not replaceable by the inventory: a section is a source-layout
+    fact (which tools sit under which header comment), invisible to the live
+    registry, and it does not line up with the tag-derived groups the inventory
+    records — SECTION 8 alone spans analysis + batch + templates + validation."""
     src = _server_source()
+    lines = src.splitlines()
+    decorators = _tool_decorator_lines(src)
+    # Segment boundaries: every SECTION header (counted or not) ends a segment.
+    boundaries = [
+        number
+        for number, line in enumerate(lines, start=1)
+        if re.search(r"#[^\n]*SECTION [\w]+:", line)
+    ]
+    boundaries.append(len(lines) + 1)
     headers = [
-        (m.start(), m.group(1), m.group(2))
-        for m in re.finditer(r"#[^\n]*SECTION ([\w]+):[^\n]*?\((\d+) tools?\)", src)
+        (number, match.group(1), match.group(2))
+        for number, line in enumerate(lines, start=1)
+        if (match := re.search(r"#[^\n]*SECTION ([\w]+):[^\n]*?\((\d+) tools?\)", line))
     ]
     assert headers, "no counted SECTION headers found in server.py"
-    # Segment boundaries: every SECTION header (counted or not) ends a segment.
-    boundaries = sorted(m.start() for m in re.finditer(r"#[^\n]*SECTION [\w]+:", src))
-    boundaries.append(len(src))
     mismatches: list[str] = []
     for start, section_id, declared in headers:
         end = min(b for b in boundaries if b > start)
-        actual = len(re.findall(r"@mcp\.tool\(", src[start:end]))
+        actual = sum(1 for line in decorators if start <= line < end)
         if actual != int(declared):
             mismatches.append(f"SECTION {section_id}: header says {declared}, actual {actual}")
     assert not mismatches, "; ".join(mismatches)
@@ -122,8 +182,6 @@ def test_section_header_counts_match_decorators() -> None:
 
 def test_server_json_versions_match_pyproject() -> None:
     """MCP registry manifest must ship the same version as the package."""
-    import json
-
     manifest = json.loads((ROOT / "server.json").read_text(encoding="utf-8"))
     expected = _pyproject_version()
     assert manifest["version"] == expected, (
@@ -141,8 +199,6 @@ def test_server_json_versions_match_pyproject() -> None:
 def test_readme_contains_mcp_name_marker() -> None:
     """PyPI ownership validation for the MCP registry needs this marker in the
     README (which ships to PyPI as the long description)."""
-    import json
-
     manifest = json.loads((ROOT / "server.json").read_text(encoding="utf-8"))
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert f"mcp-name: {manifest['name']}" in readme

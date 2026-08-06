@@ -7,12 +7,12 @@
     "url": "https://github.com/U-C4N/Autocad-MCP",
     "source": "github"
   },
-  "version": "1.4.0",
+  "version": "1.5.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "autocad-mcp-pro",
-      "version": "1.4.0",
+      "version": "1.5.0",
       "transport": {
         "type": "stdio"
       },
@@ -33,7 +33,14 @@
         },
         {
           "name": "TOOL_PROFILE",
-          "description": "Exposed tool profile: full (default), core or lean.",
+          "description": "Exposed tool profile: full (default) or lean.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "DISCOVERY_MODE",
+          "description": "Tool discovery: off (default) advertises the full catalog; search replaces it with search_tools plus a call_tool proxy.",
           "isRequired": false,
           "format": "string",
           "isSecret": false

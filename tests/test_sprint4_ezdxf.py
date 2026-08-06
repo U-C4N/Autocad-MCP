@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import pytest
 
+import config
+
 pytestmark = pytest.mark.asyncio
 
 
@@ -96,8 +98,13 @@ async def test_zoom_window_reports_not_applied(backend):
 # ── NEW-undo-1 — undo/transaction stack behaviour under lock ────────────────
 
 
-async def test_undo_empty_stack_returns_error(backend):
+async def test_undo_empty_stack_returns_error(backend, monkeypatch):
+    """With history on but nothing done yet, undo declines rather than raising."""
+    monkeypatch.setattr(config.settings, "ezdxf_undo_depth", 4)
+    await backend.drawing_new()
+
     res = await backend.drawing_undo()
+
     assert res["ok"] is False
     assert "undo" in res["error"].lower()
 

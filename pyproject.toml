@@ -1,6 +1,6 @@
 [project]
 name = "autocad-mcp-pro"
-version = "1.4.0"
+version = "1.5.0"
 description = "Production-grade AutoCAD MCP server — COM API + ezdxf dual engine"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -32,9 +32,31 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "fastmcp>=3.0",
-    "ezdxf>=1.3",
-    "pydantic>=2.0",
+    # These ranges are what an *installer* gets from PyPI, so they stay ranges:
+    # a library that pins its dependencies exactly is unco-installable. They are
+    # deliberately narrow because a range is all a `pip install` has to protect
+    # it. The floor of each range is the version this release is tested against.
+    #
+    # What CI and contributors get is different and exact: uv.lock pins the
+    # whole transitive graph (including the dev tools) to the set the suite was
+    # last run against, and every locked lane installs with `--locked` so an
+    # untested upstream cannot appear silently. Ranges guard users; the lock
+    # guards us. Regenerate the lock with `uv lock` whenever these change.
+    #
+    # Every ceiling is the next major. A tighter cap (e.g. `<3.5`) would block a
+    # user whose environment already holds a newer minor from installing us at
+    # all, and it buys nothing here: the lock is what protects our own runs, and
+    # `deps-floating.yml` runs the suite against unpinned latest on a schedule,
+    # so a breaking upstream minor surfaces as a failing scheduled job rather
+    # than as a silent CI-green-but-users-broken state.
+    #
+    # fastmcp 3.x moves fast and `fastmcp` is now a thin meta-package
+    # (Requires-Dist: fastmcp-slim[client,server]), so a new minor can reshape
+    # the API we build on. If deps-floating goes red, add a targeted `!=` for
+    # the bad version rather than lowering this ceiling.
+    "fastmcp>=3.4.5,<4",
+    "ezdxf>=1.4,<2",
+    "pydantic>=2.0,<3",
 ]
 
 [project.urls]
@@ -44,11 +66,20 @@ Issues = "https://github.com/U-C4N/Autocad-MCP/issues"
 Changelog = "https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
+# Rendering needs an extra — the core install cannot draw pixels.
+# ezdxf.addons.drawing.frontend does an unconditional top-level `import
+# PIL.Image`, so Pillow is required by *every* ezdxf render path (PNG
+# screenshot and PDF export alike), not only by the COM window-capture path
+# it is listed under below. `pip install autocad-mcp-pro` on its own therefore
+# renders nothing. Install `[pdf]` (or `[full]`) for rendering on any platform:
+# Pillow comes in transitively as a matplotlib dependency.
 com = [
     "pywin32>=306",
+    # Win32 window capture for the live-AutoCAD screenshot path.
     "Pillow>=10.0",
 ]
 pdf = [
+    # Also satisfies ezdxf's hard Pillow requirement, transitively.
     "matplotlib>=3.8",
 ]
 full = [
@@ -63,12 +94,24 @@ autocad-mcp = "server:main"
 # without a --from indirection (MCP registry / uvx convention).
 autocad-mcp-pro = "server:main"
 
-[tool.uv]
-dev-dependencies = [
+# PEP 735 dependency group (was [tool.uv] dev-dependencies, which uv now warns
+# is deprecated). The standard spelling is understood by uv *and* by pip >=25.1
+# (`pip install --group dev`), so the dev toolchain has one definition whether
+# or not you use uv.
+#
+# These are the exact gates CI runs, and uv.lock freezes them: `uv sync
+# --locked` reproduces this list bit-for-bit, so a lint or test job can no
+# longer be broken by a tool release nobody chose.
+[dependency-groups]
+dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
-    "ruff>=0.8",
+    # Exact pin *and* locked: the formatter's output changes between minors, so
+    # a floating ruff makes `ruff format --check .` fail on unchanged code. This
+    # is now the only place the version is written — the workflows install ruff
+    # from the lock rather than restating it.
+    "ruff==0.16.1",
 ]
 
 [build-system]
@@ -78,7 +121,15 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 # Flat layout: no directory matches the project name, so hatchling needs an
 # explicit file selection (GH issue #2). server.py imports config + security.
-only-include = ["server.py", "config.py", "security.py", "version.py", "backends", "engineering"]
+only-include = [
+    "server.py",
+    "config.py",
+    "security.py",
+    "version.py",
+    "backends",
+    "engineering",
+    "discovery",
+]
 
 [tool.ruff]
 line-length = 100

@@ -53,5 +53,7 @@ benchmarks/.competitors/
 # Local editor/agent state
 .cursor/
 
-# Stale/unvetted lockfile (regenerate deliberately with 'uv lock' if adopting uv)
-uv.lock
+# NOTE: uv.lock is deliberately *not* ignored. It used to be — back when the
+# committed one was stale and unvetted — but CI now installs from it with
+# `uv sync --locked`, so ignoring it would silently disarm every locked lane.
+# Regenerate with `uv lock` whenever pyproject.toml dependencies change.

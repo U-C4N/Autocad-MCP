@@ -14,8 +14,9 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from backends.capability import UnsupportedCapabilityError
 from benchmarks.adapters.base import BenchmarkAdapter, TaskResult
-from benchmarks.tasks_v2 import TASKS_V2, TaskSpec, task_by_id
+from benchmarks.tasks_v3 import DEFAULT_MATRIX, MATRICES, TaskSpec, task_by_id
 
 
 def _load_registry() -> dict[str, dict]:
@@ -78,6 +79,7 @@ async def run_tasks(
     artifact_dir: str | Path,
     *,
     timeout: float = 30.0,
+    matrix: str = DEFAULT_MATRIX,
 ) -> dict:
     destination = Path(artifact_dir).resolve()
     destination.mkdir(parents=True, exist_ok=True)
@@ -90,6 +92,12 @@ async def run_tasks(
                 result = await asyncio.wait_for(adapter.run_task(task), timeout=timeout)
             except TimeoutError:
                 result = TaskResult(task.task_id, "timeout", 0.0, f"Exceeded {timeout}s")
+            except UnsupportedCapabilityError as exc:
+                # "Your server got this wrong" and "your engine cannot reach
+                # this" are different findings about a competitor. The enum has
+                # carried `unsupported` since v2 for exactly this, but a
+                # refusal is still an exception and used to land as `fail`.
+                result = TaskResult(task.task_id, "unsupported", 0.0, f"[{exc.capability}] {exc}")
             except Exception as exc:
                 result = TaskResult(task.task_id, "fail", 0.0, str(exc), stderr_summary=str(exc))
             result.duration_ms = round((time.perf_counter() - started) * 1000, 2)
@@ -108,7 +116,11 @@ async def run_tasks(
         weight_by_id[item.task_id] * item.score for item in results if item.status != "unsupported"
     )
     return {
+        # The *report* schema is unchanged — same keys, same enum — so the
+        # chart renderers still read v1.4's published files. `matrix` says
+        # which task set ran, which is the thing that actually moved.
         "schema_version": "2.0",
+        "matrix": matrix,
         "adapter": adapter.name,
         "adapter_metadata": adapter.metadata(),
         "git_sha": _git_sha(),
@@ -138,6 +150,12 @@ def _parser(registry: dict[str, dict]) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list", action="store_true", help="List the fixed benchmark tasks")
     parser.add_argument(
+        "--matrix",
+        default=DEFAULT_MATRIX,
+        choices=sorted(MATRICES),
+        help="Task set to run. v2 stays addressable so a v1.4 report can be reproduced.",
+    )
+    parser.add_argument(
         "--server",
         default="autocad-mcp-pro",
         choices=sorted(registry),
@@ -148,14 +166,35 @@ def _parser(registry: dict[str, dict]) -> argparse.ArgumentParser:
     parser.add_argument("--artifact-dir", default="benchmarks/results/latest")
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+    parser.add_argument(
+        "--publish",
+        type=Path,
+        help=(
+            "Also write the report here with artifact paths reduced to filenames. "
+            "How results/published/*.json are produced — it was a manual edit before."
+        ),
+    )
     return parser
+
+
+def _sanitize_for_publication(report: dict) -> dict:
+    """Drop absolute paths from artifacts, keep the hash that identifies them.
+
+    A published report should not carry the run machine's directory layout;
+    the sha256 is what makes the artifact checkable, and that stays.
+    """
+    published = json.loads(json.dumps(report))
+    for result in published["results"]:
+        for artifact in result["artifacts"]:
+            artifact.pop("path", None)
+    return published
 
 
 def main() -> None:
     registry = _load_registry()
     args = _parser(registry).parse_args()
     if args.list:
-        for task in TASKS_V2:
+        for task in MATRICES[args.matrix]:
             print(f"{task.task_id}\t{task.category}\t{task.description}")
         return
 
@@ -165,10 +204,27 @@ def main() -> None:
         raise SystemExit(
             f"{args.server} supports backends {supported_backends}, not {args.backend!r}"
         )
-    tasks = [task_by_id(task_id) for task_id in args.task] if args.task else list(TASKS_V2)
+    tasks = (
+        [task_by_id(task_id, args.matrix) for task_id in args.task]
+        if args.task
+        else list(MATRICES[args.matrix])
+    )
     adapter = _make_adapter(entry, args.backend)
-    report = asyncio.run(run_tasks(adapter, tasks, args.artifact_dir, timeout=args.timeout))
+    report = asyncio.run(
+        run_tasks(adapter, tasks, args.artifact_dir, timeout=args.timeout, matrix=args.matrix)
+    )
     rendered = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)
+    if args.publish:
+        args.publish.parent.mkdir(parents=True, exist_ok=True)
+        args.publish.write_text(
+            json.dumps(
+                _sanitize_for_publication(report), ensure_ascii=False, indent=2, sort_keys=True
+            )
+            + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        print(f"Published: {args.publish}", file=sys.stderr)
     print(rendered)
 
 
