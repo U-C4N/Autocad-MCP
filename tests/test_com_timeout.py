@@ -117,6 +117,10 @@ async def test_genuine_deadline_still_rebuilds_the_executor(com_backend, monkeyp
     assert await asyncio.wait_for(com_backend._run(lambda: "fresh"), timeout=3) == "fresh"
 
 
+def _raise_value_error():
+    raise ValueError("nope")
+
+
 async def test_ordinary_errors_are_unchanged(com_backend, monkeypatch):
     """Sanity: non-timeout failures never touched the executor and still don't."""
     monkeypatch.setattr(config.settings, "com_call_timeout", 5)
@@ -130,3 +134,36 @@ async def test_ordinary_errors_are_unchanged(com_backend, monkeypatch):
 
     assert com_backend._executor is live
     assert await com_backend._run(lambda x: x * 2, 21) == 42
+
+
+# ── the handler must be inert where pywin32 is absent ───────────────────────
+
+
+async def test_an_ordinary_error_survives_a_host_without_pywin32(com_backend, monkeypatch):
+    """`except pywintypes.com_error` is evaluated on the way out of *every*
+    failed call, not only COM ones.
+
+    `pywintypes` is bound only when `sys.platform == "win32"` and the import
+    succeeded, so on Linux — and on a Windows box that installed without the
+    `[com]` extra — that clause raised `NameError: name 'pywintypes' is not
+    defined` and buried the real exception. Every Linux CI leg failed on
+    exactly this; the timeout tests survived only because they matched an
+    earlier `except`.
+
+    Deleting the module attribute reproduces the absent import faithfully: the
+    clause resolves the name through the module globals either way.
+    """
+    monkeypatch.delattr(cb, "pywintypes", raising=False)
+    monkeypatch.setattr(config.settings, "com_call_timeout", 5)
+
+    with pytest.raises(ValueError, match="nope"):
+        await com_backend._run(_raise_value_error)
+
+
+async def test_the_com_error_clause_is_a_tuple_so_it_can_be_empty():
+    """An empty tuple catches nothing, which is the correct behaviour when no
+    `com_error` type exists to be raised — a placeholder Exception subclass
+    would swallow unrelated errors instead."""
+    assert isinstance(cb._COM_ERROR, tuple)
+    if not cb._COM_IMPORTS_OK:
+        assert cb._COM_ERROR == ()

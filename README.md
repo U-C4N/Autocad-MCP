@@ -16,7 +16,7 @@ refine quality issues inside transactions, and deliver hashed artifacts with
 validation evidence.
 
 > **v1.5 release snapshot:** 154 tools · 6 resources · 5 prompt templates ·
-> 1243 collected tests. Runtime discovery through `system_about` is authoritative.
+> 1245 collected tests. Runtime discovery through `system_about` is authoritative.
 
 ## Install in 10 seconds
 

@@ -59,6 +59,18 @@ if _WIN32_AVAILABLE:
 else:
     _COM_IMPORTS_OK = False
 
+#: What `_run` may catch as a COM failure. A *tuple*, because where pywin32 is
+#: absent the right value is the empty one: `except ()` catches nothing, which
+#: is exactly correct when no `com_error` type exists to be raised.
+#:
+#: `except pywintypes.com_error` used to be written directly, and Python
+#: evaluates that name on the way out of every failed call — not only COM ones.
+#: On any host without pywin32 (all of Linux, and Windows installed without the
+#: `[com]` extra) it raised `NameError: name 'pywintypes' is not defined` and
+#: buried the real exception. A placeholder Exception subclass would be worse
+#: than the bug: it would silently swallow unrelated errors.
+_COM_ERROR: tuple[type[BaseException], ...] = (pywintypes.com_error,) if _COM_IMPORTS_OK else ()
+
 try:
     from PIL import Image as PILImage
 
@@ -682,7 +694,7 @@ class ComBackend(AutoCADBackend):
                 "(press ESC in AutoCAD). Increase COM_CALL_TIMEOUT if a long "
                 "operation is expected."
             ) from e
-        except pywintypes.com_error as e:
+        except _COM_ERROR as e:
             hr = e.args[0] if e.args else 0
             if hr in (-2147221246, -2147221005, -2147417842):
                 _COM_STATE.pop("app", None)
