@@ -26,7 +26,7 @@
         },
         {
           "name": "ALLOWED_PATHS",
-          "description": "Comma-separated absolute paths the server may read and write. Empty blocks file access outside temp.",
+          "description": "Comma-separated absolute paths the server may read and write. Empty means no allowlist is enforced at all - traversal and system-directory checks still run, but nothing scopes the filesystem. Set this.",
           "isRequired": false,
           "format": "string",
           "isSecret": false

@@ -51,6 +51,12 @@ def render_chart(reports: list[dict[str, Any]], output: Path) -> None:
     coverage = [item["summary"]["coverage_percent"] for item in reports]
     passed = [item["summary"]["passed"] for item in reports]
     attempted = [item["summary"]["attempted"] for item in reports]
+    # Which task set each server actually ran. Not decoration: since v1.5.0
+    # the reference adapter runs the 15-task v3 matrix while the pinned
+    # competitor reports are v2 runs from v1.4, so the bars do not share a
+    # denominator and a chart that implies they do is the lie this lane
+    # exists to avoid.
+    matrices = [item.get("matrix", "v2") for item in reports]
     colors = ["#58a6ff" if label == "autocad-mcp-pro" else "#484f58" for label in labels]
 
     fig, ax = plt.subplots(figsize=(12, 4.8), constrained_layout=True)
@@ -60,7 +66,9 @@ def render_chart(reports: list[dict[str, Any]], output: Path) -> None:
 
     ax.set_xlim(0, 100)
     ax.set_xlabel(
-        "Weighted live-run score / 100 (fixed 10-task matrix)", color="#e6edf3", labelpad=10
+        "Weighted live-run score / 100, within each server's own task matrix",
+        color="#e6edf3",
+        labelpad=10,
     )
     ax.set_title(
         "Live-run benchmark - headless ezdxf lane",
@@ -73,17 +81,20 @@ def render_chart(reports: list[dict[str, Any]], output: Path) -> None:
     ax.text(
         0,
         1.02,
-        "Same 10 tasks, same harness, pinned competitor commits; artifacts verified by re-opening the DXF",
+        "Same harness, pinned competitor commits; artifacts verified by re-opening the DXF. "
+        "Matrices differ - read the per-bar label.",
         transform=ax.transAxes,
         color="#8b949e",
         fontsize=10,
     )
 
-    for bar, score, cov, ok, total in zip(bars, scores, coverage, passed, attempted, strict=True):
+    for bar, score, cov, ok, total, matrix in zip(
+        bars, scores, coverage, passed, attempted, matrices, strict=True
+    ):
         ax.text(
-            min(score + 1.2, 82),
+            min(score + 1.2, 76),
             bar.get_y() + bar.get_height() / 2,
-            f"{score:g}  ({ok}/{total} pass, {cov:g}% coverage)",
+            f"{score:g}  ({ok}/{total} pass, {cov:g}% coverage, matrix {matrix})",
             va="center",
             color="#e6edf3",
             fontweight="bold",
@@ -92,7 +103,9 @@ def render_chart(reports: list[dict[str, Any]], output: Path) -> None:
     ax.text(
         0,
         -0.22,
-        "Unsupported tasks score 0 in the fixed matrix; per-task statuses and reasons are in benchmarks/results/published/.",
+        "Unsupported tasks score 0 within a server's own matrix. The five v3 tasks were "
+        "added after the competitor runs and were never put to them; per-task statuses are "
+        "in benchmarks/results/published/.",
         transform=ax.transAxes,
         color="#8b949e",
         fontsize=9,

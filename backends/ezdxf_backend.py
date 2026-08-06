@@ -2968,13 +2968,15 @@ class EzdxfBackend(AutoCADBackend):
             radius = math.sqrt((chord_x - cxf) ** 2 + (chord_y - cyf) ** 2)
             angle_rad = math.atan2(chord_y - cyf, chord_x - cxf)
             leader = float(leader_length)
-            mpoint = (
-                cxf + (radius + leader) * math.cos(angle_rad),
-                cyf + (radius + leader) * math.sin(angle_rad),
-            )
+            # Same correction as dimension_diameter: the size comes from
+            # `radius`, and `location` only places the text.
             dim = msp.add_radius_dim(
                 center=(cxf, cyf),
-                mpoint=mpoint,
+                radius=radius,
+                location=(
+                    cxf + (radius + leader) * math.cos(angle_rad),
+                    cyf + (radius + leader) * math.sin(angle_rad),
+                ),
                 text=text if text is not None else "<>",
                 override=override or None,
             )
@@ -3011,13 +3013,18 @@ class EzdxfBackend(AutoCADBackend):
             radius = math.sqrt((x2f - x1f) ** 2 + (y2f - y1f) ** 2) / 2
             angle_rad = math.atan2(y2f - y1f, x2f - x1f)
             leader = float(leader_length)
-            mpoint = (
-                cx + (radius + leader) * math.cos(angle_rad),
-                cy + (radius + leader) * math.sin(angle_rad),
-            )
+            # The measured size comes from `radius`; `location` only places the
+            # text. This used to pass centre + (radius + leader) as `mpoint`,
+            # which ezdxf measures to — so every diameter came out
+            # 2 x leader_length too large. 60 on a true 40, at default
+            # settings, with nothing on the drawing to show for it.
             dim = msp.add_diameter_dim(
                 center=(cx, cy),
-                mpoint=mpoint,
+                radius=radius,
+                location=(
+                    cx + (radius + leader) * math.cos(angle_rad),
+                    cy + (radius + leader) * math.sin(angle_rad),
+                ),
                 text=text if text is not None else "<>",
                 override=override or None,
             )

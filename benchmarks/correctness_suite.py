@@ -269,6 +269,30 @@ async def two_vertex_circle_has_area():
     return abs(area - math.pi * 100.0) < 1e-9
 
 
+async def diameter_dim_measures_the_diameter():
+    """The number on the callout is the whole point of the callout.
+
+    `add_diameter_dim` measures to `mpoint`; the leader is a text placement.
+    Feeding it centre + (radius + leader) made every diameter come back
+    2 x leader_length too large at DEFAULT settings - 60 on a true 40.
+    """
+    b = await _b()
+    info = await b.dimension_diameter(-20, 0, 20, 0)
+    dim = b._doc.entitydb.get(info.handle)
+    return abs(dim.get_measurement() - 40.0) < 1e-6
+
+
+async def radius_dim_ignores_the_leader_length():
+    b = await _b()
+    near = await b.dimension_radius(0, 0, 20, 0, leader_length=5)
+    far = await b.dimension_radius(0, 0, 20, 0, leader_length=40)
+    values = [
+        b._doc.entitydb.get(near.handle).get_measurement(),
+        b._doc.entitydb.get(far.handle).get_measurement(),
+    ]
+    return all(abs(v - 20.0) < 1e-6 for v in values)
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -294,6 +318,8 @@ CHECKS = {
     "hatch_area_subtracts_its_island": (hatch_area_subtracts_its_island, "Measurement"),
     "boundary_area_agrees_with_measure": (boundary_area_agrees_with_measure, "Measurement"),
     "two_vertex_circle_has_area": (two_vertex_circle_has_area, "Measurement"),
+    "diameter_dim_measures_the_diameter": (diameter_dim_measures_the_diameter, "Dimensions"),
+    "radius_dim_ignores_the_leader_length": (radius_dim_ignores_the_leader_length, "Dimensions"),
 }
 
 

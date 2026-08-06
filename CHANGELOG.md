@@ -355,10 +355,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exactly this, but a refusal is still an exception and was being caught by the
   generic handler — "your engine cannot reach this" and "your server got this
   wrong" are different findings about a competitor.
-- Three measurement checks added to `correctness_suite.py` (24, was 21). They
-  are new capability rather than repaired regressions — v1.4.0 misses them by
-  not having the method — and they are there because all three broke during
-  this release and nothing outside their own unit tests would have noticed.
+- Five checks added to `correctness_suite.py` (26, was 21), and the two kinds
+  read differently in the A/B table. Three measurement checks are new
+  capability — v1.4.0 misses them by not having the method (`miss → pass`) —
+  and are there because all three broke during this release. Two dimension
+  checks are repaired defects: v1.4.0 has the methods and gets them wrong
+  (`fail → pass`). Result against v1.4.0: 21/26 → 26/26, five fixed, zero
+  regressed.
 
 ### Changed
 
@@ -704,6 +707,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `release.yml` now runs `ruff format --check .` alongside `ruff check .`,
   matching the CI lint job — the release gate previously skipped formatting.
 
+- **Every headless diameter and radius dimension reported the wrong number, at
+  default settings.** `add_diameter_dim` / `add_radius_dim` measure to the point
+  they are given; `leader_length` is a *text placement*. Passing
+  `centre + (radius + leader)` as that point made the leader part of the
+  measurement, so a true ⌀40 bore was dimensioned **60** with the default
+  `leader_length=10`, and **108** at 34. Radius callouts were `leader_length`
+  too large the same way. This is the worst class of defect for this project —
+  a wrong number, silently, on the one part of a drawing that exists to carry
+  numbers — and it shipped in v1.4.0 and earlier. Now the size comes from
+  `radius` and `location` only places the text.
+  The live COM backend was never affected: ActiveX's `AddDimDiametric` takes
+  the two chord points and the leader length as separate arguments, so the two
+  engines had been disagreeing by `2 × leader_length` on the same call.
+  Found while building the sheet in the README's hero image, whose own bore
+  callout was wrong. Two checks added to `correctness_suite.py` (26, was 24);
+  both report `fail → pass` against v1.4.0 rather than `miss → pass`, which is
+  what distinguishes a repaired defect from new capability in that lane.
 - **A HATCH could not be measured, and the refusal listed HATCH as
   measurable.** `entity_measure` had no HATCH branch, so a hatch fell through
   to the generic error — whose own text named HATCH among the measurable types.

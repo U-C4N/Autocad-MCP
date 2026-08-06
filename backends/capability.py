@@ -21,7 +21,7 @@ hand-written refusal. Three properties follow:
 
 * An unimplemented method refuses instead of pretending. It cannot silently
   succeed and it cannot silently do nothing.
-* The refusal is *declared*: `test_capability.py` fails if a key used here is
+* The refusal is *declared*: `test_capability_contract.py` fails if a key used here is
   missing from either backend's `CapabilityMap`, so `system_capabilities` can
   never disagree with what a call actually does. This is the part that keeps
   the escape hatch honest — without it, `@capability` would just be a way to
