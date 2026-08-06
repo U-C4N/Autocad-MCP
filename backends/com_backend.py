@@ -3197,7 +3197,14 @@ class ComBackend(AutoCADBackend):
             method = "activex_area"
             closed = True
             self_intersecting = None
-            if area is None or perimeter is None:
+            # Only the AREA decides whether we need the fallback. This used to
+            # read `area is None or perimeter is None`, which coupled two
+            # independent property reads: HATCH, REGION and 3DSOLID expose
+            # `.Area` but no `.Length`, so a perfectly good area was thrown
+            # away, the fallback demanded a `.Coordinates` only the polyline
+            # types carry, and the call died claiming AutoCAD "reported neither
+            # an area nor usable vertices" — while holding the area.
+            if area is None:
                 # Rebuild from the polyline's own vertices and run the SAME
                 # shared maths the headless engine uses, so a missing ActiveX
                 # property can never make this backend the less accurate one.
@@ -3214,15 +3221,33 @@ class ComBackend(AutoCADBackend):
                     )
                 closed = bool(getattr(ent, "Closed", True))
                 fallback_area, fallback_perimeter = polygon_area_perimeter(vertices, closed)
-                area = fallback_area if area is None else area
+                area = fallback_area
                 perimeter = fallback_perimeter if perimeter is None else perimeter
                 self_intersecting = is_self_intersecting([(v[0], v[1]) for v in vertices])
 
+            elif self_intersecting is None:
+                # The bowtie warning was only ever computed inside the fallback,
+                # so a live LWPOLYLINE bowtie — which has both `.Area` and
+                # `.Length` and therefore never reaches it — came back
+                # `area: 0.0, self_intersecting: null`. That is precisely the
+                # confident-zero this field exists to flag, going out unflagged.
+                coords = list(getattr(ent, "Coordinates", ()) or ())
+                if len(coords) >= 6:
+                    self_intersecting = is_self_intersecting(
+                        [
+                            (float(coords[i]), float(coords[i + 1]))
+                            for i in range(0, len(coords) - 1, 2)
+                        ]
+                    )
+
+            # A perimeter we do not have is reported as absent, not invented.
+            # `round(None, 6)` was also a TypeError waiting for the first type
+            # that answers `.Area` and nothing else.
             return {
                 "handle": str(handle),
                 "type": obj_name,
                 "area": round(float(area), 6),
-                "perimeter": round(float(perimeter), 6),
+                "perimeter": None if perimeter is None else round(float(perimeter), 6),
                 "closed": closed,
                 "assumed_closed": not closed,
                 "method": method,
@@ -3230,7 +3255,7 @@ class ComBackend(AutoCADBackend):
                 "flatten_tolerance": None,
                 "backend": "com",
                 "self_intersecting": self_intersecting,
-                "perimeter_exact": True,
+                "perimeter_exact": perimeter is not None,
                 "loop_count": 1,
             }
 

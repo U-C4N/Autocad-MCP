@@ -98,7 +98,17 @@ def is_self_intersecting(vertices: Sequence[tuple[float, float]]) -> bool | None
     Worth reporting because the shoelace *cancels* crossed lobes rather than
     failing: a bowtie made of two 2500-unit triangles measures 0.0, which is a
     confident wrong number of exactly the kind this release removes.
+
+    A closed loop may arrive either with or without a repeated closing vertex —
+    `ezdxf.path.flattening()` emits one, raw polyline points do not — and both
+    spellings must give the same answer. They did not: the adjacency guard
+    below excludes neighbours *by index*, so with the duplicate present the
+    first and last real edges were cross-tested even though they share a point,
+    and every plain hatch boundary came back flagged.
     """
+    vertices = list(vertices)
+    if len(vertices) > 1 and math.dist(vertices[0][:2], vertices[-1][:2]) < _EPS:
+        vertices = vertices[:-1]
     count = len(vertices)
     if count < 4:
         return False

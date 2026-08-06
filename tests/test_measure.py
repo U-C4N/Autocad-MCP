@@ -198,3 +198,39 @@ def test_two_straight_vertices_still_enclose_nothing():
 
 def test_a_single_vertex_is_still_degenerate():
     assert polygon_area_perimeter([(0.0, 0.0, 1.0)], closed=True) == (0.0, 0.0)
+
+
+# ── a closed loop must answer the same however it was handed over ───────────
+
+
+def test_a_repeated_closing_vertex_is_not_a_self_intersection():
+    """The false alarm this shipped with.
+
+    `ezdxf.path.flattening()` repeats the start point, so every hatch boundary
+    and every flattened curve arrived here with a duplicate closing vertex. The
+    adjacency guard excludes neighbours *by index*, so the first and last real
+    edges — which share a point but not an index neighbourhood — were
+    cross-tested and reported as crossing. A plain 40x40 square hatch came back
+    `self_intersecting: True`: a confident wrong warning on the field that
+    exists to warn.
+    """
+    square = [(0.0, 0.0), (50.0, 0.0), (50.0, 50.0), (0.0, 50.0)]
+
+    assert is_self_intersecting(square) is False
+    assert is_self_intersecting([*square, (0.0, 0.0)]) is False
+
+
+def test_a_bowtie_is_still_caught_when_it_carries_a_closing_vertex():
+    """Dropping the duplicate must not disarm the check."""
+    bowtie = [(0.0, 0.0), (50.0, 50.0), (50.0, 0.0), (0.0, 50.0)]
+
+    assert is_self_intersecting(bowtie) is True
+    assert is_self_intersecting([*bowtie, (0.0, 0.0)]) is True
+
+
+def test_a_triangle_with_a_closing_vertex_is_still_not_degenerate():
+    """Four entries, three real corners — must not fall under the `< 4` guard
+    and answer False for the wrong reason."""
+    triangle = [(0.0, 0.0), (60.0, 0.0), (30.0, 40.0), (0.0, 0.0)]
+
+    assert is_self_intersecting(triangle) is False

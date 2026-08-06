@@ -301,3 +301,133 @@ async def test_com_backend_connects():
     assert backend.is_connected
     await backend.disconnect()
     assert not backend.is_connected
+
+
+# ── entity_measure: a good .Area must not be thrown away ────────────────────
+#
+# The fallback fired when `.Area` OR `.Length` was missing, and then demanded
+# `.Coordinates`, which only the polyline types carry. So HATCH, REGION and
+# 3DSOLID — the very types the README sells the COM backend on — discarded a
+# successfully-read area and raised "AutoCAD reported neither an area nor
+# usable vertices", which was false: it had the area.
+#
+# These profiles are ASSUMPTIONS about the ActiveX member table, not facts, and
+# they are what a live seat has to confirm. What they do test is our dispatch,
+# which is where the defect is: given a member profile, does the code keep the
+# number it already has?
+
+
+def _measure_backend(entity):
+    """A ComBackend whose HandleToObject returns exactly this entity."""
+    import backends.com_backend as cb
+
+    backend = ComBackend()
+
+    async def _run(func, *args, **kwargs):  # bypass the STA executor
+        return func(*args, **kwargs)
+
+    backend._run = _run
+    doc = MagicMock()
+    doc.HandleToObject.return_value = entity
+    cb._acad_doc = lambda: doc
+    return backend
+
+
+class _Entity:
+    """An ActiveX entity that has only the members it is given."""
+
+    def __init__(self, object_name, **members):
+        self.ObjectName = object_name
+        for name, value in members.items():
+            setattr(self, name, value)
+
+    def __getattr__(self, name):  # anything not set simply does not exist
+        raise AttributeError(name)
+
+
+@pytest.mark.asyncio
+async def test_a_hatch_with_an_area_and_no_length_keeps_the_area():
+    """The red case: today this raises, holding a perfectly good 300.0."""
+    backend = _measure_backend(_Entity("AcDbHatch", Area=300.0))
+
+    result = await backend.entity_measure("2AF")
+
+    assert result["area"] == pytest.approx(300.0)
+    assert result["method"] == "activex_area"
+
+
+@pytest.mark.asyncio
+async def test_a_solid_without_a_perimeter_says_so_instead_of_inventing_one():
+    backend = _measure_backend(_Entity("AcDb3dSolid", Area=1250.0))
+
+    result = await backend.entity_measure("3B0")
+
+    assert result["area"] == pytest.approx(1250.0)
+    assert result["perimeter"] is None
+    assert result["perimeter_exact"] is False
+
+
+@pytest.mark.asyncio
+async def test_the_polyline_fallback_still_fires_when_the_area_is_the_missing_one():
+    """The fallback exists for a reason and must keep working."""
+    entity = _Entity("AcDbPolyline", Coordinates=(0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0))
+    entity.GetBulge = lambda index: 0.0
+    entity.Closed = True
+    backend = _measure_backend(entity)
+
+    result = await backend.entity_measure("4C1")
+
+    assert result["method"] == "activex_fallback_analytic"
+    assert result["area"] == pytest.approx(100.0)
+
+
+@pytest.mark.asyncio
+async def test_the_refusal_is_only_used_when_there_is_genuinely_nothing():
+    """The message names both halves, so it must only appear when both are true."""
+    backend = _measure_backend(_Entity("AcDbSpline"))
+
+    with pytest.raises(RuntimeError, match="neither an area nor usable vertices"):
+        await backend.entity_measure("5D2")
+
+
+@pytest.mark.asyncio
+async def test_a_line_is_still_refused_before_any_of_this():
+    backend = _measure_backend(_Entity("AcDbLine", Area=0.0))
+
+    with pytest.raises(RuntimeError, match="does not bound an area"):
+        await backend.entity_measure("6E3")
+
+
+@pytest.mark.asyncio
+async def test_a_live_bowtie_is_flagged_even_though_activex_answered():
+    """`area: 0.0` with no warning is the exact failure this field prevents.
+
+    A bowtie LWPOLYLINE has both `.Area` (which AutoCAD returns as the
+    shoelace, cancelling the crossed lobes to ~0) and `.Length`, so it never
+    reached the fallback where `self_intersecting` used to be computed.
+    """
+    entity = _Entity(
+        "AcDbPolyline",
+        Area=0.0,
+        Length=200.0,
+        Coordinates=(0.0, 0.0, 50.0, 50.0, 50.0, 0.0, 0.0, 50.0),
+    )
+    backend = _measure_backend(entity)
+
+    result = await backend.entity_measure("7F4")
+
+    assert result["method"] == "activex_area"
+    assert result["self_intersecting"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_simple_polyline_is_not_flagged():
+    entity = _Entity(
+        "AcDbPolyline",
+        Area=2500.0,
+        Length=200.0,
+        Coordinates=(0.0, 0.0, 50.0, 0.0, 50.0, 50.0, 0.0, 50.0),
+    )
+    backend = _measure_backend(entity)
+
+    assert (await backend.entity_measure("8A5"))["self_intersecting"] is False

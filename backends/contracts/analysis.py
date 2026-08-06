@@ -117,8 +117,15 @@ class AnalysisContract(ABC):
         islands inside them — and the headless engine adds ``hatch_style``
         (``normal``/``outer``/``ignore``) so the number can be read against the
         drawing's own island setting. The live backend does not carry that key:
-        it asks AutoCAD for ``.Area``, which has already applied the style, so
-        there is no house rule left to disclose.
+        it reads ActiveX ``.Area``, and whether that number already has the
+        island style applied is **not verified against a live seat**. Until it
+        is, do not read a COM hatch area as equivalent to the headless one.
+
+        ``perimeter`` is ``None`` where ActiveX exposes no length for the type
+        (REGION and 3DSOLID among them), and ``perimeter_exact`` is then False.
+        A missing perimeter is not a reason to discard an area that was read
+        successfully — doing exactly that is what made this method raise on
+        every ACIS type it advertised.
 
         ``exact`` and
         ``flatten_tolerance`` are the accuracy disclosure: when one engine can

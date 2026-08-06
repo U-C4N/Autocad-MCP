@@ -931,20 +931,31 @@ class EzdxfBackend(AutoCADBackend):
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         lock = self._lock
+        # One `asyncio.timeout_at` for both phases rather than two
+        # `asyncio.wait_for`s. `wait_for` wraps its awaitable in a Task, so the
+        # old shape cost two extra Tasks and two timer handles on *every* call
+        # — 4,000 of each to draw 2,000 lines, which is where the throughput
+        # this release lost was going. `acquired` keeps the two failure modes
+        # distinguishable, which is the whole reason they were separate.
+        acquired = False
+        call: asyncio.Future | None = None
         try:
-            await asyncio.wait_for(lock.acquire(), timeout)
+            async with asyncio.timeout_at(deadline):
+                await lock.acquire()
+                acquired = True
+                call = asyncio.ensure_future(asyncio.to_thread(func, *args, **kwargs))
+                result = await call
         except TimeoutError as exc:
-            raise self._busy_error(timeout) from exc
-
-        call = asyncio.ensure_future(asyncio.to_thread(func, *args, **kwargs))
-        try:
-            result = await asyncio.wait_for(call, max(deadline - loop.time(), 0.0))
-        except TimeoutError as exc:
-            if not call.cancelled():
-                # The call itself raised TimeoutError (an OSError subclass, and
-                # the same type wait_for raises) rather than overrunning the
-                # deadline. That is an ordinary failure: release the lock and
-                # let it through unchanged instead of blaming the deadline.
+            if not acquired:
+                # Timed out queueing behind someone else's live call. That lock
+                # is held by a call that will release it normally; do not
+                # abandon it.
+                raise self._busy_error(timeout) from exc
+            if call is None or not call.cancelled():
+                # The call itself raised TimeoutError (an OSError subclass,
+                # and the same type the deadline raises) rather than overrunning
+                # the deadline. That is an ordinary failure: release the lock
+                # and let it through unchanged instead of blaming the deadline.
                 lock.release()
                 raise
             if self._lock is lock:
@@ -957,7 +968,11 @@ class EzdxfBackend(AutoCADBackend):
             )
             raise self._timeout_error(func, timeout) from exc
         except BaseException:
-            lock.release()
+            # Only ours to release if we ever took it — cancellation can land
+            # while still queueing, and releasing someone else's lock there
+            # would hand the document to two callers at once.
+            if acquired:
+                lock.release()
             raise
         lock.release()
         return result
