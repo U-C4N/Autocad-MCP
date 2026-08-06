@@ -151,7 +151,15 @@ def validate_path(path: str, *, allow_write: bool = False) -> Path:
 # `sanitize_command` and `sanitize_lisp` each have exactly ONE caller, both of
 # them the COM-only free-text escape hatch into SendCommand. The policy is
 # scoped to the CHANNEL, not to the operation, which is capability narrowing
-# rather than a contradiction:
+# rather than a contradiction.
+#
+# That "the CHANNEL" was singular was wrong, and it took an audit to notice.
+# `_ensure_linetype_loaded` and `ComBackend.linetype_load` reach SendCommand
+# too, carrying a caller's linetype name and file path, and neither passed
+# through anything here — so the denylist below was guarding one door of two.
+# `sanitize_symbol_name` / `sanitize_macro_argument` at the end of this module
+# close the other. Before adding a third SendCommand site, guard it there and
+# amend this paragraph rather than this one:
 #
 #   * `block_insert(name, x, y, ...)` takes a block ALREADY in the drawing plus
 #     typed geometry. The INSERT *command* takes a file path and pulls in an
@@ -349,3 +357,76 @@ def sanitize_lisp(expression: str) -> str:
         )
 
     return expression
+
+
+# ---------------------------------------------------------------------------
+# Symbol-table names interpolated into a SendCommand macro
+# ---------------------------------------------------------------------------
+#
+# The scoped-to-the-CHANNEL argument above assumed `sanitize_command` and
+# `sanitize_lisp` were the only routes into SendCommand. They were not.
+# `_ensure_linetype_loaded` builds `_-LINETYPE _LOAD {name} {file}` from a
+# caller's `linetype=` argument, and `ComBackend.linetype_load` adds a
+# caller-supplied path. SendCommand takes a whole macro and treats a newline
+# and `;` as segment separators, so either string could append commands that
+# the 36-verb denylist never sees.
+#
+# The guard is the DXF symbol-name rule rather than a second blocklist. AutoCAD
+# already forbids these characters in a table name, so nothing this rejects was
+# ever a loadable linetype, and the injection characters fall out of the rule
+# instead of having to be enumerated and kept up to date.
+
+#: Characters DXF forbids in a symbol-table name, plus the whitespace that ends
+#: a SendCommand segment.
+_FORBIDDEN_SYMBOL_CHARS = set('<>/\\":;?*|,=`') | set("\n\r\t")
+
+#: Long enough for any real linetype, short enough not to be a payload.
+_MAX_SYMBOL_NAME = 255
+
+
+def sanitize_symbol_name(name: str, *, kind: str = "symbol") -> str:
+    """Return `name` if it is a legal DXF symbol-table name, else refuse.
+
+    Used at every point where a caller-controlled name is interpolated into an
+    AutoCAD command macro. The refusal deliberately does not echo the rejected
+    string back: an error message that a client logs or renders is a channel
+    too, and a payload that reaches a log is a payload that reached something.
+    """
+    candidate = (name or "").strip()
+    if not candidate:
+        raise ToolError(f"{kind} name rejected: empty.")
+    if len(candidate) > _MAX_SYMBOL_NAME:
+        raise ToolError(f"{kind} name rejected: longer than {_MAX_SYMBOL_NAME} characters.")
+    offenders = sorted({c for c in candidate if c in _FORBIDDEN_SYMBOL_CHARS or ord(c) < 32})
+    if offenders:
+        shown = ", ".join(repr(c) for c in offenders)
+        raise ToolError(
+            f"{kind} name rejected: DXF symbol-table names cannot contain {shown}. "
+            "This name would also end the AutoCAD command macro it is placed in."
+        )
+    return candidate
+
+
+#: What ends a segment inside a SendCommand macro. A path legitimately contains
+#: ':' and '\', so a file argument cannot be held to the symbol-name rule -- it
+#: gets this narrower one plus `validate_path`.
+_MACRO_SEPARATORS = set("\n\r;") | {chr(c) for c in range(32)}
+
+
+def sanitize_macro_argument(value: str, *, kind: str = "argument") -> str:
+    """Return `value` if it cannot end the AutoCAD command macro it sits in.
+
+    For arguments that are legitimately allowed the characters DXF forbids in a
+    symbol name -- a file path, mostly. Narrower than `sanitize_symbol_name` on
+    purpose: the goal is only that the string cannot start a second command.
+    """
+    candidate = (value or "").strip()
+    if not candidate:
+        raise ToolError(f"{kind} rejected: empty.")
+    if any(c in _MACRO_SEPARATORS for c in candidate):
+        raise ToolError(
+            f"{kind} rejected: contains a newline, carriage return, semicolon or "
+            "control character, which would end the AutoCAD command macro it is "
+            "placed in and start another."
+        )
+    return candidate

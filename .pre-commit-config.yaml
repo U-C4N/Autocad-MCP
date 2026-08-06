@@ -1,6 +1,11 @@
+# The ruff version here MUST equal the `ruff==` pin in pyproject.toml's
+# [dependency-groups] dev. It was v0.8.6 against a project pin of 0.16.1, and
+# ruff 0.16 formats Python inside Markdown while 0.8 does not -- so anyone who
+# ran `pre-commit install` produced commits that failed CI's
+# `ruff format --check .`. tests/test_release_consistency.py pins them equal.
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.6
+    rev: v0.16.1
     hooks:
       - id: ruff
         args: [--fix]

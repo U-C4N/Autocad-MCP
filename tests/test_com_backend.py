@@ -431,3 +431,53 @@ async def test_a_simple_polyline_is_not_flagged():
     backend = _measure_backend(entity)
 
     assert (await backend.entity_measure("8A5"))["self_intersecting"] is False
+
+
+# ── the member profile, measured on a live AutoCAD 2026 (2026-08-06) ────────
+#
+# Probed on a fresh seat with a throwaway drawing, nothing saved:
+#   AcDbCircle    Area 314.1593  Circumference 62.8319   (no Length, no Coordinates)
+#   AcDbPolyline  Area 1600.0    Length 160.0            Coordinates present
+#   AcDbHatch     Area 942.4778  -- r20 with an r10 island, so pi*(400-100):
+#                                   AutoCAD's hatch area DOES subtract islands
+#   AcDbRegion    Area 1600.0    Perimeter 160.0
+#   AcDb3dSolid   Area ABSENT    Volume 1000.0
+#
+# The last row is the one that matters: ActiveX exposes no `.Area` on a 3DSOLID
+# at all, so "REGION / 3DSOLID area" was half a claim.
+
+
+@pytest.mark.asyncio
+async def test_a_circle_uses_circumference_for_its_perimeter():
+    """Measured: AcDbCircle has `.Circumference` and no `.Length`."""
+    backend = _measure_backend(_Entity("AcDbCircle", Area=314.1593, Circumference=62.8319))
+
+    result = await backend.entity_measure("C01")
+
+    assert result["area"] == pytest.approx(314.1593)
+    assert result["perimeter"] == pytest.approx(62.8319)
+    assert result["perimeter_exact"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_region_uses_perimeter():
+    """Measured: AcDbRegion has `.Perimeter` and no `.Length`."""
+    backend = _measure_backend(_Entity("AcDbRegion", Area=1600.0, Perimeter=160.0))
+
+    result = await backend.entity_measure("R01")
+
+    assert result["area"] == pytest.approx(1600.0)
+    assert result["perimeter"] == pytest.approx(160.0)
+
+
+@pytest.mark.asyncio
+async def test_a_3dsolid_is_refused_by_name_because_activex_has_no_area_for_it():
+    """Measured: AcDb3dSolid exposes Volume and no Area at all.
+
+    The generic "neither an area nor usable vertices" would send the reader
+    hunting for geometry that was never the problem.
+    """
+    backend = _measure_backend(_Entity("AcDb3dSolid", Volume=1000.0))
+
+    with pytest.raises(RuntimeError, match="no surface-area member"):
+        await backend.entity_measure("S01")

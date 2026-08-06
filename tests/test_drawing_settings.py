@@ -130,10 +130,86 @@ async def test_the_default_dimscale_adds_no_override(backend):
 
 
 async def test_dimscale_reaches_aligned_and_angular_too(backend):
-    """Those two do not go through `build_dim_override`, so they were missed."""
-    await backend.drawing_settings({"dimscale": 3.0})
-    aligned = await backend.dimension_aligned(0, 0, 60, 60, 40, 70)
-    angular = await backend.dimension_angular(0, 0, 50, 0, 0, 50, 30, 30)
+    """Those two do not go through `build_dim_override`, so they were missed.
 
-    for handle in (aligned.handle, angular.handle):
-        assert _dim_text_heights(backend, handle) == pytest.approx([3.0])
+    Asserted as a *ratio* against the same dimension drawn unscaled. This used
+    to hardcode 3.0, which only held because the base text height was ezdxf's
+    bare 1.0 mm — so the assertion silently depended on the very defect that
+    made every headless drawing non-conformant, and moving the base to the ISO
+    2.5 mm broke a test that was measuring the right thing by accident.
+    """
+    plain_aligned = await backend.dimension_aligned(0, 0, 60, 60, 40, 70)
+    plain_angular = await backend.dimension_angular(0, 0, 50, 0, 0, 50, 30, 30)
+    base_aligned = _dim_text_heights(backend, plain_aligned.handle)
+    base_angular = _dim_text_heights(backend, plain_angular.handle)
+
+    await backend.drawing_settings({"dimscale": 3.0})
+    aligned = await backend.dimension_aligned(0, 0, 60, 60, 40, 90)
+    angular = await backend.dimension_angular(0, 0, 50, 0, 0, 50, 50, 50)
+
+    assert _dim_text_heights(backend, aligned.handle) == pytest.approx(
+        [h * 3.0 for h in base_aligned]
+    )
+    assert _dim_text_heights(backend, angular.handle) == pytest.approx(
+        [h * 3.0 for h in base_angular]
+    )
+
+
+# ── the rest of the dimension variables need friendly names too ─────────────
+
+
+def _dim_text(backend, handle) -> str:
+    dim = backend._doc.entitydb.get(handle)
+    for entity in backend._doc.blocks.get(dim.dxf.geometry):
+        if entity.dxftype() == "MTEXT":
+            return entity.text
+        if entity.dxftype() == "TEXT":
+            return entity.dxf.text
+    raise AssertionError("the dimension block carries no text")
+
+
+async def test_the_dimension_variables_have_friendly_names(backend):
+    """DIMTXT / DIMASZ / DIMDEC / DIMDSEP / DIMZIN had no friendly key at all.
+
+    `text_size` is TEXTSIZE — the height of a standalone TEXT entity, not of a
+    dimension — so the only way to reach dimension lettering was raw
+    `system_set_variable`, which is exactly the path that silently did nothing
+    headlessly. A drafter should not have to know a sysvar name to set the
+    height of the numbers on their own drawing.
+    """
+    res = await backend.drawing_settings(
+        {
+            "dim_text_height": 5.0,
+            "dim_arrow_size": 6.0,
+            "dim_decimals": 1,
+            "decimal_separator": ",",
+            "zero_suppression": 0,
+        }
+    )
+    assert res["ok"] is True, res.get("errors")
+
+    dim = await backend.dimension_linear(0, 0, 33.333, 0, 16, -30)
+    assert _dim_text(backend, dim.handle) == "33,3"
+    assert _dim_text_heights(backend, dim.handle) == pytest.approx([5.0])
+
+
+async def test_the_decimal_separator_reads_back_as_a_character(backend):
+    """DIMDSEP is an int char code in the header — ezdxf refuses a string
+    there. The friendly key is the place to translate, so a snapshot says
+    ',' rather than 44."""
+    await backend.drawing_settings({"decimal_separator": ","})
+
+    snap = (await backend.drawing_settings())["settings"]
+
+    assert snap["decimal_separator"] == ","
+    assert snap["dim_text_height"] == 2.5
+
+
+async def test_a_bad_decimal_separator_is_reported_and_not_written(backend):
+    before = await backend.system_get_variable("DIMDSEP")
+
+    res = await backend.drawing_settings({"decimal_separator": "x"})
+
+    assert "decimal_separator" in res["errors"]
+    assert res["ok"] is False
+    assert await backend.system_get_variable("DIMDSEP") == before

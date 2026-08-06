@@ -183,7 +183,6 @@ for i in 1 2 3; do
   python -m benchmarks.perf_suite --out /tmp/on-$i.json
   EZDXF_CALL_TIMEOUT=0 python -m benchmarks.perf_suite --out /tmp/off-$i.json
 done
-git worktree remove --force /tmp/wt-v140
 ```
 
 ## Correctness A/B suite
@@ -202,17 +201,39 @@ python benchmarks/compare_versions.py v1.0.0     # vs a tag/ref
 python benchmarks/compare_versions.py --json results.json
 ```
 
-### Result — v1.5.0 vs v1.4.0 (release gate)
+### Result — v1.5.1 vs v1.5.0 (release gate)
 
 26 checks, ezdxf backend, one subprocess per check. Machine-readable report:
-[`results/published/ab-v1.4.0-vs-v1.5.0.json`](results/published/ab-v1.4.0-vs-v1.5.0.json).
+[`results/published/ab-v1.5.0-vs-v1.5.1.json`](results/published/ab-v1.5.0-vs-v1.5.1.json).
+
+| Version | Checks passing | Pass rate | Fixed | Regressed |
+|---------|----------------|-----------|-------|-----------|
+| **v1.5.0** (baseline)     | 24 / 26 | 92.3 % | — | — |
+| **v1.5.1** (this release) | 26 / 26 | 100 % | 2 | **0** |
+
+v1.5.0 fails `diameter_dim_measures_the_diameter` and
+`radius_dim_ignores_the_leader_length`: it has both methods and gets both
+wrong. That is the defect 1.5.1 exists to fix and the reason 1.5.0 is yanked.
+
+### Result — this release vs v1.4.0
+
+Same suite, older baseline:
+[`results/published/ab-v1.4.0-vs-v1.5.1.json`](results/published/ab-v1.4.0-vs-v1.5.1.json).
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---------|----------------|-----------|-------|-----------|
 | **v1.4.0** (baseline)     | 21 / 26 | 80.8 % | — | — |
-| **v1.5.0** (this release) | 26 / 26 | 100 % | 5 | **0** |
+| **v1.5.1** (this release) | 26 / 26 | 100 % | 5 | **0** |
 
-The pass rate is against the 26-check v1.5.0 suite; v1.4.0 passed 21/21 of the
+> This row used to read `v1.5.0 | 24 / 26 | 92.3 % | 5`, which was impossible on
+> its face — 21 passing plus 5 fixed is 26, not 24 — and it contradicted the
+> report it linked. The cause is worth recording: the file named
+> `ab-v1.4.0-vs-v1.5.0.json` was regenerated from a tree that already carried
+> the dimension fixes, so it never measured the v1.5.0 *tag*. The v1.5.0 tag
+> really does score 24/26, which is what the v1.5.0-baseline table above
+> reports. This table now names the tree it actually measured.
+
+The pass rate is against the 26-check current suite; v1.4.0 passed 21/21 of the
 checks that existed when it shipped. The five splits into two kinds, and the
 difference is the whole reason this lane distinguishes `miss` from `fail`:
 
@@ -222,10 +243,11 @@ difference is the whole reason this lane distinguishes `miss` from `fail`:
   having the method (`miss → pass`). They are in the suite because all three
   broke during v1.5.0 development and nothing outside their own unit tests
   would have caught it.
-* **Two are repaired defects.** v1.4.0 *has* `dimension_diameter` and
-  `dimension_radius` and gets them wrong (`fail → pass`): `leader_length`, a
-  text placement, was being measured as geometry, so at default settings every
-  diameter callout came out 2 × `leader_length` too large.
+* **Two are repaired defects.** v1.4.0 *and v1.5.0* both have
+  `dimension_diameter` and `dimension_radius` and both get them wrong
+  (`fail → pass`): `leader_length`, a text placement, was being measured as
+  geometry, so at default settings every diameter callout came out
+  2 × `leader_length` too large. Only 1.5.1 passes them.
 
 The 21 pre-existing checks are unchanged and all still pass: the discovery
 layer, `cad_batch`, the 19-module contract split, the layout/viewport family

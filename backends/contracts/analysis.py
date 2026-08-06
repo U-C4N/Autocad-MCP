@@ -117,12 +117,16 @@ class AnalysisContract(ABC):
         islands inside them — and the headless engine adds ``hatch_style``
         (``normal``/``outer``/``ignore``) so the number can be read against the
         drawing's own island setting. The live backend does not carry that key:
-        it reads ActiveX ``.Area``, and whether that number already has the
-        island style applied is **not verified against a live seat**. Until it
-        is, do not read a COM hatch area as equivalent to the headless one.
+        it reads ActiveX ``.Area``, which **does** apply the island style —
+        verified on a live AutoCAD 2026 (2026-08-06): a hatch of r20 with an
+        r10 island returns 942.478, which is pi*(400-100).
 
-        ``perimeter`` is ``None`` where ActiveX exposes no length for the type
-        (REGION and 3DSOLID among them), and ``perimeter_exact`` is then False.
+        ``perimeter`` is ``None`` where ActiveX exposes no length member for the
+        type, and ``perimeter_exact`` is then False. The member differs per
+        type and was measured rather than assumed: LWPOLYLINE ``.Length``,
+        CIRCLE ``.Circumference``, REGION ``.Perimeter``, HATCH none. A
+        3DSOLID has no ``.Area`` at all — only ``.Volume`` — and is refused by
+        name.
         A missing perimeter is not a reason to discard an area that was read
         successfully — doing exactly that is what made this method raise on
         every ACIS type it advertised.

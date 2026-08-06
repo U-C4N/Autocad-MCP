@@ -19,20 +19,38 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # The same three lanes as ci.yml, not one. This job was a single
+    # ubuntu/3.11 run, so a Windows-only defect could reach PyPI without any
+    # Windows job having executed -- which is not hypothetical: v1.5.0 shipped
+    # with `except pywintypes.com_error` raising NameError wherever pywin32 is
+    # absent, and only the Linux legs of ci.yml caught it.
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: "3.11"
+            extra: pdf
+          - os: ubuntu-latest
+            python-version: "3.12"
+            extra: pdf
+          - os: windows-latest
+            python-version: "3.11"
+            extra: full
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         id: python
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
       - run: pip install "uv==${{ env.LOCKED_UV_VERSION }}"
       - name: Install the locked environment
         # `--locked` refuses to re-resolve, so the artifact that goes to PyPI is
         # gated by the exact dependency set the suite was run against — not by
         # whatever the index happens to serve at tag time. ruff's version comes
         # from [dependency-groups] dev via the lock; it is not restated here.
-        run: uv sync --locked --extra pdf --python "${{ steps.python.outputs.python-path }}"
+        run: uv sync --locked --extra ${{ matrix.extra }} --python "${{ steps.python.outputs.python-path }}"
       - run: uv run --no-sync ruff check .
       - run: uv run --no-sync ruff format --check .
       - run: uv run --no-sync pytest -q

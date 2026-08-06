@@ -198,6 +198,11 @@ class CapabilityRefusalMiddleware(Middleware):
     only channel that carries both a machine-readable payload *and* the error
     flag; rebasing the exception on ``FastMCPError`` carries neither, which is
     why no tool function changes here.
+
+    R32 added a sibling kind. A quarantined document is *not* a capability
+    boundary — the engine can draw a circle perfectly well, the document it would
+    draw into is untrusted — so it gets ``kind: "quarantined"`` and carries the
+    abandoned-call record instead of a capability key.
     """
 
     async def on_call_tool(self, context: MiddlewareContext, call_next):
@@ -205,19 +210,25 @@ class CapabilityRefusalMiddleware(Middleware):
             return await call_next(context)
         except Exception as exc:
             capability = _batch_capability_of(exc)
-            if capability is None:
+            quarantine = None if capability else _batch_quarantine_of(exc)
+            if capability is None and quarantine is None:
                 raise  # not ours — leave it byte-for-byte as it was
             message = _refusal_message(exc)
+            payload = {
+                "ok": False,
+                "error": message,
+                "tool": context.message.name,
+                "backend": _backend_name_or_none(context),
+            }
+            if capability is not None:
+                payload["kind"] = "unsupported"
+                payload["capability"] = capability
+            else:
+                payload["kind"] = "quarantined"
+                payload["quarantine"] = quarantine
             return ToolResult(
                 content=message,  # prose-only clients still get a full sentence
-                structured_content={
-                    "ok": False,
-                    "kind": "unsupported",
-                    "capability": capability,
-                    "error": message,
-                    "tool": context.message.name,
-                    "backend": _backend_name_or_none(context),
-                },
+                structured_content=payload,
                 is_error=True,
             )
 
@@ -3514,6 +3525,43 @@ def _batch_capability_of(exc: BaseException) -> str | None:
     return None
 
 
+_quarantine_error_type: type | None = None
+
+
+def _quarantine_refusal_type() -> type | None:
+    """``DocumentQuarantineError``, imported lazily like the capability types.
+
+    It lives in ``backends.quarantine``, which deliberately imports no ezdxf, so
+    this resolves even on a box where a backend's dependencies are missing.
+    """
+    global _quarantine_error_type
+    if _quarantine_error_type is None:
+        from backends.quarantine import DocumentQuarantineError
+
+        _quarantine_error_type = DocumentQuarantineError
+    return _quarantine_error_type
+
+
+def _batch_quarantine_of(exc: BaseException) -> dict | None:
+    """The abandoned-call record ``exc`` refuses on behalf of, or None.
+
+    Recognised by type, not structurally: ``DocumentQuarantineError``
+    deliberately has no ``capability`` attribute, because
+    ``_batch_capability_of`` would then report it to the client as
+    ``kind: "unsupported"`` — telling them the ezdxf engine cannot draw a circle
+    when the engine is fine and the document is not.
+    """
+    try:
+        quarantine_type = _quarantine_refusal_type()
+    except Exception as exc_import:  # pragma: no cover - core module
+        log.debug("quarantine refusal type unavailable: %s", exc_import)
+        return None
+    for error in _batch_cause_chain(exc):
+        if isinstance(error, quarantine_type):
+            return getattr(error, "quarantine", None) or {}
+    return None
+
+
 def _refusal_message(exc: BaseException) -> str:
     """The most specific message on the cause chain, in full.
 
@@ -3558,6 +3606,16 @@ def _classify_batch_error(exc: BaseException) -> dict:
         return {
             "kind": "unsupported",
             "capability": capability,
+            "message": _batch_message(exc),
+        }
+    quarantine = _batch_quarantine_of(exc)
+    if quarantine is not None:
+        # R32: its own kind. Filing it under "unsupported" would tell the batch
+        # reader the engine lacks a feature; filing it under "failed" would hide
+        # that every remaining step will refuse for the same reason.
+        return {
+            "kind": "quarantined",
+            "quarantine": quarantine,
             "message": _batch_message(exc),
         }
     chain = _batch_cause_chain(exc)
@@ -4849,8 +4907,10 @@ async def drawing_settings(
             description=(
                 "Omit to READ every setting; pass a dict to CHANGE them. Friendly keys: "
                 "units (mm/cm/m/inch/feet), linear_precision, angular_precision, ltscale, "
-                "dimscale, text_size, point_mode, point_size, osmode, fillet_radius. "
-                'Example: {"units": "mm", "dimscale": 1.0, "linear_precision": 2}.'
+                "dimscale, dim_text_height, dim_arrow_size, dim_decimals, "
+                'decimal_separator ("." or ","), zero_suppression, text_size, point_mode, '
+                "point_size, osmode, fillet_radius. "
+                'Example: {"units": "mm", "dimscale": 1.0, "dim_text_height": 3.5}.'
             ),
         ),
     ] = None,
@@ -4859,9 +4919,14 @@ async def drawing_settings(
     """Read or change common AutoCAD drawing settings by friendly name.
 
     A convenience facade over the system variables (INSUNITS, LUPREC, LTSCALE,
-    DIMSCALE, TEXTSIZE, OSMODE, …) so the user can say "set units to mm and
-    dimension scale to 1" without memorising sysvar names. Call with no argument
-    to get a full snapshot of the current settings.
+    DIMSCALE, DIMTXT, DIMASZ, DIMDEC, DIMDSEP, DIMZIN, TEXTSIZE, OSMODE, …) so
+    the user can say "set units to mm and dimension text to 3.5" without
+    memorising sysvar names. Call with no argument to get a full snapshot of the
+    current settings.
+
+    `dim_text_height` / `dim_arrow_size` / `dim_decimals` / `decimal_separator`
+    / `zero_suppression` shape the *dimension* — `text_size` is TEXTSIZE, the
+    height of a standalone TEXT entity, and does not touch dimensions.
     """
     if settings:
         await ctx.info(f"Applying drawing settings: {', '.join(settings)}")

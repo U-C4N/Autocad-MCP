@@ -13,7 +13,7 @@ Live through COM on Windows, or headless through ezdxf on any platform — one t
 [![License: MIT](https://img.shields.io/badge/license-MIT-3fb950)](https://github.com/U-C4N/Autocad-MCP/blob/main/LICENSE)
 [![Stars](https://img.shields.io/github/stars/U-C4N/Autocad-MCP?style=flat&color=e3b341)](https://github.com/U-C4N/Autocad-MCP/stargazers)
 
-[Install](#install-in-10-seconds) · [Evidence](#evidence) · [Two engines](#the-two-engines) · [Limits](#what-this-release-is-bad-at) · [Config](#configuration) · [Changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md)
+[Install](https://github.com/U-C4N/Autocad-MCP#install-in-10-seconds) · [Evidence](https://github.com/U-C4N/Autocad-MCP#evidence) · [Two engines](https://github.com/U-C4N/Autocad-MCP#the-two-engines) · [Limits](https://github.com/U-C4N/Autocad-MCP#what-this-release-is-bad-at) · [Config](https://github.com/U-C4N/Autocad-MCP#configuration) · [Changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md)
 
 </div>
 
@@ -29,7 +29,7 @@ Live through COM on Windows, or headless through ezdxf on any platform — one t
 
 ---
 
-> **v1.5 release snapshot:** 154 tools · 6 resources · 5 prompt templates · 1258 collected tests.
+> **v1.5 release snapshot:** 154 tools · 6 resources · 5 prompt templates · 1369 collected tests.
 > 154 is the **registered** count. A default install **advertises 149** over `tools/list`, because
 > `ENABLE_3D` is unset and the five `solid_*` tools stay hidden. `system_about` is the runtime authority.
 
@@ -104,7 +104,7 @@ Works with Claude Desktop, Cursor, or any stdio MCP host. For HTTP: `autocad-mcp
 <tr><td><b>Geometry</b></td><td>lines, arcs, polylines, splines, hatches, trim/extend/fillet/chamfer, handle-preserving edits</td></tr>
 <tr><td><b>Annotation</b></td><td>ISO 129 toleranced dimensions, ISO 286 fits (<code>fit="H7"</code>), TABLE, MLEADER, GD&amp;T frames and datums (ISO 1101)</td></tr>
 <tr><td><b>Engineering generators</b></td><td>involute gears (front + section A-A), DIN 6885 keyed bores, ISO A3 title block</td></tr>
-<tr><td><b>Discovery</b> ✨</td><td><code>search_tools</code> ranked over an AutoCAD command and synonym corpus — <code>FILLET</code>, <code>BPOLY</code>, <code>QSELECT</code>, <code>WBLOCK</code>, <code>OVERKILL</code>, <code>CHSPACE</code> each rank <b>#1</b> of the 149-tool advertised catalog</td></tr>
+<tr><td><b>Discovery</b> ✨</td><td><code>search_tools</code> ranked over an AutoCAD command and synonym corpus — <code>FILLET</code>, <code>BPOLY</code>, <code>QSELECT</code>, <code>WBLOCK</code>, <code>OVERKILL</code>, <code>CHSPACE</code> each rank <b>#1</b> of the 154-tool registry</td></tr>
 <tr><td><b>Batching</b> ✨</td><td><code>cad_batch</code> runs a whole step list in one round trip; <code>fields=</code> projects the response on 11 result-heavy tools (a closed, gated list)</td></tr>
 <tr><td><b>Paper space</b> ✨</td><td>8 of the 12 layout tools are new — <code>layout_delete/rename/copy</code>, <code>viewport_list/set_scale/lock/delete</code>, <code>entity_change_space</code> (CHSPACE, headless only); layout listing, creation and activation, <code>viewport_create</code> and <code>drawing_export_pdf(layout=...)</code> shipped in v1.4.0, which wrongly declared headless viewport rendering impossible</td></tr>
 <tr><td><b>Selection</b> ✨</td><td>window vs crossing stated back to the caller; the polygon is tested as a shape, not as its bounding box — the entity side is still <i>its</i> bounding box, on both engines</td></tr>
@@ -144,8 +144,9 @@ There are **27 capability keys**. `system_capabilities` returns the live map, an
 | Viewport model-content rendering | ✅ | ✅ ᵐ *(no viewport borders)* |
 | Selection window / crossing / polygon | ✅ | ✅ |
 | Entity area by handle | ActiveX `.Area` | Analytic, bulges included |
-| HATCH filled area (islands subtracted) | AutoCAD's own number | Loops walked, `hatch_style` reported |
-| REGION / 3DSOLID area | ✅ | — *ACIS is opaque to ezdxf* |
+| HATCH filled area (islands subtracted) | AutoCAD's own number — *measured: a r20 hatch with an r10 island returns 942.478, so the island is subtracted* | Loops walked, `hatch_style` reported |
+| REGION area | ✅ *`.Area` + `.Perimeter`, verified on a seat* | — *ACIS is opaque to ezdxf* |
+| 3DSOLID **surface** area | — *ActiveX exposes `.Volume` only; use MASSPROP* | — |
 | 3D solids | ✅ *only with `ENABLE_3D=true`* | — *no headless ACIS* |
 | DWG write | ✅ | — *no DWG writer* |
 | WIPEOUT | — *`AddWipeout` verified absent, AutoCAD 2026* | ✅ |
@@ -190,7 +191,7 @@ Competitors are driven **black-box over MCP stdio** against the tool contracts r
 
 | v3 task | Verified against |
 |---|---|
-| `tool_discovery` | six AutoCAD command names, each ranking **#1** of the 149-tool advertised catalog |
+| `tool_discovery` | six AutoCAD command names, each ranking **#1** of the 154-tool registry the harness ranks (pass bar is top-3) |
 | `token_budget` | 40,305 → 356 tokens advertised, against a 2,000 ceiling fixed in advance |
 | `hatch_islands` | **300** filled with the island, 400 ignoring it |
 | `selection_filter` | window 1, crossing 2, bounding box 3, polygon 1 |
@@ -200,17 +201,26 @@ Competitors are driven **black-box over MCP stdio** against the tool contracts r
 
 26 deterministic headless checks against the previous tag and the current tree, each in its own subprocess so a hard crash counts as a miss rather than killing the run.
 
+**v1.5.1 release gate**, baseline `v1.5.0` ([report](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/ab-v1.5.0-vs-v1.5.1.json)):
+
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---|---:|---:|---:|---:|
-| v1.4.0 *(baseline)* | 21 / 26 | 80.8 % ᵃ | — | — |
-| **v1.5.0** *(this release)* | **26 / 26** | **100 %** | 5 | **0** |
+| v1.5.0 *(baseline)* | 24 / 26 | 92.3 % | — | — |
+| **v1.5.1** *(this release)* | **26 / 26** | **100 %** | 2 | **0** |
 
-<sub>ᵃ Against the 26-check v1.5.0 suite. v1.4.0 passed 21/21 of the checks that existed when it shipped.</sub>
+**v1.5.0 fails two of these**, and they are the reason it is yanked:
+`diameter_dim_measures_the_diameter` and `radius_dim_ignores_the_leader_length`.
+It has both methods and gets both wrong — `leader_length`, a *text placement*,
+was being measured as geometry, so at default settings every diameter callout
+came out **2 × leader_length too large** (60 on a true ⌀40). v1.4.0 shipped the
+same defect. The live COM backend was never affected.
 
-The five splits into two kinds, and the difference matters:
+Against the older `v1.4.0` baseline the same suite reports **21 / 26** ᵃ with
+five fixed ([report](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/ab-v1.4.0-vs-v1.5.0.json)) — three of those
+five are new capability rather than repairs: v1.4.0 has no `entity_measure` and
+no boundary tracing, so it misses them by not having the method.
 
-- **Three are new capability, not repaired regressions.** v1.4.0 has no `entity_measure` and no boundary tracing, so it misses `hatch_area_subtracts_its_island`, `boundary_area_agrees_with_measure` and `two_vertex_circle_has_area` by not having the method.
-- **Two are real defects that v1.4.0 shipped.** It has `dimension_diameter` and `dimension_radius`, and both returned the wrong number: `leader_length` — a *text placement* — was being measured as geometry, so at default settings every diameter callout came out **2 × leader_length too large** (60 on a true ⌀40) and every radius `leader_length` too large. Found while building the drawing at the top of this page. The live COM backend was never affected.
+<sub>ᵃ Against the 26-check current suite. v1.4.0 passed 21/21 of the checks that existed when it shipped.</sub>
 
 The 21 pre-existing checks are unchanged and all still pass: the discovery layer, `cad_batch`, the 19-module contract split, layouts/viewports and Wave A landed with **zero correctness regressions**.
 
@@ -230,7 +240,7 @@ The 21 pre-existing checks are unchanged and all still pass: the discovery layer
 Workloads call the same backend methods the MCP tools call, so the backend's own per-call overhead — worker-thread hand-off, document lock, the `EZDXF_CALL_TIMEOUT` guard — is included. The FastMCP layer above it is **not**: `perf_suite.py` never builds the server, so tool dispatch, argument validation, the five middleware and result serialization all sit outside the timer, and in-process they cost roughly an order of magnitude more than the backend call itself. Read these as backend-engine numbers, not per-tool-call latency. **Self-measurement only** — competitor servers pay an extra stdio serialization cost that in-process runs do not, so no cross-server timing claims are made.
 
 > [!CAUTION]
-> These are **not** an improvement over v1.4.0, and they are not the engine's floor. The per-call timeout guard costs about **21%** of entity-creation throughput — see [what this release is bad at](#what-this-release-is-bad-at) for the paired measurement and why the guard is kept.
+> These are **not** an improvement over v1.4.0, and they are not the engine's floor. The per-call timeout guard costs about **21%** of entity-creation throughput — see [what this release is bad at](https://github.com/U-C4N/Autocad-MCP#what-this-release-is-bad-at) for the paired measurement and why the guard is kept.
 
 ### 5 · Source-review leaderboard
 
@@ -310,13 +320,15 @@ Nothing here loads a `.env` file — there is no dotenv dependency. Export these
 
 ## Architecture
 
+The request path, as a Mermaid diagram — GitHub draws it; on PyPI it is the same graph in source form:
+
 ```mermaid
 flowchart LR
   A[MCP host / AI agent] --> B[FastMCP 3 server]
   B --> C[Error · audit · timing · logging middleware]
   C --> D[Typed contract · 19 modules · 27 capabilities]
-  D --> E[COM backend<br/>single-STA thread]
-  D --> F[ezdxf backend<br/>asyncio.to_thread]
+  D --> E[COM backend — single-STA thread]
+  D --> F[ezdxf backend — asyncio.to_thread]
   E --> G[Live AutoCAD]
   F --> H[Headless DXF]
   E --> I[Engineering · critique · scoring · delivery]
@@ -403,5 +415,6 @@ Built from production drawing work, then made model-agnostic through MCP.
 
 [MIT](https://github.com/U-C4N/Autocad-MCP/blob/main/LICENSE)
 
-<!-- MCP registry ownership marker; must equal the "name" in server.json. -->
+<sub>The line below is the MCP registry's ownership marker. It must equal the `name` in `server.json`, and it is deliberately plain text so it survives PyPI's HTML stripping.</sub>
+
 mcp-name: io.github.u-c4n/autocad-mcp

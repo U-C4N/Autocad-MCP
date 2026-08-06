@@ -117,6 +117,80 @@ async def test_genuine_deadline_still_rebuilds_the_executor(com_backend, monkeyp
     assert await asyncio.wait_for(com_backend._run(lambda: "fresh"), timeout=3) == "fresh"
 
 
+# ── R32 — what the timeout message must admit, and the undo mark it must record ──
+
+
+async def test_com_timeout_says_the_call_may_still_land(com_backend, monkeypatch):
+    """AutoCAD's own command processor arbitrates the abandoned call, not us.
+
+    Unlike the ezdxf backend there is no ``self._doc`` to quarantine — the
+    drawing belongs to the operator and lives in AutoCAD's process. What the
+    server *can* do is stop the message implying the operation is dead: the
+    worker is still blocked inside an uncancellable COM call, so a blind retry
+    double-applies it.
+    """
+    monkeypatch.setattr(config.settings, "com_call_timeout", 0.2)
+    release = threading.Event()
+    finished = threading.Event()
+
+    def _hang():
+        try:
+            release.wait(5.0)
+        finally:
+            finished.set()
+
+    try:
+        with pytest.raises(RuntimeError) as excinfo:
+            await com_backend._run(_hang)
+    finally:
+        release.set()
+        assert finished.wait(5)
+
+    message = str(excinfo.value).lower()
+    assert "may still" in message, "the abandoned call can still execute in AutoCAD"
+    assert "retry" in message and "double" in message
+
+
+async def test_timed_out_transaction_begin_does_not_hide_an_open_undo_mark(
+    com_backend, monkeypatch
+):
+    """RED: ``_transaction_active`` was set only after ``_run`` returned.
+
+    A timed-out ``transaction_begin`` therefore left ``StartUndoMark`` open in
+    AutoCAD while the server recorded no transaction, and the next
+    ``transaction_begin`` nested a second mark nobody could see — the exact
+    inverse of the R16 fix ``transaction_commit`` already carries.
+    """
+    monkeypatch.setattr(config.settings, "com_call_timeout", 0.2)
+    release = threading.Event()
+    finished = threading.Event()
+    marks = []
+
+    class _FakeDoc:
+        def StartUndoMark(self):
+            marks.append("start")
+            try:
+                release.wait(5.0)
+            finally:
+                finished.set()
+
+    monkeypatch.setattr(cb, "_acad_doc", lambda: _FakeDoc())
+
+    try:
+        with pytest.raises(RuntimeError, match="did not respond"):
+            await com_backend.transaction_begin()
+
+        assert com_backend._transaction_active is True, (
+            "the mark may already be set in AutoCAD; recording nothing is the unsafe direction"
+        )
+        again = await com_backend.transaction_begin()
+        assert again == {"ok": False, "error": "A transaction is already active"}
+        assert marks == ["start"], "the second begin must not nest another undo mark"
+    finally:
+        release.set()
+        assert finished.wait(5)
+
+
 def _raise_value_error():
     raise ValueError("nope")
 

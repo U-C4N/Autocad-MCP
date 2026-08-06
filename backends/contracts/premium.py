@@ -11,6 +11,8 @@ import math
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
+from backends.quarantine import DocumentQuarantineError
+
 if TYPE_CHECKING:
     from backends.base import EntityInfo
     from engineering.plan_spec import (
@@ -579,6 +581,11 @@ class PremiumContract(ABC):
         layer = layer or self._role_layer("construction")
         try:
             ents = await self.entity_list(layer_filter=layer, limit=5000)
+        except DocumentQuarantineError:
+            # "deleted: 0" here would read as "there was nothing to clear" on a
+            # document the backend has declared untrusted -- and this is step 9
+            # of the standard workflow, immediately before finalize.
+            raise
         except Exception:
             ents = []
         deleted = 0

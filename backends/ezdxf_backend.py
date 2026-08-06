@@ -39,8 +39,25 @@ from .base import (
     normalize_lineweight,
     shoelace_area,
 )
+from .quarantine import (
+    AbandonedCall,
+    DocumentQuarantineError,
+    QuarantineRecord,
+    quarantine_refusal,
+    real_call_name,
+)
 
-__all__ = ["EzdxfBackend", "UnsupportedCapabilityError", "_unsupported"]
+__all__ = [
+    "DocumentQuarantineError",
+    "EzdxfBackend",
+    "UnsupportedCapabilityError",
+    "_unsupported",
+]
+
+#: How many abandoned calls ``system_status`` keeps. The interesting one is
+#: always the most recent; older entries exist so a support transcript shows a
+#: document that has been abandoned on repeatedly rather than once.
+_MAX_ABANDONED_RECORDS = 10
 
 log = logging.getLogger(__name__)
 
@@ -337,6 +354,64 @@ def _flatten_measure(ent, tolerance: float, result: dict) -> dict:
     return result
 
 
+#: ISO-conformant dimension style for a new headless document, in mm.
+#:
+#: ezdxf's bare `Standard` dimstyle leaves every one of these unset, and the
+#: renderer then falls back to its own defaults rather than to the DXF schema
+#: defaults -- 1.0 mm text with a *comma* decimal marker. ISO 3098 puts the
+#: minimum lettering height at 2.5 mm and ISO 129 wants a point, so every
+#: headless drawing this server made was non-conformant on both counts while
+#: the document header claimed `$DIMTXT 2.5`.
+#:
+#: `ezdxf.new(setup=True)` is not the fix: measured, it renders a 100 mm
+#: dimension as "10000" at 0.25 mm text, because its metric styles carry a
+#: length factor. Setting the attributes explicitly is what reaches the
+#: renderer, because only a *stored* value does.
+_ISO_DIMSTYLE = {
+    "dimtxt": 2.5,  # ISO 3098 minimum lettering height
+    "dimasz": 2.5,  # arrowhead, matched to the text
+    "dimdsep": ord("."),  # ISO 129 decimal marker; ezdxf defaults to a comma
+    "dimdec": 2,
+    "dimexe": 1.25,  # extension line beyond the dimension line
+    "dimexo": 0.625,  # offset from the measured feature
+    "dimgap": 0.625,  # gap around the text
+}
+
+
+def _normalise_dimstyle_rounding(doc) -> None:
+    """Discard a stored ``dimrnd`` of 0.0, which AutoCAD means as *no* rounding.
+
+    ezdxf applies ``xround(value, dimrnd)`` whenever the attribute is present at
+    all, and ``xround(33.333, 0.0)`` is ``33``. Saving a drawing writes the
+    attribute out, so every reopened file — including one this server saved
+    itself — silently rounded every dimension to a whole unit *before* DIMDEC
+    got to format it: a 12.75 mm feature dimensioned as 13, R6.35 as R6.
+
+    Only the 0.0 sentinel is removed. A drafter who genuinely asked for 0.5 mm
+    rounding keeps it.
+    """
+    try:
+        style = doc.dimstyles.get("Standard")
+    except Exception:
+        return
+    if style.dxf.hasattr("dimrnd") and float(style.dxf.dimrnd) == 0.0:
+        style.dxf.discard("dimrnd")
+
+
+def _apply_iso_dimstyle(doc) -> None:
+    """Store ISO defaults on the document's `Standard` dimension style."""
+    try:
+        style = doc.dimstyles.get("Standard")
+    except Exception:  # a template without a Standard style is the caller's own
+        return
+    for attribute, value in _ISO_DIMSTYLE.items():
+        style.dxf.set(attribute, value)
+    doc.header["$DIMTXT"] = _ISO_DIMSTYLE["dimtxt"]
+    doc.header["$DIMASZ"] = _ISO_DIMSTYLE["dimasz"]
+    doc.header["$DIMDSEP"] = _ISO_DIMSTYLE["dimdsep"]
+    doc.header["$DIMDEC"] = _ISO_DIMSTYLE["dimdec"]
+
+
 #: AutoCAD's HPISLANDDETECTION, by the code DXF stores in group 75.
 _HATCH_STYLE_NAMES = {0: "normal", 1: "outer", 2: "ignore"}
 
@@ -443,27 +518,147 @@ def _measure_hatch(ent, tolerance: float, result: dict) -> dict:
     return _round_measure(result)
 
 
-def _with_header_dimscale(doc, override: dict | None) -> dict | None:
-    """Carry `$DIMSCALE` onto the dimension being created.
+#: The dimension style every headless dimension is rendered from.
+#:
+#: `msp.add_*_dim` defaults to `dimstyle="EZDXF"` (`"EZ_RADIUS"` for the radial
+#: ones) and ezdxf silently substitutes `Standard` when that entry is missing —
+#: which it is in every document this server creates, so the five call sites got
+#: `Standard` by accident rather than by name. Naming it keeps three things
+#: pointed at one style: `_apply_iso_dimstyle`, which writes it; the `iso128`
+#: critique, which grades it; and the header fold below, which compares against
+#: it. A file authored by `ezdxf.new(setup=True)` *does* carry an `EZDXF` entry,
+#: and its metric styles carry a length factor — measured, that renders a 100 mm
+#: dimension as "10000" — so on an opened file the substitution would have
+#: pointed the dimension at a style nobody here configured and left both the
+#: fold and the ISO defaults inert.
+_DIMSTYLE_NAME = "Standard"
 
-    `drawing_settings({"dimscale": ...})` writes the header variable, which is
-    what AutoCAD consults when it draws a dimension — so the call worked on the
-    live backend. ezdxf renders from the dimstyle table entry and never reads
-    the header, so headlessly the same call reported success and changed
-    nothing. Folding it into the per-dimension override makes one call mean one
-    thing on both engines.
 
-    1.0 is the default and is deliberately not written, so an untouched drawing
-    does not gain an override on every dimension.
+#: DIM* header variables folded onto the dimension being created, as
+#: ``dimstyle attribute -> (header variable, renderer fallback, coercion)``.
+#:
+#: The third column is what ezdxf's *renderer* resolves the attribute to when
+#: the dimstyle stores nothing — `DimStyleOverride.get(attr, default)` with the
+#: defaults spelled out in `render/dim_base.py` and `get_decimal_separator`.
+#: Deliberately NOT the DXF schema default, which differs for three of the six:
+#: dimtxt 1.0 vs 2.5, dimasz 0.25 vs 2.5, dimdsep 0 (a comma) vs 44. Keying the
+#: "header already agrees, nothing to fold" test on the schema default is the
+#: invisible way to get this wrong — it switches the fold off for exactly the
+#: opened-file case it exists for, and switches it *on* for a fresh drawing,
+#: where folding dimdsep would put ezdxf's comma back onto a sheet ISO 129 wants
+#: a point on.
+#:
+#: This is an allowlist, not "every DIM* variable". $DIMADEC and $DIMAZIN sit at
+#: 0 in a fresh header while the renderer falls back to 2 and 2, so completing
+#: the table would silently reformat every angular dimension this server has
+#: ever drawn (measured: 239.04° becomes 239°). $DIMGAP is the other one that
+#: looks safe and is not: `build_dim_override` sets dimgap=-1.0 for
+#: `tol_mode="basic"` to draw the theoretically-exact box, and a fold would be
+#: competing with it for the same key.
+_HEADER_DIMVARS: dict[str, tuple[str, Any, Any]] = {
+    "dimscale": ("$DIMSCALE", 1.0, float),
+    "dimtxt": ("$DIMTXT", 1.0, float),
+    "dimasz": ("$DIMASZ", 0.25, float),
+    "dimdec": ("$DIMDEC", 2, int),
+    "dimdsep": ("$DIMDSEP", 0, int),  # a character code; 0 renders as a comma
+    "dimzin": ("$DIMZIN", 8, int),
+}
+
+
+def _coerce_dimvar(value, coerce):
+    """The value as the override dict needs it, or None if it is junk.
+
+    ezdxf validates the *header* (a string in `$DIMDSEP` raises DXFValueError)
+    but not the override dict, so a float 46.0 or a stray string reaching
+    `dimdsep` renders garbage instead of raising. Coercing here is what keeps an
+    opened file's odd header out of the drawing.
     """
     try:
-        scale = float(doc.header.get("$DIMSCALE", 1.0) or 1.0)
-    except (AttributeError, TypeError, ValueError):
-        return override
-    if abs(scale - 1.0) < 1e-9:
-        return override
-    merged = dict(override or {})
-    merged.setdefault("dimscale", scale)
+        return coerce(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _header_dimvar(doc, header_var: str, coerce):
+    """The header's value for a DIM* variable, or None if it has none usable."""
+    try:
+        raw = doc.header.get(header_var, None)
+    except Exception:  # an opened document may not have a readable header
+        return None
+    return None if raw is None else _coerce_dimvar(raw, coerce)
+
+
+def _style_dimvar(doc, attribute: str, fallback, coerce):
+    """What the renderer would use with no header and no override in play."""
+    try:
+        style = doc.dimstyles.get(_DIMSTYLE_NAME)
+        if style.dxf.hasattr(attribute):
+            stored = _coerce_dimvar(style.dxf.get(attribute), coerce)
+            if stored is not None:
+                return stored
+    except Exception:  # a document without a Standard style is the caller's own
+        pass
+    return fallback
+
+
+def effective_dimvar(doc, attribute: str):
+    """The value the next dimension will actually be rendered with.
+
+    Header first, then the stored dimstyle attribute, then ezdxf's renderer
+    fallback — the order `_with_header_dimvars` produces below, and the order a
+    live seat uses (the header DIMVARS *are* the current settings; the dimstyle
+    table entry is only the base underneath them). `drawing_critique` has to
+    resolve the same value, or it reports a defect the sheet does not have and
+    clears one it does.
+    """
+    header_var, fallback, coerce = _HEADER_DIMVARS[attribute]
+    from_header = _header_dimvar(doc, header_var, coerce)
+    if from_header is not None:
+        return from_header
+    return _style_dimvar(doc, attribute, fallback, coerce)
+
+
+def _with_header_dimvars(doc, override: dict | None) -> dict | None:
+    """Carry the DIM* header variables onto the dimension being created.
+
+    `system_set_variable("DIMTXT", 5.0)` writes the header variable, which is
+    what AutoCAD consults when it builds a dimension — so the call worked on the
+    live backend. ezdxf renders from the dimstyle table entry plus the
+    per-dimension override and never reads the header, so headlessly the same
+    call reported success and changed nothing. Measured on v1.5.1: after
+    DIMTXT=5.0, DIMASZ=6.0, DIMDEC=1, DIMDSEP=44 and DIMZIN=0 the header read
+    all five back, and the next dimension was byte-identical to the one before
+    them — still 2.5 mm text, 2.5 arrows, "33.33". Folding them into the
+    override makes one call mean one thing on both engines.
+
+    v1.5.1 folded `$DIMSCALE` alone, which is why this is a table rather than a
+    fifth copy of the same six lines.
+
+    A variable whose header value already matches what the renderer would use is
+    skipped, so an untouched `drawing_new` drawing gains no override at all —
+    header and style agree on all six there. `setdefault` is what keeps the fold
+    below `build_dim_override`: an explicit tolerance/limit/basic key, or any
+    value a caller passed, always outranks the header.
+    """
+    merged = override
+    for attribute, (header_var, fallback, coerce) in _HEADER_DIMVARS.items():
+        from_header = _header_dimvar(doc, header_var, coerce)
+        if from_header is None:
+            continue
+        if attribute == "dimscale" and not from_header:
+            # DIMSCALE 0 means "scale to the paper-space viewport". There is no
+            # viewport to scale to here, and folding a literal 0 would render
+            # the dimension to nothing; 1.0 is what the renderer already uses.
+            continue
+        stored = _style_dimvar(doc, attribute, fallback, coerce)
+        if isinstance(from_header, float):
+            if abs(from_header - float(stored)) < 1e-9:
+                continue
+        elif from_header == stored:
+            continue
+        if merged is override:  # only allocate once something is actually folded
+            merged = dict(override or {})
+        merged.setdefault(attribute, from_header)
     return merged
 
 
@@ -744,6 +939,10 @@ class EzdxfBackend(AutoCADBackend):
         self._transaction_stack: list[Path] = []  # isolated transaction snapshots
         self._connected = False
         self._lock = asyncio.Lock()
+        # R32: the document a timed-out call was abandoned on is untrusted until
+        # it is replaced. See backends/quarantine.py for what that buys.
+        self._quarantine: QuarantineRecord | None = None
+        self._abandoned_calls: list[QuarantineRecord] = []
 
     @property
     def name(self) -> str:
@@ -837,6 +1036,9 @@ class EzdxfBackend(AutoCADBackend):
     async def disconnect(self) -> None:
         self._cleanup_undo_stack()
         self._reset_document_state()
+        # The document goes away with the backend, so nothing is left to protect.
+        # The record stays in _abandoned_calls for anyone reading the transcript.
+        self._clear_quarantine("disconnect")
         self._connected = False
 
     def _cleanup_undo_stack(self):
@@ -887,17 +1089,128 @@ class EzdxfBackend(AutoCADBackend):
         )
 
     @staticmethod
-    def _timeout_error(func, timeout: float) -> RuntimeError:
-        name = getattr(func, "__name__", "call")
+    def _timeout_error(call: str, timeout: float) -> RuntimeError:
         return RuntimeError(
-            f"ezdxf call '{name}' timed out after {timeout:g}s. asyncio.to_thread "
-            "cannot be cancelled, so the worker thread was abandoned and the drawing "
-            "may be left mid-write - reopen it before trusting its contents. Raise "
-            "EZDXF_CALL_TIMEOUT (seconds; 0 disables the timeout entirely) if this "
-            "operation is legitimately slow."
+            f"ezdxf call '{call}' timed out after {timeout:g}s. asyncio.to_thread "
+            "cannot be cancelled, so the worker thread was abandoned and may still be "
+            "writing to the drawing. Every later call on this document is refused - "
+            "reads included - until drawing_open(path), drawing_new() or "
+            "drawing_close() rebinds it, or until the abandoned call is seen to finish "
+            "cleanly, which lifts the refusal by itself. system_status() stays "
+            "answerable throughout. Raise EZDXF_CALL_TIMEOUT (seconds; 0 disables the "
+            "timeout entirely) if this operation is legitimately slow."
         )
 
-    async def _async(self, func, *args, **kwargs):
+    # ── document quarantine (R32) ─────────────────────────────────────────────
+
+    def _reap_quarantine(self) -> None:
+        """The free exit: an abandoned call that finished cleanly is no corruption.
+
+        The common real trigger for the deadline is a legitimately slow
+        ``drawing_audit`` or a big ``drawing_export_pdf`` against the 120s
+        default, not a hang. If the ``_sync`` body ran to completion the document
+        holds exactly the state that call intended, and forcing a reopen for that
+        would be its own defect.
+
+        This inference is sound *only* because every other caller was refused in
+        the meantime, so "the call finished" really does mean "the document is
+        what that call intended". Add one mutating exemption to the gate and the
+        lift becomes a lie.
+
+        The lift is not silent: the caller never received the return value, so a
+        late-completing ``entity_create_*`` leaves an entity whose handle nobody
+        holds. That fact survives in the record.
+        """
+        record = self._quarantine
+        if record is None or not record.watcher.finished:
+            return
+        if record.watcher.error is not None:
+            if record.outcome == "running":
+                error = record.watcher.error
+                record.outcome = "failed_after_deadline"
+                record.detail = f"{type(error).__name__}: {error}"
+                log.error(
+                    "abandoned ezdxf call %r raised %s after its deadline; the document "
+                    "stays quarantined - it was left mid-write",
+                    record.call,
+                    record.detail,
+                )
+            return
+        record.outcome = "completed_after_deadline"
+        record.capture_lost_result()
+        self._quarantine = None
+        log.warning(
+            "abandoned ezdxf call %r completed %.1fs after its deadline; lifting the "
+            "document quarantine. Its return value never reached the caller (%s), so "
+            "anything it created is in the drawing with no handle reported",
+            record.call,
+            record.age(),
+            record.result_repr,
+        )
+
+    def _clear_quarantine(self, released_by: str, new_path: str | None = None):
+        """Release the quarantine because ``self._doc`` was just rebound.
+
+        Only the three calls that construct a *fresh* ``Drawing`` may do this:
+        the runaway keeps the object it captured, so its remaining writes land on
+        an orphan nobody reads. That holds for a ``_sync`` which captured
+        doc/msp once at entry — the shape of nearly every closure in this file.
+        One that re-reads ``self._msp()`` inside its own loop would follow the
+        rebind into the fresh document, and ``_async`` cannot prevent that, which
+        is why a still-live runaway is said out loud rather than implied away.
+        """
+        record = self._quarantine
+        if record is None:
+            return None
+        self._quarantine = None
+        record.outcome = "released"
+        record.released_by = released_by
+        if record.thread_alive():
+            record.detail = "the abandoned worker was still running at recovery time"
+            log.warning(
+                "%s cleared the document quarantine while the abandoned %r worker is "
+                "STILL RUNNING; its writes go to the replaced Drawing unless its _sync "
+                "re-reads self._msp() inside its own loop",
+                released_by,
+                record.call,
+            )
+        if new_path and record.document_path:
+            try:
+                same = os.path.abspath(new_path) == os.path.abspath(record.document_path)
+            except (OSError, ValueError):  # a path this OS cannot normalise
+                same = new_path == record.document_path
+            if same:
+                log.warning(
+                    "%s is reopening %s, the same path the abandoned %r call was working "
+                    "against; if that call is inside doc.saveas the file is being written "
+                    "right now and this read may be of a truncated document",
+                    released_by,
+                    new_path,
+                    record.call,
+                )
+        return record
+
+    def _quarantine_document(self, func, watcher, timeout: float) -> str:
+        """Record an abandoned call and refuse the document until it is replaced.
+
+        ``func`` is the caller's closure (it carries the qualname the message
+        needs); ``watcher`` is the wrapper the worker thread is actually running,
+        and the only thing that can report whether it ever finished.
+        """
+        call = real_call_name(func)
+        record = QuarantineRecord(
+            call,
+            timeout,
+            watcher,
+            document_path=self._doc_path,
+            document_id=id(self._doc),
+        )
+        self._quarantine = record
+        self._abandoned_calls.append(record)
+        del self._abandoned_calls[:-_MAX_ABANDONED_RECORDS]
+        return call
+
+    async def _async(self, func, *args, quarantine_exit: bool = False, **kwargs):
         """Run a blocking ezdxf call in a worker thread, serialised and timed out.
 
         The ezdxf ``Drawing`` is not thread-safe, so every backend method funnels
@@ -922,9 +1235,34 @@ class EzdxfBackend(AutoCADBackend):
         for the lock does not abandon it: that lock is held by a live call which
         will release it normally. Outside cancellation (client disconnect) also
         releases normally, as it did before the timeout existed.
+
+        R32 — swapping the lock is only half the answer, and on its own it is the
+        more dangerous half: it removes the mutual exclusion the lock existed
+        for, so the *next* call runs against the same ``Drawing`` the runaway is
+        still mutating. Measured, that returned a fresh circle handle, an entity
+        count for a modelspace 50 entities further on, and a valid DXF of a state
+        that never existed. So the abandonment quarantines the document, and
+        every later call is refused **before** ``lock.acquire()`` — after the
+        acquire the refusal would queue behind an unrelated in-flight call and
+        the caller would wait the full timeout to be told the document is
+        untrusted. Reads are refused too: a read of a container another thread is
+        appending to does not tear loudly, it runs unbounded — ``drawing_info``
+        blew its own 2.0s deadline at 2.03s and abandoned a *second* worker.
+
+        ``quarantine_exit=True`` is for the three calls that rebind ``self._doc``
+        to a freshly constructed object. They still take the lock, because two
+        concurrent recoveries would otherwise both rebind it and one fresh
+        document would be silently discarded with its caller's work in it.
         """
+        # The gate, before any await: a refusal must not queue.
+        if self._quarantine is not None:
+            self._reap_quarantine()
+            if self._quarantine is not None and not quarantine_exit:
+                raise quarantine_refusal(self._quarantine)
+
         timeout = config.settings.ezdxf_call_timeout
         if timeout <= 0:
+            # No deadline means no abandon branch, so nothing here can quarantine.
             async with self._lock:
                 return await asyncio.to_thread(func, *args, **kwargs)
 
@@ -939,11 +1277,15 @@ class EzdxfBackend(AutoCADBackend):
         # distinguishable, which is the whole reason they were separate.
         acquired = False
         call: asyncio.Future | None = None
+        # The only place an abandoned thread's outcome is observable is inside
+        # the thread: `call` is CANCELLED by the deadline, so its done-callback
+        # reports the await ending and never the worker. See AbandonedCall.
+        watched = AbandonedCall(func)
         try:
             async with asyncio.timeout_at(deadline):
                 await lock.acquire()
                 acquired = True
-                call = asyncio.ensure_future(asyncio.to_thread(func, *args, **kwargs))
+                call = asyncio.ensure_future(asyncio.to_thread(watched, *args, **kwargs))
                 result = await call
         except TimeoutError as exc:
             if not acquired:
@@ -960,13 +1302,18 @@ class EzdxfBackend(AutoCADBackend):
                 raise
             if self._lock is lock:
                 self._lock = asyncio.Lock()
+            # Same handler, same branch as the lock swap: the two other exits
+            # above touched nothing, and quarantining on either would refuse the
+            # whole document for a failure that never reached it.
+            name = self._quarantine_document(func, watched, timeout)
             log.error(
                 "ezdxf call %r exceeded EZDXF_CALL_TIMEOUT=%gs; abandoning the worker "
-                "thread and the lock it holds",
-                getattr(func, "__name__", func),
+                "thread and the lock it holds, and quarantining the document it may "
+                "still be writing to",
+                name,
                 timeout,
             )
-            raise self._timeout_error(func, timeout) from exc
+            raise self._timeout_error(name, timeout) from exc
         except BaseException:
             # Only ours to release if we ever took it — cancellation can land
             # while still queueing, and releasing someone else's lock there
@@ -1025,17 +1372,26 @@ class EzdxfBackend(AutoCADBackend):
         def _sync():
             if template and Path(template).exists():
                 self._doc = ezdxf.readfile(template)
+                _normalise_dimstyle_rounding(self._doc)
             else:
                 self._doc = ezdxf.new(dxfversion="R2010")
+                _apply_iso_dimstyle(self._doc)
+            # R32: the rebind above is the release — the runaway keeps the
+            # Drawing it captured, so its remaining writes land on an orphan.
+            # Clear before _reset_history_baseline, which snapshots the new doc.
+            released = self._clear_quarantine("drawing_new")
             self._doc_path = None
             self._dirty = False
             self._current_layer = "0"
             self._reset_document_state()
             self._current_space = "Model"
             self._reset_history_baseline()
-            return {"ok": True, "name": "untitled.dxf"}
+            result = {"ok": True, "name": "untitled.dxf"}
+            if released is not None:
+                result["quarantine_cleared"] = released.to_dict()
+            return result
 
-        return await self._async(_sync)
+        return await self._async(_sync, quarantine_exit=True)
 
     async def drawing_open(self, path: str) -> dict:
         def _sync():
@@ -1051,6 +1407,12 @@ class EzdxfBackend(AutoCADBackend):
                         f"({size} > {max_bytes}). Set MAX_DXF_BYTES env var to override."
                     )
             self._doc = ezdxf.readfile(path)
+            _normalise_dimstyle_rounding(self._doc)
+            # R32: only reached if the read succeeded. Reopening the very path a
+            # runaway doc.saveas is writing either fails loudly here (acceptable)
+            # or hands back a truncated document (not) — _clear_quarantine
+            # compares the two paths and says so.
+            released = self._clear_quarantine("drawing_open", path)
             self._doc_path = path
             self._dirty = False
             try:
@@ -1061,9 +1423,12 @@ class EzdxfBackend(AutoCADBackend):
             self._reset_document_state()
             self._current_space = "Model"
             self._reset_history_baseline()
-            return {"ok": True, "name": Path(path).name, "path": path}
+            result = {"ok": True, "name": Path(path).name, "path": path}
+            if released is not None:
+                result["quarantine_cleared"] = released.to_dict()
+            return result
 
-        return await self._async(_sync)
+        return await self._async(_sync, quarantine_exit=True)
 
     async def drawing_save(self, path: str | None = None) -> dict:
         save_path = path or self._doc_path
@@ -2042,16 +2407,32 @@ class EzdxfBackend(AutoCADBackend):
 
     async def drawing_close(self, save: bool = True) -> dict:
         def _sync():
-            if save and self._dirty and self._doc_path:
+            # R32: closing is a way out of a quarantine, but saving on the way is
+            # not. That save is the exact defect measured — a valid DXF holding
+            # 15200 of the 60000 entities the runaway went on to write, a
+            # considered document of a state that never existed. Say what was
+            # dropped instead of writing it.
+            quarantined = self._quarantine is not None
+            if save and self._dirty and self._doc_path and not quarantined:
                 self._doc.saveas(self._doc_path)
             self._cleanup_undo_stack()
             self._doc = None
+            released = self._clear_quarantine("drawing_close")
             self._doc_path = None
             self._dirty = False
             self._reset_document_state()
-            return {"ok": True}
+            result = {"ok": True}
+            if released is not None:
+                result["quarantine_cleared"] = released.to_dict()
+                result["saved"] = False
+                result["warning"] = (
+                    "the document was quarantined after a call was abandoned mid-write, "
+                    "so unsaved changes were discarded rather than serialised out of a "
+                    "drawing another thread may still have been mutating"
+                )
+            return result
 
-        return await self._async(_sync)
+        return await self._async(_sync, quarantine_exit=True)
 
     async def drawing_undo(self) -> dict:
         self._require_undo_history("drawing_undo")
@@ -2179,6 +2560,7 @@ class EzdxfBackend(AutoCADBackend):
 
     def _restore_snapshot(self, path: Path) -> None:
         self._doc = ezdxf.readfile(str(path))
+        _normalise_dimstyle_rounding(self._doc)
         self._current_layer = str(self._doc.header.get("$CLAYER", "0"))
         self._dirty = True
 
@@ -2909,7 +3291,7 @@ class EzdxfBackend(AutoCADBackend):
             from engineering.tolerances import build_dim_override
 
             override, text = build_dim_override(tol_upper, tol_lower, tol_mode, text_override)
-            override = _with_header_dimscale(self._require_doc(), override)
+            override = _with_header_dimvars(self._require_doc(), override)
             msp = self._msp()
             dim = msp.add_linear_dim(
                 base=(float(dim_x), float(dim_y)),
@@ -2917,6 +3299,7 @@ class EzdxfBackend(AutoCADBackend):
                 p2=(float(x2), float(y2)),
                 angle=float(rotation),
                 text=text if text is not None else "<>",
+                dimstyle=_DIMSTYLE_NAME,
                 override=override or None,
             )
             dim.render()
@@ -2946,7 +3329,8 @@ class EzdxfBackend(AutoCADBackend):
                 distance=math.sqrt(
                     (float(dim_x) - float(x1)) ** 2 + (float(dim_y) - float(y1)) ** 2
                 ),
-                override=_with_header_dimscale(self._require_doc(), None),
+                dimstyle=_DIMSTYLE_NAME,
+                override=_with_header_dimvars(self._require_doc(), None),
             )
             dim.render()
             ent = dim.dimension
@@ -2977,7 +3361,8 @@ class EzdxfBackend(AutoCADBackend):
                 line1=((vxf, vyf), (float(x1), float(y1))),
                 line2=((vxf, vyf), (float(x2), float(y2))),
                 location=(float(tx), float(ty)),
-                override=_with_header_dimscale(self._require_doc(), None),
+                dimstyle=_DIMSTYLE_NAME,
+                override=_with_header_dimvars(self._require_doc(), None),
             )
             dim.render()
             ent = dim.dimension
@@ -3005,7 +3390,7 @@ class EzdxfBackend(AutoCADBackend):
             from engineering.tolerances import build_dim_override
 
             override, text = build_dim_override(tol_upper, tol_lower, tol_mode, text_override)
-            override = _with_header_dimscale(self._require_doc(), override)
+            override = _with_header_dimvars(self._require_doc(), override)
             msp = self._msp()
             cxf, cyf = float(cx), float(cy)
             radius = math.sqrt((chord_x - cxf) ** 2 + (chord_y - cyf) ** 2)
@@ -3021,6 +3406,7 @@ class EzdxfBackend(AutoCADBackend):
                     cyf + (radius + leader) * math.sin(angle_rad),
                 ),
                 text=text if text is not None else "<>",
+                dimstyle=_DIMSTYLE_NAME,
                 override=override or None,
             )
             dim.render()
@@ -3049,7 +3435,7 @@ class EzdxfBackend(AutoCADBackend):
             from engineering.tolerances import build_dim_override
 
             override, text = build_dim_override(tol_upper, tol_lower, tol_mode, text_override)
-            override = _with_header_dimscale(self._require_doc(), override)
+            override = _with_header_dimvars(self._require_doc(), override)
             msp = self._msp()
             x1f, y1f, x2f, y2f = float(x1), float(y1), float(x2), float(y2)
             cx = (x1f + x2f) / 2
@@ -3070,6 +3456,7 @@ class EzdxfBackend(AutoCADBackend):
                     cy + (radius + leader) * math.sin(angle_rad),
                 ),
                 text=text if text is not None else "<>",
+                dimstyle=_DIMSTYLE_NAME,
                 override=override or None,
             )
             dim.render()
@@ -3718,7 +4105,6 @@ class EzdxfBackend(AutoCADBackend):
         min_area: float | None = None,
     ) -> dict:
         def _sync():
-            from engineering.measure import polygon_area_perimeter
 
             if min_area is not None and float(min_area) < 0:
                 return {"ok": False, "error": "min_area cannot be negative; no area is negative"}
@@ -3739,19 +4125,26 @@ class EzdxfBackend(AutoCADBackend):
             ]
 
             def _area(entity) -> float | None:
-                """None means "this shape has no area", not "its area is zero"."""
-                dxftype = entity.dxftype()
-                if dxftype == "CIRCLE":
-                    return math.pi * float(entity.dxf.radius) ** 2
-                if dxftype == "LWPOLYLINE" and entity.closed:
-                    points = [[p[0], p[1], p[4]] for p in entity.get_points()]
-                    return polygon_area_perimeter(points, closed=True)[0]
-                if dxftype in ("SOLID", "TRACE", "HATCH"):
-                    try:
-                        return float(entity.dxf.get("area", 0.0) or 0.0)
-                    except Exception:
-                        return None
-                return None
+                """None means "this shape has no area", not "its area is zero".
+
+                Answered by the same measurement `entity_measure` uses, so the
+                two cannot disagree about the same entity. They did: this used
+                to read ``entity.dxf.get("area", 0.0)`` for SOLID, TRACE and
+                HATCH, none of which carry an ``area`` DXF attribute, so every
+                one of them measured 0.0 and any positive threshold silently
+                excluded every hatch in the drawing while ``filtered_by``
+                reported that the filter had run.
+
+                The two refusals stay distinguishable. A type that bounds no
+                area on any engine raises RuntimeError and is *excluded*; a
+                type this engine cannot evaluate (ACIS) refuses with a
+                capability and is also excluded, because "I could not measure
+                it" must never read as "it is big enough".
+                """
+                try:
+                    return float(_measure_dxf_entity(entity, 0.001)["area"])
+                except (UnsupportedCapabilityError, RuntimeError, ValueError, TypeError):
+                    return None
 
             handles = []
             for entity in self._msp():
@@ -4846,6 +5239,7 @@ class EzdxfBackend(AutoCADBackend):
             p = self._transaction_stack.pop()
             try:
                 self._doc = ezdxf.readfile(str(p))
+                _normalise_dimstyle_rounding(self._doc)
                 self._current_layer = str(self._doc.header.get("$CLAYER", "0"))
                 self._dirty = True
             finally:
@@ -4860,6 +5254,12 @@ class EzdxfBackend(AutoCADBackend):
     # ── system ────────────────────────────────────────────────────────────────
 
     async def system_status(self) -> dict:
+        # R32: deliberately NOT routed through _async. It reads self._doc
+        # directly, which is what keeps it answerable while the document is
+        # quarantined; putting it behind the lock would make the diagnostic
+        # channel the first thing the quarantine closes, leaving the user with a
+        # refusal and no way to ask what happened.
+        self._reap_quarantine()
         has_doc = self._doc is not None
         return {
             "backend": "ezdxf",
@@ -4868,6 +5268,8 @@ class EzdxfBackend(AutoCADBackend):
             "document_path": self._doc_path,
             "unsaved_changes": self._dirty,
             "transaction_depth": len(self._transaction_stack),
+            "quarantine": self._quarantine.to_dict() if self._quarantine else None,
+            "abandoned_calls": [record.to_dict() for record in self._abandoned_calls],
             "capabilities": [
                 "file_read_write",
                 "dxf_export",

@@ -19,6 +19,7 @@ from typing import Any
 
 import config
 from engineering.measure import is_self_intersecting, polygon_area_perimeter
+from security import sanitize_macro_argument, sanitize_symbol_name, validate_path
 
 from . import ocs
 from .base import (
@@ -203,6 +204,9 @@ def _ensure_linetype_loaded(name: str) -> None:
     """
     if not name or name.lower() in _BUILTIN_LINETYPES:
         return
+    # Before any COM call: this name is about to be interpolated into a
+    # SendCommand macro, where a newline or ';' would start a second command.
+    name = sanitize_symbol_name(name, kind="linetype")
     doc = _acad_doc()
     existing = {doc.Linetypes.Item(i).Name.lower() for i in range(doc.Linetypes.Count)}
     if name.lower() in existing:
@@ -293,6 +297,10 @@ def _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode="none", text_overri
 
 #: ActiveX object names that bound no area at all. Not a capability gap — no
 #: engine can give a LINE an area — so these raise a plain error.
+#: Solids carry a volume but no surface area over ActiveX. Verified on a live
+#: AutoCAD 2026 (2026-08-06): AcDb3dSolid answers `.Volume` and raises on `.Area`.
+_COM_NO_SURFACE_AREA_TYPES = frozenset({"AcDb3dSolid", "AcDbBody"})
+
 _COM_NO_AREA_TYPES = frozenset(
     {
         "AcDbLine",
@@ -652,6 +660,14 @@ class ComBackend(AutoCADBackend):
         looking identical to an expired deadline. ``future.cancelled()`` tells
         them apart — ``wait_for`` cancels the future it is waiting on, an
         ordinary failure completes it — mirroring ``EzdxfBackend._async``.
+
+        R32 deliberately stops short of the ezdxf document quarantine here. There
+        is no ``self._doc`` to replace: the drawing belongs to the operator, lives
+        in AutoCAD's process, and AutoCAD's own single-threaded command processor
+        arbitrates the abandoned call — not us. The only "reopen" available would
+        close the operator's drawing and discard unsaved work the server never
+        created. What COM is exposed to is idempotency, so the message says the
+        call may still land.
         """
         if self._executor is None:
             raise RuntimeError("ComBackend not connected. Call connect() first.")
@@ -691,8 +707,11 @@ class ComBackend(AutoCADBackend):
             raise RuntimeError(
                 f"AutoCAD did not respond within {timeout:.0f}s. The application "
                 "may be showing a modal dialog or have an active command prompt "
-                "(press ESC in AutoCAD). Increase COM_CALL_TIMEOUT if a long "
-                "operation is expected."
+                "(press ESC in AutoCAD). The abandoned call may still complete in "
+                "AutoCAD after this error - the worker is blocked inside an "
+                "uncancellable COM call, not stopped - so verify the drawing before "
+                "retrying: a retry can double-apply the operation. Increase "
+                "COM_CALL_TIMEOUT if a long operation is expected."
             ) from e
         except _COM_ERROR as e:
             hr = e.args[0] if e.args else 0
@@ -2903,15 +2922,27 @@ class ComBackend(AutoCADBackend):
         # dialog deadlocks SendCommand; (2) ISO/metric drawings need acadiso.lin,
         # imperial drawings need acad.lin. We pick automatically from MEASUREMENT
         # if the caller didn't specify a file.
+        #
+        # Both arguments end up inside a SendCommand macro, so both are checked
+        # before the COM thread is entered: the name against the DXF
+        # symbol-table rule, the path against the same allowlist every other
+        # file-taking tool uses. This was the one path-taking tool that reached
+        # the filesystem with neither.
+        safe_name = sanitize_symbol_name(name, kind="linetype")
+        safe_file = None
+        if file is not None:
+            resolved = validate_path(str(file))
+            safe_file = sanitize_macro_argument(str(resolved), kind="linetype file")
+
         def _sync():
             app = _acad_app()
             doc = _acad_doc()
 
             existing = {doc.Linetypes.Item(i).Name.lower() for i in range(doc.Linetypes.Count)}
-            if name.lower() in existing:
-                return {"ok": True, "name": name, "already_loaded": True}
+            if safe_name.lower() in existing:
+                return {"ok": True, "name": safe_name, "already_loaded": True}
 
-            if file is None:
+            if safe_file is None:
                 try:
                     measurement = int(app.GetVariable("MEASUREMENT"))
                 except Exception as exc:
@@ -2919,7 +2950,7 @@ class ComBackend(AutoCADBackend):
                     measurement = 1
                 lin_file = "acadiso.lin" if measurement == 1 else "acad.lin"
             else:
-                lin_file = file
+                lin_file = safe_file
 
             try:
                 old_filedia = int(app.GetVariable("FILEDIA"))
@@ -2930,7 +2961,7 @@ class ComBackend(AutoCADBackend):
                 app.SetVariable("FILEDIA", 0)
                 # Double newline: first ends the file name, second exits
                 # -LINETYPE's [?/Create/Load/Set] option menu.
-                doc.SendCommand(f"_-LINETYPE _LOAD {name} {lin_file}\n\n")
+                doc.SendCommand(f"_-LINETYPE _LOAD {safe_name} {lin_file}\n\n")
             finally:
                 try:
                     app.SetVariable("FILEDIA", old_filedia)
@@ -2938,13 +2969,13 @@ class ComBackend(AutoCADBackend):
                     log.debug("FILEDIA restore failed: %s", exc)
 
             after = {doc.Linetypes.Item(i).Name.lower() for i in range(doc.Linetypes.Count)}
-            if name.lower() not in after:
+            if safe_name.lower() not in after:
                 raise RuntimeError(
-                    f"Failed to load linetype '{name}' from '{lin_file}'. "
+                    f"Failed to load linetype '{safe_name}' from '{lin_file}'. "
                     "Check the linetype name spelling and that the .lin file is "
                     "on AutoCAD's support path."
                 )
-            return {"ok": True, "name": name, "file": lin_file}
+            return {"ok": True, "name": safe_name, "file": lin_file}
 
         return await self._run(_sync)
 
@@ -3189,10 +3220,16 @@ class ComBackend(AutoCADBackend):
                 area = float(ent.Area)
             except Exception as exc:
                 log.debug("ActiveX .Area unavailable for %s: %s", obj_name, exc)
-            try:
-                perimeter = float(ent.Length)
-            except Exception as exc:
-                log.debug("ActiveX .Length unavailable for %s: %s", obj_name, exc)
+            # Measured on a live AutoCAD 2026 (2026-08-06): the perimeter lives
+            # under a different member per type, and on some types nowhere.
+            # AcDbPolyline -> .Length, AcDbCircle -> .Circumference,
+            # AcDbRegion -> .Perimeter, AcDbHatch -> none of them.
+            for member in ("Length", "Circumference", "Perimeter"):
+                try:
+                    perimeter = float(getattr(ent, member))
+                    break
+                except Exception as exc:
+                    log.debug("ActiveX .%s unavailable for %s: %s", member, obj_name, exc)
 
             method = "activex_area"
             closed = True
@@ -3215,6 +3252,17 @@ class ComBackend(AutoCADBackend):
                     for i in range(0, len(coords) - 1, 2)
                 ]
                 if not vertices:
+                    if obj_name in _COM_NO_SURFACE_AREA_TYPES:
+                        # Verified on a live AutoCAD 2026 (2026-08-06): AcDb3dSolid
+                        # exposes `.Volume` and no `.Area` whatsoever. The generic
+                        # message would send the caller hunting for geometry that
+                        # was never the problem.
+                        raise RuntimeError(
+                            f"entity_measure: handle {handle} is {obj_name}, and ActiveX "
+                            "exposes no surface-area member for it — only .Volume. "
+                            "AutoCAD's own MASSPROP reports the surface area; this server "
+                            "does not wrap it."
+                        )
                     raise RuntimeError(
                         f"entity_measure: AutoCAD reported neither an area nor usable "
                         f"vertices for handle {handle} ({obj_name})."
@@ -3436,12 +3484,22 @@ class ComBackend(AutoCADBackend):
 
         def _sync():
             doc = _acad_doc()
+            # R32: record the mark from inside the worker, immediately before
+            # setting it. `_transaction_active = True` used to run only after
+            # `_run` returned, so a timed-out begin left StartUndoMark open in
+            # AutoCAD while the server recorded no transaction, and the next
+            # transaction_begin nested a second mark nobody could see — the
+            # exact inverse of the R16 fix transaction_commit already carries.
+            # The abandoned STA thread cannot be cancelled, so the flag has to
+            # be written where the call happens; and it is written *before*
+            # StartUndoMark because a call that hangs inside it may still land.
+            # A `_acad_doc()` that fails leaves the flag alone, which is right:
+            # nothing reached AutoCAD.
+            self._transaction_active = True
             doc.StartUndoMark()
             return {"ok": True, "message": "Transaction begun (AutoCAD undo mark set)"}
 
-        result = await self._run(_sync)
-        self._transaction_active = True
-        return result
+        return await self._run(_sync)
 
     async def transaction_commit(self) -> dict:
         def _sync():

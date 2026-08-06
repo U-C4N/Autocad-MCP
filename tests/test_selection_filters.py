@@ -544,3 +544,47 @@ async def test_the_filter_count_matches_the_handles(backend):
     result = await backend.selection_filter(layer="GEOMETRY")
 
     assert result["count"] == len(result["handles"]) == 2
+
+
+# ── min_area must agree with the measurement tool ───────────────────────────
+
+
+async def test_min_area_sees_a_hatch_at_the_area_entity_measure_reports(backend):
+    """`_area` read `entity.dxf.get("area", 0.0)` for SOLID/TRACE/HATCH.
+
+    Those types carry no `area` DXF attribute, so the lookup always fell to the
+    default and every hatch measured 0.0 — excluded by any positive threshold,
+    while `filtered_by` asserted the filter had run. Its own docstring says
+    None means "this shape has no area", not "its area is zero", and the live
+    COM path reads ActiveX `.Area` correctly, so the two engines returned
+    different selections for the same call.
+    """
+    hatch = await backend.entity_create_hatch(
+        "SOLID", [[0, 0], [40, 0], [40, 40], [0, 40]], layer="HATCH"
+    )
+    measured = await backend.entity_measure(hatch.handle)
+    assert measured["area"] == pytest.approx(1600.0)
+
+    kept = await backend.selection_filter(entity_type="HATCH", min_area=1.0)
+
+    assert kept["handles"] == [hatch.handle], "a 1600 mm^2 hatch must survive a 1 mm^2 threshold"
+
+
+async def test_min_area_excludes_a_hatch_that_is_genuinely_too_small(backend):
+    """The fix must not simply admit everything."""
+    await backend.entity_create_hatch("SOLID", [[0, 0], [2, 0], [2, 2], [0, 2]], layer="HATCH")
+
+    kept = await backend.selection_filter(entity_type="HATCH", min_area=100.0)
+
+    assert kept["handles"] == []
+
+
+async def test_min_area_and_entity_measure_cannot_disagree_on_a_solid(backend):
+    solid = backend._doc.modelspace().add_solid([(0, 0), (10, 0), (0, 10), (10, 10)])
+    measured = await backend.entity_measure(solid.dxf.handle)
+
+    just_under = await backend.selection_filter(min_area=measured["area"] - 0.5)
+    just_over = await backend.selection_filter(min_area=measured["area"] + 0.5)
+
+    assert solid.dxf.handle in just_under["handles"]
+    assert solid.dxf.handle not in just_over["handles"]

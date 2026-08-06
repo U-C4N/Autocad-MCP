@@ -10,6 +10,8 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING
 
+from backends.quarantine import DocumentQuarantineError, quarantine_refusal
+
 from .layers import ENGINEERING_LAYERS
 from .plan_spec import (
     ALL_CRITIQUE_FOCUSES,
@@ -45,6 +47,8 @@ async def _check_iso128(backend: AutoCADBackend) -> list[Issue]:
     issues: list[Issue] = []
     try:
         layers = await backend.layer_list()
+    except DocumentQuarantineError:
+        raise
     except Exception as exc:
         return [Issue("warning", "iso128", f"layer_list failed: {exc}")]
     allowed = set(ISO_128_LINEWEIGHTS_MM)
@@ -73,6 +77,87 @@ async def _check_iso128(backend: AutoCADBackend) -> list[Issue]:
                     detail={"layer": lyr.name, "lineweight": lw},
                 )
             )
+    issues.extend(_check_dimension_legibility(backend))
+    return issues
+
+
+#: ISO 3098 minimum lettering height for technical drawings, in mm.
+ISO_3098_MIN_TEXT_MM = 2.5
+
+
+def _check_dimension_legibility(backend: AutoCADBackend) -> list[Issue]:
+    """Dimension text must be readable and use an ISO 129 decimal marker.
+
+    This lane was blind: `iso128` checked layer lineweights only, so a sheet
+    whose dimensions rendered at ezdxf's bare 1.0 mm with a comma separator
+    critiqued clean — and "zero issues" is the claim that the drawing is
+    conformant. Reading the settings rather than the rendered block keeps it
+    cheap and catches the case before a dimension is even drawn.
+
+    It reads the *effective* value — header first, then the stored dimstyle
+    attribute, then ezdxf's renderer fallback — because that is the order the
+    renderer resolves in since the DIM* header variables started reaching it.
+    Grading the dimstyle alone made this check wrong in both directions: it
+    would report a 1.0 mm defect on a sheet the header letters at 2.5, and clear
+    a sheet the header letters at 1.0 because the style still said 2.5.
+
+    Headless only by construction: a live AutoCAD document carries the
+    operator's own template, and second-guessing it from here would report
+    their house standard as a defect.
+    """
+    doc = getattr(backend, "_doc", None)
+    if doc is None:  # the live backend has no ezdxf document to read
+        return []
+
+    # This is the one check that reads `_doc` directly instead of going through
+    # `_async`, so it also misses `_async`'s quarantine gate — and it runs on
+    # the event loop thread, which is exactly the unsynchronised access to a
+    # document an abandoned worker may still be writing that the quarantine
+    # exists to prevent. Refuse here rather than read.
+    record = getattr(backend, "_quarantine", None)
+    if record is not None:
+        reap = getattr(backend, "_reap_quarantine", None)
+        if reap is not None:
+            reap()
+        record = getattr(backend, "_quarantine", None)
+        if record is not None:
+            raise quarantine_refusal(record)
+
+    from backends.ezdxf_backend import effective_dimvar
+
+    try:
+        height = float(effective_dimvar(doc, "dimtxt"))
+        separator = int(effective_dimvar(doc, "dimdsep"))
+    except DocumentQuarantineError:
+        raise
+    except Exception:
+        return []
+
+    issues: list[Issue] = []
+    if height < ISO_3098_MIN_TEXT_MM:
+        issues.append(
+            Issue(
+                severity="warning",
+                focus="iso128",
+                message=(
+                    f"Dimension text is {height:g} mm; ISO 3098 sets the minimum "
+                    f"lettering height at {ISO_3098_MIN_TEXT_MM} mm."
+                ),
+                detail={"dimtxt": height, "minimum": ISO_3098_MIN_TEXT_MM},
+            )
+        )
+    # DIMDSEP 0 is not "unset" — ezdxf's `get_decimal_separator` renders it as a
+    # comma — so it is the violation, not an excuse to skip the check.
+    marker = "," if separator == 0 else chr(separator)
+    if marker != ".":
+        issues.append(
+            Issue(
+                severity="warning",
+                focus="iso128",
+                message=(f"Dimension decimal marker is {marker!r}; ISO 129 uses a point."),
+                detail={"dimdsep": separator},
+            )
+        )
     return issues
 
 
@@ -81,6 +166,8 @@ async def _check_layer_color(backend: AutoCADBackend) -> list[Issue]:
     issues: list[Issue] = []
     try:
         layers = await backend.layer_list()
+    except DocumentQuarantineError:
+        raise
     except Exception:
         return []
     for lyr in layers:
@@ -111,6 +198,8 @@ async def _check_construction_left(backend: AutoCADBackend) -> list[Issue]:
     """
     try:
         ents = await backend.entity_list(limit=5000)
+    except DocumentQuarantineError:
+        raise
     except Exception:
         return []
     leftover = [e for e in ents if "CONST" in (e.layer or "").upper()]
@@ -139,6 +228,8 @@ async def _check_untrimmed_corner(backend: AutoCADBackend) -> list[Issue]:
     tol = 0.5  # mm — generous; tighten via PlanSpec.notes later
     try:
         lines = await backend.entity_list(type_filter="LINE", limit=5000)
+    except DocumentQuarantineError:
+        raise
     except Exception:
         return []
     endpoints: list[tuple[str, tuple[float, float]]] = []
@@ -182,6 +273,8 @@ async def _check_duplicate_entities(backend: AutoCADBackend) -> list[Issue]:
     """Two LINEs with identical endpoints (in either direction) are duplicates."""
     try:
         lines = await backend.entity_list(type_filter="LINE", limit=5000)
+    except DocumentQuarantineError:
+        raise
     except Exception:
         return []
     seen: dict[tuple, str] = {}
@@ -240,6 +333,8 @@ async def _check_dim_overlap(backend: AutoCADBackend) -> list[Issue]:
     tol = 5.0  # mm
     try:
         ents = await backend.entity_list(limit=5000)
+    except DocumentQuarantineError:
+        raise
     except Exception:
         return []
     dim_points: list[tuple[str, tuple[float, float]]] = []

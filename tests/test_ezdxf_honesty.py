@@ -29,6 +29,7 @@ import pytest
 import config
 from backends.com_backend import ComBackend
 from backends.ezdxf_backend import EzdxfBackend
+from backends.quarantine import DocumentQuarantineError
 
 pytestmark = pytest.mark.asyncio
 
@@ -113,31 +114,45 @@ async def test_both_backends_declare_the_same_capability_keys():
 
 
 async def test_slow_call_times_out_and_backend_stays_usable(backend, monkeypatch):
+    """The anti-deadlock guarantee, restated after R32.
+
+    This used to assert that the next ``drawing_info`` / ``entity_create_line``
+    *succeeded*, on the strength of a ``_hang`` that only slept and touched no
+    document. Both assertions were the defect written down as a requirement: the
+    lock swap that stops the deadlock is exactly what drops mutual exclusion on
+    the one shared ``Drawing``, so "succeeded" meant "ran against a document
+    another thread may still be writing". The guarantee that actually holds is
+    that the next call returns *immediately* — refused, not queued.
+    """
     monkeypatch.setattr(config.settings, "ezdxf_call_timeout", 0.2)
     entered = threading.Event()
+    release = threading.Event()
 
     def _hang():
         entered.set()
-        time.sleep(2.0)
+        release.wait(5.0)
         return "too late"
 
-    started = time.monotonic()
-    with pytest.raises(RuntimeError) as excinfo:
-        await backend._async(_hang)
-    assert entered.is_set()
-    assert time.monotonic() - started < 1.5, "must abandon the call, not wait it out"
+    try:
+        started = time.monotonic()
+        with pytest.raises(RuntimeError) as excinfo:
+            await backend._async(_hang)
+        assert entered.is_set()
+        assert time.monotonic() - started < 1.5, "must abandon the call, not wait it out"
 
-    message = str(excinfo.value)
-    assert "EZDXF_CALL_TIMEOUT" in message
-    assert "0.2" in message
+        message = str(excinfo.value)
+        assert "EZDXF_CALL_TIMEOUT" in message
+        assert "0.2" in message
 
-    # The anti-deadlock guarantee: the NEXT call must not queue behind the
-    # abandoned worker thread (which is still sleeping).
-    monkeypatch.setattr(config.settings, "ezdxf_call_timeout", 10)
-    info = await asyncio.wait_for(backend.drawing_info(), timeout=3)
-    assert info.backend == "ezdxf"
-    line = await asyncio.wait_for(backend.entity_create_line(0, 0, 1, 1), timeout=3)
-    assert line.handle
+        monkeypatch.setattr(config.settings, "ezdxf_call_timeout", 10)
+        started = time.monotonic()
+        with pytest.raises(DocumentQuarantineError):
+            await asyncio.wait_for(backend.drawing_info(), timeout=3)
+        with pytest.raises(DocumentQuarantineError):
+            await asyncio.wait_for(backend.entity_create_line(0, 0, 1, 1), timeout=3)
+        assert time.monotonic() - started < 1.0, "refused up front, never queued"
+    finally:
+        release.set()
 
 
 async def test_waiting_on_a_busy_backend_times_out_without_stealing_the_lock(backend, monkeypatch):
@@ -151,6 +166,10 @@ async def test_waiting_on_a_busy_backend_times_out_without_stealing_the_lock(bac
             await backend._async(lambda: "never runs")
         assert time.monotonic() - started < 1.0
         assert backend._lock is live, "the in-flight call's lock must not be swapped out"
+        # R32: nothing was abandoned here, so nothing may be quarantined — that
+        # lock is held by a live call which will release it normally.
+        assert backend._quarantine is None
+        assert backend._abandoned_calls == []
     finally:
         live.release()
 
@@ -166,6 +185,10 @@ async def test_zero_timeout_disables_the_check(backend, monkeypatch):
         return "finished"
 
     assert await backend._async(_slow) == "finished"
+    # R32: with the deadline off there is no abandon branch at all, so there is
+    # nothing that could quarantine the document.
+    assert backend._quarantine is None
+    assert backend._abandoned_calls == []
 
 
 async def test_async_still_serialises_calls(backend):
@@ -202,6 +225,9 @@ async def test_a_call_raising_TimeoutError_is_not_reported_as_the_deadline(backe
         await backend._async(_boom)
 
     assert backend._lock is live, "a call that merely failed must not abandon its lock"
+    # R32: not our deadline, so no thread was abandoned and the document is fine.
+    assert backend._quarantine is None
+    assert backend._abandoned_calls == []
     assert await asyncio.wait_for(backend._async(lambda: "next"), timeout=2) == "next"
 
 

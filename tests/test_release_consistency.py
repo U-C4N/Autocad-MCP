@@ -29,6 +29,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import sys
 import tomllib
 from pathlib import Path
 
@@ -268,3 +269,67 @@ def test_windows_only_dependencies_carry_a_platform_marker() -> None:
         'Windows-only distributions need `; sys_platform == "win32"` or the '
         f"extra cannot be installed off Windows: {unmarked}"
     )
+
+
+def test_document_numbers_match_the_tree() -> None:
+    """Every figure the docs quote, recomputed from its source of truth.
+
+    The A/B suite grew 24 -> 26 and three files kept saying 24: `README.md`
+    (fixed by hand), `benchmarks/README.md` and `CLAUDE.md` (not). Each was
+    edited on its own and nobody re-read the other two, so the repository
+    shipped three different answers to one question. That is a mechanical
+    failure and it deserves a mechanical gate rather than another careful
+    reader.
+
+    `scripts/check_doc_numbers.py` also fails when a pattern stops matching, so
+    rewording the sentence around a number cannot silently disarm the check.
+    """
+    import subprocess
+
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "check_doc_numbers.py")],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        timeout=120,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_pre_commit_ruff_matches_the_project_pin() -> None:
+    """A pre-commit hook that formats differently from CI is a trap, armed.
+
+    `.pre-commit-config.yaml` sat at ruff v0.8.6 while `[dependency-groups] dev`
+    pinned 0.16.1, and 0.16 formats Python inside Markdown where 0.8 does not.
+    Anyone who ran `pre-commit install` therefore produced commits that failed
+    CI's own `ruff format --check .` -- the same class of failure the ruff pin
+    was introduced to end.
+    """
+    config = (ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+    hook = re.search(r"ruff-pre-commit\s*\n\s*rev:\s*v?([\d.]+)", config)
+    assert hook, ".pre-commit-config.yaml no longer pins ruff-pre-commit"
+
+    dev_group = _pyproject()["dependency-groups"]["dev"]
+    pinned = next((d for d in dev_group if d.startswith("ruff==")), None)
+    assert pinned, "pyproject no longer pins ruff in [dependency-groups] dev"
+
+    assert hook.group(1) == pinned.split("==", 1)[1], (
+        f"pre-commit runs ruff {hook.group(1)} but the project pins {pinned} — "
+        "a contributor's hook would format differently from CI"
+    )
+
+
+def test_the_release_gate_covers_the_platforms_ci_covers() -> None:
+    """`release.yml` publishes to PyPI; a lane CI has and it lacks is a hole.
+
+    Its test job was one ubuntu/3.11 run, so a Windows-only defect could reach
+    PyPI with no Windows job having executed. v1.5.0 shipped exactly such a
+    defect (`except pywintypes.com_error` -> NameError without pywin32).
+    """
+    release = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    gate = release.split("build:", 1)[0]
+
+    assert "windows-latest" in gate, "the release test gate never runs on Windows"
+    assert "3.12" in gate, "the release test gate never runs on Python 3.12"
+    assert "uv sync --locked" in gate, "the release gate must install from the lockfile"
