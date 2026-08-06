@@ -196,6 +196,37 @@ def test_server_json_versions_match_pyproject() -> None:
             assert package["identifier"] == _pyproject()["project"]["name"]
 
 
+def test_uv_lock_records_the_pyproject_version() -> None:
+    """`uv sync --locked` refuses a lock that disagrees with pyproject.
+
+    This one is cheap and was learned the expensive way. The v1.5.0 lock was
+    generated before the version bump, so it recorded the project's own package
+    as 1.4.0 while pyproject said 1.5.0. No dependency differed — the whole
+    transitive graph was identical — but `--locked` will not re-resolve, so
+    every locked CI lane (lint, test-linux 3.11, test-linux 3.12, test-windows)
+    died on `uv sync` before running a single test.
+
+    The rest of this module chains pyproject -> version.py -> CHANGELOG ->
+    README -> server.json. The lockfile was the one release artifact carrying a
+    version string that nothing checked.
+    """
+    lock = (ROOT / "uv.lock").read_text(encoding="utf-8")
+    name = _pyproject()["project"]["name"]
+    expected = _pyproject_version()
+
+    match = re.search(
+        rf'^\[\[package\]\]\nname = "{re.escape(name)}"\nversion = "([^"]+)"',
+        lock,
+        re.MULTILINE,
+    )
+    assert match, f"uv.lock has no [[package]] entry for {name!r}"
+    assert match.group(1) == expected, (
+        f"uv.lock records {name} {match.group(1)} but pyproject says {expected} — "
+        "run `uv lock` after bumping the version, or every locked CI lane fails "
+        "at `uv sync --locked` before a test runs"
+    )
+
+
 def test_readme_contains_mcp_name_marker() -> None:
     """PyPI ownership validation for the MCP registry needs this marker in the
     README (which ships to PyPI as the long description)."""
