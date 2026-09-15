@@ -89,6 +89,29 @@ def _layer(spec: dict, where: str) -> str:
     return layer
 
 
+def _one_line(value, where: str) -> str:
+    """A single-line DXF string (TEXT content, ATTDEF prompt/default).
+
+    ezdxf's DXFAttr fixer (``fix_one_line_text``) silently strips line breaks
+    and a trailing ``^`` on write, logged at DEBUG only, so the declared value
+    and the value read back would differ; COM writes the raw string, so the two
+    engines would also diverge. Refuse it here, before any write, using ezdxf's
+    own ``is_valid_one_line_text`` rule plus the other C0 controls DXF text
+    cannot carry.
+    """
+    if not isinstance(value, str):
+        raise TypeError(f"{where} must be a string")
+    controls = sorted({c for c in value if ord(c) < 32})
+    if controls:
+        shown = ", ".join(repr(c) for c in controls)
+        raise TypeError(
+            f"{where} must be a single line without control characters (contains {shown})"
+        )
+    if value.endswith("^"):
+        raise TypeError(f"{where} must not end with '^' (DXF strips a trailing caret)")
+    return value
+
+
 def validate_entity_specs(entities) -> list[dict]:
     """Normalise ``block_define`` primitive specs; refuse the whole list on the first defect."""
     if not isinstance(entities, (list, tuple)) or not entities:
@@ -128,11 +151,8 @@ def validate_entity_specs(entities) -> list[dict]:
                 bulges = [_scalar(b, f"{where}: bulges[{j}]") for j, b in enumerate(bulges)]
             norm.update(points=pts, closed=closed, bulges=list(bulges) if bulges else None)
         elif kind == "text":
-            text = spec.get("text")
-            if not isinstance(text, str):
-                raise TypeError(f"{where}: 'text' must be a string")
             norm.update(
-                text=text,
+                text=_one_line(spec.get("text"), f"{where}: 'text'"),
                 x=_number(spec, "x", where),
                 y=_number(spec, "y", where),
                 height=_number(spec, "height", where),
@@ -163,13 +183,9 @@ def validate_attdef_specs(attdefs) -> list[dict]:
         if tag in seen:
             raise TypeError(f"{where}: duplicate tag {tag!r}")
         seen.add(tag)
-        prompt = spec.get("prompt", tag)
-        default = spec.get("default", "")
+        prompt = _one_line(spec.get("prompt", tag), f"{where}: 'prompt'")
+        default = _one_line(spec.get("default", ""), f"{where}: 'default'")
         invisible = spec.get("invisible", False)
-        if not isinstance(prompt, str):
-            raise TypeError(f"{where}: 'prompt' must be a string")
-        if not isinstance(default, str):
-            raise TypeError(f"{where}: 'default' must be a string")
         if not isinstance(invisible, bool):
             raise TypeError(f"{where}: 'invisible' must be a boolean")
         out.append(

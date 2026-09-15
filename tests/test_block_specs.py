@@ -50,6 +50,10 @@ def test_each_type_normalises_to_floats_and_layer_zero():
         ({"type": "circle", "cx": 0, "cy": 0, "r": float("nan")}, "finite"),
         ({"type": "text", "text": "M", "x": 0, "y": 0, "height": -1}, "height"),
         ({"type": "text", "text": 5, "x": 0, "y": 0, "height": 1}, "text"),
+        ({"type": "text", "text": "A\nB", "x": 0, "y": 0, "height": 1}, "'text'"),
+        ({"type": "text", "text": "A\rB", "x": 0, "y": 0, "height": 1}, "'text'"),
+        ({"type": "text", "text": "A\x01B", "x": 0, "y": 0, "height": 1}, "'text'"),
+        ({"type": "text", "text": "10^", "x": 0, "y": 0, "height": 1}, "'text'"),
         ({"type": "text", "text": "M", "x": 0, "y": 0, "height": 1, "align": "top"}, "align"),
         ({"type": "polyline", "points": [[0, 0]]}, "points"),
         ({"type": "polyline", "points": [[0, 0], [1]]}, "points[1]"),
@@ -113,6 +117,11 @@ def test_attdefs_normalise_and_default():
         ({"tag": "TAG", "x": 0, "y": 0, "height": 0}, "height"),
         ({"tag": "TAG", "x": 0, "y": 0, "height": 1, "invisible": 1}, "invisible"),
         ({"tag": "TAG", "x": 0, "y": 0, "height": 1, "default": 3}, "default"),
+        ({"tag": "TAG", "x": 0, "y": 0, "height": 1, "prompt": 3}, "prompt"),
+        ({"tag": "TAG", "x": 0, "y": 0, "height": 1, "prompt": "P\nQ"}, "'prompt'"),
+        ({"tag": "TAG", "x": 0, "y": 0, "height": 1, "default": "L-1\r\n"}, "'default'"),
+        ({"tag": "TAG", "x": 0, "y": 0, "height": 1, "default": "L-1^"}, "'default'"),
+        ({"tag": "TAG", "x": 0, "y": 0, "height": 1, "default": "L\x1f1"}, "'default'"),
     ],
 )
 def test_bad_attdef_names_the_index_and_key(bad, fragment):
@@ -142,6 +151,58 @@ def test_trailing_newline_cannot_smuggle_a_duplicate_tag():
                 {"tag": "TAG", "x": 0, "y": 0, "height": 1},
             ]
         )
+
+
+@pytest.mark.parametrize("value", ["A\nB", "A\rB", "10^", "A\tB", "L-1\r\n"])
+def test_one_line_strings_are_refused_before_ezdxf_would_rewrite_them(value):
+    """ezdxf's `fix_one_line_text` strips line breaks and a trailing caret on
+    `add_text` / `add_attdef` (DEBUG log only), so 'A\\nB' lands as 'AB' and the
+    ATTRIB value the P&ID reader gets back differs from the declared one; COM
+    writes the raw string, so the engines would diverge too. The gate is ours,
+    typed, and indexed — the same hole the tag check closed, on its siblings."""
+    from ezdxf.lldxf.validator import is_valid_one_line_text
+
+    # Either ezdxf's own rule rejects it or it is a C0 control DXF text cannot carry.
+    assert not is_valid_one_line_text(value) or any(ord(c) < 32 for c in value)
+    with pytest.raises(TypeError, match=r"entities\[0\]: 'text'"):
+        validate_entity_specs([{"type": "text", "text": value, "x": 0, "y": 0, "height": 2}])
+    with pytest.raises(TypeError, match=r"attdefs\[0\]: 'prompt'"):
+        validate_attdef_specs([{"tag": "TAG", "x": 0, "y": 0, "height": 2, "prompt": value}])
+    with pytest.raises(TypeError, match=r"attdefs\[0\]: 'default'"):
+        validate_attdef_specs([{"tag": "TAG", "x": 0, "y": 0, "height": 2, "default": value}])
+
+
+@pytest.mark.parametrize("value", ["10^2", "Ø20 H7", "%%C20", "L-101", ""])
+def test_one_line_strings_that_ezdxf_keeps_verbatim_pass(value):
+    """A caret inside the text (`10^2`), unicode and `%%C` survive both engines."""
+    from ezdxf.lldxf.validator import is_valid_one_line_text
+
+    assert is_valid_one_line_text(value)
+    out = validate_entity_specs([{"type": "text", "text": value, "x": 0, "y": 0, "height": 2}])
+    assert out[0]["text"] == value
+    att = validate_attdef_specs(
+        [{"tag": "TAG", "x": 0, "y": 0, "height": 2, "prompt": value, "default": value}]
+    )
+    assert att[0]["prompt"] == value and att[0]["default"] == value
+
+
+def test_one_line_gate_writes_through_ezdxf_unchanged():
+    """Round-trip proof: what the gate accepts, ezdxf stores verbatim (no
+    DXFAttr fixer rewrite), so declared == read back."""
+    import ezdxf
+
+    doc = ezdxf.new()
+    blk = doc.blocks.new("T")
+    [spec] = validate_entity_specs(
+        [{"type": "text", "text": "10^2 Ø", "x": 0, "y": 0, "height": 2}]
+    )
+    [att] = validate_attdef_specs(
+        [{"tag": "TAG", "x": 0, "y": 0, "height": 2, "prompt": "P Q", "default": "L-101"}]
+    )
+    t = blk.add_text(spec["text"])
+    a = blk.add_attdef(att["tag"], text=att["default"], dxfattribs={"prompt": att["prompt"]})
+    assert t.dxf.text == "10^2 Ø"
+    assert a.dxf.text == "L-101" and a.dxf.prompt == "P Q"
 
 
 def test_solid_vertices_use_dxf_bowtie_order():
