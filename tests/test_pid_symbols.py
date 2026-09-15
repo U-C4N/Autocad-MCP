@@ -348,3 +348,81 @@ def test_equipment_families_register():
     assert next(p for p in ecc.ports if p.name == "out").y == pytest.approx(-1.0)
     assert resolve("reducer").name == "PID_MISC_REDUCER_CONCENTRIC"
     assert resolve("agitator").ports[0] == Port("shaft", 0.0, 0.0, 270.0, "process")
+
+
+# ── parametric vessels (Task 10) ─────────────────────────────────────────────
+
+from engineering.pid.symbols_vessels import (  # noqa: E402
+    VESSELS,
+    build_vessel,
+    validate_vessel_params,
+)
+
+
+def test_vessels_are_parametric_and_hash_named():
+    assert len(VESSELS) == 6
+    v = build_vessel("vertical_vessel")
+    assert v.parametric is True and v.name.startswith("PID_VESSEL_VERTICAL_VESSEL_")
+    assert len(v.name.rsplit("_", 1)[1]) == 8
+    assert {p.name: p.direction_deg for p in v.ports} == {
+        "N1": 90.0,
+        "N2": 270.0,
+        "N3": 180.0,
+        "N4": 0.0,
+    }
+    same = build_vessel("vertical_vessel", {"width": 20, "height": 40})
+    assert same.name == v.name, "identical parameters share one definition"
+    other = build_vessel("vertical_vessel", {"width": 30})
+    assert other.name != v.name
+
+
+def test_vessel_nozzles_are_where_the_parameters_say():
+    v = build_vessel(
+        "vertical_vessel",
+        {
+            "width": 20,
+            "height": 40,
+            "nozzles": [{"name": "F", "side": "right", "fraction": 0.25}],
+        },
+    )
+    port = v.ports[0]
+    assert (port.name, port.x, port.y, port.direction_deg) == ("F", 13.0, -10.0, 0.0)
+    assert v.bbox == (-10.0, -20.0, 13.0, 20.0)
+
+
+def test_vessel_variants_draw_their_features():
+    column = build_vessel("column", {"trays": 5})
+    assert sum(1 for p in column.primitives if p["type"] == "line") >= 5 + 2
+    cone = build_vessel("tank", {"roof": "cone"})
+    assert any(p["type"] == "polyline" and not p["closed"] for p in cone.primitives)
+    jacketed = build_vessel("reactor", {"jacketed": True})
+    assert jacketed.bbox[2] == pytest.approx(12.0 + 5.0), "half width 12 + jacket 2 + stub 3"
+    hopper = build_vessel("hopper")
+    assert {p.direction_deg for p in hopper.ports} == {90.0, 270.0}
+
+
+@pytest.mark.parametrize(
+    "params, key",
+    [
+        ({"width": 0}, "width"),
+        ({"height": -1}, "height"),
+        ({"nozzles": [{"name": "A", "side": "up", "fraction": 0.5}]}, "side"),
+        ({"nozzles": [{"name": "A", "side": "top", "fraction": 1.5}]}, "fraction"),
+        (
+            {
+                "nozzles": [
+                    {"name": "A", "side": "top", "fraction": 0.5},
+                    {"name": "A", "side": "top", "fraction": 0.2},
+                ]
+            },
+            "name",
+        ),
+        ({"trays": -2}, "trays"),
+        ({"roof": "dome"}, "roof"),
+        ({"bogus": 1}, "bogus"),
+    ],
+)
+def test_vessel_params_are_validated(params, key):
+    symbol = "column" if "trays" in params else ("tank" if "roof" in params else "vertical_vessel")
+    with pytest.raises(ValueError, match=key):
+        validate_vessel_params(symbol, params)
