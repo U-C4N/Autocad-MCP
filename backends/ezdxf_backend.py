@@ -4453,12 +4453,13 @@ class EzdxfBackend(AutoCADBackend):
             }
             if layer:
                 attribs["layer"] = layer
+            ref = msp.add_blockref(name, (float(x), float(y)), dxfattribs=attribs)
             if attributes:
-                ref = msp.add_auto_blockref(
-                    name, (float(x), float(y)), attributes, dxfattribs=attribs
-                )
-            else:
-                ref = msp.add_blockref(name, (float(x), float(y)), dxfattribs=attribs)
+                # `add_auto_blockref` wraps the INSERT in an anonymous *U block,
+                # so the returned handle names `*U1` and carries no ATTRIBs.
+                # `add_auto_attribs` attaches ATTRIBs to this INSERT for every
+                # ATTDEF the definition has; values for tags it lacks are ignored.
+                ref.add_auto_attribs({str(k): str(v) for k, v in attributes.items()})
             self._mark_dirty()
             return _entity_info_dxf(ref)
 
