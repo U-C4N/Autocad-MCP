@@ -689,6 +689,7 @@ async def _registered_tool_count() -> int | None:
 # specific tags (engineering/premium/corner) take precedence over the broad
 # entity/drawing tags. Tools whose tags match none fall into "other".
 _GROUP_TAG_PRIORITY = (
+    "pid",
     "engineering",
     "premium",
     "corner",
@@ -713,6 +714,7 @@ _GROUP_TAG_PRIORITY = (
 
 # Map the winning tag to a human-readable group label for the breakdown.
 _GROUP_TAG_LABELS = {
+    "pid": "pid",
     "engineering": "engineering",
     "premium": "premium",
     "corner": "corner_ops",
@@ -6352,6 +6354,113 @@ async def solid_boolean(
     """
     _require_3d()
     return await _backend(ctx).solid_boolean(target_handle, tool_handle, operation)
+
+
+# ---------------------------------------------------------------------------
+# ── SECTION 17: P&ID (2 tools) ──────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+
+
+@cad_tool(
+    summary="List the P&ID symbol catalogue: families, variants, ports, parameters.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "P&ID: Symbol Catalogue", "readOnlyHint": True},
+    tags={"pid", "query"},
+)
+async def pid_symbol_list(
+    family: Annotated[
+        str | None,
+        "valve | rotating | vessel | heat | misc | instrument | connector | marker; omit for all",
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """The symbols `pid_symbol_insert` can place, with their ports and variant options.
+
+    Authored from ISO 10628-2 (equipment, valves) and ISA-5.1 (instrumentation);
+    each row's `source` names the figure. Symbol-local sizes are millimetres at
+    A3/A1 paper scale (bubble Ø10, valve 8×4); `scale` at insertion rescales.
+    """
+    from engineering.pid.symbols import CATALOG_VERSION, list_symbols
+
+    return {"catalog_version": CATALOG_VERSION, "symbols": list_symbols(family)}
+
+
+@cad_tool(
+    summary=(
+        "Place a P&ID symbol (valve, pump, vessel, instrument bubble, connector) "
+        "as a tagged block with ports."
+    ),
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "P&ID: Insert Symbol", "readOnlyHint": False},
+    tags={"pid", "create"},
+)
+async def pid_symbol_insert(
+    symbol: Annotated[
+        str,
+        "Catalogue symbol name, e.g. gate, centrifugal_pump, vertical_vessel, instrument, offpage",
+    ],
+    x: Annotated[float, "Insertion X (WCS)"],
+    y: Annotated[float, "Insertion Y (WCS)"],
+    rotation: Annotated[float, "Rotation in degrees; 0 = flow left to right"] = 0.0,
+    scale: Annotated[float, Field(default=1.0, gt=0, description="Uniform scale")] = 1.0,
+    tag: Annotated[
+        str | None,
+        "Tag: equipment P-101, valve HV-101, instrument FIC-101 (split into FUNC/LOOP)",
+    ] = None,
+    desc: Annotated[str | None, "Description attribute"] = None,
+    actuator: Annotated[
+        str | None, "Valves: none | diaphragm | piston | motor | solenoid | hand"
+    ] = None,
+    fail: Annotated[str | None, "Actuated valves: FO | FC | FL"] = None,
+    type: Annotated[str | None, "Instruments: discrete | dcs | computer | plc"] = None,
+    location: Annotated[
+        str | None,
+        "Instruments: field | primary | auxiliary | primary_rear | auxiliary_rear",
+    ] = None,
+    params: Annotated[
+        dict | None,
+        "Parametric vessels: {width, height, nozzles: [{name, side, fraction}], roof, trays, jacketed}",
+    ] = None,
+    shape: Annotated[str | None, "Reducer: concentric | eccentric"] = None,
+    direction: Annotated[str | None, "Off-page connector: in | out"] = None,
+    link: Annotated[str | None, "Off-page connector link id shared by both ends"] = None,
+    layer: Annotated[str | None, "Override the family layer"] = None,
+    ctx: Context = None,
+) -> dict:
+    """Insert a catalogue symbol as a real block with TAG attributes and named ports.
+
+    Defines the block on first use (`defined`), creates a missing family layer
+    from the P&ID layer set (`layers_created`), writes an ACADMCP_PID payload
+    so readers without the catalogue still see the ports, and returns every
+    port in WCS — connect them with `pid_line_draw`. An invalid ISA-5.1 tag is
+    written and reported in `tag_warnings`; `drawing_critique` flags it.
+    """
+    from engineering.pid.insert import place_symbol
+
+    await ctx.info(f"P&ID symbol {symbol} at ({x}, {y})")
+    return await place_symbol(
+        _backend(ctx),
+        symbol,
+        x,
+        y,
+        rotation,
+        scale,
+        tag,
+        desc,
+        fail,
+        link,
+        layer,
+        actuator=actuator,
+        type=type,
+        location=location,
+        params=params,
+        shape=shape,
+        direction=direction,
+    )
 
 
 # ---------------------------------------------------------------------------

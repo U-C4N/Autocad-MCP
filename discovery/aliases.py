@@ -60,9 +60,9 @@ class ToolAliases:
 #       commands in AutoCAD itself; this server splits each into discrete tools.
 #   SETVAR -- one command both reads and writes a system variable; the server
 #       splits read and write.
-#   ERASE, INSERT -- the server genuinely exposes one operation through two
-#       tools (single vs. batch delete; block insert vs. block-reference
-#       creation), so both are correct destinations.
+#   ERASE, INSERT -- the server genuinely exposes one operation through more
+#       than one tool (single vs. batch delete; block insert vs. block-reference
+#       creation vs. the P&ID catalogue insert), so each is a correct destination.
 #   QSELECT -- AutoCAD's Quick Select dialog is both "filter by properties"
 #       (selection_filter) and "find things like this one"
 #       (entity_select_smart); a drafter typing it could mean either.
@@ -1343,6 +1343,29 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
     "view_zoom_window": ToolAliases(
         acad=("ZOOM",),
         synonyms=("zoom into a region", "close up of an area", "magnify a rectangle"),
+    ),
+    # ── P&ID ────────────────────────────────────────────────────────────────
+    "pid_symbol_list": ToolAliases(
+        acad=(),
+        synonyms=(
+            "p&id symbols",
+            "pid symbol catalogue",
+            "which valves can i draw",
+            "instrument bubble types",
+        ),
+    ),
+    "pid_symbol_insert": ToolAliases(
+        acad=("INSERT",),
+        synonyms=(
+            "p&id symbol",
+            "insert a valve",
+            "place a pump",
+            "draw a vessel",
+            "instrument bubble",
+            "control valve",
+            "off-page connector",
+            "process equipment symbol",
+        ),
     ),
 }
 

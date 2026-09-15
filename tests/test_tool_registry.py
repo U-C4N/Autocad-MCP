@@ -495,7 +495,7 @@ async def test_tool_groups_is_byte_identical_to_the_source_declared_grouping():
 
 
 async def test_tool_group_sizes_are_unchanged():
-    """Frozen snapshot of the surface (157 tools, 19 groups).
+    """Frozen snapshot of the surface (159 tools, 20 groups).
 
     Taken before @cad_tool landed at 131 tools; `batch` moved 2 -> 3 when
     v1.5.0's `cad_batch` joined `entity_batch_create`/`entity_batch_modify`, and
@@ -507,8 +507,12 @@ async def test_tool_group_sizes_are_unchanged():
     both engines) joined SECTION 7. `entity_query` moved 8 -> 9 and
     `entity_modification` 15 -> 16 when v1.6's `entity_get_xdata` /
     `entity_set_xdata` joined SECTION 5 (the getter is tagged `query`, the
-    setter `modify`, so the pair splits across two groups). Every other number
-    here has been unchanged since the snapshot was taken.
+    setter `modify`, so the pair splits across two groups). `pid` appeared
+    (0 -> 2) when v1.6's SECTION 17 opened with `pid_symbol_list` /
+    `pid_symbol_insert`; the `pid` tag is ranked first in
+    `_GROUP_TAG_PRIORITY` so those tools file under `pid` rather than under
+    their secondary `query` / `create` tags. Every other number here has been
+    unchanged since the snapshot was taken.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
@@ -524,6 +528,7 @@ async def test_tool_group_sizes_are_unchanged():
         "entity_query": 9,
         "layers": 14,
         "layouts": 12,
+        "pid": 2,
         "premium": 12,
         "solids": 5,
         "system": 7,
@@ -532,4 +537,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 157
+    assert sum(sizes.values()) == 159

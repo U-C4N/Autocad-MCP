@@ -36,6 +36,7 @@ PID_LAYERS: list[tuple[str, int, str, float, str]] = [
     ("INSTRUMENT-SYMBOL", 4, "Continuous", 0.35, "instrument bubbles / FCFs"),
     ("INSTRUMENT-LINE-SIGNAL", 4, "DASHED", 0.18, "pneumatic / electrical signal"),
     ("INSTRUMENT-TAG-TEXT", 7, "Continuous", 0.25, "tag labels"),
+    ("PROCESS-LINE-TEXT", 7, "Continuous", 0.25, "line numbers"),
     ("ELECTRICAL-LINE", 6, "DASHDOT", 0.18, "electrical line"),
     ("UTILITY-LINE", 5, "PHANTOM", 0.25, "utility (steam, water, air)"),
     ("INSULATION-HATCH", 8, "Continuous", 0.13, "insulation hatch"),
