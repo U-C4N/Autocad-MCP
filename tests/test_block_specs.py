@@ -1,0 +1,212 @@
+# tests/test_block_specs.py
+"""block_define request validation: refuse the whole request before any write."""
+
+from __future__ import annotations
+
+import pytest
+
+from backends.block_specs import (
+    ALLOWED_TYPES,
+    solid_vertices,
+    validate_attdef_specs,
+    validate_entity_specs,
+)
+
+
+def test_allowed_types_are_the_documented_six():
+    assert ALLOWED_TYPES == ("line", "circle", "arc", "polyline", "text", "solid")
+
+
+def test_empty_entities_is_refused():
+    with pytest.raises(ValueError, match="empty"):
+        validate_entity_specs([])
+
+
+def test_each_type_normalises_to_floats_and_layer_zero():
+    out = validate_entity_specs(
+        [
+            {"type": "line", "x1": 0, "y1": 0, "x2": 1, "y2": 0},
+            {"type": "circle", "cx": 0, "cy": 0, "r": 2},
+            {"type": "arc", "cx": 0, "cy": 0, "r": 2, "start_deg": 0, "end_deg": 180},
+            {"type": "polyline", "points": [[0, 0], [1, 0], [1, 1]], "closed": True},
+            {"type": "text", "text": "M", "x": 0, "y": 0, "height": 2},
+            {"type": "solid", "points": [[0, 0], [1, 0], [0, 1]]},
+        ]
+    )
+    assert [e["type"] for e in out] == list(ALLOWED_TYPES)
+    assert out[0] == {"type": "line", "layer": "0", "x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 0.0}
+    assert out[3]["points"] == [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]
+    assert out[3]["closed"] is True and out[3]["bulges"] is None
+    assert out[4]["align"] == "left" and out[4]["rotation_deg"] == 0.0
+    assert out[5]["points"] == [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)]
+
+
+@pytest.mark.parametrize(
+    "bad, fragment",
+    [
+        ({"type": "square"}, "type"),
+        ({"type": "line", "x1": 0, "y1": 0, "x2": 1}, "y2"),
+        ({"type": "circle", "cx": 0, "cy": 0, "r": 0}, "r"),
+        ({"type": "circle", "cx": 0, "cy": 0, "r": float("nan")}, "finite"),
+        ({"type": "text", "text": "M", "x": 0, "y": 0, "height": -1}, "height"),
+        ({"type": "text", "text": 5, "x": 0, "y": 0, "height": 1}, "text"),
+        ({"type": "text", "text": "A\nB", "x": 0, "y": 0, "height": 1}, "'text'"),
+        ({"type": "text", "text": "A\rB", "x": 0, "y": 0, "height": 1}, "'text'"),
+        ({"type": "text", "text": "A\x01B", "x": 0, "y": 0, "height": 1}, "'text'"),
+        ({"type": "text", "text": "10^", "x": 0, "y": 0, "height": 1}, "'text'"),
+        ({"type": "text", "text": "M", "x": 0, "y": 0, "height": 1, "align": "top"}, "align"),
+        ({"type": "polyline", "points": [[0, 0]]}, "points"),
+        ({"type": "polyline", "points": [[0, 0], [1]]}, "points[1]"),
+        ({"type": "polyline", "points": [[0, 0], [1, 1]], "bulges": [0.5]}, "bulges"),
+        ({"type": "polyline", "points": [[0, 0], [1, 1]], "closed": "yes"}, "closed"),
+        ({"type": "solid", "points": [[0, 0], [1, 0]]}, "points"),
+        ({"type": "solid", "points": [[0, 0], [1, 0], [1, 1], [0, 1], [2, 2]]}, "at most 4"),
+        ({"type": "line", "x1": 0, "y1": 0, "x2": 1, "y2": 0, "layer": ""}, "layer"),
+        ({"type": "line", "x1": 0, "y1": 0, "x2": 1, "y2": 0, "layer": "BAD<LAYER"}, "layer"),
+        ({"type": "line", "x1": 0, "y1": 0, "x2": 1, "y2": 0, "layer": "A;B"}, "layer"),
+        ({"type": "line", "x1": 0, "y1": 0, "x2": 1, "y2": 0, "layer": "A\x01B"}, "layer"),
+        ({"type": "line", "x1": True, "y1": 0, "x2": 1, "y2": 0}, "x1"),
+    ],
+)
+def test_bad_entity_names_the_index_and_key(bad, fragment):
+    good = {"type": "line", "x1": 0, "y1": 0, "x2": 1, "y2": 0}
+    with pytest.raises(TypeError, match=r"entities\[1\]") as exc:
+        validate_entity_specs([good, bad])
+    assert fragment in str(exc.value)
+
+
+def test_illegal_layer_name_is_refused_before_any_write():
+    """ezdxf would raise DXFValueError on this layer mid-loop, after earlier
+    primitives (and, with overwrite, the old definition) were already written.
+    The gate has to be ours, typed, and indexed."""
+    with pytest.raises(TypeError, match=r"entities\[0\].*'layer'") as exc:
+        validate_entity_specs(
+            [{"type": "line", "x1": 0, "y1": 0, "x2": 1, "y2": 0, "layer": "BAD<LAYER"}]
+        )
+    assert "'<'" in str(exc.value)
+    # Legal names, including the ones with spaces and dots, still pass.
+    out = validate_entity_specs(
+        [{"type": "line", "x1": 0, "y1": 0, "x2": 1, "y2": 0, "layer": " PID.Valves-1 "}]
+    )
+    assert out[0]["layer"] == "PID.Valves-1"
+
+
+def test_attdefs_normalise_and_default():
+    out = validate_attdef_specs([{"tag": "TAG", "x": 0, "y": 3, "height": 2.5}])
+    assert out == [
+        {
+            "tag": "TAG",
+            "prompt": "TAG",
+            "default": "",
+            "x": 0.0,
+            "y": 3.0,
+            "height": 2.5,
+            "rotation_deg": 0.0,
+            "align": "left",
+            "invisible": False,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "bad, fragment",
+    [
+        ({"tag": "tag", "x": 0, "y": 0, "height": 1}, "tag"),
+        ({"tag": "T-1", "x": 0, "y": 0, "height": 1}, "tag"),
+        ({"tag": "TAG\n", "x": 0, "y": 0, "height": 1}, "tag"),
+        ({"tag": "TAG", "x": 0, "y": 0, "height": 0}, "height"),
+        ({"tag": "TAG", "x": 0, "y": 0, "height": 1, "invisible": 1}, "invisible"),
+        ({"tag": "TAG", "x": 0, "y": 0, "height": 1, "default": 3}, "default"),
+        ({"tag": "TAG", "x": 0, "y": 0, "height": 1, "prompt": 3}, "prompt"),
+        ({"tag": "TAG", "x": 0, "y": 0, "height": 1, "prompt": "P\nQ"}, "'prompt'"),
+        ({"tag": "TAG", "x": 0, "y": 0, "height": 1, "default": "L-1\r\n"}, "'default'"),
+        ({"tag": "TAG", "x": 0, "y": 0, "height": 1, "default": "L-1^"}, "'default'"),
+        ({"tag": "TAG", "x": 0, "y": 0, "height": 1, "default": "L\x1f1"}, "'default'"),
+    ],
+)
+def test_bad_attdef_names_the_index_and_key(bad, fragment):
+    with pytest.raises(TypeError, match=r"attdefs\[0\]") as exc:
+        validate_attdef_specs([bad])
+    assert fragment in str(exc.value)
+
+
+def test_duplicate_attdef_tags_are_refused():
+    with pytest.raises(TypeError, match="duplicate"):
+        validate_attdef_specs(
+            [
+                {"tag": "TAG", "x": 0, "y": 0, "height": 1},
+                {"tag": "TAG", "x": 0, "y": 5, "height": 1},
+            ]
+        )
+
+
+def test_trailing_newline_cannot_smuggle_a_duplicate_tag():
+    """`$` matches before a trailing newline; ezdxf strips it on write, so
+    'TAG\n' + 'TAG' would land as two ATTDEFs with the same tag and the
+    attribute readers (dict keyed by tag) would silently drop one."""
+    with pytest.raises(TypeError, match=r"attdefs\[0\].*'tag'"):
+        validate_attdef_specs(
+            [
+                {"tag": "TAG\n", "x": 0, "y": 0, "height": 1},
+                {"tag": "TAG", "x": 0, "y": 0, "height": 1},
+            ]
+        )
+
+
+@pytest.mark.parametrize("value", ["A\nB", "A\rB", "10^", "A\tB", "L-1\r\n"])
+def test_one_line_strings_are_refused_before_ezdxf_would_rewrite_them(value):
+    """ezdxf's `fix_one_line_text` strips line breaks and a trailing caret on
+    `add_text` / `add_attdef` (DEBUG log only), so 'A\\nB' lands as 'AB' and the
+    ATTRIB value the P&ID reader gets back differs from the declared one; COM
+    writes the raw string, so the engines would diverge too. The gate is ours,
+    typed, and indexed — the same hole the tag check closed, on its siblings."""
+    from ezdxf.lldxf.validator import is_valid_one_line_text
+
+    # Either ezdxf's own rule rejects it or it is a C0 control DXF text cannot carry.
+    assert not is_valid_one_line_text(value) or any(ord(c) < 32 for c in value)
+    with pytest.raises(TypeError, match=r"entities\[0\]: 'text'"):
+        validate_entity_specs([{"type": "text", "text": value, "x": 0, "y": 0, "height": 2}])
+    with pytest.raises(TypeError, match=r"attdefs\[0\]: 'prompt'"):
+        validate_attdef_specs([{"tag": "TAG", "x": 0, "y": 0, "height": 2, "prompt": value}])
+    with pytest.raises(TypeError, match=r"attdefs\[0\]: 'default'"):
+        validate_attdef_specs([{"tag": "TAG", "x": 0, "y": 0, "height": 2, "default": value}])
+
+
+@pytest.mark.parametrize("value", ["10^2", "Ø20 H7", "%%C20", "L-101", ""])
+def test_one_line_strings_that_ezdxf_keeps_verbatim_pass(value):
+    """A caret inside the text (`10^2`), unicode and `%%C` survive both engines."""
+    from ezdxf.lldxf.validator import is_valid_one_line_text
+
+    assert is_valid_one_line_text(value)
+    out = validate_entity_specs([{"type": "text", "text": value, "x": 0, "y": 0, "height": 2}])
+    assert out[0]["text"] == value
+    att = validate_attdef_specs(
+        [{"tag": "TAG", "x": 0, "y": 0, "height": 2, "prompt": value, "default": value}]
+    )
+    assert att[0]["prompt"] == value and att[0]["default"] == value
+
+
+def test_one_line_gate_writes_through_ezdxf_unchanged():
+    """Round-trip proof: what the gate accepts, ezdxf stores verbatim (no
+    DXFAttr fixer rewrite), so declared == read back."""
+    import ezdxf
+
+    doc = ezdxf.new()
+    blk = doc.blocks.new("T")
+    [spec] = validate_entity_specs(
+        [{"type": "text", "text": "10^2 Ø", "x": 0, "y": 0, "height": 2}]
+    )
+    [att] = validate_attdef_specs(
+        [{"tag": "TAG", "x": 0, "y": 0, "height": 2, "prompt": "P Q", "default": "L-101"}]
+    )
+    t = blk.add_text(spec["text"])
+    a = blk.add_attdef(att["tag"], text=att["default"], dxfattribs={"prompt": att["prompt"]})
+    assert t.dxf.text == "10^2 Ø"
+    assert a.dxf.text == "L-101" and a.dxf.prompt == "P Q"
+
+
+def test_solid_vertices_use_dxf_bowtie_order():
+    quad = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+    assert solid_vertices(quad) == [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
+    tri = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)]
+    assert solid_vertices(tri) == tri
