@@ -4453,6 +4453,13 @@ class EzdxfBackend(AutoCADBackend):
             }
             if layer:
                 attribs["layer"] = layer
+            # `add_blockref` never checks the name, and `add_auto_attribs`
+            # silently skips autofill when `Insert.block()` resolves to None,
+            # so a typo'd name used to yield a dangling INSERT that dropped its
+            # attribute values and that `doc.audit()` later deletes. Refuse
+            # before writing, as COM's `InsertBlock` does for an unknown name.
+            if name not in self._doc.blocks:
+                raise ValueError(f"block {name!r} is not defined")
             ref = msp.add_blockref(name, (float(x), float(y)), dxfattribs=attribs)
             if attributes:
                 # `add_auto_blockref` wraps the INSERT in an anonymous *U block,

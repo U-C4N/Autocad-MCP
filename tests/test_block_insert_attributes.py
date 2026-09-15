@@ -41,3 +41,15 @@ async def test_insert_without_attributes_is_unchanged(backend):
     info = await backend.entity_get(ref.handle)
     assert info.properties["block_name"] == "TB"
     assert await backend.block_get_attributes(ref.handle) == {}
+
+
+@pytest.mark.parametrize("attributes", [{"TAG": "P-101"}, None], ids=["with-attrs", "no-attrs"])
+async def test_insert_of_undefined_block_is_refused_before_writing(backend, attributes):
+    # `add_blockref` never checks the name and `add_auto_attribs` skips autofill
+    # when the definition is missing, so a typo'd name used to return a handle
+    # whose attribute values were dropped and which `doc.audit()` later deletes.
+    before = len(list(backend._msp()))
+    with pytest.raises(ValueError, match="'NO_SUCH_BLOCK' is not defined"):
+        await backend.block_insert("NO_SUCH_BLOCK", 5, 5, attributes=attributes)
+    assert len(list(backend._msp())) == before, "a refused insert must not write"
+    assert [b.name for b in backend._doc.blocks if b.name == "NO_SUCH_BLOCK"] == []
