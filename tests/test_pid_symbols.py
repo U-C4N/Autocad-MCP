@@ -327,3 +327,24 @@ def test_hand_actuator_has_no_fail_attribute_or_signal_port():
 def test_no_duplicate_primitives(spec):
     seen = [json.dumps(p, sort_keys=True) for p in spec.primitives]
     assert len(seen) == len(set(seen)), "duplicate overlapping geometry inside the block"
+
+
+# ── rotating equipment, heat transfer, inline miscellany (Task 9) ────────────
+
+from engineering.pid.symbols_equipment import HEAT, MISC, ROTATING  # noqa: E402
+
+
+def test_equipment_families_register():
+    assert len(ROTATING) == 6 and len(HEAT) == 4 and len(MISC) == 7
+    pump = resolve("centrifugal_pump")
+    assert pump.family == "rotating" and pump.layer_class == "PROCESS-EQUIPMENT"
+    assert {p.name: p.direction_deg for p in pump.ports} == {"suction": 180.0, "discharge": 90.0}
+    hx = resolve("shell_tube_hx")
+    assert {p.name for p in hx.ports} == {"shell_in", "shell_out", "tube_in", "tube_out"}
+    orifice = resolve("orifice_plate")
+    assert next(p for p in orifice.ports if p.name == "signal").kind == "signal"
+    ecc = resolve("reducer", shape="eccentric")
+    assert ecc.name == "PID_MISC_REDUCER_ECCENTRIC"
+    assert next(p for p in ecc.ports if p.name == "out").y == pytest.approx(-1.0)
+    assert resolve("reducer").name == "PID_MISC_REDUCER_CONCENTRIC"
+    assert resolve("agitator").ports[0] == Port("shaft", 0.0, 0.0, 270.0, "process")
