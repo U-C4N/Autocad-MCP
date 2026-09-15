@@ -129,3 +129,50 @@ def test_line_number_format_drops_empty_fields():
     assert format_line_number("L-{seq}", seq=7) == "L-7"
     with pytest.raises(ValueError, match="unknown"):
         format_line_number("{bogus}", seq=1)
+
+
+def test_line_number_format_fills_specs_and_refuses_what_it_cannot_fill():
+    # A format spec is honoured, and literal text around a field survives with it.
+    assert format_line_number("P-{seq:04d}", seq=7) == "P-0007"
+    assert format_line_number('{size}"-{service}-{seq}', size=4, service="P", seq=1) == '4"-P-1'
+    # A token whose field is empty drops out with its literal decoration.
+    assert format_line_number('{size}"-{service}-{seq}', service="P", seq=1) == "P-1"
+    # Nothing with a brace in it is ever copied verbatim into the number.
+    with pytest.raises(ValueError, match="unknown"):
+        format_line_number("{bogus}x-{seq}", seq=7)
+    with pytest.raises(ValueError, match="one field"):
+        format_line_number("{area}{unit}-{seq}", area="1", unit="2", seq=7)
+    with pytest.raises(ValueError, match="conversion"):
+        format_line_number("{seq!r}", seq=7)
+    with pytest.raises(ValueError, match="positional"):
+        format_line_number("{}-{seq}", seq=7)
+    with pytest.raises(ValueError, match=r"'\{seq'"):
+        format_line_number("{seq", seq=7)
+    with pytest.raises(ValueError, match=r"'\{seq:04d\}'"):
+        format_line_number("{seq:04d}", seq="abc")
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf")])
+def test_route_refuses_non_finite_coordinates(bad):
+    with pytest.raises(ValueError, match=r"end\.x"):
+        route((0, 0), 0.0, (bad, 0), 180.0)
+    with pytest.raises(ValueError, match=r"end\.x"):
+        route((0, 0), 0.0, (bad, 0), 180.0, mode="direct")
+    with pytest.raises(ValueError, match=r"start\.y"):
+        route((0, bad), 0.0, (50, 0), 180.0)
+    with pytest.raises(ValueError, match=r"waypoints\[1\]\.x"):
+        route((0, 0), 0.0, (10, 7), 90.0, mode=[(10, 0), (bad, 0)])
+    with pytest.raises(ValueError, match="stub"):
+        route((0, 0), 0.0, (50, 0), 180.0, stub=bad)
+
+
+def test_route_refuses_non_axis_port_directions_with_a_value_error():
+    with pytest.raises(ValueError, match=r"start_dir 45\.0 is not an axis direction"):
+        route((0, 0), 45.0, (50, 50), 225.0)
+    with pytest.raises(ValueError, match=r"end_dir 90\.5 is not an axis direction"):
+        route((0, 0), 0.0, (50, 30), 90.5)
+    with pytest.raises(ValueError, match="start_dir nan"):
+        route((0, 0), float("nan"), (50, 0), 180.0)
+    # Equivalent angles and engine float drift still resolve to the axis.
+    assert route((0, 0), -360.0, (50, 0), 540.0) == [(0.0, 0.0), (50.0, 0.0)]
+    assert route((0, 0), 1e-9, (50, 0), 180.0 - 1e-9) == [(0.0, 0.0), (50.0, 0.0)]

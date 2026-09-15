@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import math
-import re
+import string
 from dataclasses import dataclass
 
 
@@ -45,6 +45,7 @@ PID_LINE_LAYERS = frozenset(LAYER_TO_CLASS)
 AXIS = {0.0: (1.0, 0.0), 90.0: (0.0, 1.0), 180.0: (-1.0, 0.0), 270.0: (0.0, -1.0)}
 DEFAULT_NUMBER_FORMAT = "{size}-{service}-{seq}-{spec}-{insulation}"
 _EPS = 1e-9
+_DIR_TOL = 1e-6  # degrees of drift still read as an axis
 
 Point = tuple[float, float]
 
@@ -55,8 +56,33 @@ def snap_axis(dx: float, dy: float) -> float:
     return 90.0 if dy >= 0 else 270.0
 
 
+def axis_direction(name: str, direction_deg) -> float:
+    """Normalise ``direction_deg`` to one of the four AXIS keys, or raise ``ValueError``.
+
+    Tolerates the float drift an engine round trip can add (1e-6 deg); anything
+    else — 45, 90.5, nan — is a genuinely non-orthogonal port and is refused."""
+    value = float(direction_deg)
+    if math.isfinite(value):
+        wrapped = value % 360.0
+        for key in AXIS:
+            if abs(wrapped - key) < _DIR_TOL or abs(wrapped - key - 360.0) < _DIR_TOL:
+                return key
+    raise ValueError(
+        f"{name} {value} is not an axis direction (0/90/180/270); "
+        "rotate the symbol to a multiple of 90 or pass waypoints"
+    )
+
+
 def _unit(direction_deg: float) -> Point:
-    return AXIS[float(direction_deg) % 360.0]
+    return AXIS[axis_direction("direction", direction_deg)]
+
+
+def _finite_point(name: str, p) -> Point:
+    q = (float(p[0]), float(p[1]))
+    for axis, value in zip("xy", q, strict=True):
+        if not math.isfinite(value):
+            raise ValueError(f"{name}.{axis} is {value}; coordinates must be finite")
+    return q
 
 
 def _dist(a: Point, b: Point) -> float:
@@ -122,10 +148,10 @@ def route(start, start_dir, end, end_dir, stub: float = 5.0, mode="auto") -> lis
     """Orthogonal path from ``start`` (leaving along ``start_dir``) to ``end``
     (arriving against ``end_dir``). ``None`` directions are radial: the axis
     towards the other end. Raises ``ValueError`` when no candidate honours the stub."""
-    s: Point = (float(start[0]), float(start[1]))
-    e: Point = (float(end[0]), float(end[1]))
+    s = _finite_point("start", start)
+    e = _finite_point("end", end)
     if isinstance(mode, (list, tuple)):
-        path = [s] + [(float(p[0]), float(p[1])) for p in mode] + [e]
+        path = [s] + [_finite_point(f"waypoints[{i}]", p) for i, p in enumerate(mode)] + [e]
         for a, b in zip(path, path[1:], strict=False):
             if _dist(a, b) < 0.01:
                 raise ValueError("waypoints repeat a point (segment shorter than 0.01 mm)")
@@ -136,10 +162,19 @@ def route(start, start_dir, end, end_dir, stub: float = 5.0, mode="auto") -> lis
         return [s, e]
     if mode != "auto":
         raise ValueError("route must be 'auto', 'direct' or a list of waypoints")
-    if stub < 0:
-        raise ValueError("stub must be >= 0")
-    ds = snap_axis(e[0] - s[0], e[1] - s[1]) if start_dir is None else float(start_dir) % 360.0
-    de = snap_axis(s[0] - e[0], s[1] - e[1]) if end_dir is None else float(end_dir) % 360.0
+    stub = float(stub)
+    if not math.isfinite(stub) or stub < 0:
+        raise ValueError(f"stub must be a finite length >= 0, not {stub}")
+    ds = (
+        snap_axis(e[0] - s[0], e[1] - s[1])
+        if start_dir is None
+        else axis_direction("start_dir", start_dir)
+    )
+    de = (
+        snap_axis(s[0] - e[0], s[1] - e[1])
+        if end_dir is None
+        else axis_direction("end_dir", end_dir)
+    )
     us, ue = _unit(ds), _unit(de)
     s1 = (s[0] + us[0] * stub, s[1] + us[1] * stub)
     e1 = (e[0] + ue[0] * stub, e[1] + ue[1] * stub)
@@ -211,25 +246,63 @@ def count_crossings(vertices, others) -> int:
     return count
 
 
-_FIELD_RE = re.compile(r"^\{(\w+)\}$")
 _KNOWN_FIELDS = {"size", "service", "seq", "spec", "insulation", "area", "unit"}
 
 
-def format_line_number(fmt: str, **fields) -> str:
-    """Fill ``fmt`` (``-``-separated tokens) and drop the empty fields with their separators."""
-    kept: list[str] = []
-    for token in fmt.split("-"):
-        match = _FIELD_RE.match(token)
-        if not match:
-            kept.append(token)
-            continue
-        name = match.group(1)
+def _parse_token(token: str) -> list[tuple[str, str | None, str | None, str | None]]:
+    """``string.Formatter`` parse of one ``-``-separated token, with every malformed
+    or unsupported placeholder refused by name — nothing braced is ever copied through."""
+    try:
+        parts = list(string.Formatter().parse(token))
+    except ValueError as exc:
+        raise ValueError(f"line-number format token {token!r} is malformed: {exc}") from exc
+    fields = [part for part in parts if part[1] is not None]
+    if len(fields) > 1:
+        raise ValueError(
+            f"line-number format token {token!r} holds {len(fields)} fields; "
+            "a token may hold at most one field"
+        )
+    for _literal, name, _spec, conversion in fields:
+        if name == "" or name.isdigit():
+            raise ValueError(
+                f"line-number format token {token!r} uses a positional field; "
+                f"name one of: {', '.join(sorted(_KNOWN_FIELDS))}"
+            )
         if name not in _KNOWN_FIELDS:
             raise ValueError(
                 f"unknown line-number field {{{name}}}; known: {', '.join(sorted(_KNOWN_FIELDS))}"
             )
+        if conversion is not None:
+            raise ValueError(
+                f"line-number format token {token!r} uses a conversion (!{conversion}); "
+                "only a format spec such as {seq:04d} is supported"
+            )
+    return parts
+
+
+def _render_token(token: str, fields: dict) -> str | None:
+    """The token with its field filled, or ``None`` when that field is empty."""
+    out: list[str] = []
+    for literal, name, spec, _conversion in _parse_token(token):
+        out.append(literal)
+        if name is None:
+            continue
         value = fields.get(name)
         if value is None or value == "":
-            continue
-        kept.append(str(value))
-    return "-".join(kept)
+            return None
+        try:
+            out.append(format(value, spec or ""))
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                f"line-number format token {token!r} cannot format {name}={value!r}: {exc}"
+            ) from exc
+    return "".join(out)
+
+
+def format_line_number(fmt: str, **fields) -> str:
+    """Fill ``fmt`` (``-``-separated tokens) and drop the empty fields with their separators.
+
+    A token is literal text, or one ``{field}`` (optionally ``{field:spec}``) with
+    literal text around it; a token whose field is empty drops out whole."""
+    rendered = (_render_token(token, fields) for token in fmt.split("-"))
+    return "-".join(text for text in rendered if text is not None)
