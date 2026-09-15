@@ -3106,7 +3106,13 @@ class ComBackend(AutoCADBackend):
         return await self._run(_sync)
 
     async def entity_set_xdata(self, handle, app_name, values) -> dict:
-        from backends.xdata_specs import encode_values, validate_app_name
+        from backends.xdata_specs import (
+            app_size,
+            check_entity_budget,
+            encode_values,
+            split_tags_by_app,
+            validate_app_name,
+        )
 
         # Validate and type every value before any ActiveX call: a bad
         # values[i] raises here and nothing is written.
@@ -3116,6 +3122,14 @@ class ComBackend(AutoCADBackend):
         def _sync():
             doc = _acad_doc()
             ent = doc.HandleToObject(str(handle).strip().upper())
+            if tags:
+                # The 16 KB limit is per entity across every application, the
+                # same gate the headless engine runs: read what is already
+                # there and refuse before the APPID is registered or SetXData
+                # gets the chance to fail half-way with AutoCAD's own error.
+                codes, values_ = ent.GetXData("")
+                existing = split_tags_by_app(list(codes or []), list(values_ or []))
+                check_entity_budget(app, tags, existing)
             try:
                 doc.RegisteredApplications.Add(app)
             except Exception as exc:  # already registered
@@ -3133,7 +3147,7 @@ class ComBackend(AutoCADBackend):
                 "handle": handle,
                 "app_name": app,
                 "value_count": len(tags),
-                "bytes": sum(len(str(v)) for _, v in tags),
+                "bytes": app_size(app, tags) if tags else 0,
                 "removed": not tags,
                 "backend": "com",
             }

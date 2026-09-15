@@ -4540,7 +4540,12 @@ class EzdxfBackend(AutoCADBackend):
         return await self._async(_sync)
 
     async def entity_set_xdata(self, handle, app_name, values) -> dict:
-        from backends.xdata_specs import encode_values, validate_app_name
+        from backends.xdata_specs import (
+            app_size,
+            check_entity_budget,
+            encode_values,
+            validate_app_name,
+        )
 
         # Validate and type every value before touching the document: a bad
         # values[i] raises here and nothing is written.
@@ -4562,6 +4567,16 @@ class EzdxfBackend(AutoCADBackend):
                     "removed": True,
                     "backend": "ezdxf",
                 }
+            # The 16 KB limit is per entity across every application (ACAD's
+            # own DSTYLE overrides included), so the gate sees what is already
+            # there. Raises before the APPID is registered or anything is set.
+            existing = {}
+            if ent.xdata is not None:
+                existing = {
+                    other: [(tag.code, tag.value) for tag in other_tags]
+                    for other, other_tags in ent.xdata.data.items()
+                }
+            check_entity_budget(app, tags, existing)
             if app not in doc.appids:
                 doc.appids.add(app)
             ent.set_xdata(app, tags)
@@ -4571,7 +4586,7 @@ class EzdxfBackend(AutoCADBackend):
                 "handle": handle,
                 "app_name": app,
                 "value_count": len(tags),
-                "bytes": sum(len(str(v)) for _, v in tags),
+                "bytes": app_size(app, tags),
                 "removed": False,
                 "backend": "ezdxf",
             }
