@@ -118,6 +118,23 @@ async def test_mirrored_polyline_points_are_wcs(backend):
     _assert_points(info.properties["points"], [[-10, 0], [-20, 0], [-20, 10]])
 
 
+async def test_mirrored_polyline_bulges_are_wcs(backend):
+    """A reflection reverses an arc's sense, so the bulge sign flips with the
+    points — otherwise ``points`` and ``bulges`` describe two different arcs
+    and, ``length`` being frame-invariant, nothing in the payload says so."""
+    msp = backend._doc.modelspace()
+    poly = msp.add_lwpolyline([(10, 0, 1), (20, 0, 0), (20, 10, 0)], format="xyb")
+    mirrored = await backend.entity_mirror(poly.dxf.handle, *Y_AXIS)
+
+    info = await backend.entity_get(mirrored.handle)
+    _assert_points(info.properties["points"], [[-10, 0], [-20, 0], [-20, 10]])
+    # Bulge +1 bowed to -y from (10,0) to (20,0); mirrored across x=0 it runs
+    # (-10,0) to (-20,0) and still bows to -y, which in that direction is CW.
+    assert info.properties["bulges"] == pytest.approx([-1.0, 0.0, 0.0])
+    assert info.properties["bounding_box"]["min"][1] == pytest.approx(-5.0, abs=1e-9)
+    assert info.properties["length"] == pytest.approx(5 * 3.141592653589793 + 10, abs=1e-6)
+
+
 async def test_mirrored_text_insertion_is_wcs(backend):
     text = await backend.entity_create_text("PART A", 40, 15, 3.0)
     mirrored = await backend.entity_mirror(text.handle, *Y_AXIS)

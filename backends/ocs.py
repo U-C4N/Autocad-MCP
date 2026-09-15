@@ -98,3 +98,29 @@ def plane_normal(extrusion) -> list[float]:
     """The entity's plane normal, for reporting a frame that xy cannot express."""
     uz = OCS(Vec3(extrusion)).uz
     return [float(uz.x), float(uz.y), float(uz.z)]
+
+
+def wcs_bulge(extrusion, bulge) -> float:
+    """An LWPOLYLINE vertex bulge as the arc reads in WCS XY.
+
+    The bulge is ``tan(sweep/4)``, signed counter-clockwise *in the entity's
+    own frame*. A left-handed frame (``uz.z < 0`` — what a mirror produces) is
+    a reflection of WCS XY, and a reflection reverses every arc's sense: the
+    same stored ``+1`` that bowed to -y before ``entity_mirror`` bows to +y
+    after it, while ``points`` translated through :func:`to_wcs_2d` land where
+    the vertices really are. Handing the stored sign out next to translated
+    points describes the arc's mirror image, and nothing in the payload can
+    show it (``length`` is frame-invariant). Same rule as
+    :func:`wcs_arc_angles` reversing an ARC's endpoints.
+
+    The magnitude is left alone: it is exact for every flat frame, and in a
+    tilted plane the projected arc is no longer circular at all, which
+    ``plane_normal`` already reports.
+    """
+    value = float(bulge or 0.0)
+    if value == 0.0:
+        return 0.0
+    try:
+        return -value if OCS(Vec3(extrusion)).uz.z < 0 else value
+    except Exception:
+        return value  # an unreadable extrusion is not evidence of a reflected frame

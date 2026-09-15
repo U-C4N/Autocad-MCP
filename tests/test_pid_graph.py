@@ -258,6 +258,77 @@ def test_point_to_arc_distance_follows_the_bulge():
     assert _point_segment_distance((5, 0), a, b, 0.0) == pytest.approx(0.0)  # straight
 
 
+async def test_a_mirrored_arc_is_tested_on_the_side_the_drawing_holds(backend):
+    """The bulge is signed in the polyline's own frame, and ``entity_mirror``
+    leaves that frame a reflection (extrusion -Z). Handing the stored sign
+    out next to WCS ``points`` described the arc's mirror image: a line ending
+    on the true apex dangled and one ending on empty paper made a junction,
+    with ``length`` (frame-invariant) saying nothing about it."""
+    msp = backend._doc.modelspace()
+    pipe = msp.add_lwpolyline(
+        [(-20, 0, 0), (0, 0, 1), (10, 0, 0), (30, 0, 0)],
+        format="xyb",
+        dxfattribs={"layer": "PROCESS-PIPING-MAIN"},
+    )
+    # Mirror across the X axis: the arc that bowed to -y now bows to +y, which
+    # the engine's own bounding box confirms.
+    pipe = (await backend.entity_mirror(pipe.dxf.handle, 0, 0, 1, 0, delete_original=True)).handle
+    info = (await backend.entity_get(pipe)).properties
+    assert info["bounding_box"]["max"][1] == pytest.approx(5.0)
+    assert info["bounding_box"]["min"][1] == pytest.approx(0.0)
+    assert info["bulges"] == [0.0, -1.0, 0.0, 0.0]
+    on_arc = (
+        await backend.entity_create_line(5, 5, 5, 30, layer="PROCESS-PIPING-SECONDARY")
+    ).handle
+    on_paper = (
+        await backend.entity_create_line(5, -5, 5, -30, layer="PROCESS-PIPING-SECONDARY")
+    ).handle
+    graph = await build_graph(backend)
+    edges = {e["id"]: e for e in graph["edges"]}
+    assert edges[pipe]["length"] == pytest.approx(20 + 5 * math.pi + 20)
+    assert edges[on_arc]["from"] and "junction" in edges[on_arc]["from"]
+    assert edges[on_paper]["from"] is None
+    assert [j["id"] for j in graph["junctions"]] == [edges[on_arc]["from"]["junction"]]
+    junction = graph["junctions"][0]
+    assert (junction["x"], junction["y"]) == pytest.approx((5.0, 5.0))
+    assert set(junction["edges"]) == {pipe, on_arc}
+    assert {(d["edge"], d["end"]) for d in graph["dangling"]} >= {(on_paper, "from")}
+    assert (on_arc, "from") not in {(d["edge"], d["end"]) for d in graph["dangling"]}
+
+
+def test_com_polyline_bulges_follow_points_into_wcs():
+    """ActiveX ``GetBulge`` answers in the same OCS as ``Coordinates``. Once
+    the points are reflected into WCS the arc's sense reverses with them, so
+    the bulge sign flips — the same polyline as the test above, as AutoCAD
+    would hand it over after MIRROR."""
+    from types import SimpleNamespace
+
+    from backends.com_backend import _entity_info
+    from engineering.pid.graph import _point_segment_distance
+
+    ent = SimpleNamespace(
+        ObjectName="AcDbPolyline",
+        Coordinates=(20.0, 0.0, 0.0, 0.0, -10.0, 0.0, -30.0, 0.0),
+        Normal=(0.0, 0.0, -1.0),
+        Elevation=0.0,
+        Handle="2F",
+        Layer="PROCESS-PIPING-MAIN",
+        Color=256,
+        Linetype="ByLayer",
+        Visible=True,
+        Closed=False,
+        Length=40 + 5 * math.pi,
+        GetBoundingBox=lambda: ((-20.0, 0.0, 0.0), (30.0, 5.0, 0.0)),
+        GetBulge=lambda i: [0.0, 1.0, 0.0, 0.0][i],
+    )
+    props = _entity_info(ent).properties
+    assert props["points"] == [[-20.0, 0.0], [0.0, 0.0], [10.0, 0.0], [30.0, 0.0]]
+    assert props["bulges"] == [0.0, -1.0, 0.0, 0.0]
+    a, b, bulge = props["points"][1], props["points"][2], props["bulges"][1]
+    assert _point_segment_distance((5.0, 5.0), a, b, bulge) == pytest.approx(0.0)
+    assert _point_segment_distance((5.0, -5.0), a, b, bulge) == pytest.approx(math.hypot(5, 5))
+
+
 def test_com_polyline_bulges_are_read_only_when_length_says_an_arc_exists():
     """The COM engine pays one round trip per vertex for GetBulge, so it asks
     only when ActiveX ``Length`` exceeds the chord walk — an arc is always

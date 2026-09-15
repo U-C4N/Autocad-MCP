@@ -815,8 +815,13 @@ def _entity_info_dxf(ent) -> EntityInfo:
             props["length"] = round(_length, 6)
             # The bulge of the segment leaving each vertex (DXF convention), so
             # a reader that walks `points` can test against the arc the drawing
-            # holds instead of the chord it does not. Parallel to `points`.
-            props["bulges"] = [b for _x, _y, b in _verts]
+            # holds instead of the chord it does not. Parallel to `points`, and
+            # in the same frame as them: a mirrored polyline's frame is a
+            # reflection, which reverses every arc's sense, so the stored sign
+            # next to translated points would describe the arc's mirror image.
+            props["bulges"] = [
+                ocs.wcs_bulge(extrusion, b) if needs_ocs else b for _x, _y, b in _verts
+            ]
             if ent.closed:
                 props["area"] = round(_area, 6)
         elif ent_type == "TEXT":

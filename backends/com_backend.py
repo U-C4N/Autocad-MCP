@@ -403,13 +403,17 @@ def _entity_info(entity) -> EntityInfo:
             # changing its stride on a doc reading alone, with no way to verify
             # against live AutoCAD from here, risks breaking a path that works
             # today.
+            normal = None
             if obj_name in _COM_LWPOLYLINE_NAMES:
                 try:
                     normal = tuple(entity.Normal)
                     if not ocs.is_wcs_frame(normal):
                         elevation = float(getattr(entity, "Elevation", 0.0))
                         pts = [ocs.to_wcs_2d(normal, p[0], p[1], elevation) for p in pts]
+                    else:
+                        normal = None
                 except Exception as exc:
+                    normal = None
                     log.debug("OCS normalisation of polyline coordinates failed: %s", exc)
             props["points"] = pts
             props["closed"] = bool(entity.Closed)
@@ -418,8 +422,13 @@ def _entity_info(entity) -> EntityInfo:
             # is one cross-process call per vertex, so it is only paid when
             # the polyline can carry an arc: an arc is always longer than its
             # chord, so a `Length` equal to the chord walk means every bulge
-            # is zero and no call is needed.
-            props["bulges"] = _com_bulges(entity, coords, bool(entity.Closed), props["length"])
+            # is zero and no call is needed. GetBulge answers in the same OCS
+            # as Coordinates, so a translated `points` list needs the bulges
+            # translated with it — a mirrored frame reverses the arc's sense.
+            bulges = _com_bulges(entity, coords, bool(entity.Closed), props["length"])
+            if normal is not None:
+                bulges = [ocs.wcs_bulge(normal, b) for b in bulges]
+            props["bulges"] = bulges
         elif obj_name == "AcDbText":
             props["text"] = entity.TextString
             ins = entity.InsertionPoint
