@@ -128,6 +128,62 @@ def _arc_extent(cx, cy, r, start_deg, end_deg):
     return pts
 
 
+def scan_hits(primitives, axis: str, c: float, eps: float = 1e-9) -> list[float]:
+    """Where the scan line ``x = c`` (``axis="x"``) or ``y = c`` (``axis="y"``)
+    meets the drawn geometry: the *other* coordinate of every crossing.
+
+    A segment lying on the scan line contributes both of its ends; a tangent
+    arc contributes its touching point. Text has no outline and is skipped;
+    bulged polylines are refused rather than silently flattened to chords.
+    """
+    if axis not in ("x", "y"):
+        raise ValueError(f"scan_hits: axis must be 'x' or 'y', got {axis!r}")
+    along_x = axis == "x"
+    hits: list[float] = []
+
+    def segment(x1: float, y1: float, x2: float, y2: float) -> None:
+        # a = scanned coordinate, b = reported coordinate
+        a1, b1, a2, b2 = (x1, y1, x2, y2) if along_x else (y1, x1, y2, x2)
+        if abs(a2 - a1) <= eps:
+            if abs(a1 - c) <= eps:
+                hits.extend((b1, b2))
+            return
+        t = (c - a1) / (a2 - a1)
+        if -eps <= t <= 1.0 + eps:
+            hits.append(b1 + t * (b2 - b1))
+
+    def circle_arc(cx: float, cy: float, r: float, start: float, end: float) -> None:
+        ca, cb = (cx, cy) if along_x else (cy, cx)
+        d2 = r * r - (c - ca) ** 2
+        if d2 < -eps:
+            return
+        s = math.sqrt(max(d2, 0.0))
+        sweep = (end - start) % 360.0 or 360.0
+        for b in {cb - s, cb + s}:
+            x, y = (c, b) if along_x else (b, c)
+            rel = (math.degrees(math.atan2(y - cy, x - cx)) - start) % 360.0
+            if rel <= sweep + 1e-6 or rel >= 360.0 - 1e-6:
+                hits.append(b)
+
+    for p in primitives:
+        kind = p["type"]
+        if kind == "line":
+            segment(p["x1"], p["y1"], p["x2"], p["y2"])
+        elif kind == "circle":
+            circle_arc(p["cx"], p["cy"], p["r"], 0.0, 360.0)
+        elif kind == "arc":
+            circle_arc(p["cx"], p["cy"], p["r"], p["start_deg"], p["end_deg"])
+        elif kind in ("polyline", "solid"):
+            if kind == "polyline" and p.get("bulges"):
+                raise ValueError("scan_hits: bulged polylines are not supported")
+            pts = list(p["points"])
+            if kind == "solid" or p["closed"]:
+                pts.append(pts[0])
+            for (x1, y1), (x2, y2) in zip(pts, pts[1:], strict=False):
+                segment(x1, y1, x2, y2)
+    return hits
+
+
 def bbox_of(primitives) -> tuple[float, float, float, float]:
     """Extent of the drawn geometry (text counts by its insertion point only)."""
     xs: list[float] = []
