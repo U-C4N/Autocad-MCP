@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import re
 
@@ -208,7 +209,13 @@ def test_list_symbols_reports_variants_and_ports():
 
 # ── valves (Task 8) ──────────────────────────────────────────────────────────
 
-from engineering.pid.symbols_valves import ACTUATORS, VALVE_BODIES, build_valve  # noqa: E402
+from engineering.pid.symbols_valves import (  # noqa: E402
+    ACTUATORS,
+    NO_ACTUATOR,
+    STEM_CLEARANCE,
+    VALVE_BODIES,
+    build_valve,
+)
 
 
 def test_valve_bodies_and_actuators_enumerate():
@@ -247,3 +254,76 @@ def test_three_way_angle_and_relief_ports():
     assert {p.name: p.direction_deg for p in angle.ports} == {"in": 180.0, "out": 270.0}
     relief = build_valve("relief")
     assert {p.name: p.direction_deg for p in relief.ports} == {"in": 270.0, "out": 0.0}
+
+
+def _axis_top(primitives) -> float:
+    """Highest y at which a body's own geometry touches the x = 0 axis."""
+    ys = [0.0]
+    for p in primitives:
+        kind = p["type"]
+        if kind == "line" and p["x1"] == 0.0 == p["x2"]:
+            ys += [p["y1"], p["y2"]]
+        elif kind == "circle" and p["cx"] == 0.0:
+            ys.append(p["cy"] + p["r"])
+        elif kind == "arc" and p["cx"] == 0.0:
+            if (90.0 - p["start_deg"]) % 360.0 <= (p["end_deg"] - p["start_deg"]) % 360.0:
+                ys.append(p["cy"] + p["r"])
+        elif kind == "polyline":
+            pts = list(p["points"]) + ([p["points"][0]] if p["closed"] else [])
+            for (x1, y1), (x2, y2) in zip(pts, pts[1:], strict=False):
+                if x1 == 0.0 == x2:
+                    ys += [y1, y2]
+                elif min(x1, x2) <= 0.0 <= max(x1, x2):
+                    ys.append(y1 + (y2 - y1) * (0.0 - x1) / (x2 - x1))
+    return max(ys)
+
+
+def _actuated():
+    return [
+        (body, actuator)
+        for body in VALVE_BODIES
+        if body not in NO_ACTUATOR
+        for actuator in ACTUATORS
+        if actuator != "none"
+    ]
+
+
+@pytest.mark.parametrize("body,actuator", _actuated(), ids=lambda v: v)
+def test_actuator_glyph_is_connected_to_its_stem_and_clear_of_the_body(body, actuator):
+    bare = build_valve(body)
+    composed = build_valve(body, actuator)
+    extra = list(composed.primitives[len(bare.primitives) :])
+    assert composed.primitives[: len(bare.primitives)] == bare.primitives
+    stem, glyph = extra[0], extra[1:]
+    assert stem["type"] == "line" and stem["x1"] == 0.0 == stem["x2"]
+    stem_bottom, stem_top = sorted((stem["y1"], stem["y2"]))
+    # The stem starts where the body's own axial geometry ends — never
+    # coincident with a body line (butterfly disc, needle stem) or inside a
+    # body circle / dome.
+    assert stem_bottom == pytest.approx(_axis_top(bare.primitives))
+    # The glyph's lowest edge sits on the stem's top (no floating dome) ...
+    assert bbox_of(glyph)[1] == pytest.approx(stem_top)
+    # ... and the whole glyph is above the body, with the standard clearance.
+    assert bbox_of(glyph)[1] >= bare.bbox[3] + STEM_CLEARANCE - EPS
+    # The FAIL attribute sits beside the glyph, not on the body.
+    if actuator != "hand":
+        fail = next(a for a in composed.attdefs if a["tag"] == "FAIL")
+        assert fail["y"] > bare.bbox[3]
+    if actuator != "hand":
+        signal = next(p for p in composed.ports if p.name == "signal")
+        assert signal.y == pytest.approx(composed.bbox[3])
+
+
+def test_hand_actuator_has_no_fail_attribute_or_signal_port():
+    for body in VALVE_BODIES:
+        if body in NO_ACTUATOR:
+            continue
+        hand = build_valve(body, "hand")
+        assert all(a["tag"] != "FAIL" for a in hand.attdefs)
+        assert all(p.name != "signal" for p in hand.ports)
+
+
+@pytest.mark.parametrize("spec", all_specs(), ids=_ids())
+def test_no_duplicate_primitives(spec):
+    seen = [json.dumps(p, sort_keys=True) for p in spec.primitives]
+    assert len(seen) == len(set(seen)), "duplicate overlapping geometry inside the block"
