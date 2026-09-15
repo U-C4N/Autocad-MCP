@@ -242,20 +242,35 @@ def make_spec(
 # ── instrument bubble (ISA-5.1-2009 Table 5.4.1) ─────────────────────────────
 
 
+def _bubble_half_width(type: str, y: float) -> float:
+    """Half-width of the instrument outline at height ``y`` so a location line
+    ends on the outline instead of overshooting it (circle: chord; square:
+    full width; flat-topped hexagon: ``r - |y| / tan 60``)."""
+    r = BUBBLE_RADIUS
+    if type == "discrete":
+        return math.sqrt(max(r * r - y * y, 0.0))
+    if type == "computer":
+        return r - abs(y) / math.tan(math.radians(60.0))
+    return r  # dcs / plc: the square is the outline
+
+
 def build_instrument(type: str = "discrete", location: str = "field") -> SymbolSpec:
     if type not in INSTRUMENT_TYPES:
         raise ValueError(f"instrument: type must be one of {', '.join(INSTRUMENT_TYPES)}")
     if location not in INSTRUMENT_LOCATIONS:
         raise ValueError(f"instrument: location must be one of {', '.join(INSTRUMENT_LOCATIONS)}")
     r = BUBBLE_RADIUS
-    prims: list[dict] = [circle(0, 0, r)]
     square = polyline([(-r, -r), (r, -r), (r, r), (-r, r)])
-    if type == "dcs":
-        prims.append(square)
+    # Outline per type (spec 4.4): discrete = circle; dcs = circle inside a square;
+    # computer = hexagon; plc = diamond inside a square -- no circle in the last two.
+    if type == "discrete":
+        prims: list[dict] = [circle(0, 0, r)]
+    elif type == "dcs":
+        prims = [circle(0, 0, r), square]
     elif type == "computer":
-        prims.append(polyline(regular_polygon(0, 0, r, 6, 0.0)))
-    elif type == "plc":
-        prims += [square, polyline([(0, r), (r, 0), (0, -r), (-r, 0)])]
+        prims = [polyline(regular_polygon(0, 0, r, 6, 0.0))]
+    else:  # plc
+        prims = [square, polyline([(0, r), (r, 0), (0, -r), (-r, 0)])]
     ys = {
         "field": [],
         "primary": [0.0],
@@ -264,7 +279,8 @@ def build_instrument(type: str = "discrete", location: str = "field") -> SymbolS
         "auxiliary_rear": [0.8, -0.8],
     }[location]
     for y in ys:
-        prims += dashed_line(-r, y, r, y) if location.endswith("_rear") else [line(-r, y, r, y)]
+        hw = _bubble_half_width(type, y)
+        prims += dashed_line(-hw, y, hw, y) if location.endswith("_rear") else [line(-hw, y, hw, y)]
     attdefs = (
         attdef("FUNC", 0.0, 2.0, DESC_HEIGHT, align="middle_center"),
         attdef("LOOP", 0.0, -2.0, DESC_HEIGHT, align="middle_center"),

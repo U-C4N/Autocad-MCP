@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 
 import pytest
@@ -109,6 +110,56 @@ def test_instrument_generator_covers_four_types_by_five_locations():
     assert sum(1 for p in aux_rear.primitives if p["type"] == "polyline") == 2, "square + diamond"
     hexagon = next(p for p in specs[("computer", "field")].primitives if p["type"] == "polyline")
     assert len(hexagon["points"]) == 6
+
+
+def test_instrument_outline_per_type_follows_isa_table_5_4_1():
+    """Spec 4.4: discrete = circle; dcs = circle inside a square; computer = hexagon;
+    plc = diamond inside a square -- no circle in the last two."""
+    outline = {
+        t: [p["type"] for p in resolve("instrument", type=t, location="field").primitives]
+        for t in INSTRUMENT_TYPES
+    }
+    assert outline == {
+        "discrete": ["circle"],
+        "dcs": ["circle", "polyline"],
+        "computer": ["polyline"],
+        "plc": ["polyline", "polyline"],
+    }
+    plc = resolve("instrument", type="plc", location="field").primitives
+    assert sorted(len(p["points"]) for p in plc) == [4, 4], "square + diamond"
+
+
+def test_instrument_location_lines_end_on_the_outline():
+    """A location line must not poke outside the bubble outline: chord of the circle,
+    full width of the square, clipped to the flat-topped hexagon's slanted sides."""
+    r = BUBBLE_RADIUS
+    half_width = {
+        "discrete": lambda y: math.sqrt(r * r - y * y),
+        "dcs": lambda y: r,
+        "plc": lambda y: r,
+        "computer": lambda y: r - abs(y) / math.tan(math.radians(60.0)),
+    }
+    for t in INSTRUMENT_TYPES:
+        for loc in INSTRUMENT_LOCATIONS:
+            spec = resolve("instrument", type=t, location=loc)
+            lines = [p for p in spec.primitives if p["type"] == "line"]
+            ys = {p["y1"] for p in lines}
+            expected_ys = {"field": set(), "primary": {0.0}, "auxiliary": {0.8, -0.8}}[
+                loc.removesuffix("_rear")
+            ]
+            assert ys == expected_ys, (t, loc)
+            for p in lines:
+                assert p["y1"] == p["y2"], (t, loc)
+                hw = half_width[t](p["y1"])
+                assert -hw - 1e-9 <= min(p["x1"], p["x2"]), (t, loc, p)
+                assert max(p["x1"], p["x2"]) <= hw + 1e-9, (t, loc, p)
+            # a solid line spans the whole outline (not merely stays inside it); a dashed
+            # one starts on it and its last dash may stop short of the far side
+            if lines:
+                hw = half_width[t](next(iter(ys)))
+                assert min(p["x1"] for p in lines) == pytest.approx(-hw)
+                if not loc.endswith("_rear"):
+                    assert max(p["x2"] for p in lines) == pytest.approx(hw)
 
 
 def test_unknown_symbol_or_option_names_the_valid_values():
