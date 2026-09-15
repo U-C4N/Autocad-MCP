@@ -384,6 +384,17 @@ _FORBIDDEN_SYMBOL_CHARS = set('<>/\\":;?*|,=`') | set("\n\r\t")
 _MAX_SYMBOL_NAME = 255
 
 
+def illegal_symbol_name_chars(name: str) -> list[str]:
+    """The characters in `name` that DXF forbids in a symbol-table name, sorted.
+
+    The one rule behind every symbol-name gate in this repo: `sanitize_symbol_name`
+    refuses on it for macro interpolation, and pre-write validators (block
+    primitive specs, for one) refuse on it so ezdxf's own `DXFValueError` never
+    fires mid-write after earlier entities have already landed.
+    """
+    return sorted({c for c in name if c in _FORBIDDEN_SYMBOL_CHARS or ord(c) < 32})
+
+
 def sanitize_symbol_name(name: str, *, kind: str = "symbol") -> str:
     """Return `name` if it is a legal DXF symbol-table name, else refuse.
 
@@ -397,7 +408,7 @@ def sanitize_symbol_name(name: str, *, kind: str = "symbol") -> str:
         raise ToolError(f"{kind} name rejected: empty.")
     if len(candidate) > _MAX_SYMBOL_NAME:
         raise ToolError(f"{kind} name rejected: longer than {_MAX_SYMBOL_NAME} characters.")
-    offenders = sorted({c for c in candidate if c in _FORBIDDEN_SYMBOL_CHARS or ord(c) < 32})
+    offenders = illegal_symbol_name_chars(candidate)
     if offenders:
         shown = ", ".join(repr(c) for c in offenders)
         raise ToolError(

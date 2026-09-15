@@ -58,6 +58,9 @@ def test_each_type_normalises_to_floats_and_layer_zero():
         ({"type": "solid", "points": [[0, 0], [1, 0]]}, "points"),
         ({"type": "solid", "points": [[0, 0], [1, 0], [1, 1], [0, 1], [2, 2]]}, "at most 4"),
         ({"type": "line", "x1": 0, "y1": 0, "x2": 1, "y2": 0, "layer": ""}, "layer"),
+        ({"type": "line", "x1": 0, "y1": 0, "x2": 1, "y2": 0, "layer": "BAD<LAYER"}, "layer"),
+        ({"type": "line", "x1": 0, "y1": 0, "x2": 1, "y2": 0, "layer": "A;B"}, "layer"),
+        ({"type": "line", "x1": 0, "y1": 0, "x2": 1, "y2": 0, "layer": "A\x01B"}, "layer"),
         ({"type": "line", "x1": True, "y1": 0, "x2": 1, "y2": 0}, "x1"),
     ],
 )
@@ -66,6 +69,22 @@ def test_bad_entity_names_the_index_and_key(bad, fragment):
     with pytest.raises(TypeError, match=r"entities\[1\]") as exc:
         validate_entity_specs([good, bad])
     assert fragment in str(exc.value)
+
+
+def test_illegal_layer_name_is_refused_before_any_write():
+    """ezdxf would raise DXFValueError on this layer mid-loop, after earlier
+    primitives (and, with overwrite, the old definition) were already written.
+    The gate has to be ours, typed, and indexed."""
+    with pytest.raises(TypeError, match=r"entities\[0\].*'layer'") as exc:
+        validate_entity_specs(
+            [{"type": "line", "x1": 0, "y1": 0, "x2": 1, "y2": 0, "layer": "BAD<LAYER"}]
+        )
+    assert "'<'" in str(exc.value)
+    # Legal names, including the ones with spaces and dots, still pass.
+    out = validate_entity_specs(
+        [{"type": "line", "x1": 0, "y1": 0, "x2": 1, "y2": 0, "layer": " PID.Valves-1 "}]
+    )
+    assert out[0]["layer"] == "PID.Valves-1"
 
 
 def test_attdefs_normalise_and_default():
@@ -90,6 +109,7 @@ def test_attdefs_normalise_and_default():
     [
         ({"tag": "tag", "x": 0, "y": 0, "height": 1}, "tag"),
         ({"tag": "T-1", "x": 0, "y": 0, "height": 1}, "tag"),
+        ({"tag": "TAG\n", "x": 0, "y": 0, "height": 1}, "tag"),
         ({"tag": "TAG", "x": 0, "y": 0, "height": 0}, "height"),
         ({"tag": "TAG", "x": 0, "y": 0, "height": 1, "invisible": 1}, "invisible"),
         ({"tag": "TAG", "x": 0, "y": 0, "height": 1, "default": 3}, "default"),
@@ -107,6 +127,19 @@ def test_duplicate_attdef_tags_are_refused():
             [
                 {"tag": "TAG", "x": 0, "y": 0, "height": 1},
                 {"tag": "TAG", "x": 0, "y": 5, "height": 1},
+            ]
+        )
+
+
+def test_trailing_newline_cannot_smuggle_a_duplicate_tag():
+    """`$` matches before a trailing newline; ezdxf strips it on write, so
+    'TAG\n' + 'TAG' would land as two ATTDEFs with the same tag and the
+    attribute readers (dict keyed by tag) would silently drop one."""
+    with pytest.raises(TypeError, match=r"attdefs\[0\].*'tag'"):
+        validate_attdef_specs(
+            [
+                {"tag": "TAG\n", "x": 0, "y": 0, "height": 1},
+                {"tag": "TAG", "x": 0, "y": 0, "height": 1},
             ]
         )
 

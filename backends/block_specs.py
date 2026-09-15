@@ -11,8 +11,12 @@ from __future__ import annotations
 import math
 import re
 
+from security import illegal_symbol_name_chars
+
 ALLOWED_TYPES = ("line", "circle", "arc", "polyline", "text", "solid")
 TEXT_ALIGNMENTS = ("left", "center", "right", "middle_center")
+#: Checked with ``fullmatch`` — ``$`` alone would accept a trailing newline, which
+#: ezdxf then strips on write, turning two "distinct" tags into one duplicate.
 ATTDEF_TAG_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,30}$")
 
 _REQUIRED = {
@@ -73,7 +77,16 @@ def _layer(spec: dict, where: str) -> str:
     layer = spec.get("layer", "0")
     if not isinstance(layer, str) or not layer.strip():
         raise TypeError(f"{where}: 'layer' must be a non-empty string")
-    return layer.strip()
+    layer = layer.strip()
+    # Gate the DXF name rule here rather than letting ezdxf raise DXFValueError
+    # on `add_*(dxfattribs={"layer": ...})` mid-loop, after the block exists and
+    # earlier primitives are already written (and, with overwrite, the old
+    # definition is already gone).
+    offenders = illegal_symbol_name_chars(layer)
+    if offenders:
+        shown = ", ".join(repr(c) for c in offenders)
+        raise TypeError(f"{where}: 'layer' is not a legal DXF layer name (contains {shown})")
+    return layer
 
 
 def validate_entity_specs(entities) -> list[dict]:
@@ -145,7 +158,7 @@ def validate_attdef_specs(attdefs) -> list[dict]:
         if not isinstance(spec, dict):
             raise TypeError(f"{where}: must be an object")
         tag = spec.get("tag")
-        if not isinstance(tag, str) or not ATTDEF_TAG_RE.match(tag):
+        if not isinstance(tag, str) or not ATTDEF_TAG_RE.fullmatch(tag):
             raise TypeError(f"{where}: 'tag' must match {ATTDEF_TAG_RE.pattern}, got {tag!r}")
         if tag in seen:
             raise TypeError(f"{where}: duplicate tag {tag!r}")
