@@ -106,6 +106,8 @@ class _Node:
 class _Edge:
     id: str
     vertices: list[tuple[float, float]]
+    bulges: list[float]  # per vertex, the arc leaving it (DXF convention); 0.0 = straight
+    length: float | None  # the engine's own measurement (bulge-aware), None when it gave none
     layer: str
     linetype: str
     space: str
@@ -132,19 +134,33 @@ class _Edge:
             "insulation": p.get("insulation"),
             "from": self.from_ref,
             "to": self.to_ref,
-            "length": round(
-                sum(
-                    math.dist(a, b) for a, b in zip(self.vertices, self.vertices[1:], strict=False)
-                ),
-                6,
-            ),
+            # Both engines measure the real geometry (ezdxf via the shared
+            # bulge-aware maths, COM via ActiveX `Length`); a chord walk over
+            # the vertices is 12.5% short on a semicircular jump and says
+            # nothing. The chord sum is kept only for an engine that reports
+            # no length at all, and then the approximation is named.
+            "length": round(self.length, 6) if self.length is not None else self.chord_length(),
             "layer": self.layer,
             "space": self.space,
             "source": self.source,
         }
+        if self.length is None:
+            out["length_approximate"] = True
         if include_geometry:
             out["vertices"] = [[x, y] for x, y in self.vertices]
+            out["bulges"] = list(self.bulges)
         return out
+
+    def chord_length(self) -> float:
+        return round(
+            sum(math.dist(a, b) for a, b in zip(self.vertices, self.vertices[1:], strict=False)),
+            6,
+        )
+
+    def segments(self):
+        """``(a, b, bulge)`` per segment, the bulge belonging to the segment's start."""
+        for i, (a, b) in enumerate(zip(self.vertices, self.vertices[1:], strict=False)):
+            yield a, b, self.bulges[i] if i < len(self.bulges) else 0.0
 
 
 class _Grid:
@@ -178,15 +194,53 @@ def _vertices(info: EntityInfo) -> list[tuple[float, float]]:
     return [(float(p[0]), float(p[1])) for p in info.properties.get("points") or []]
 
 
-def _point_segment_distance(p, a, b) -> float:
+def _bulges(info: EntityInfo, count: int) -> list[float]:
+    """Per-vertex bulges as the engine reports them; straight when it reports none."""
+    raw = info.properties.get("bulges") or []
+    out = [float(b or 0.0) for b in raw[:count]]
+    return out + [0.0] * (count - len(out))
+
+
+def _length(info: EntityInfo) -> float | None:
+    raw = info.properties.get("length")
+    try:
+        return float(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _point_segment_distance(p, a, b, bulge: float = 0.0) -> float:
+    """Distance from ``p`` to the polyline segment a→b, an arc when it carries a bulge.
+
+    The bulge is the DXF one: tan(sweep/4), positive counter-clockwise from
+    ``a`` to ``b``. Testing against the chord instead misses every line that
+    ends on the curved "jump" foreign P&IDs draw where two lines cross.
+    """
     ax, ay = a
     bx, by = b
     px, py = p
     dx, dy = bx - ax, by - ay
-    if dx == 0 and dy == 0:
+    chord = math.hypot(dx, dy)
+    if chord < 1e-12:
         return math.hypot(px - ax, py - ay)
-    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)))
-    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+    if abs(bulge) < 1e-12:
+        t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)))
+        return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+    theta = 4.0 * math.atan(bulge)  # signed sweep
+    radius = chord / (2.0 * math.sin(abs(theta) / 2.0))
+    sagitta = abs(bulge) * chord / 2.0
+    # The centre sits on the chord's normal: opposite the arc while it is less
+    # than a semicircle, on the arc's side once it is more (|bulge| > 1). A
+    # positive bulge bows to the right of a→b, so its centre is to the left.
+    nx, ny = -dy / chord, dx / chord  # left of a→b
+    offset = math.copysign(radius - sagitta, bulge)
+    cx, cy = (ax + bx) / 2.0 + offset * nx, (ay + by) / 2.0 + offset * ny
+    start = math.atan2(ay - cy, ax - cx)
+    phi = math.atan2(py - cy, px - cx)
+    swept = (phi - start) % (2.0 * math.pi) if theta > 0 else (start - phi) % (2.0 * math.pi)
+    if swept <= abs(theta):
+        return abs(math.hypot(px - cx, py - cy) - radius)
+    return min(math.hypot(px - ax, py - ay), math.hypot(px - bx, py - by))
 
 
 def _keyword_kind(block_name: str) -> str | None:
@@ -349,6 +403,8 @@ async def build_graph(
         edge = _Edge(
             id=info.handle,
             vertices=verts,
+            bulges=_bulges(info, len(verts)),
+            length=_length(info),
             layer=info.layer,
             linetype=info.linetype,
             space=space,
@@ -373,7 +429,7 @@ async def build_graph(
         elif include_foreign:
             foreign_edges[edge.id] = edge
 
-    # 3 — spatial index of ports and vertices
+    # 3 — spatial index of ports (edge vertices join once membership is settled)
     grid = _Grid(cell=10.0 * tolerance)
     radial_ports: list[tuple[str, str, float, float, float]] = []
     for node in nodes.values():
@@ -383,28 +439,18 @@ async def build_graph(
                 radial_ports.append((node.id, pname, port["x"], port["y"], port["radius"]))
             else:
                 grid.add(port["x"], port["y"], ("port", node.id, pname))
-    all_edges = {**edges, **foreign_edges}
-    for edge in all_edges.values():
-        for v in edge.vertices:
-            grid.add(v[0], v[1], ("vertex", edge.id))
 
     # 4 — resolve endpoints
     junctions: list[dict] = []
     dangling: list[dict] = []
 
-    def _junction_at(x, y, edge_id, other_id) -> dict:
-        for j in junctions:
-            if math.hypot(j["x"] - x, j["y"] - y) <= tolerance:
-                for e in (edge_id, other_id):
-                    if e not in j["edges"]:
-                        j["edges"].append(e)
-                return {"junction": j["id"]}
-        j = {"id": f"J{len(junctions) + 1}", "x": x, "y": y, "edges": [edge_id, other_id]}
-        junctions.append(j)
-        return {"junction": j["id"]}
+    def _end(edge: _Edge, end: str) -> tuple[float, float]:
+        return edge.vertices[0] if end == "from" else edge.vertices[-1]
 
-    def _resolve(edge: _Edge, end: str) -> dict | None:
-        x, y = edge.vertices[0] if end == "from" else edge.vertices[-1]
+    def _attach(edge: _Edge, end: str) -> dict | None:
+        """``{node, port}`` when this end sits on a port or a foreign block's
+        bounding box; None otherwise. Only a successful match has side effects."""
+        x, y = _end(edge, end)
         for node_id, pname, cx, cy, r in radial_ports:
             if abs(math.hypot(x - cx, y - cy) - r) <= tolerance:
                 nodes[node_id].ports[pname]["edges"].append(edge.id)
@@ -438,14 +484,29 @@ async def build_graph(
                 }
                 grid.add(x, y, ("port", node.id, pname))
                 return {"node": node.id, "port": pname}
+        return None
+
+    def _junction_at(x, y, edge_id, other_id) -> dict:
+        for j in junctions:
+            if math.hypot(j["x"] - x, j["y"] - y) <= tolerance:
+                for e in (edge_id, other_id):
+                    if e not in j["edges"]:
+                        j["edges"].append(e)
+                return {"junction": j["id"]}
+        j = {"id": f"J{len(junctions) + 1}", "x": x, "y": y, "edges": [edge_id, other_id]}
+        junctions.append(j)
+        return {"junction": j["id"]}
+
+    def _junction_or_dangling(edge: _Edge, end: str) -> dict | None:
+        x, y = _end(edge, end)
         for _d, item in grid.near(x, y, tolerance):
             if item[0] == "vertex" and item[1] != edge.id:
                 return _junction_at(x, y, edge.id, item[1])
-        for other in all_edges.values():
+        for other in edges.values():
             if other.id == edge.id:
                 continue
-            for a, b in zip(other.vertices, other.vertices[1:], strict=False):
-                if _point_segment_distance((x, y), a, b) <= tolerance:
+            for a, b, bulge in other.segments():
+                if _point_segment_distance((x, y), a, b, bulge) <= tolerance:
                     return _junction_at(x, y, edge.id, other.id)
         nearest = None
         for d, item in grid.near(x, y, 10.0 * tolerance):
@@ -466,23 +527,29 @@ async def build_graph(
         )
         return None
 
+    # 4a — node attachment first, so a foreign line's membership (spec §9.2
+    # step 4c: it is an edge only when an end touches a node) is settled
+    # before any junction exists. Resolving junctions first let a P&ID line
+    # end on a foreign line that was then discarded, leaving a `{"junction"}`
+    # reference to nothing and one dangling end short.
     for edge in list(edges.values()):
-        edge.from_ref = _resolve(edge, "from")
-        edge.to_ref = _resolve(edge, "to")
+        edge.from_ref = _attach(edge, "from")
+        edge.to_ref = _attach(edge, "to")
     for edge in list(foreign_edges.values()):
-        # a foreign line joins the graph only through a node
-        probe_from = _resolve(edge, "from")
-        probe_to = _resolve(edge, "to")
-        attached = any(ref and "node" in ref for ref in (probe_from, probe_to))
-        if attached:
-            edge.from_ref, edge.to_ref = probe_from, probe_to
+        from_ref = _attach(edge, "from")
+        to_ref = _attach(edge, "to")
+        if from_ref or to_ref:
+            edge.from_ref, edge.to_ref = from_ref, to_ref
             edges[edge.id] = edge
-        else:
-            dangling[:] = [d for d in dangling if d["edge"] != edge.id]
-            for j in junctions:
-                if edge.id in j["edges"]:
-                    j["edges"].remove(edge.id)
-    junctions[:] = [j for j in junctions if len(j["edges"]) >= 2]
+    # 4b — junctions and dangling ends over the edges that are in the graph
+    for edge in edges.values():
+        for v in edge.vertices:
+            grid.add(v[0], v[1], ("vertex", edge.id))
+    for edge in edges.values():
+        if edge.from_ref is None:
+            edge.from_ref = _junction_or_dangling(edge, "from")
+        if edge.to_ref is None:
+            edge.to_ref = _junction_or_dangling(edge, "to")
 
     # 5 — tags and line numbers from attributes or nearby text
     texts = [(info, space) for info, space in entities if info.type in TEXT_TYPES]

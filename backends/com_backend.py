@@ -326,6 +326,28 @@ def _com_bulge(entity, index: int) -> float:
         return 0.0
 
 
+def _com_bulges(entity, coords, closed: bool, length) -> list[float]:
+    """Every vertex's bulge, read only when ``Length`` says an arc exists.
+
+    ``coords`` is the flat ``Coordinates`` variant (x0, y0, x1, y1, ...). A
+    circular arc is strictly longer than its chord, so when AutoCAD's own
+    ``Length`` equals the chord walk the polyline is straight everywhere and
+    the per-vertex COM round trips are skipped.
+    """
+    count = len(coords) // 2
+    pts = [(float(coords[i]), float(coords[i + 1])) for i in range(0, 2 * count, 2)]
+    chord = sum(math.dist(a, b) for a, b in zip(pts, pts[1:], strict=False))
+    if closed and count > 1:
+        chord += math.dist(pts[-1], pts[0])
+    try:
+        straight = abs(float(length) - chord) <= 1e-9 * max(1.0, chord)
+    except (TypeError, ValueError):
+        straight = False
+    if straight:
+        return [0.0] * count
+    return [_com_bulge(entity, i) for i in range(count)]
+
+
 # What a lightweight polyline calls itself over ActiveX. The live name is
 # ``AcDbPolyline`` (measured on AutoCAD 2026, 2026-08-06 — the member profile in
 # tests/test_com_backend.py); ``AcDbLWPolyline`` is the DXF-flavoured spelling
@@ -392,6 +414,12 @@ def _entity_info(entity) -> EntityInfo:
             props["points"] = pts
             props["closed"] = bool(entity.Closed)
             props["length"] = entity.Length
+            # Per-vertex bulges, parallel to `points` (ezdxf parity). GetBulge
+            # is one cross-process call per vertex, so it is only paid when
+            # the polyline can carry an arc: an arc is always longer than its
+            # chord, so a `Length` equal to the chord walk means every bulge
+            # is zero and no call is needed.
+            props["bulges"] = _com_bulges(entity, coords, bool(entity.Closed), props["length"])
         elif obj_name == "AcDbText":
             props["text"] = entity.TextString
             ins = entity.InsertionPoint

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from engineering.pid.drawlines import draw_line
@@ -181,3 +183,116 @@ async def test_geometry_is_optional(backend):
     assert "vertices" not in lean["edges"][0]
     full = await build_graph(backend, include_geometry=True)
     assert len(full["edges"][0]["vertices"]) >= 2
+
+
+async def test_a_line_ending_on_a_discarded_foreign_line_dangles(backend):
+    """A foreign line is an edge only when an end touches a node (spec §9.2 4c).
+
+    Junctions used to be resolved before that decision, so a P&ID line ending
+    on a foreign line that was then dropped kept ``{"junction": "J1"}`` while
+    ``junctions`` was empty and ``stats.dangling`` was one short — an id
+    Task 15's line list would dereference into nothing."""
+    main = (await backend.entity_create_line(0, 0, 50, 0, layer="PROCESS-PIPING-MAIN")).handle
+    await backend.entity_create_line(50, -20, 50, 20, layer="0")
+    graph = await build_graph(backend)
+    edge = graph["edges"][0]
+    assert edge["id"] == main and edge["from"] is None and edge["to"] is None
+    assert graph["junctions"] == []
+    assert {(d["edge"], d["end"]) for d in graph["dangling"]} == {(main, "from"), (main, "to")}
+    assert graph["stats"]["dangling"] == 2
+
+
+async def test_a_foreign_line_ending_on_another_discarded_foreign_line_dangles(backend):
+    blk = backend._doc.blocks.new(name="GATE_VALVE")
+    blk.add_lwpolyline([(-4, -2), (-4, 2), (0, 0)], close=True)
+    blk.add_lwpolyline([(4, -2), (4, 2), (0, 0)], close=True)
+    valve = (await backend.block_insert("GATE_VALVE", 50, 50)).handle
+    kept = (await backend.entity_create_line(46, 50, 10, 50, layer="0")).handle  # on the bbox
+    await backend.entity_create_line(10, 50, 10, 0, layer="0")  # touches nothing: not an edge
+    graph = await build_graph(backend)
+    assert [e["id"] for e in graph["edges"]] == [kept]
+    edge = graph["edges"][0]
+    assert edge["from"] == {"node": valve, "port": "p1"} and edge["to"] is None
+    assert graph["junctions"] == []
+    assert [(d["edge"], d["end"]) for d in graph["dangling"]] == [(kept, "to")]
+    assert graph["stats"]["dangling"] == 1
+
+
+async def test_edge_length_is_the_engines_measurement_not_a_chord_walk(backend):
+    """A curved crossing "jump" is an arc in the drawing; the chord walk over
+    its vertices was 5.7 units short and said nothing about it. The engine
+    measures the real geometry, and a line ending *on the arc* is a junction."""
+    msp = backend._doc.modelspace()
+    pipe = msp.add_lwpolyline(
+        [(-20, 0, 0), (0, 0, 1), (10, 0, 0), (30, 0, 0)],
+        format="xyb",
+        dxfattribs={"layer": "PROCESS-PIPING-MAIN"},
+    )
+    pipe = pipe.dxf.handle
+    measured = (await backend.entity_get(pipe)).properties["length"]
+    assert measured == pytest.approx(20 + 5 * math.pi + 20)
+    # bulge 1 from (0,0) to (10,0) bows to -y: centre (5,0), radius 5 → apex (5,-5)
+    branch = await backend.entity_create_line(5, -5, 5, -30, layer="PROCESS-PIPING-SECONDARY")
+    branch = branch.handle
+    graph = await build_graph(backend)
+    edges = {e["id"]: e for e in graph["edges"]}
+    assert edges[pipe]["length"] == pytest.approx(measured)
+    assert "length_approximate" not in edges[pipe]
+    assert edges[branch]["from"] and "junction" in edges[branch]["from"]
+    junction = graph["junctions"][0]
+    assert (junction["x"], junction["y"]) == pytest.approx((5.0, -5.0))
+    assert set(junction["edges"]) == {pipe, branch}
+    full = await build_graph(backend, include_geometry=True)
+    assert {e["id"]: e for e in full["edges"]}[pipe]["bulges"] == [0.0, 1.0, 0.0, 0.0]
+
+
+def test_point_to_arc_distance_follows_the_bulge():
+    from engineering.pid.graph import _point_segment_distance
+
+    a, b = (0.0, 0.0), (10.0, 0.0)
+    assert _point_segment_distance((5, -5), a, b, 1.0) == pytest.approx(0.0)  # CCW apex
+    assert _point_segment_distance((5, 5), a, b, -1.0) == pytest.approx(0.0)  # CW apex
+    assert _point_segment_distance((5, 5), a, b, 1.0) == pytest.approx(math.hypot(5, 5))
+    assert _point_segment_distance((5, -2.5), a, b, 0.5) == pytest.approx(0.0)  # sagitta
+    assert _point_segment_distance((5, 2.5), a, b, 0.5) == pytest.approx(5.0)
+    assert _point_segment_distance((5, 0), a, b, 0.0) == pytest.approx(0.0)  # straight
+
+
+def test_com_polyline_bulges_are_read_only_when_length_says_an_arc_exists():
+    """The COM engine pays one round trip per vertex for GetBulge, so it asks
+    only when ActiveX ``Length`` exceeds the chord walk — an arc is always
+    longer than its chord, so equality proves every bulge is zero."""
+    from types import SimpleNamespace
+
+    from backends.com_backend import _entity_info
+
+    def fake(coords, length, bulges):
+        calls = []
+
+        def get_bulge(i):
+            calls.append(i)
+            return bulges[i]
+
+        ent = SimpleNamespace(
+            ObjectName="AcDbPolyline",
+            Coordinates=coords,
+            Normal=(0.0, 0.0, 1.0),
+            Elevation=0.0,
+            Handle="2F",
+            Layer="0",
+            Color=256,
+            Linetype="ByLayer",
+            Visible=True,
+            Closed=False,
+            Length=length,
+            GetBoundingBox=lambda: ((0.0, 0.0, 0.0), (1.0, 1.0, 0.0)),
+            GetBulge=get_bulge,
+        )
+        return ent, calls
+
+    straight, calls = fake((0.0, 0.0, 10.0, 0.0, 10.0, 10.0), 20.0, [0.0, 0.0, 0.0])
+    assert _entity_info(straight).properties["bulges"] == [0.0, 0.0, 0.0]
+    assert calls == []
+    curved, calls = fake((0.0, 0.0, 10.0, 0.0, 10.0, 10.0), 10 + 5 * math.pi, [0.0, 1.0, 0.0])
+    assert _entity_info(curved).properties["bulges"] == [0.0, 1.0, 0.0]
+    assert calls == [0, 1, 2]

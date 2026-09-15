@@ -813,6 +813,10 @@ def _entity_info_dxf(ent) -> EntityInfo:
             _verts = [(float(x), float(y), float(b)) for x, y, b in ent.get_points(format="xyb")]
             _area, _length = measure.polygon_area_perimeter(_verts, bool(ent.closed))
             props["length"] = round(_length, 6)
+            # The bulge of the segment leaving each vertex (DXF convention), so
+            # a reader that walks `points` can test against the arc the drawing
+            # holds instead of the chord it does not. Parallel to `points`.
+            props["bulges"] = [b for _x, _y, b in _verts]
             if ent.closed:
                 props["area"] = round(_area, 6)
         elif ent_type == "TEXT":
