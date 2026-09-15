@@ -6357,7 +6357,7 @@ async def solid_boolean(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 17: P&ID (3 tools) ──────────────────────────────────────────────
+# ── SECTION 17: P&ID (4 tools) ──────────────────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -6531,6 +6531,50 @@ async def pid_line_draw(
         number_format,
         label,
         arrow,
+    )
+
+
+@cad_tool(
+    summary=(
+        "Read the P&ID back as a graph: symbols, lines, junctions, dangling ends, confidence."
+    ),
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "P&ID: Connectivity Graph", "readOnlyHint": True},
+    tags={"pid", "query"},
+)
+async def pid_graph(
+    tolerance: Annotated[
+        float, Field(default=0.5, gt=0, description="Endpoint-to-port snap distance (mm)")
+    ] = 0.5,
+    label_search: Annotated[
+        float,
+        Field(default=15.0, gt=0, description="How far to look for tag/line-number text (mm)"),
+    ] = 15.0,
+    scope: Annotated[
+        str, "current_space | all (every layout, current restored afterwards)"
+    ] = "current_space",
+    include_foreign: Annotated[
+        bool, "Classify INSERTs not placed by this server (confidence < 1)"
+    ] = True,
+    include_geometry: Annotated[bool, "Include edge vertices"] = False,
+    ctx: Context = None,
+) -> dict:
+    """Connectivity of the drawing as it *is*, not as it was drawn.
+
+    Nodes: symbol INSERTs classified by catalogue name (confidence 1.0),
+    ACADMCP_PID payload (0.95), tag attributes / block-name keywords (0.6) or
+    a line touching an unknown INSERT (0.3); every node reports its `source`.
+    Ports come from the INSERT's real rotation and scale, measured. Edges:
+    lines and polylines; each end resolves to a port, a junction on another
+    line, or `dangling` with the nearest port as a hint. `stats.confidence_min`
+    is the number to read before trusting a foreign drawing.
+    """
+    from engineering.pid.graph import build_graph
+
+    return await build_graph(
+        _backend(ctx), tolerance, label_search, scope, include_foreign, include_geometry
     )
 
 

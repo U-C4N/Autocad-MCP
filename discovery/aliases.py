@@ -1384,6 +1384,18 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "pneumatic signal",
         ),
     ),
+    "pid_graph": ToolAliases(
+        acad=(),
+        synonyms=(
+            "p&id connectivity",
+            "what is connected to",
+            "trace the line",
+            "read the p&id",
+            "dangling lines",
+            "instrument loop graph",
+            "process graph",
+        ),
+    ),
 }
 
 
