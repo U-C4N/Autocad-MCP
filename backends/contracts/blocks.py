@@ -48,3 +48,19 @@ class BlockContract(ABC):
         base_x: float = 0.0,
         base_y: float = 0.0,
     ) -> dict: ...
+
+    @abstractmethod
+    async def block_define(
+        self,
+        name: str,
+        entities: list[dict],
+        attdefs: list[dict] | None = None,
+        base_x: float = 0.0,
+        base_y: float = 0.0,
+        overwrite: bool = False,
+    ) -> dict:
+        """Create (or with ``overwrite`` replace the contents of) a block
+        definition from typed primitive specs and ATTDEF specs — see
+        ``backends/block_specs.py`` for the spec vocabulary. Returns
+        ``{ok, name, entity_count, attdef_count, replaced, backend}``."""
+        ...

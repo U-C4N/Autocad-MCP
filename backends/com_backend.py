@@ -3136,6 +3136,128 @@ class ComBackend(AutoCADBackend):
 
         return await self._run(_sync)
 
+    async def block_define(
+        self,
+        name,
+        entities,
+        attdefs=None,
+        base_x=0.0,
+        base_y=0.0,
+        overwrite=False,
+    ) -> dict:
+        """A block definition with ATTDEFs from typed specs, through ActiveX.
+
+        ``Blocks.Add`` creates the definition; each primitive is one ``Add*``
+        call on the Block object, each ATTDEF one ``AddAttribute``. Overwrite
+        deletes the existing definition's members and re-adds — the name and
+        its INSERTs survive. Unit-tested against a fake ActiveX surface;
+        executed live by ``scripts/smoke_pid_com.py``.
+        """
+        from backends.block_specs import (
+            solid_vertices,
+            validate_attdef_specs,
+            validate_entity_specs,
+        )
+
+        # The anonymous-name rule comes first: ``*`` is also a forbidden DXF
+        # symbol character, so ``sanitize_symbol_name`` would refuse ``*U9``
+        # with the generic message before this one could name the real reason.
+        if (name or "").strip().startswith("*"):
+            raise ValueError("block_define: anonymous block names (*...) are refused")
+        clean_name = sanitize_symbol_name(name, kind="block")
+        ents = validate_entity_specs(entities)
+        atts = validate_attdef_specs(attdefs or [])
+        # acAlignmentLeft / Center / Right / MiddleCenter
+        align_map = {"left": 0, "center": 1, "right": 2, "middle_center": 10}
+
+        def _style(obj, layer: str) -> None:
+            obj.Layer = layer
+            obj.Color = 0  # acByBlock
+            obj.Linetype = "ByBlock"
+
+        def _sync():
+            doc = _acad_doc()
+            try:
+                existing = doc.Blocks.Item(clean_name)
+            except Exception:
+                existing = None
+            if existing is not None and not overwrite:
+                raise ValueError(
+                    f"block_define: block {clean_name!r} already exists; "
+                    "pass overwrite=true to replace its contents"
+                )
+            replaced = existing is not None
+            base = _apoint(float(base_x), float(base_y), 0.0)
+            if existing is None:
+                block = doc.Blocks.Add(base, clean_name)
+            else:
+                block = existing
+                members = [block.Item(i) for i in range(block.Count)]
+                for member in members:
+                    member.Delete()
+                block.Origin = base
+            for spec in ents:
+                kind = spec["type"]
+                if kind == "line":
+                    obj = block.AddLine(
+                        _apoint(spec["x1"], spec["y1"]), _apoint(spec["x2"], spec["y2"])
+                    )
+                elif kind == "circle":
+                    obj = block.AddCircle(_apoint(spec["cx"], spec["cy"]), float(spec["r"]))
+                elif kind == "arc":
+                    obj = block.AddArc(
+                        _apoint(spec["cx"], spec["cy"]),
+                        float(spec["r"]),
+                        deg2rad(spec["start_deg"]),
+                        deg2rad(spec["end_deg"]),
+                    )
+                elif kind == "polyline":
+                    flat = [coord for pt in spec["points"] for coord in pt]
+                    obj = block.AddLightWeightPolyline(_av(flat))
+                    obj.Closed = bool(spec["closed"])
+                    for index, bulge in enumerate(spec["bulges"] or []):
+                        if bulge:
+                            obj.SetBulge(index, float(bulge))
+                elif kind == "text":
+                    obj = block.AddText(
+                        spec["text"], _apoint(spec["x"], spec["y"]), float(spec["height"])
+                    )
+                    obj.Rotation = deg2rad(spec["rotation_deg"])
+                    if spec["align"] != "left":
+                        obj.Alignment = align_map[spec["align"]]
+                        obj.TextAlignmentPoint = _apoint(spec["x"], spec["y"])
+                elif kind == "solid":
+                    verts = solid_vertices(spec["points"])
+                    verts = verts + [verts[-1]] * (4 - len(verts))
+                    obj = block.AddSolid(*[_apoint(x, y) for x, y in verts])
+                _style(obj, spec["layer"])
+            for att in atts:
+                mode = 1 if att["invisible"] else 0  # acAttributeModeInvisible / Normal
+                obj = block.AddAttribute(
+                    float(att["height"]),
+                    mode,
+                    att["prompt"],
+                    _apoint(att["x"], att["y"]),
+                    att["tag"],
+                    att["default"],
+                )
+                obj.Rotation = deg2rad(att["rotation_deg"])
+                if att["align"] != "left":
+                    obj.Alignment = align_map[att["align"]]
+                    obj.TextAlignmentPoint = _apoint(att["x"], att["y"])
+                _style(obj, "0")
+            _regen()
+            return {
+                "ok": True,
+                "name": clean_name,
+                "entity_count": len(ents),
+                "attdef_count": len(atts),
+                "replaced": replaced,
+                "backend": "com",
+            }
+
+        return await self._run(_sync)
+
     # ── analysis / query ──────────────────────────────────────────────────────
 
     async def analysis_stats(self) -> dict:

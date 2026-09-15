@@ -4560,6 +4560,128 @@ class EzdxfBackend(AutoCADBackend):
 
         return await self._async(_sync)
 
+    async def block_define(
+        self,
+        name,
+        entities,
+        attdefs=None,
+        base_x=0.0,
+        base_y=0.0,
+        overwrite=False,
+    ) -> dict:
+        """A block definition with ATTDEFs from typed specs.
+
+        Validation runs before any write, so a malformed entry leaves no
+        definition behind. ``overwrite`` replaces the *contents* of an existing
+        definition rather than deleting it: existing INSERTs keep pointing at
+        the name and show the new geometry (deleting a referenced block is
+        refused by both engines; replacing contents works on both).
+        """
+        from ezdxf.enums import TextEntityAlignment
+
+        from backends.block_specs import (
+            solid_vertices,
+            validate_attdef_specs,
+            validate_entity_specs,
+        )
+        from security import sanitize_symbol_name
+
+        # The anonymous-name rule comes first: ``*`` is also a forbidden DXF
+        # symbol character, so ``sanitize_symbol_name`` would refuse ``*U9``
+        # with the generic message before this one could name the real reason.
+        if (name or "").strip().startswith("*"):
+            raise ValueError("block_define: anonymous block names (*...) are refused")
+        clean_name = sanitize_symbol_name(name, kind="block")
+        ents = validate_entity_specs(entities)
+        atts = validate_attdef_specs(attdefs or [])
+        align_map = {
+            "left": TextEntityAlignment.LEFT,
+            "center": TextEntityAlignment.CENTER,
+            "right": TextEntityAlignment.RIGHT,
+            "middle_center": TextEntityAlignment.MIDDLE_CENTER,
+        }
+
+        def _sync():
+            doc = self._require_doc()
+            existing = doc.blocks.get(clean_name) if clean_name in doc.blocks else None
+            if existing is not None and not overwrite:
+                raise ValueError(
+                    f"block_define: block {clean_name!r} already exists; "
+                    "pass overwrite=true to replace its contents"
+                )
+            replaced = existing is not None
+            base = (float(base_x), float(base_y), 0.0)
+            if existing is None:
+                blk = doc.blocks.new(name=clean_name, base_point=base)
+            else:
+                blk = existing
+                blk.delete_all_entities()
+                blk.block.dxf.base_point = base
+            for spec in ents:
+                attribs = {"layer": spec["layer"], "color": 0, "linetype": "ByBlock"}
+                kind = spec["type"]
+                if kind == "line":
+                    blk.add_line(
+                        (spec["x1"], spec["y1"]), (spec["x2"], spec["y2"]), dxfattribs=attribs
+                    )
+                elif kind == "circle":
+                    blk.add_circle((spec["cx"], spec["cy"]), spec["r"], dxfattribs=attribs)
+                elif kind == "arc":
+                    blk.add_arc(
+                        (spec["cx"], spec["cy"]),
+                        spec["r"],
+                        spec["start_deg"],
+                        spec["end_deg"],
+                        dxfattribs=attribs,
+                    )
+                elif kind == "polyline":
+                    bulges = spec["bulges"] or [0.0] * len(spec["points"])
+                    blk.add_lwpolyline(
+                        [(x, y, b) for (x, y), b in zip(spec["points"], bulges, strict=True)],
+                        format="xyb",
+                        close=spec["closed"],
+                        dxfattribs=attribs,
+                    )
+                elif kind == "text":
+                    txt = blk.add_text(
+                        spec["text"],
+                        dxfattribs={
+                            **attribs,
+                            "height": spec["height"],
+                            "rotation": spec["rotation_deg"],
+                        },
+                    )
+                    txt.set_placement((spec["x"], spec["y"]), align=align_map[spec["align"]])
+                elif kind == "solid":
+                    blk.add_solid(solid_vertices(spec["points"]), dxfattribs=attribs)
+            for att in atts:
+                attdef = blk.add_attdef(
+                    att["tag"],
+                    insert=(att["x"], att["y"]),
+                    text=att["default"],
+                    dxfattribs={
+                        "layer": "0",
+                        "color": 0,
+                        "height": att["height"],
+                        "rotation": att["rotation_deg"],
+                        "prompt": att["prompt"],
+                    },
+                )
+                attdef.set_placement((att["x"], att["y"]), align=align_map[att["align"]])
+                if att["invisible"]:
+                    attdef.is_invisible = True
+            self._mark_dirty()
+            return {
+                "ok": True,
+                "name": clean_name,
+                "entity_count": len(ents),
+                "attdef_count": len(atts),
+                "replaced": replaced,
+                "backend": "ezdxf",
+            }
+
+        return await self._async(_sync)
+
     # ── analysis / query ──────────────────────────────────────────────────────
 
     async def analysis_stats(self) -> dict:

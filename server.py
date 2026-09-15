@@ -2855,7 +2855,7 @@ async def linetype_load(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 7: Block Operations (7 tools) ───────────────────────────────────
+# ── SECTION 7: Block Operations (8 tools) ───────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -2981,6 +2981,46 @@ async def block_create_from_entities(
     """
     await ctx.info(f"Creating block '{name}' from {len(handles)} entities")
     return await _backend(ctx).block_create_from_entities(name, handles, base_x, base_y)
+
+
+@cad_tool(
+    summary="Define a block from typed primitives and attribute definitions, on both engines.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Define Block", "readOnlyHint": False},
+    tags={"block", "create"},
+)
+async def block_define(
+    name: Annotated[str, "New block definition name"],
+    entities: Annotated[
+        list[dict],
+        "Primitives in block-local coordinates. type=line {x1,y1,x2,y2} | circle {cx,cy,r} | "
+        "arc {cx,cy,r,start_deg,end_deg} | polyline {points,closed,bulges?} | "
+        "text {text,x,y,height,rotation_deg?,align?} | solid {points (3-4)}. Optional layer (default 0).",
+    ],
+    attdefs: Annotated[
+        list[dict] | None,
+        "Attribute definitions: {tag, x, y, height, prompt?, default?, rotation_deg?, align?, invisible?}",
+    ] = None,
+    base_x: Annotated[float, "Block base point X"] = 0.0,
+    base_y: Annotated[float, "Block base point Y"] = 0.0,
+    overwrite: Annotated[
+        bool, "Replace the contents of an existing definition of this name"
+    ] = False,
+    ctx: Context = None,
+) -> dict:
+    """Create a block definition with attribute definitions from typed specs.
+
+    The whole request is validated before anything is written: one malformed
+    entry refuses the call and leaves no definition behind. `overwrite=true`
+    replaces the *contents* of an existing block so its INSERTs keep pointing
+    at the name and show the new geometry; `replaced` reports it. Geometry
+    inside the block is ByBlock so the INSERT's layer supplies colour and
+    lineweight. Insert with `block_insert(attributes={TAG: value})`.
+    """
+    await ctx.info(f"Defining block '{name}' from {len(entities)} primitives")
+    return await _backend(ctx).block_define(name, entities, attdefs, base_x, base_y, overwrite)
 
 
 @cad_tool(summary="Find every place a given block is inserted.", cost="read")

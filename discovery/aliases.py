@@ -66,11 +66,15 @@ class ToolAliases:
 #   QSELECT -- AutoCAD's Quick Select dialog is both "filter by properties"
 #       (selection_filter) and "find things like this one"
 #       (entity_select_smart); a drafter typing it could mean either.
+#   BLOCK -- one command makes a definition either from selected objects
+#       (block_create_from_entities) or from scratch with attribute
+#       definitions (block_define); a drafter typing it could mean either.
 #
 # Every other AutoCAD command must map to exactly one tool.
 SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
     {
         "ARRAY",
+        "BLOCK",
         "ERASE",
         "INSERT",
         "LAYER",
@@ -199,6 +203,16 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "group entities into a symbol",
             "save a selection as a block",
             "reusable symbol",
+        ),
+    ),
+    "block_define": ToolAliases(
+        acad=("BLOCK", "BEDIT", "ATTDEF"),
+        synonyms=(
+            "define a block",
+            "make a symbol",
+            "block with attributes",
+            "attribute definition",
+            "create a block definition from scratch",
         ),
     ),
     "block_explode": ToolAliases(

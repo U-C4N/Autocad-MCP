@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 154,
+    "tools": 155,
     "resources": 6,
     "prompts": 5,
     "groups": 19
@@ -11,7 +11,7 @@
   "groups": {
     "analysis": 12,
     "batch": 3,
-    "blocks": 8,
+    "blocks": 9,
     "corner_ops": 4,
     "dimensions": 5,
     "drawing": 11,
@@ -184,6 +184,20 @@
       ],
       "annotations": {
         "title": "Create Block From Entities",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "block_define",
+      "group": "blocks",
+      "cost": "mutate",
+      "summary": "Define a block from typed primitives and attribute definitions, on both engines.",
+      "tags": [
+        "block",
+        "create"
+      ],
+      "annotations": {
+        "title": "Define Block",
         "readOnlyHint": false
       }
     },

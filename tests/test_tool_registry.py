@@ -495,21 +495,23 @@ async def test_tool_groups_is_byte_identical_to_the_source_declared_grouping():
 
 
 async def test_tool_group_sizes_are_unchanged():
-    """Frozen snapshot of the surface (154 tools, 19 groups).
+    """Frozen snapshot of the surface (155 tools, 19 groups).
 
     Taken before @cad_tool landed at 131 tools; `batch` moved 2 -> 3 when
     v1.5.0's `cad_batch` joined `entity_batch_create`/`entity_batch_modify`, and
     `layouts` moved 4 -> 12 with M6's layout/viewport lifecycle. That group
     gained `entity_change_space` too: it is tagged `layout` *and* `modify`, and
     `_GROUP_TAG_PRIORITY` ranks `layout` higher, so CHSPACE files under layouts
-    rather than splitting a ninth tool off into entity_modification. Every other
-    number here has been unchanged since the snapshot was taken.
+    rather than splitting a ninth tool off into entity_modification. `blocks`
+    moved 8 -> 9 when v1.6's `block_define` (typed primitives + ATTDEFs on
+    both engines) joined SECTION 7. Every other number here has been unchanged
+    since the snapshot was taken.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
         "analysis": 12,
         "batch": 3,
-        "blocks": 8,
+        "blocks": 9,
         "corner_ops": 4,
         "dimensions": 5,
         "drawing": 11,
@@ -527,4 +529,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 154
+    assert sum(sizes.values()) == 155
