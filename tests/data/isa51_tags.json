@@ -58,17 +58,18 @@
     ["CIC-903", "Indicating Controller", "903"]
   ],
   "invalid": [
-    ["FCI-101", "I"],
-    ["FIH-102", "H"],
-    ["F-103", "function"],
-    ["FICC-104", "repeated"],
-    ["PSVX-105", "X"],
-    ["ABCDEF-106", "D"],
-    ["FQQ-107", "Q"],
-    ["1FC", "format"],
-    ["FIC", "format"],
-    ["fic-101-", "format"],
-    ["LSO-108", "O"]
+    ["FCI-101", "unexpected letter I at position 3"],
+    ["FIH-102", "trailing H needs an alarm (A) or switch (S) before it"],
+    ["F-103", "needs at least one function letter after F"],
+    ["FICC-104", "repeated letter C at position 4"],
+    ["PSVX-105", "unexpected letter X at position 4 after valve V"],
+    ["ABCDE-106", "unexpected letter D at position 4"],
+    ["ABCDEF-106", "not in [area-]LETTERS[-]loop[suffix] format"],
+    ["FQQ-107", "unexpected letter Q at position 3"],
+    ["1FC", "not in [area-]LETTERS[-]loop[suffix] format"],
+    ["FIC", "not in [area-]LETTERS[-]loop[suffix] format"],
+    ["fic-101-", "not in [area-]LETTERS[-]loop[suffix] format"],
+    ["LSO-108", "trailing O (open/closed) is only valid after a switch on a position (Z) tag"]
   ],
   "formats": [
     ["10-FIC-101A", "10", "FIC", "101", "A"],

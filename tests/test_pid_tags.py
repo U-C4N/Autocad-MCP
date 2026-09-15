@@ -39,7 +39,23 @@ def test_invalid_tags_name_the_offending_letter(tag, fragment):
     out = parse_tag(tag, kind="instrument")
     assert out["valid"] is False
     assert out["tag"] == tag
-    assert any(fragment in err for err in out["errors"]), out["errors"]
+    # The grammar stops at the first offending letter, so the fixture pins
+    # exactly one error and the fragment must sit in *that* one.
+    assert len(out["errors"]) == 1, out["errors"]
+    assert fragment in out["errors"][0], out["errors"]
+
+
+@pytest.mark.parametrize("tag, fragment", FIXTURE["invalid"])
+def test_invalid_fixture_fragments_bind_the_letter_and_position(tag, fragment):
+    # Every grammar error is prefixed with the tag's own letters, so a fragment
+    # that is a substring of the tag ("I" for FCI) matches whatever the grammar
+    # says and pins nothing. A row must quote the rule text, and a grammar row
+    # must quote the reported position as well as the letter.
+    assert fragment not in tag.upper(), f"{tag!r}: fragment {fragment!r} is part of the tag"
+    if "format" not in fragment:
+        assert "position" in fragment or "letter" in fragment or "trailing" in fragment, (
+            f"{tag!r}: fragment {fragment!r} names neither a letter nor a position"
+        )
 
 
 @pytest.mark.parametrize("tag, area, letters, loop, suffix", FIXTURE["formats"])
