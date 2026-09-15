@@ -204,3 +204,46 @@ def test_list_symbols_reports_variants_and_ports():
     assert list_symbols(family="marker") and all(
         r["family"] == "marker" for r in list_symbols(family="marker")
     )
+
+
+# ── valves (Task 8) ──────────────────────────────────────────────────────────
+
+from engineering.pid.symbols_valves import ACTUATORS, VALVE_BODIES, build_valve  # noqa: E402
+
+
+def test_valve_bodies_and_actuators_enumerate():
+    assert len(VALVE_BODIES) == 11 and len(ACTUATORS) == 6
+    gate = build_valve("gate")
+    assert gate.name == "PID_VALVE_GATE" and gate.bbox == (-4.0, -2.0, 4.0, 2.0)
+    assert {p.name: (p.x, p.y, p.direction_deg) for p in gate.ports} == {
+        "in": (-4.0, 0.0, 180.0),
+        "out": (4.0, 0.0, 0.0),
+    }
+    assert [a["tag"] for a in gate.attdefs] == ["TAG", "DESC"]
+
+
+def test_actuators_add_a_signal_port_and_a_fail_attribute():
+    cv = build_valve("globe", "diaphragm")
+    assert cv.name == "PID_VALVE_GLOBE_DIAPHRAGM" and cv.variant == "diaphragm"
+    signal = next(p for p in cv.ports if p.name == "signal")
+    assert (signal.x, signal.y, signal.direction_deg, signal.kind) == (0.0, 9.0, 90.0, "signal")
+    assert cv.bbox[3] == 9.0
+    assert "FAIL" in [a["tag"] for a in cv.attdefs]
+    hand = build_valve("gate", "hand")
+    assert all(p.name != "signal" for p in hand.ports) and "FAIL" not in [
+        a["tag"] for a in hand.attdefs
+    ]
+
+
+def test_check_and_relief_refuse_actuators():
+    for body in ("check", "relief"):
+        with pytest.raises(ValueError, match="actuator"):
+            build_valve(body, "motor")
+
+
+def test_three_way_angle_and_relief_ports():
+    assert {p.name for p in build_valve("three_way").ports} == {"in", "out", "branch"}
+    angle = build_valve("angle")
+    assert {p.name: p.direction_deg for p in angle.ports} == {"in": 180.0, "out": 270.0}
+    relief = build_valve("relief")
+    assert {p.name: p.direction_deg for p in relief.ports} == {"in": 270.0, "out": 0.0}
