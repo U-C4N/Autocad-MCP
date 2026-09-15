@@ -69,6 +69,9 @@ class ToolAliases:
 #   BLOCK -- one command makes a definition either from selected objects
 #       (block_create_from_entities) or from scratch with attribute
 #       definitions (block_define); a drafter typing it could mean either.
+#   PLINE -- a raw polyline (entity_create_polyline) or a P&ID line run
+#       between two ports (pid_line_draw), which is an LWPOLYLINE with a
+#       class, a number and markers; a drafter typing it could mean either.
 #
 # Every other AutoCAD command must map to exactly one tool.
 SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
@@ -80,6 +83,7 @@ SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
         "LAYER",
         "LAYOUT",
         "MEASUREGEOM",
+        "PLINE",
         "QSELECT",
         "SETVAR",
         "ZOOM",
@@ -1365,6 +1369,19 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "control valve",
             "off-page connector",
             "process equipment symbol",
+        ),
+    ),
+    "pid_line_draw": ToolAliases(
+        acad=("PLINE",),
+        synonyms=(
+            "process line",
+            "pipe run",
+            "signal line",
+            "connect equipment",
+            "instrument line",
+            "line number",
+            "connect the pump to the vessel",
+            "pneumatic signal",
         ),
     ),
 }

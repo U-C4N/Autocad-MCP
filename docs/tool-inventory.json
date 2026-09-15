@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 159,
+    "tools": 160,
     "resources": 6,
     "prompts": 5,
     "groups": 20
@@ -21,7 +21,7 @@
     "entity_query": 9,
     "layers": 14,
     "layouts": 12,
-    "pid": 2,
+    "pid": 3,
     "premium": 12,
     "solids": 5,
     "system": 7,
@@ -1714,6 +1714,20 @@
       ],
       "annotations": {
         "title": "Load Linetype",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "pid_line_draw",
+      "group": "pid",
+      "cost": "mutate",
+      "summary": "Draw a P&ID line port-to-port: orthogonal route, ISA-5.1 class, line number, markers, arrow.",
+      "tags": [
+        "create",
+        "pid"
+      ],
+      "annotations": {
+        "title": "P&ID: Draw Line",
         "readOnlyHint": false
       }
     },

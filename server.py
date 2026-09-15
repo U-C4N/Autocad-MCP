@@ -6357,7 +6357,7 @@ async def solid_boolean(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 17: P&ID (2 tools) ──────────────────────────────────────────────
+# ── SECTION 17: P&ID (3 tools) ──────────────────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -6460,6 +6460,77 @@ async def pid_symbol_insert(
         params=params,
         shape=shape,
         direction=direction,
+    )
+
+
+@cad_tool(
+    summary=(
+        "Draw a P&ID line port-to-port: orthogonal route, ISA-5.1 class, "
+        "line number, markers, arrow."
+    ),
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "P&ID: Draw Line", "readOnlyHint": False},
+    tags={"pid", "create"},
+)
+async def pid_line_draw(
+    from_: Annotated[dict, "{handle, port} of a placed symbol, or {x, y}"],
+    to: Annotated[dict, "{handle, port} of a placed symbol, or {x, y}"],
+    line_class: Annotated[
+        str,
+        "process_major | process_minor | utility | pneumatic | electric | hydraulic | capillary | data",
+    ] = "process_major",
+    route: Annotated[str | list, "auto (orthogonal) | direct | [[x, y], ...] waypoints"] = "auto",
+    stub: Annotated[
+        float,
+        Field(default=5.0, ge=0, description="Minimum straight run leaving each port (mm)"),
+    ] = 5.0,
+    line_number: Annotated[
+        str | None, "Verbatim line number; omit to build one from the fields"
+    ] = None,
+    size: Annotated[str | None, "Nominal size, e.g. 100"] = None,
+    service: Annotated[str | None, "Service code, e.g. P"] = None,
+    spec: Annotated[str | None, "Piping spec, e.g. CS1"] = None,
+    insulation: Annotated[str | None, "Insulation code, e.g. IH"] = None,
+    number_format: Annotated[
+        str | None,
+        "Default {size}-{service}-{seq}-{spec}-{insulation}; empty fields drop out",
+    ] = None,
+    label: Annotated[bool, "Write the line number along the longest segment"] = True,
+    arrow: Annotated[
+        bool | None, "Flow arrow at the end; default per class (process yes, signal no)"
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """Connect two ports with one LWPOLYLINE on the class's layer.
+
+    Ports come from `pid_symbol_insert`; a bubble's radial port is entered
+    without a name. `auto` picks the shortest orthogonal route that leaves each
+    port straight for `stub` mm; when none exists the call refuses and says so
+    — pass waypoints. `crossings` counts existing P&ID lines the new one cuts
+    (reported, never refused) and `port_reuse` names ports that already had a
+    line (branching is legal). Signal classes get ISA-5.1 markers (`//`, `X`,
+    `L`, `o`) as small blocks on segments >= 15 mm; electric is dashed by layer.
+    """
+    from engineering.pid.drawlines import draw_line
+
+    await ctx.info(f"P&ID line {line_class}")
+    return await draw_line(
+        _backend(ctx),
+        from_,
+        to,
+        line_class,
+        route,
+        stub,
+        line_number,
+        size,
+        service,
+        spec,
+        insulation,
+        number_format,
+        label,
+        arrow,
     )
 
 

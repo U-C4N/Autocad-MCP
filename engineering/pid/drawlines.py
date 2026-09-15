@@ -1,0 +1,270 @@
+"""``pid_line_draw``: resolve ports, route, draw, label, mark, tag with XDATA."""
+
+from __future__ import annotations
+
+import math
+from typing import TYPE_CHECKING
+
+from .insert import ensure_layer, insert_symbol
+from .lines import (
+    AXIS,
+    DEFAULT_NUMBER_FORMAT,
+    LINE_CLASSES,
+    PID_LINE_LAYERS,
+    count_crossings,
+    format_line_number,
+    label_placement,
+    marker_positions,
+    route,
+    snap_axis,
+)
+from .symbols import Port, resolve, transform_port
+from .xdata import line_payload, marker_payload, read_payload, write_payload
+
+if TYPE_CHECKING:
+    from backends.base import AutoCADBackend
+
+TEXT_HEIGHT = 2.5
+LABEL_LAYER = "PROCESS-LINE-TEXT"
+_INSERT_TYPES = {"INSERT", "BLOCKREFERENCE"}
+_PAGE = 1000
+
+
+async def resolve_endpoint(backend: AutoCADBackend, ref: dict) -> dict:
+    """``{handle, port}`` → the port in WCS (payload ports + INSERT transform);
+    ``{x, y}`` → a free point."""
+    if not isinstance(ref, dict):
+        raise ValueError("endpoint must be {handle, port} or {x, y}")
+    if "handle" in ref:
+        handle = str(ref["handle"])
+        info = await backend.entity_get(handle)
+        block_name = str(info.properties.get("block_name", ""))
+        if block_name.startswith("PID_MARKER_"):
+            raise ValueError(f"{handle} is a marker/arrow — decoration on a line, not an endpoint")
+        payload = await read_payload(backend, handle)
+        if info.type not in _INSERT_TYPES or payload is None or payload.get("kind") != "symbol":
+            raise ValueError(f"{handle} is not a P&ID symbol placed by pid_symbol_insert")
+        ports = payload["ports"]
+        port_name = ref.get("port")
+        if port_name is None:
+            if len(ports) == 1:
+                port_name = next(iter(ports))
+            elif payload.get("family") == "instrument" and "signal" in ports:
+                port_name = "signal"
+            else:
+                raise ValueError(f"{handle}: choose a port: {', '.join(ports)}")
+        if port_name not in ports:
+            raise ValueError(f"{handle} has no port {port_name!r}; ports: {', '.join(ports)}")
+        lx, ly, ldir, kind, radius = ports[port_name]
+        ins = info.properties["insertion"]
+        world = transform_port(
+            Port(port_name, float(lx), float(ly), ldir, kind, float(radius)),
+            float(ins[0]),
+            float(ins[1]),
+            float(info.properties.get("rotation_deg", 0.0)),
+            float(info.properties.get("x_scale", 1.0)),
+        )
+        return {**world, "handle": handle, "port": port_name, "block_name": block_name}
+    if "x" in ref and "y" in ref:
+        return {
+            "name": None,
+            "x": float(ref["x"]),
+            "y": float(ref["y"]),
+            "direction_deg": None,
+            "kind": None,
+            "radius": 0.0,
+            "inferred": False,
+            "handle": None,
+            "port": None,
+            "block_name": None,
+        }
+    raise ValueError("endpoint must be {handle, port} or {x, y}")
+
+
+def _vertices(info) -> list[tuple[float, float]]:
+    if info.type == "LINE":
+        s, e = info.properties["start"], info.properties["end"]
+        return [(float(s[0]), float(s[1])), (float(e[0]), float(e[1]))]
+    return [(float(p[0]), float(p[1])) for p in info.properties.get("points", [])]
+
+
+async def existing_pid_lines(backend: AutoCADBackend) -> list[dict]:
+    """Every LINE/LWPOLYLINE on a P&ID line layer, with its payload when it has one."""
+    out = []
+    for type_filter in ("LWPOLYLINE", "LINE"):
+        offset = 0
+        while True:
+            page = await backend.entity_list(type_filter=type_filter, limit=_PAGE, offset=offset)
+            for info in page:
+                if info.layer.upper() not in PID_LINE_LAYERS:
+                    continue
+                payload = (
+                    await read_payload(backend, info.handle) if info.type == "LWPOLYLINE" else None
+                )
+                out.append({"handle": info.handle, "vertices": _vertices(info), "payload": payload})
+            if len(page) < _PAGE:
+                break
+            offset += _PAGE
+    return out
+
+
+def _anchor(endpoint: dict, other: dict) -> tuple[tuple[float, float], float | None]:
+    """Where the line actually starts/ends: on the circle for radial ports."""
+    if endpoint["radius"] > 0:
+        axis = snap_axis(other["x"] - endpoint["x"], other["y"] - endpoint["y"])
+        ux, uy = AXIS[axis]
+        return (
+            endpoint["x"] + ux * endpoint["radius"],
+            endpoint["y"] + uy * endpoint["radius"],
+        ), axis
+    return (endpoint["x"], endpoint["y"]), endpoint["direction_deg"]
+
+
+def _ref(endpoint: dict) -> dict | None:
+    return {"handle": endpoint["handle"], "port": endpoint["port"]} if endpoint["handle"] else None
+
+
+def _segment_angle(a: tuple[float, float], b: tuple[float, float]) -> float:
+    (ax0, ay0), (ax1, ay1) = a, b
+    if abs(ax1 - ax0) < 1e-9 or abs(ay1 - ay0) < 1e-9:
+        return snap_axis(ax1 - ax0, ay1 - ay0)
+    return math.degrees(math.atan2(ay1 - ay0, ax1 - ax0)) % 360.0
+
+
+async def draw_line(
+    backend: AutoCADBackend,
+    from_: dict,
+    to: dict,
+    line_class: str = "process_major",
+    route_mode="auto",
+    stub: float = 5.0,
+    line_number: str | None = None,
+    size: str | None = None,
+    service: str | None = None,
+    spec: str | None = None,
+    insulation: str | None = None,
+    number_format: str | None = None,
+    label: bool = True,
+    arrow: bool | None = None,
+) -> dict:
+    if line_class not in LINE_CLASSES:
+        raise ValueError(f"line_class must be one of {', '.join(LINE_CLASSES)}, got {line_class!r}")
+    cls = LINE_CLASSES[line_class]
+    start = await resolve_endpoint(backend, from_)
+    end = await resolve_endpoint(backend, to)
+    if start["handle"] and start["handle"] == end["handle"] and start["port"] == end["port"]:
+        raise ValueError("from and to are the same port")
+    s_point, s_dir = _anchor(start, end)
+    e_point, e_dir = _anchor(end, start)
+    path = route(s_point, s_dir, e_point, e_dir, stub=stub, mode=route_mode)
+
+    existing = await existing_pid_lines(backend)
+    crossings = count_crossings(path, [ln["vertices"] for ln in existing])
+    used: set[tuple[str, str]] = set()
+    max_seq = 0
+    for ln in existing:
+        payload = ln["payload"] or {}
+        for key in ("from", "to"):
+            ref = payload.get(key)
+            if ref:
+                used.add((ref["handle"], ref["port"]))
+        if isinstance(payload.get("seq"), int):
+            max_seq = max(max_seq, payload["seq"])
+    port_reuse = [
+        {"handle": ep["handle"], "port": ep["port"]}
+        for ep in (start, end)
+        if ep["handle"] and (ep["handle"], ep["port"]) in used
+    ]
+    seq = max_seq + 1
+    if line_number is None:
+        fmt = number_format or DEFAULT_NUMBER_FORMAT
+        fields = {
+            "size": size,
+            "service": service,
+            "seq": seq,
+            "spec": spec,
+            "insulation": insulation,
+        }
+        line_number = format_line_number(fmt, **fields) or None
+
+    await ensure_layer(backend, cls.layer)
+    poly = await backend.entity_create_polyline(
+        [list(p) for p in path], closed=False, layer=cls.layer
+    )
+    if cls.linetype:
+        await backend.entity_set_properties(poly.handle, linetype=cls.linetype)
+    await write_payload(
+        backend,
+        poly.handle,
+        line_payload(
+            line_class, line_number, size, service, spec, insulation, seq, _ref(start), _ref(end)
+        ),
+    )
+
+    label_handle = None
+    if label and line_number:
+        await ensure_layer(backend, LABEL_LAYER)
+        lx, ly, rot, _index = label_placement(path)
+        shift = len(line_number) * TEXT_HEIGHT * 0.7 / 2.0
+        lx -= math.cos(math.radians(rot)) * shift
+        ly -= math.sin(math.radians(rot)) * shift
+        text = await backend.entity_create_text(
+            line_number, lx, ly, TEXT_HEIGHT, rot, layer=LABEL_LAYER
+        )
+        label_handle = text.handle
+
+    want_arrow = cls.arrow if arrow is None else arrow
+    arrow_handle = None
+    if want_arrow:
+        angle = _segment_angle(path[-2], path[-1])
+        ax1, ay1 = path[-1]
+        placed = await insert_symbol(
+            backend,
+            resolve("arrow_flow"),
+            ax1,
+            ay1,
+            angle,
+            1.0,
+            None,
+            cls.layer,
+            marker_payload(poly.handle),
+        )
+        arrow_handle = placed["handle"]
+
+    marker_handles: list[str] = []
+    if cls.marker:
+        marker_spec = resolve(cls.marker)
+        for mx, my, angle in marker_positions(path):
+            placed = await insert_symbol(
+                backend,
+                marker_spec,
+                mx,
+                my,
+                angle,
+                1.0,
+                None,
+                cls.layer,
+                marker_payload(poly.handle),
+            )
+            marker_handles.append(placed["handle"])
+
+    return {
+        "handle": poly.handle,
+        "vertices": [[x, y] for x, y in path],
+        "line_class": line_class,
+        "layer": cls.layer,
+        "line_number": line_number,
+        "from": {
+            "handle": start["handle"],
+            "port": start["port"],
+            "x": s_point[0],
+            "y": s_point[1],
+        },
+        "to": {"handle": end["handle"], "port": end["port"], "x": e_point[0], "y": e_point[1]},
+        "port_reuse": port_reuse,
+        "crossings": crossings,
+        "label_handle": label_handle,
+        "arrow_handle": arrow_handle,
+        "marker_handles": marker_handles,
+        "backend": backend.name,
+    }
