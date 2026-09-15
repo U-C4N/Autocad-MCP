@@ -3,7 +3,11 @@
 DXF XDATA is a list of (group code, value) pairs under a registered APPID.
 This module is the one place that decides how a JSON value becomes a group
 code and enforces the two limits AutoCAD enforces silently: 255 characters
-per string and 16 KB per entity.
+per string and 16 KB per entity. It also refuses the one thing neither engine
+can store: a line separator inside a string. DXF is a text format of
+alternating "group code" / "value" lines, and ezdxf writes a 1000 tag verbatim,
+so a LF or CR in the value splits the tag pair and the saved file -- and every
+undo/transaction snapshot, which is also a DXF save -- becomes unreadable.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ RESERVED_APPS = {"ACAD"}
 MAX_STRING = 255
 MAX_BYTES = 16 * 1024
 INT_MIN, INT_MAX = -(2**31), 2**31 - 1
+LINE_SEPARATORS = ("\n", "\r")
 
 
 def validate_app_name(app) -> str:
@@ -39,6 +44,11 @@ def encode_values(values) -> list[tuple[int, object]]:
             if len(value) > MAX_STRING:
                 raise ValueError(
                     f"xdata: {where} is {len(value)} characters; the limit is {MAX_STRING}"
+                )
+            if any(sep in value for sep in LINE_SEPARATORS):
+                raise ValueError(
+                    f"xdata: {where} contains a newline; "
+                    "line separators are not allowed in XDATA strings"
                 )
             tags.append((1000, value))
             size += len(value.encode("utf-8")) + 2
