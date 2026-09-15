@@ -194,6 +194,21 @@ def test_transform_port_applies_rotation_and_scale_about_the_insertion():
     assert radial["direction_deg"] is None and radial["radius"] == pytest.approx(15.0)
 
 
+def test_transform_port_applies_a_mirror_and_refuses_a_stretch():
+    port = Port("out", 0.0, 6.0, 90.0, "process")
+    flipped_y = transform_port(port, 100.0, 200.0, 0.0, 1.0, -1.0)
+    assert (flipped_y["x"], flipped_y["y"], flipped_y["direction_deg"]) == (100.0, 194.0, 270.0)
+    mirrored = transform_port(port, 200.0, 100.0, 180.0, 1.0, -1.0)  # entity_mirror about x=150
+    assert (mirrored["x"], mirrored["y"]) == pytest.approx((200.0, 106.0))
+    assert mirrored["direction_deg"] == pytest.approx(90.0)
+    flipped_x = transform_port(Port("in", -4.0, 0.0, 180.0, "process"), 0.0, 0.0, 0.0, -1.0, 1.0)
+    assert (flipped_x["x"], flipped_x["y"], flipped_x["direction_deg"]) == (4.0, 0.0, 0.0)
+    radial = transform_port(Port("signal", 0.0, 0.0, None, "signal", 5.0), 0.0, 0.0, 0.0, -2.0)
+    assert radial["radius"] == pytest.approx(10.0)
+    with pytest.raises(ValueError, match="non-uniform"):
+        transform_port(port, 0.0, 0.0, 0.0, 2.0, 1.0)
+
+
 def test_list_symbols_reports_variants_and_ports():
     rows = {row["symbol"]: row for row in list_symbols()}
     assert rows["instrument"]["variants"] == {

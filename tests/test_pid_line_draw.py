@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
-from engineering.pid.drawlines import draw_line
+from backends.com_backend import ComBackend
+from engineering.pid.drawlines import draw_line, existing_pid_lines, resolve_endpoint
 from engineering.pid.insert import place_symbol
-from engineering.pid.xdata import read_payload
+from engineering.pid.xdata import (
+    APP_NAME,
+    encode_payload,
+    line_payload,
+    read_payload,
+    write_payload,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -138,3 +147,119 @@ async def test_refusals(backend):
     with pytest.raises(ValueError, match="not a P&ID symbol"):
         line = await backend.entity_create_line(0, 0, 1, 1)
         await draw_line(backend, {"handle": line.handle, "port": "in"}, {"x": 0, "y": 0})
+
+
+async def test_mirrored_symbol_ports_follow_the_mirrored_geometry(backend):
+    """``entity_mirror`` on an INSERT writes ``y_scale = -1``; the port has to be
+    on the mirrored pump (discharge stub at (200, 104)->(200, 106)), not at the
+    unmirrored offset — a line attached at y=94 runs through the pump body."""
+    pump = await place_symbol(backend, "centrifugal_pump", 100, 100, tag="P-1")
+    about_vertical = await backend.entity_mirror(pump["handle"], 150, 0, 150, 200)
+    info = await backend.entity_get(about_vertical.handle)
+    assert info.properties["y_scale"] == -1.0, "the fixture must exercise a real mirror"
+    ep = await resolve_endpoint(backend, {"handle": about_vertical.handle, "port": "discharge"})
+    assert (ep["x"], ep["y"], ep["direction_deg"]) == (200.0, 106.0, 90.0)
+    suction = await resolve_endpoint(backend, {"handle": about_vertical.handle, "port": "suction"})
+    assert (suction["x"], suction["y"], suction["direction_deg"]) == (204.0, 100.0, 0.0)
+    result = await draw_line(
+        backend, {"handle": about_vertical.handle, "port": "discharge"}, {"x": 200, "y": 160}
+    )
+    assert result["vertices"][0] == [200.0, 106.0]
+
+    about_horizontal = await backend.entity_mirror(pump["handle"], 0, 150, 300, 150)
+    ep = await resolve_endpoint(backend, {"handle": about_horizontal.handle, "port": "discharge"})
+    assert (ep["x"], ep["y"], ep["direction_deg"]) == (100.0, 194.0, 270.0)
+
+
+async def test_stretched_symbol_is_refused_not_resolved_off_the_geometry(backend):
+    pump = await place_symbol(backend, "centrifugal_pump", 100, 100, tag="P-1")
+    payload = await read_payload(backend, pump["handle"])
+    stretched = await backend.block_insert(pump["block_name"], 300, 100, 2.0, 1.0, 0.0)
+    await write_payload(backend, stretched.handle, payload)
+    with pytest.raises(ValueError, match="non-uniform"):
+        await resolve_endpoint(backend, {"handle": stretched.handle, "port": "discharge"})
+    with pytest.raises(ValueError, match="non-uniform"):
+        await draw_line(
+            backend, {"handle": stretched.handle, "port": "discharge"}, {"x": 0, "y": 0}
+        )
+
+
+# ── the COM engine names a lightweight polyline ``AcDbPolyline`` ─────────────
+
+
+class _ComEntity:
+    """An ActiveX entity with only the members it is given."""
+
+    def __init__(self, object_name, **members):
+        self.ObjectName = object_name
+        for name, value in members.items():
+            setattr(self, name, value)
+
+    def __getattr__(self, name):
+        raise AttributeError(name)
+
+
+def _com_pid_polyline(handle, coords, payload):
+    tags = encode_payload(payload)
+    codes = [1001] + [1000] * len(tags)
+    values = [APP_NAME] + tags
+    return _ComEntity(
+        "AcDbPolyline",
+        Handle=handle,
+        Layer="PROCESS-PIPING-MAIN",
+        Color=256,
+        Linetype="ByLayer",
+        Visible=True,
+        Closed=False,
+        Length=1.0,
+        Coordinates=tuple(coords),
+        Normal=(0.0, 0.0, 1.0),
+        Elevation=0.0,
+        GetBoundingBox=lambda: ((0.0, 0.0, 0.0), (1.0, 1.0, 0.0)),
+        GetXData=lambda app: (codes, values),
+    )
+
+
+def _fake_com(monkeypatch, entities):
+    backend = ComBackend()
+
+    async def run_inline(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(backend, "_run", run_inline)
+    by_handle = {ent.Handle: ent for ent in entities}
+    space = SimpleNamespace(Count=len(entities), Item=lambda i: entities[i])
+    doc = SimpleNamespace(HandleToObject=lambda handle: by_handle[handle])
+    monkeypatch.setattr("backends.com_backend._msp", lambda: space)
+    monkeypatch.setattr("backends.com_backend._acad_doc", lambda: doc)
+    return backend
+
+
+async def test_existing_lines_are_seen_on_the_com_engine(monkeypatch):
+    """A live LWPOLYLINE's ObjectName is ``AcDbPolyline`` (measured on AutoCAD
+    2026), which the COM engine reports as type POLYLINE. A reader that filters
+    on LWPOLYLINE sees nothing there: every number restarts at seq 1, crossings
+    stay 0 and port reuse is never reported."""
+    payload = line_payload(
+        "process_major",
+        "100-P-7",
+        "100",
+        "P",
+        None,
+        None,
+        7,
+        {"handle": "2A", "port": "discharge"},
+        None,
+    )
+    poly = _com_pid_polyline("3E", (100.0, 106.0, 100.0, 128.0, 207.0, 128.0), payload)
+    other_layer = _com_pid_polyline("3F", (0.0, 0.0, 1.0, 1.0), payload)
+    other_layer.Layer = "GEOMETRY"
+    backend = _fake_com(monkeypatch, [poly, other_layer])
+
+    assert (await backend.entity_get("3E")).type == "POLYLINE"
+    lines = await existing_pid_lines(backend)
+
+    assert [ln["handle"] for ln in lines] == ["3E"]
+    assert lines[0]["vertices"] == [(100.0, 106.0), (100.0, 128.0), (207.0, 128.0)]
+    assert lines[0]["payload"]["seq"] == 7
+    assert lines[0]["payload"]["from"] == {"handle": "2A", "port": "discharge"}

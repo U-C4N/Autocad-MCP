@@ -326,6 +326,15 @@ def _com_bulge(entity, index: int) -> float:
         return 0.0
 
 
+# What a lightweight polyline calls itself over ActiveX. The live name is
+# ``AcDbPolyline`` (measured on AutoCAD 2026, 2026-08-06 — the member profile in
+# tests/test_com_backend.py); ``AcDbLWPolyline`` is the DXF-flavoured spelling
+# this code once matched on alone, which left every live LWPOLYLINE without
+# ``points`` because the branch never fired. Both are accepted so the vertices
+# come through whichever spelling a seat reports.
+_COM_LWPOLYLINE_NAMES = ("AcDbPolyline", "AcDbLWPolyline")
+
+
 def _entity_info(entity) -> EntityInfo:
     """Convert a COM entity object to EntityInfo dataclass."""
     try:
@@ -362,16 +371,17 @@ def _entity_info(entity) -> EntityInfo:
             # Arc length (N3) — parity with ezdxf so length_range selects ARCs.
             _sweep = (entity.EndAngle - entity.StartAngle) % (2.0 * math.pi)
             props["length"] = entity.Radius * _sweep
-        elif obj_name in ("AcDbLWPolyline", "AcDb2dPolyline"):
+        elif obj_name in _COM_LWPOLYLINE_NAMES or obj_name == "AcDb2dPolyline":
             coords = list(entity.Coordinates)
             pts = [[coords[i], coords[i + 1]] for i in range(0, len(coords), 2)]
             # ActiveX hands back WCS for every point property on this backend
             # *except* this one: "LightweightPolyline object: the variant is an
-            # array of 2D points in OCS." Scoped to AcDbLWPolyline deliberately —
-            # AcDb2dPolyline's Coordinates may be 3D triples, and changing its
-            # stride on a doc reading alone, with no way to verify against live
-            # AutoCAD from here, risks breaking a path that works today.
-            if obj_name == "AcDbLWPolyline":
+            # array of 2D points in OCS." Scoped to the lightweight polyline
+            # deliberately — AcDb2dPolyline's Coordinates may be 3D triples, and
+            # changing its stride on a doc reading alone, with no way to verify
+            # against live AutoCAD from here, risks breaking a path that works
+            # today.
+            if obj_name in _COM_LWPOLYLINE_NAMES:
                 try:
                     normal = tuple(entity.Normal)
                     if not ocs.is_wcs_frame(normal):

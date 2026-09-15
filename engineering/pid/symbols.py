@@ -176,21 +176,55 @@ def all_specs() -> list[SymbolSpec]:
     return specs
 
 
-def transform_port(port: Port, x: float, y: float, rotation_deg: float, scale: float) -> dict:
-    """Symbol-local port -> WCS, for an INSERT at (x, y) rotated by ``rotation_deg``
-    and uniformly scaled."""
+def transform_port(
+    port: Port,
+    x: float,
+    y: float,
+    rotation_deg: float,
+    scale: float,
+    y_scale: float | None = None,
+) -> dict:
+    """Symbol-local port -> WCS, for an INSERT at (x, y) rotated by ``rotation_deg``.
+
+    ``scale`` is the X factor; ``y_scale`` defaults to it (a uniform INSERT). A
+    negative factor is a mirror — ``entity_mirror`` on an INSERT writes
+    ``y_scale = -1`` — and is applied in full, to the point, the direction and
+    the radius, so the port lands where the mirrored geometry actually is. The
+    magnitudes must match: a stretched symbol has no circle for a radial port to
+    sit on, so it is refused instead of resolving to a point off the symbol.
+    """
+    sx = float(scale)
+    sy = sx if y_scale is None else float(y_scale)
+    if abs(abs(sx) - abs(sy)) > 1e-9:
+        raise ValueError(
+            f"non-uniform INSERT scale (x_scale={sx:g}, y_scale={sy:g}): P&ID symbols "
+            "are placed with one scale factor (a mirror may flip its sign); re-insert "
+            "the symbol with pid_symbol_insert"
+        )
     a = math.radians(rotation_deg)
-    lx, ly = port.x * scale, port.y * scale
-    wx = x + lx * math.cos(a) - ly * math.sin(a)
-    wy = y + lx * math.sin(a) + ly * math.cos(a)
-    direction = None if port.direction_deg is None else (port.direction_deg + rotation_deg) % 360.0
+    cos_a, sin_a = math.cos(a), math.sin(a)
+    lx, ly = port.x * sx, port.y * sy
+    wx = x + lx * cos_a - ly * sin_a
+    wy = y + lx * sin_a + ly * cos_a
+    if port.direction_deg is None:
+        direction = None
+    else:
+        # Reflect first (a flipped X negates the angle about 90°, a flipped Y
+        # negates it about 0°), then rotate — exact, so the uniform case keeps
+        # the same numbers it always had.
+        d = float(port.direction_deg)
+        if sx < 0:
+            d = 180.0 - d
+        if sy < 0:
+            d = -d
+        direction = (d + rotation_deg) % 360.0
     return {
         "name": port.name,
         "x": wx,
         "y": wy,
         "direction_deg": direction,
         "kind": port.kind,
-        "radius": port.radius * scale,
+        "radius": port.radius * abs(sx),
         "inferred": False,
     }
 

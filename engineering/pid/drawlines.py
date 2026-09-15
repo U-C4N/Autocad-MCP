@@ -27,6 +27,12 @@ if TYPE_CHECKING:
 TEXT_HEIGHT = 2.5
 LABEL_LAYER = "PROCESS-LINE-TEXT"
 _INSERT_TYPES = {"INSERT", "BLOCKREFERENCE"}
+# ezdxf reports a lightweight polyline as LWPOLYLINE; the COM engine derives the
+# type from the ActiveX ObjectName, and a live LWPOLYLINE is ``AcDbPolyline``
+# (measured on AutoCAD 2026 — see backends/com_backend.py), so it arrives as
+# POLYLINE, with the heavy kind as 2DPOLYLINE. Same set the graph reader keeps.
+_POLY_TYPES = {"LWPOLYLINE", "POLYLINE", "2DPOLYLINE"}
+_LINE_TYPES = {"LINE"}
 _PAGE = 1000
 
 
@@ -57,13 +63,21 @@ async def resolve_endpoint(backend: AutoCADBackend, ref: dict) -> dict:
             raise ValueError(f"{handle} has no port {port_name!r}; ports: {', '.join(ports)}")
         lx, ly, ldir, kind, radius = ports[port_name]
         ins = info.properties["insertion"]
-        world = transform_port(
-            Port(port_name, float(lx), float(ly), ldir, kind, float(radius)),
-            float(ins[0]),
-            float(ins[1]),
-            float(info.properties.get("rotation_deg", 0.0)),
-            float(info.properties.get("x_scale", 1.0)),
-        )
+        x_scale = float(info.properties.get("x_scale", 1.0))
+        # The full INSERT transform: a mirrored symbol (``entity_mirror`` writes
+        # ``y_scale = -1``) has its ports on the mirrored geometry, not on the
+        # unmirrored one; a stretched symbol is refused by ``transform_port``.
+        try:
+            world = transform_port(
+                Port(port_name, float(lx), float(ly), ldir, kind, float(radius)),
+                float(ins[0]),
+                float(ins[1]),
+                float(info.properties.get("rotation_deg", 0.0)),
+                x_scale,
+                float(info.properties.get("y_scale", x_scale)),
+            )
+        except ValueError as exc:
+            raise ValueError(f"{handle}: {exc}") from exc
         return {**world, "handle": handle, "port": port_name, "block_name": block_name}
     if "x" in ref and "y" in ref:
         return {
@@ -82,29 +96,34 @@ async def resolve_endpoint(backend: AutoCADBackend, ref: dict) -> dict:
 
 
 def _vertices(info) -> list[tuple[float, float]]:
-    if info.type == "LINE":
+    if info.type in _LINE_TYPES:
         s, e = info.properties["start"], info.properties["end"]
         return [(float(s[0]), float(s[1])), (float(e[0]), float(e[1]))]
-    return [(float(p[0]), float(p[1])) for p in info.properties.get("points", [])]
+    return [(float(p[0]), float(p[1])) for p in info.properties.get("points") or []]
 
 
 async def existing_pid_lines(backend: AutoCADBackend) -> list[dict]:
-    """Every LINE/LWPOLYLINE on a P&ID line layer, with its payload when it has one."""
+    """Every LINE/polyline on a P&ID line layer, with its payload when it has one.
+
+    Listed without a type filter: the two engines name a lightweight polyline
+    differently (``_POLY_TYPES``), and a filter spelled for one of them is blind
+    on the other — every auto-built number would restart at 1 and no crossing
+    or port reuse would ever be reported there.
+    """
     out = []
-    for type_filter in ("LWPOLYLINE", "LINE"):
-        offset = 0
-        while True:
-            page = await backend.entity_list(type_filter=type_filter, limit=_PAGE, offset=offset)
-            for info in page:
-                if info.layer.upper() not in PID_LINE_LAYERS:
-                    continue
-                payload = (
-                    await read_payload(backend, info.handle) if info.type == "LWPOLYLINE" else None
-                )
-                out.append({"handle": info.handle, "vertices": _vertices(info), "payload": payload})
-            if len(page) < _PAGE:
-                break
-            offset += _PAGE
+    offset = 0
+    while True:
+        page = await backend.entity_list(limit=_PAGE, offset=offset)
+        for info in page:
+            if info.type not in _POLY_TYPES | _LINE_TYPES:
+                continue
+            if info.layer.upper() not in PID_LINE_LAYERS:
+                continue
+            payload = await read_payload(backend, info.handle) if info.type in _POLY_TYPES else None
+            out.append({"handle": info.handle, "vertices": _vertices(info), "payload": payload})
+        if len(page) < _PAGE:
+            break
+        offset += _PAGE
     return out
 
 
