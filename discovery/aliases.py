@@ -734,6 +734,14 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "hide an entity",
         ),
     ),
+    "entity_get_xdata": ToolAliases(
+        acad=("XDLIST",),
+        synonyms=("extended data", "read xdata", "entity metadata", "registered application data"),
+    ),
+    "entity_set_xdata": ToolAliases(
+        acad=("XDATA",),
+        synonyms=("attach extended data", "write xdata", "tag an entity with metadata"),
+    ),
     "entity_trim": ToolAliases(
         acad=("TRIM", "TR"),
         synonyms=(

@@ -156,3 +156,17 @@ class EntityQueryContract(ABC):
           would cost more than the listing it is meant to make cheap.
         """
         ...
+
+    # ── extended entity data (XDATA) ─────────────────────────────────────────
+
+    @abstractmethod
+    async def entity_get_xdata(self, handle: str, app_name: str | None = None) -> dict:
+        """Extended entity data as ``{"handle", "xdata": {app: [values]}, "backend"}``.
+        ``app_name=None`` returns every app; an absent app is ``{}``, not an error."""
+        ...
+
+    @abstractmethod
+    async def entity_set_xdata(self, handle: str, app_name: str, values: list) -> dict:
+        """Replace the app's XDATA (registering the APPID if needed). Values are typed
+        by ``backends/xdata_specs.py``; an empty list removes the app's XDATA."""
+        ...

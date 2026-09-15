@@ -495,7 +495,7 @@ async def test_tool_groups_is_byte_identical_to_the_source_declared_grouping():
 
 
 async def test_tool_group_sizes_are_unchanged():
-    """Frozen snapshot of the surface (155 tools, 19 groups).
+    """Frozen snapshot of the surface (157 tools, 19 groups).
 
     Taken before @cad_tool landed at 131 tools; `batch` moved 2 -> 3 when
     v1.5.0's `cad_batch` joined `entity_batch_create`/`entity_batch_modify`, and
@@ -504,8 +504,11 @@ async def test_tool_group_sizes_are_unchanged():
     `_GROUP_TAG_PRIORITY` ranks `layout` higher, so CHSPACE files under layouts
     rather than splitting a ninth tool off into entity_modification. `blocks`
     moved 8 -> 9 when v1.6's `block_define` (typed primitives + ATTDEFs on
-    both engines) joined SECTION 7. Every other number here has been unchanged
-    since the snapshot was taken.
+    both engines) joined SECTION 7. `entity_query` moved 8 -> 9 and
+    `entity_modification` 15 -> 16 when v1.6's `entity_get_xdata` /
+    `entity_set_xdata` joined SECTION 5 (the getter is tagged `query`, the
+    setter `modify`, so the pair splits across two groups). Every other number
+    here has been unchanged since the snapshot was taken.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
@@ -517,8 +520,8 @@ async def test_tool_group_sizes_are_unchanged():
         "drawing": 11,
         "engineering": 10,
         "entity_creation": 18,
-        "entity_modification": 15,
-        "entity_query": 8,
+        "entity_modification": 16,
+        "entity_query": 9,
         "layers": 14,
         "layouts": 12,
         "premium": 12,
@@ -529,4 +532,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 155
+    assert sum(sizes.values()) == 157

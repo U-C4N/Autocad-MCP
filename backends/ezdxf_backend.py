@@ -4518,6 +4518,66 @@ class EzdxfBackend(AutoCADBackend):
 
         return await self._async(_sync)
 
+    # ── extended entity data (XDATA) ─────────────────────────────────────────
+
+    async def entity_get_xdata(self, handle, app_name=None) -> dict:
+        from backends.xdata_specs import decode_values, validate_app_name
+
+        wanted = validate_app_name(app_name) if app_name else None
+
+        def _sync():
+            ent = self._get_entity(handle)
+            out: dict[str, list] = {}
+            if ent.xdata is not None:
+                apps = [wanted] if wanted else list(ent.xdata.data.keys())
+                for app in apps:
+                    if not ent.has_xdata(app):
+                        continue
+                    tags = ent.get_xdata(app)
+                    out[app] = decode_values((tag.code, tag.value) for tag in tags)
+            return {"handle": handle, "xdata": out, "backend": "ezdxf"}
+
+        return await self._async(_sync)
+
+    async def entity_set_xdata(self, handle, app_name, values) -> dict:
+        from backends.xdata_specs import encode_values, validate_app_name
+
+        # Validate and type every value before touching the document: a bad
+        # values[i] raises here and nothing is written.
+        app = validate_app_name(app_name)
+        tags = encode_values(values)
+
+        def _sync():
+            doc = self._require_doc()
+            ent = self._get_entity(handle)
+            if not tags:
+                ent.discard_xdata(app)
+                self._mark_dirty()
+                return {
+                    "ok": True,
+                    "handle": handle,
+                    "app_name": app,
+                    "value_count": 0,
+                    "bytes": 0,
+                    "removed": True,
+                    "backend": "ezdxf",
+                }
+            if app not in doc.appids:
+                doc.appids.add(app)
+            ent.set_xdata(app, tags)
+            self._mark_dirty()
+            return {
+                "ok": True,
+                "handle": handle,
+                "app_name": app,
+                "value_count": len(tags),
+                "bytes": sum(len(str(v)) for _, v in tags),
+                "removed": False,
+                "backend": "ezdxf",
+            }
+
+        return await self._async(_sync)
+
     async def block_create_from_entities(
         self,
         name,

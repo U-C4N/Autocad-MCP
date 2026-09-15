@@ -3085,6 +3085,61 @@ class ComBackend(AutoCADBackend):
 
         return await self._run(_sync)
 
+    # ── extended entity data (XDATA) ─────────────────────────────────────────
+
+    async def entity_get_xdata(self, handle, app_name=None) -> dict:
+        from backends.xdata_specs import split_by_app, validate_app_name
+
+        wanted = validate_app_name(app_name) if app_name else ""
+
+        def _sync():
+            doc = _acad_doc()
+            ent = doc.HandleToObject(str(handle).strip().upper())
+            # GetXData("") returns every app's stream with the 1001 markers
+            # inline; a named app returns just that app's slice.
+            codes, values = ent.GetXData(wanted)
+            grouped = split_by_app(list(codes or []), list(values or []))
+            if wanted:
+                grouped = {k: v for k, v in grouped.items() if k == wanted}
+            return {"handle": handle, "xdata": grouped, "backend": "com"}
+
+        return await self._run(_sync)
+
+    async def entity_set_xdata(self, handle, app_name, values) -> dict:
+        from backends.xdata_specs import encode_values, validate_app_name
+
+        # Validate and type every value before any ActiveX call: a bad
+        # values[i] raises here and nothing is written.
+        app = validate_app_name(app_name)
+        tags = encode_values(values)
+
+        def _sync():
+            doc = _acad_doc()
+            ent = doc.HandleToObject(str(handle).strip().upper())
+            try:
+                doc.RegisteredApplications.Add(app)
+            except Exception as exc:  # already registered
+                log.debug("RegisteredApplications.Add(%s): %s", app, exc)
+            # A bare 1001 marker with no data is how ActiveX removes an app's
+            # XDATA, so the empty case is the same call with an empty tail.
+            codes = [1001] + [code for code, _ in tags]
+            payload = [app] + [_apoint(*value) if code == 1010 else value for code, value in tags]
+            ent.SetXData(
+                _ai(codes),
+                win32com.client.VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_VARIANT, payload),
+            )
+            return {
+                "ok": True,
+                "handle": handle,
+                "app_name": app,
+                "value_count": len(tags),
+                "bytes": sum(len(str(v)) for _, v in tags),
+                "removed": not tags,
+                "backend": "com",
+            }
+
+        return await self._run(_sync)
+
     async def block_create_from_entities(
         self,
         name,

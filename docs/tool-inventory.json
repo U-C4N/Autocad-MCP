@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 155,
+    "tools": 157,
     "resources": 6,
     "prompts": 5,
     "groups": 19
@@ -17,8 +17,8 @@
     "drawing": 11,
     "engineering": 10,
     "entity_creation": 18,
-    "entity_modification": 15,
-    "entity_query": 8,
+    "entity_modification": 16,
+    "entity_query": 9,
     "layers": 14,
     "layouts": 12,
     "premium": 12,
@@ -1153,6 +1153,20 @@
       }
     },
     {
+      "name": "entity_get_xdata",
+      "group": "entity_query",
+      "cost": "read",
+      "summary": "Read an entity's extended data (XDATA) by application name.",
+      "tags": [
+        "entity",
+        "query"
+      ],
+      "annotations": {
+        "title": "Get Entity XDATA",
+        "readOnlyHint": true
+      }
+    },
+    {
       "name": "entity_list",
       "group": "entity_query",
       "cost": "read",
@@ -1268,6 +1282,20 @@
         "title": "Set Entity Properties",
         "readOnlyHint": false,
         "destructiveHint": false
+      }
+    },
+    {
+      "name": "entity_set_xdata",
+      "group": "entity_modification",
+      "cost": "safe",
+      "summary": "Attach or replace extended data (XDATA) on an entity.",
+      "tags": [
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Set Entity XDATA",
+        "readOnlyHint": false
       }
     },
     {

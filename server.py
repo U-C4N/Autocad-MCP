@@ -2394,7 +2394,7 @@ async def entity_edit_geometry(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 5: Entity Query (7 tools) ───────────────────────────────────────
+# ── SECTION 5: Entity Query (9 tools) ───────────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -2637,6 +2637,42 @@ async def selection_get(
         total=len(entities),
     )
     return result
+
+
+@cad_tool(summary="Read an entity's extended data (XDATA) by application name.", cost="read")
+@mcp.tool(
+    annotations={"title": "Get Entity XDATA", "readOnlyHint": True},
+    tags={"entity", "query"},
+)
+async def entity_get_xdata(
+    handle: Annotated[str, "Entity handle"],
+    app_name: Annotated[str | None, "Registered application name; omit for every app"] = None,
+    ctx: Context = None,
+) -> dict:
+    """Extended entity data as {app: [values]}. An app with no XDATA is simply absent."""
+    return await _backend(ctx).entity_get_xdata(handle, app_name)
+
+
+@cad_tool(summary="Attach or replace extended data (XDATA) on an entity.", cost="safe")
+@mcp.tool(
+    annotations={"title": "Set Entity XDATA", "readOnlyHint": False},
+    tags={"entity", "modify"},
+)
+async def entity_set_xdata(
+    handle: Annotated[str, "Entity handle"],
+    app_name: Annotated[str, "Registered application name (created if missing)"],
+    values: Annotated[
+        list,
+        "Values typed by kind: strings (≤255 chars) → 1000, ints → 1071, floats → 1040, [x,y] → 1010",
+    ],
+    ctx: Context = None,
+) -> dict:
+    """Replace the named app's XDATA on one entity; an empty list removes it.
+
+    Limits are AutoCAD's and are enforced before writing: 255 characters per
+    string and 16 KB per entity.
+    """
+    return await _backend(ctx).entity_set_xdata(handle, app_name, values)
 
 
 # ---------------------------------------------------------------------------
