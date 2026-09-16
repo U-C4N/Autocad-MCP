@@ -18,7 +18,10 @@ class PageSetupContract(ABC):
         orientation, plot_style, scale, plot_area, device,
         margins_mm: [top, bottom, left, right], center}``. ``paper`` is the
         catalogue name when the size matches one within 0.5 mm, otherwise the
-        media name as stored. Raises ``ValueError`` for an unknown layout.
+        media name as stored. ``center`` is a bool for an extents plot and
+        ``None`` for a layout plot, where centring is not applicable (AutoCAD
+        greys it out; ActiveX refuses ``CenterPlot = True`` under
+        ``acLayout``). Raises ``ValueError`` for an unknown layout.
         ``Model`` is never listed: model space is plotted through
         ``drawing_export_pdf(layout=None)`` and carries no sheet.
         """
@@ -33,7 +36,9 @@ class PageSetupContract(ABC):
         plot_style_known, viewports_kept}``. ``changed`` is computed from the
         read-back before and after, so re-applying the same setup reports
         ``{}``. Refuses ``Model``, an unknown layout, and a ``setup`` missing a
-        resolved key, before anything is written. Never deletes viewports.
+        resolved key, before anything is written. A write the engine refuses
+        part-way through is unwound (every landed value put back) before the
+        ``ValueError`` names the refused property. Never deletes viewports.
         """
         ...
 

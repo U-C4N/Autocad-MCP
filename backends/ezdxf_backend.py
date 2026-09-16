@@ -2336,6 +2336,7 @@ class EzdxfBackend(AutoCADBackend):
     def _page_setup_row(layout) -> dict:
         from engineering.standards.papers import (
             PLOT_TYPE_NAMES,
+            center_applies,
             dxf_scale_label,
             paper_from_size,
             scale_label,
@@ -2355,6 +2356,7 @@ class EzdxfBackend(AutoCADBackend):
             scale = dxf_scale_label(int(dxf.standard_scale_type), numerator, denominator)
         else:
             scale = scale_label(numerator, denominator)
+        plot_type = int(dxf.plot_type)
         return {
             "layout": layout.name,
             "paper": paper_from_size(width, height) or media,
@@ -2363,7 +2365,7 @@ class EzdxfBackend(AutoCADBackend):
             "orientation": "landscape" if width >= height else "portrait",
             "plot_style": str(dxf.current_style_sheet),
             "scale": scale,
-            "plot_area": PLOT_TYPE_NAMES.get(int(dxf.plot_type), str(dxf.plot_type)),
+            "plot_area": PLOT_TYPE_NAMES.get(plot_type, str(dxf.plot_type)),
             "device": str(dxf.plot_configuration_file),
             "margins_mm": [
                 round(float(dxf.top_margin), 3),
@@ -2371,7 +2373,9 @@ class EzdxfBackend(AutoCADBackend):
                 round(float(dxf.left_margin), 3),
                 round(float(dxf.right_margin), 3),
             ],
-            "center": bool(flags & layout.PLOT_CENTERED),
+            # A layout plot has no centring (AutoCAD greys it out; ActiveX
+            # refuses CenterPlot=True under acLayout): None, not a bit nobody honours.
+            "center": bool(flags & layout.PLOT_CENTERED) if center_applies(plot_type) else None,
         }
 
     @staticmethod
@@ -2474,6 +2478,9 @@ class EzdxfBackend(AutoCADBackend):
                 dxf.standard_scale_type = 16
                 dxf.scale_numerator, dxf.scale_denominator = numerator, denominator
                 target.use_standard_scale(False)
+            # resolve_page_setup hands over None for a layout plot: the bit is
+            # cleared, never set — the state AutoCAD itself stores for acLayout,
+            # and the mirror of the live engine never writing CenterPlot there.
             target.plot_centered(bool(resolved["center"]))
             # Limits follow the paper; viewports are deliberately left alone
             # (Paperspace.page_setup() would delete them).

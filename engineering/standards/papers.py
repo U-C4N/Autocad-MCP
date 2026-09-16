@@ -13,6 +13,16 @@ tables of two enums that do not agree with each other:
 
 A scale without a code on an engine goes through the custom numerator /
 denominator on that engine, and the read-back reports the same label either way.
+
+Centring belongs to an *extents* plot only. The ActiveX Reference (CenterPlot
+Property, acadauto.chm, AutoCAD 2026): "This property cannot be set to True on
+a layout object whose PlotType property is set to acLayout" — a layout plot is
+the whole sheet from its own origin, and the Page Setup dialog greys the box
+out. ``resolve_page_setup`` therefore resolves ``center`` to ``None`` (not
+applicable, never written, read back as ``None``) when ``plot_area`` is
+``layout``; the bool is kept only for ``extents``. Both engines follow the
+same resolved value, so the DXF never carries a centre bit AutoCAD would
+ignore and the live engine never issues the write AutoCAD refuses.
 """
 
 from __future__ import annotations
@@ -28,11 +38,13 @@ __all__ = [
     "PAPER_INCHES",
     "PAPER_SIZES",
     "PLOT_AREAS",
+    "PLOT_TYPE_LAYOUT",
     "PLOT_TYPE_NAMES",
     "REQUIRED_SETUP_KEYS",
     "SCALES",
     "activex_scale_label",
     "canonical_media_name",
+    "center_applies",
     "dxf_scale_label",
     "paper_from_size",
     "paper_size_mm",
@@ -135,6 +147,8 @@ _ACTIVEX_SCALE_LABEL = {code: label for label, code in ACTIVEX_PLOT_SCALE.items(
 
 #: Plot area → DXF/ActiveX plot type (``AcPlotType``: acExtents=1, acLayout=5).
 PLOT_AREAS: dict[str, int] = {"layout": 5, "extents": 1}
+#: ``AcPlotType.acLayout`` — the plot type under which centring does not apply.
+PLOT_TYPE_LAYOUT = 5
 PLOT_TYPE_NAMES: dict[int, str] = {
     0: "display",
     1: "extents",
@@ -243,6 +257,19 @@ def plot_style_known(name) -> bool:
     return str(name or "").strip().lower() in {entry.lower() for entry in CTB_CATALOG}
 
 
+def center_applies(plot_type) -> bool:
+    """Whether "centre the plot" means anything under this ``AcPlotType``.
+
+    False for ``acLayout`` (5): the sheet is plotted from its origin, AutoCAD
+    greys the option out and ActiveX refuses ``CenterPlot = True``. Read-backs
+    report ``center: None`` there instead of a stored flag nothing honours.
+    """
+    try:
+        return int(plot_type) != PLOT_TYPE_LAYOUT
+    except (TypeError, ValueError):
+        return False
+
+
 def resolve_page_setup(
     paper: str,
     orientation: str = "landscape",
@@ -256,7 +283,10 @@ def resolve_page_setup(
     """Validate a page setup request and resolve it to what both engines write.
 
     Raises ``ValueError`` naming the offending field; nothing here touches a
-    drawing. ``margins_mm`` is ``[top, bottom, left, right]``.
+    drawing. ``margins_mm`` is ``[top, bottom, left, right]``. ``center`` is
+    validated as a bool and resolved to ``None`` for ``plot_area="layout"``,
+    where centring is not applicable (see the module docstring) — the default
+    call (layout, centre) is therefore a layout plot with no centring write.
     """
     name = _paper_key(paper)
     width, height = paper_size_mm(name, _orientation(orientation))
@@ -300,6 +330,7 @@ def resolve_page_setup(
 
     if not isinstance(center, bool):
         raise ValueError(f"center: must be true or false, got {center!r}")
+    plot_type = PLOT_AREAS[plot_area]
 
     return {
         "paper": name,
@@ -314,10 +345,10 @@ def resolve_page_setup(
         "dxf_standard_scale_type": DXF_STANDARD_SCALE_TYPE.get(label),
         "activex_standard_scale": ACTIVEX_PLOT_SCALE.get(label),
         "plot_area": plot_area,
-        "plot_type": PLOT_AREAS[plot_area],
+        "plot_type": plot_type,
         "device": device_name,
         "margins_mm": margins,
-        "center": center,
+        "center": center if center_applies(plot_type) else None,
     }
 
 

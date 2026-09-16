@@ -13,6 +13,7 @@ import math
 import sys
 import time
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -1961,7 +1962,14 @@ class ComBackend(AutoCADBackend):
     # typelib: AcPlotPaperUnits acMillimeters=1; AcPlotRotation ac0degrees=0;
     # AcPlotType acExtents=1 / acLayout=5; AcPlotScale acScaleToFit=0, ac1_1=16
     # (the full table is engineering.standards.papers.ACTIVEX_PLOT_SCALE).
-    # Fake-tested in tests/test_page_setup.py; executed live by
+    # CenterPlot (ActiveX Reference, acadauto.chm): "This property cannot be
+    # set to True on a layout object whose PlotType property is set to
+    # acLayout" — so a layout plot never writes it (resolve_page_setup hands
+    # over None), an extents plot writes it *after* PlotType, and a stale True
+    # is cleared *before* PlotType moves to acLayout. Every write is journaled
+    # and unwound in reverse when AutoCAD refuses one, so a failed apply leaves
+    # the layout as it was. Fake-tested in tests/test_page_setup.py (the fake
+    # enforces the CenterPlot rule); executed live by
     # scripts/smoke_settings_com.py (Task 24).
 
     _AC_MILLIMETERS = 1
@@ -1972,6 +1980,7 @@ class ComBackend(AutoCADBackend):
         from engineering.standards.papers import (
             PLOT_TYPE_NAMES,
             activex_scale_label,
+            center_applies,
             paper_from_size,
             scale_label,
         )
@@ -2024,7 +2033,7 @@ class ComBackend(AutoCADBackend):
             "plot_area": PLOT_TYPE_NAMES.get(plot_type, plot_type),
             "device": _get("ConfigName"),
             "margins_mm": margins,
-            "center": bool(_get("CenterPlot")),
+            "center": bool(_get("CenterPlot")) if center_applies(plot_type) else None,
         }
 
     def _com_paper_layout(self, doc, raw: str, operation: str):
@@ -2071,37 +2080,81 @@ class ComBackend(AutoCADBackend):
             doc = _acad_doc()
             target = self._com_paper_layout(doc, layout, "page_setup_apply")
             before = self._com_page_setup_row(target)
-            previous_device = before["device"]
-            target.RefreshPlotDeviceInfo()
-            target.ConfigName = resolved["device"]
-            target.RefreshPlotDeviceInfo()
-            media = resolved["canonical_media_name"]
-            names = [str(n) for n in (target.GetCanonicalMediaNames() or ())]
-            if media not in names:
-                # Roll the one write back before refusing, so a refusal leaves
-                # the layout as it was.
-                target.ConfigName = previous_device
-                nearest = [n for n in names if n.split("_(")[0] == media.split("_(")[0]]
-                raise ValueError(
-                    f"page_setup_apply: device {resolved['device']!r} has no media "
-                    f"{media!r} (same paper on this device: {', '.join(nearest) or 'none'}; "
-                    f"{len(names)} media in total)"
-                )
-            target.CanonicalMediaName = media
-            target.PaperUnits = self._AC_MILLIMETERS
-            target.PlotRotation = self._AC_NO_ROTATION
-            target.StyleSheet = resolved["plot_style"]
-            target.PlotWithPlotStyles = True
-            target.PlotType = int(resolved["plot_type"])
-            code = resolved["activex_standard_scale"]
-            if code is not None:
-                target.StandardScale = int(code)
-                target.UseStandardScale = True
-            else:
-                numerator, denominator = (float(v) for v in resolved["scale_ratio"])
+            # Journal of (undo callable, label) for every write that landed,
+            # unwound in reverse when a later one is refused.
+            journal: list[tuple[Callable[[], None], str]] = []
+
+            def _set(attr: str, value):
+                previous = getattr(target, attr)
+                setattr(target, attr, value)
+                journal.append((lambda: setattr(target, attr, previous), attr))
+
+            def _set_custom_scale(numerator: float, denominator: float):
+                previous = tuple(float(v) for v in target.GetCustomScale())
                 target.SetCustomScale(numerator, denominator)
-                target.UseStandardScale = False
-            target.CenterPlot = bool(resolved["center"])
+                journal.append((lambda: target.SetCustomScale(*previous), "SetCustomScale"))
+
+            step = "ConfigName"
+            try:
+                target.RefreshPlotDeviceInfo()
+                _set("ConfigName", resolved["device"])
+                target.RefreshPlotDeviceInfo()
+                media = resolved["canonical_media_name"]
+                names = [str(n) for n in (target.GetCanonicalMediaNames() or ())]
+                if media not in names:
+                    nearest = [n for n in names if n.split("_(")[0] == media.split("_(")[0]]
+                    raise ValueError(
+                        f"page_setup_apply: device {resolved['device']!r} has no media "
+                        f"{media!r} (same paper on this device: "
+                        f"{', '.join(nearest) or 'none'}; {len(names)} media in total)"
+                    )
+                step = "CanonicalMediaName"
+                _set("CanonicalMediaName", media)
+                step = "PaperUnits"
+                _set("PaperUnits", self._AC_MILLIMETERS)
+                step = "PlotRotation"
+                _set("PlotRotation", self._AC_NO_ROTATION)
+                step = "StyleSheet"
+                _set("StyleSheet", resolved["plot_style"])
+                step = "PlotWithPlotStyles"
+                _set("PlotWithPlotStyles", True)
+                center = resolved["center"]
+                if center is None and self._com_center_plot_is_set(target):
+                    # Clearing is legal under any PlotType; the layout plot
+                    # then carries the flag AutoCAD stores for acLayout.
+                    step = "CenterPlot"
+                    _set("CenterPlot", False)
+                step = "PlotType"
+                _set("PlotType", int(resolved["plot_type"]))
+                code = resolved["activex_standard_scale"]
+                if code is not None:
+                    step = "StandardScale"
+                    _set("StandardScale", int(code))
+                    step = "UseStandardScale"
+                    _set("UseStandardScale", True)
+                else:
+                    numerator, denominator = (float(v) for v in resolved["scale_ratio"])
+                    step = "SetCustomScale"
+                    _set_custom_scale(numerator, denominator)
+                    step = "UseStandardScale"
+                    _set("UseStandardScale", False)
+                if center is not None:
+                    # Extents plot: PlotType is already acExtents, so True is legal.
+                    step = "CenterPlot"
+                    _set("CenterPlot", bool(center))
+            except Exception as exc:
+                failed = self._com_unwind_page_setup(journal)
+                if isinstance(exc, ValueError) and not failed:
+                    raise
+                restored = (
+                    f"layout {target.Name!r} restored to its previous page setup"
+                    if not failed
+                    else f"layout {target.Name!r} could NOT be fully restored "
+                    f"(still changed: {', '.join(failed)})"
+                )
+                raise ValueError(
+                    f"page_setup_apply: AutoCAD refused Layout.{step} ({exc}); {restored}"
+                ) from exc
             after = self._com_page_setup_row(target)
             changed = {
                 key: [before[key], after[key]]
@@ -2119,6 +2172,27 @@ class ComBackend(AutoCADBackend):
             }
 
         return await self._run(_sync)
+
+    @staticmethod
+    def _com_center_plot_is_set(layout) -> bool:
+        """Whether the layout carries CenterPlot=True (a failed read counts as no)."""
+        try:
+            return bool(layout.CenterPlot)
+        except Exception as exc:
+            log.debug("Layout.CenterPlot read failed: %s", exc)
+            return False
+
+    @staticmethod
+    def _com_unwind_page_setup(journal: list[tuple[Callable[[], None], str]]) -> list[str]:
+        """Undo every journaled page-setup write in reverse; return what would not go back."""
+        failed: list[str] = []
+        for undo, label in reversed(journal):
+            try:
+                undo()
+            except Exception as exc:
+                log.warning("page_setup_apply: could not restore Layout.%s: %s", label, exc)
+                failed.append(label)
+        return failed
 
     async def plot_style_list(self) -> list[dict]:
         # Completed in Task 18 (installed ctb scan); the catalogue rows already answer.

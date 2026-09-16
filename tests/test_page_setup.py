@@ -83,7 +83,21 @@ def test_resolve_page_setup_defaults():
     assert setup["scale_ratio"] == [1.0, 1.0]
     assert setup["plot_area"] == "layout" and setup["plot_type"] == 5
     assert setup["device"] == "DWG To PDF.pc3"
-    assert setup["margins_mm"] is None and setup["center"] is True
+    assert setup["margins_mm"] is None
+    assert setup["center"] is None, "a layout plot has no centring (AutoCAD greys it out)"
+
+
+def test_resolve_page_setup_center_applies_to_an_extents_plot_only():
+    """ActiveX Reference, CenterPlot: 'This property cannot be set to True on a
+    layout object whose PlotType property is set to acLayout.' The resolver
+    carries the rule so both engines write the same thing: a bool for an
+    extents plot, ``None`` (not applicable, never written) for a layout plot."""
+    assert resolve_page_setup("ISO_A3", plot_area="extents")["center"] is True
+    assert resolve_page_setup("ISO_A3", plot_area="extents", center=False)["center"] is False
+    assert resolve_page_setup("ISO_A3", plot_area="layout", center=True)["center"] is None
+    assert resolve_page_setup("ISO_A3", plot_area="layout", center=False)["center"] is None
+    with pytest.raises(ValueError, match="center"):
+        resolve_page_setup("ISO_A3", plot_area="layout", center="yes")
 
 
 def test_resolve_page_setup_accepts_lowercase_and_short_paper_names():
@@ -196,7 +210,7 @@ async def test_apply_iso_a3_landscape_and_the_pdf_mediabox_agrees(backend, tmp_p
     assert row["scale"] == "fit"
     assert row["plot_area"] == "layout"
     assert row["device"] == "DWG To PDF.pc3"
-    assert row["center"] is True
+    assert row["center"] is None, "layout plot: centring is not applicable"
     assert len(row["margins_mm"]) == 4
 
     width, height = await _mediabox_after_export(backend, tmp_path, SHEET)
@@ -282,16 +296,45 @@ async def test_apply_materialises_the_default_flags_before_setting_centre(backen
     """Measured: set_flag_state starts from 0 on a fresh layout, so a naive
     plot_centered(True) writes 4 and drops lineweights/plot-styles/viewports-first."""
     await _sheet(backend)
-    await backend.page_setup_apply(SHEET, resolve_page_setup("ISO_A3", center=True))
+    extents = resolve_page_setup("ISO_A3", plot_area="extents", center=True)
+    result = await backend.page_setup_apply(SHEET, extents)
     flags = int(backend._doc.layouts.get(SHEET).dxf_layout.dxf.plot_layout_flags)
     assert flags & 4, "centre-plot bit"
     assert flags & 32, "plot with plot styles"
     assert flags & 128, "plot entity lineweights"
     assert flags & 512, "draw viewports first"
     assert flags & 16, "use standard scale (fit)"
-    await backend.page_setup_apply(SHEET, resolve_page_setup("ISO_A3", center=False))
+    assert result["applied"]["center"] is True
+    assert (await backend.page_setup_list(SHEET))[0]["center"] is True
+    await backend.page_setup_apply(
+        SHEET, resolve_page_setup("ISO_A3", plot_area="extents", center=False)
+    )
     flags = int(backend._doc.layouts.get(SHEET).dxf_layout.dxf.plot_layout_flags)
     assert not flags & 4 and flags & 32 and flags & 128 and flags & 512
+    assert (await backend.page_setup_list(SHEET))[0]["center"] is False
+
+
+async def test_layout_plot_never_sets_the_centre_bit_and_reports_it_not_applicable(backend):
+    """A layout plot is the whole sheet from its origin: AutoCAD disables
+    'Center the plot' (ActiveX refuses CenterPlot=True under acLayout). The
+    headless engine mirrors that: bit 4 is not written, and the read-back says
+    None rather than a bool AutoCAD would ignore."""
+    await _sheet(backend)
+    result = await backend.page_setup_apply(SHEET, resolve_page_setup("ISO_A3", center=True))
+    flags = int(backend._doc.layouts.get(SHEET).dxf_layout.dxf.plot_layout_flags)
+    assert not flags & 4, "centre bit must not be set for a layout plot"
+    assert result["applied"]["center"] is None
+    assert "center" not in result["changed"], "None before (fresh layout plot) and None after"
+    assert (await backend.page_setup_list(SHEET))[0]["center"] is None
+    # Switching an extents+centred sheet to a layout plot clears the stale bit
+    # (what AutoCAD stores for a layout plot) and reports the move honestly.
+    await backend.page_setup_apply(SHEET, resolve_page_setup("ISO_A3", plot_area="extents"))
+    assert (await backend.page_setup_list(SHEET))[0]["center"] is True
+    result = await backend.page_setup_apply(SHEET, resolve_page_setup("ISO_A3"))
+    flags = int(backend._doc.layouts.get(SHEET).dxf_layout.dxf.plot_layout_flags)
+    assert not flags & 4
+    assert result["changed"]["center"] == [True, None]
+    assert result["changed"]["plot_area"] == ["extents", "layout"]
 
 
 async def test_custom_scale_clears_the_standard_scale_bit_and_writes_the_ratio(backend):
@@ -370,11 +413,21 @@ _MEDIA_RE = re.compile(r"\((\d+\.\d+)_x_(\d+\.\d+)_(MM|Inches)\)")
 
 
 class _FakeLayout:
-    """Records every property set and method call, in order."""
+    """Records every property set and method call, in order.
 
-    def __init__(self, name, media_names):
+    Enforces the one rule the ActiveX Reference documents for this surface
+    (CenterPlot Property, acadauto.chm, AutoCAD 2026): "This property cannot
+    be set to True on a layout object whose PlotType property is set to
+    acLayout." ``refuse`` names properties whose write raises, the way a live
+    AutoCAD refuses a value it cannot take.
+    """
+
+    AC_LAYOUT = 5
+
+    def __init__(self, name, media_names, refuse=()):
         object.__setattr__(self, "log", [])
         object.__setattr__(self, "_media", tuple(media_names))
+        object.__setattr__(self, "_refuse", tuple(refuse))
         object.__setattr__(
             self,
             "_props",
@@ -400,8 +453,15 @@ class _FakeLayout:
         raise AttributeError(attr)
 
     def __setattr__(self, attr, value):
+        if attr in self._refuse:
+            raise RuntimeError(f"AutoCAD refused Layout.{attr} = {value!r}")
+        if attr == "CenterPlot" and value and self._props["PlotType"] == self.AC_LAYOUT:
+            raise RuntimeError("CenterPlot cannot be True while PlotType is acLayout")
         self._props[attr] = value
         self.log.append(("set", attr, value))
+
+    def snapshot(self) -> dict:
+        return dict(object.__getattribute__(self, "_props"))
 
     def RefreshPlotDeviceInfo(self):
         self.log.append(("call", "RefreshPlotDeviceInfo"))
@@ -487,11 +547,67 @@ async def test_com_apply_issues_the_property_sequence(com_backend):
         ("set", "PlotType", 5),
         ("set", "StandardScale", 0),
         ("set", "UseStandardScale", True),
-        ("set", "CenterPlot", True),
-    ]
+    ], "a layout plot never writes CenterPlot (ActiveX refuses True under acLayout)"
     assert result["changed"]["paper"] == ["ISO_A4", "ISO_A3"]
     assert result["changed"]["device"] == ["None", "DWG To PDF.pc3"]
-    assert result["changed"]["center"] == [False, True]
+    assert result["applied"]["center"] is None
+    assert "center" not in result["changed"]
+
+
+async def test_com_apply_extents_sets_plot_type_before_center_plot(com_backend):
+    backend, document = com_backend
+    result = await backend.page_setup_apply(
+        "Layout1", resolve_page_setup("ISO_A3", plot_area="extents", center=True)
+    )
+    log = document.Layouts.Item("Layout1").log
+    assert log.index(("set", "PlotType", 1)) < log.index(("set", "CenterPlot", True))
+    assert result["changed"]["center"] == [None, True]
+    assert result["changed"]["plot_area"] == ["layout", "extents"]
+    assert (await backend.page_setup_list("Layout1"))[0]["center"] is True
+
+
+async def test_com_apply_clears_a_stale_center_plot_before_switching_to_layout(com_backend):
+    backend, document = com_backend
+    layout = document.Layouts.Item("Layout1")
+    layout.PlotType = 1
+    layout.CenterPlot = True
+    del layout.log[:]
+    result = await backend.page_setup_apply("Layout1", resolve_page_setup("ISO_A3"))
+    log = layout.log
+    assert log.index(("set", "CenterPlot", False)) < log.index(("set", "PlotType", 5))
+    assert layout.CenterPlot is False and layout.PlotType == 5
+    assert result["changed"]["center"] == [True, None]
+
+
+async def test_com_apply_restores_every_write_when_autocad_refuses_a_property(com_backend):
+    """Nine writes had landed before CenterPlot in the shipped sequence, with
+    nothing put back. Any refusal now unwinds the journal in reverse."""
+    backend, document = com_backend
+    layout = _FakeLayout("Layout1", MEDIA, refuse=("PlotWithPlotStyles",))
+    document.Layouts.layouts[1] = layout
+    before = layout.snapshot()
+    with pytest.raises(ValueError, match="PlotWithPlotStyles") as info:
+        await backend.page_setup_apply("Layout1", resolve_page_setup("ISO_A3"))
+    assert "restored" in str(info.value)
+    assert layout.snapshot() == before, "every property AutoCAD accepted is put back"
+    restores = [entry for entry in layout.log if entry[0] == "set"][5:]
+    assert restores == [
+        ("set", "StyleSheet", ""),
+        ("set", "PlotRotation", 0),
+        ("set", "PaperUnits", 1),
+        ("set", "CanonicalMediaName", "ISO_A4_(210.00_x_297.00_MM)"),
+        ("set", "ConfigName", "None"),
+    ], "unwound in reverse write order"
+
+
+async def test_com_apply_restores_the_custom_scale_too(com_backend):
+    backend, document = com_backend
+    layout = _FakeLayout("Layout1", MEDIA, refuse=("UseStandardScale",))
+    document.Layouts.layouts[1] = layout
+    with pytest.raises(ValueError, match="UseStandardScale"):
+        await backend.page_setup_apply("Layout1", resolve_page_setup("ISO_A3", scale="5:1"))
+    calls = [entry for entry in layout.log if entry[0] == "call" and entry[1] == "SetCustomScale"]
+    assert calls == [("call", "SetCustomScale", 5.0, 1.0), ("call", "SetCustomScale", 1.0, 1.0)]
 
 
 async def test_com_apply_custom_scale_uses_set_custom_scale(com_backend):
@@ -539,7 +655,17 @@ async def test_com_list_reads_the_properties(com_backend):
     assert row["orientation"] == "portrait"
     assert row["margins_mm"] == [20.0, 20.0, 7.5, 7.5]
     assert row["scale"] == "1:1" and row["plot_area"] == "layout"
-    assert row["device"] == "None" and row["center"] is False
+    assert row["device"] == "None"
+    assert row["center"] is None, "acLayout: CenterPlot is not applicable"
+
+
+async def test_com_list_reports_center_for_an_extents_plot(com_backend):
+    backend, document = com_backend
+    layout = document.Layouts.Item("Layout1")
+    layout.PlotType = 1
+    assert (await backend.page_setup_list("Layout1"))[0]["center"] is False
+    layout.CenterPlot = True
+    assert (await backend.page_setup_list("Layout1"))[0]["center"] is True
 
 
 async def test_com_declares_dwt_write():
