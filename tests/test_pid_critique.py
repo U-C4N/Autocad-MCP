@@ -375,3 +375,57 @@ def test_preflight_flags_a_pid_intent_on_the_wrong_layer_set():
     assert "LAYER_SET_INTENT_MISMATCH" not in [c.code for c in ok.conflicts]
     assert pid_plan_warnings("Bearing housing", "mech") == []
     assert pid_plan_warnings("piping and instrumentation diagram", "mech")
+
+
+async def test_a_free_end_near_an_invented_frame_port_gets_no_executable_hint(backend):
+    """The graph's own ``nearest`` is computed over every port in its grid,
+    including the ``p1`` it invents on a promoted frame. A hint that names
+    that port is a hint ``pid_line_draw`` refuses (the frame carries no
+    ACADMCP_PID payload). Every dangling row — not only the ends that touch an
+    unknown block — must be re-hinted over connectable ports."""
+    frame, pump = await _frame_and_pump(backend)
+    await draw_line(backend, {"handle": pump["handle"], "port": "discharge"}, {"x": 420, "y": 106})
+    free = await backend.entity_create_line(300, 108, 417, 108, layer="PROCESS-PIPING-MAIN")
+
+    graph = await build_graph(backend, include_foreign=True)
+    row = next(d for d in graph["dangling"] if d["edge"] == free.handle and d["end"] == "to")
+    assert row["nearest"] and row["nearest"]["node"] == frame, "the graph itself still hints at p1"
+
+    issues = await backend.drawing_critique(["pid_dangling_line"])
+    to_row = next(i for i in issues if i.handles == [free.handle] and i.detail["end"] == "to")
+    assert to_row.detail["nearest"] is None
+    assert "no port within reach" in to_row.detail["hint"]
+    for issue in issues:
+        nearest = issue.detail.get("nearest")
+        if nearest:
+            node = next(n for n in graph["nodes"] if n["id"] == nearest["node"])
+            assert node["source"] in ("catalog", "xdata")
+            assert node["ports"][nearest["port"]]["inferred"] is False
+
+
+async def test_a_signal_layer_line_of_unknown_class_into_a_process_port_is_incompatible(backend):
+    """A line on INSTRUMENT-LINE-SIGNAL with a continuous linetype reads as
+    ``signal_unknown``: the reader cannot tell pneumatic from data, but it is
+    a signal line, and spec §11.1's rule (a signal-class edge ending on a
+    process port) applies to it. Skipping it would let ``drawing_finalize``
+    pass the connection."""
+    from engineering.layers import apply_layer_set
+
+    await apply_layer_set(backend, "pid")
+    pump = await place_symbol(backend, "centrifugal_pump", 100, 100, tag="P-101")
+    out = pump["ports"]["discharge"]
+    line = await backend.entity_create_line(
+        out["x"], out["y"], out["x"] + 40, out["y"] + 40, layer="INSTRUMENT-LINE-SIGNAL"
+    )
+    await backend.entity_set_properties(line.handle, linetype="Continuous")
+    graph = await build_graph(backend)
+    edge = next(e for e in graph["edges"] if e["id"] == line.handle)
+    assert edge["line_class"] == "signal_unknown" and edge["from"] == {
+        "node": pump["handle"],
+        "port": "discharge",
+    }
+
+    issues = await backend.drawing_critique(["pid_incompatible_connection"])
+    assert len(issues) == 1 and issues[0].severity == "error"
+    assert issues[0].detail["expected"] == "signal" and issues[0].detail["actual"] == "process"
+    assert issues[0].detail["line_class"] == "signal_unknown"

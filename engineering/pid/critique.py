@@ -75,23 +75,41 @@ def _evidenced_edges(graph: dict) -> set[str]:
     return out
 
 
+def _connectable(node: dict) -> bool:
+    """A node ``pid_line_draw`` will accept as an endpoint: it resolves ports
+    from the ACADMCP_PID payload, so only catalogue / XDATA symbols qualify. A
+    heuristic node (keyword name, tag attribute) is recognised for scoring but
+    refused by the drawing tool, and a hint that names it is a hint that fails."""
+    return node.get("source") in ("catalog", "xdata")
+
+
 def _nearest_recognised_port(graph: dict, nodes: dict, space, x: float, y: float) -> dict | None:
     """The same hint the graph gives a free end (spec §9.2 step 5: the nearest
-    port within ``10·tolerance``), over ports the drawing vouches for. A
-    bubble's radial port is matched on its circle, not its centre, so it is
-    left out exactly as the graph's grid leaves it out."""
+    port within ``10·tolerance``), restricted to ports the hint's own
+    ``pid_line_draw`` call can use: declared ports of catalogue / XDATA
+    symbols in the same space. Inferred ``p1..pn`` ports are never suggested —
+    the drawing tool refuses their node. A bubble's radial port is matched on
+    its circle, not its centre, so it is left out exactly as the graph's grid
+    leaves it out."""
     reach = 10.0 * graph["tolerance"]
     best = None
     for node in nodes.values():
-        if not _recognised(node) or node["space"] != space:
+        if not _connectable(node) or node["space"] != space:
             continue
         for pname, port in node["ports"].items():
-            if port.get("radius", 0.0) > 0:
+            if port.get("radius", 0.0) > 0 or port.get("inferred"):
                 continue
             d = math.hypot(port["x"] - x, port["y"] - y)
             if d <= reach and (best is None or d < best["distance"]):
                 best = {"node": node["id"], "port": pname, "distance": round(d, 6)}
     return best
+
+
+def _edge_space(graph: dict, edge_id: str) -> str | None:
+    for edge in graph["edges"]:
+        if edge["id"] == edge_id:
+            return edge.get("space")
+    return None
 
 
 def _dangling_ends(graph: dict) -> list[dict]:
@@ -106,7 +124,20 @@ def _dangling_ends(graph: dict) -> list[dict]:
     """
     evidenced = _evidenced_edges(graph)
     nodes = {n["id"]: n for n in graph["nodes"]}
-    rows = [d for d in graph["dangling"] if d["edge"] in evidenced]
+    # The graph's own ``nearest`` is computed over every port in its grid,
+    # including the ``p1..pn`` ports it invents on a promoted unknown_block; a
+    # hint built from that names a node ``pid_line_draw`` refuses. Recompute
+    # it over connectable ports only, so every hint is executable.
+    rows = [
+        {
+            **d,
+            "nearest": _nearest_recognised_port(
+                graph, nodes, _edge_space(graph, d["edge"]), d["x"], d["y"]
+            ),
+        }
+        for d in graph["dangling"]
+        if d["edge"] in evidenced
+    ]
     for edge in graph["edges"]:
         if edge["id"] not in evidenced:
             continue
@@ -179,12 +210,25 @@ def _duplicate_tags(graph: dict) -> list[Issue]:
     ]
 
 
+def _edge_kind(line_class: str | None) -> str | None:
+    """process | signal for a graph edge class. ``signal_unknown`` is what the
+    reader assigns to a line on the signal layer whose exact class it cannot
+    tell — its kind is still signal, and the spec's rule (a signal line ending
+    on a process port) applies; only an unclassified line (``None``) is skipped."""
+    if not line_class:
+        return None
+    if line_class == "signal_unknown":
+        return "signal"
+    cls = LINE_CLASSES.get(line_class)
+    return cls.kind if cls else None
+
+
 def _incompatible(graph: dict) -> list[Issue]:
     nodes = {n["id"]: n for n in graph["nodes"]}
     out = []
     for edge in graph["edges"]:
-        cls = LINE_CLASSES.get(edge.get("line_class") or "")
-        if cls is None:
+        kind = _edge_kind(edge.get("line_class"))
+        if kind is None:
             continue
         for ref in (edge["from"], edge["to"]):
             if not ref or "node" not in ref:
@@ -197,21 +241,21 @@ def _incompatible(graph: dict) -> list[Issue]:
                 # fix. Only a declared (catalogue / XDATA) port kind is judged.
                 continue
             actual = port.get("kind")
-            if actual in ("process", "signal") and actual != cls.kind:
+            if actual in ("process", "signal") and actual != kind:
                 out.append(
                     Issue(
                         "error",
                         "pid_incompatible_connection",
-                        f"{cls.kind} line {edge['id']} ends on {actual} port {ref['port']} "
+                        f"{kind} line {edge['id']} ends on {actual} port {ref['port']} "
                         f"of {ref['node']}.",
                         [edge["id"], ref["node"]],
                         {
-                            "expected": cls.kind,
+                            "expected": kind,
                             "actual": actual,
                             "port": ref["port"],
                             "line_class": edge["line_class"],
                             "hint": (
-                                f"redraw with a {actual} line class or connect to a {cls.kind} port"
+                                f"redraw with a {actual} line class or connect to a {kind} port"
                             ),
                         },
                     )
