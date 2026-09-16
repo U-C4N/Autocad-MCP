@@ -517,7 +517,9 @@ async def test_tool_group_sizes_are_unchanged():
     when `pid_tag_parse` (the ISA-5.1 tag grammar as a read-only tool)
     joined; the `pid`
     tag is ranked first in `_GROUP_TAG_PRIORITY` so those tools file under
-    `pid` rather than under their secondary `query` / `create` tags. Every
+    `pid` rather than under their secondary `query` / `create` tags. `drawing`
+    moved 11 -> 14 when v1.6's `document_list` / `document_activate` /
+    `document_close` (multi-document on both engines) opened SECTION 20. Every
     other number here has been unchanged since the snapshot was taken.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
@@ -527,7 +529,7 @@ async def test_tool_group_sizes_are_unchanged():
         "blocks": 9,
         "corner_ops": 4,
         "dimensions": 5,
-        "drawing": 11,
+        "drawing": 14,
         "engineering": 10,
         "entity_creation": 18,
         "entity_modification": 16,
@@ -543,4 +545,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 166
+    assert sum(sizes.values()) == 169

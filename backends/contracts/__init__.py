@@ -16,6 +16,7 @@ from backends.contracts.drawing import DrawingContract
 from backends.contracts.entity_creation import EntityCreationContract
 from backends.contracts.entity_modification import EntityModificationContract
 from backends.contracts.entity_query import EntityQueryContract
+from backends.contracts.environment import EnvironmentContract
 from backends.contracts.gdt import GdtContract
 from backends.contracts.identity import IdentityContract
 from backends.contracts.layers import LayerContract
@@ -37,6 +38,7 @@ __all__ = [
     "EntityCreationContract",
     "EntityModificationContract",
     "EntityQueryContract",
+    "EnvironmentContract",
     "GdtContract",
     "IdentityContract",
     "LayerContract",

@@ -18,6 +18,7 @@ import math
 import os
 import tempfile
 import uuid
+from dataclasses import dataclass, field
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
@@ -951,6 +952,69 @@ def _layer_info_dxf(layer_obj, current_name: str) -> LayerInfo:
 
 
 # ---------------------------------------------------------------------------
+# ── environment (track E): document registry ────────────────────────────────
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _DocState:
+    """Everything the backend keeps per open document.
+
+    Before v1.6 these were twelve attributes on the backend itself, which is
+    why it could hold exactly one drawing. The registry holds one of these
+    per open document; the old attribute names survive as descriptors over
+    the *active* entry so no existing method had to change.
+    """
+
+    key: str
+    doc: Any = None
+    path: str | None = None
+    dirty: bool = False
+    current_layer: str = "0"
+    current_space: str = "Model"
+    undo_stack: list[Path] = field(default_factory=list)
+    redo_stack: list[Path] = field(default_factory=list)
+    transaction_stack: list[Path] = field(default_factory=list)
+    plan_spec: Any = None
+    preflight_result: Any = None
+    gdt_datums_defined: set = field(default_factory=set)
+    gdt_datums_referenced: set = field(default_factory=set)
+    activated_seq: int = 0
+
+    @property
+    def label(self) -> str:
+        return Path(self.path).name if self.path else self.key
+
+    def discard_snapshots(self) -> None:
+        for stack in (self.undo_stack, self.redo_stack, self.transaction_stack):
+            while stack:
+                try:
+                    stack.pop().unlink()
+                except OSError:
+                    pass
+
+
+class _ActiveField:
+    """A backend attribute that lives on the active document's ``_DocState``.
+
+    A data descriptor, so it also overrides the plain class attributes the
+    ``PremiumContract`` mixin declares (``_plan_spec = None``) — the mixin's
+    ``self._plan_spec = plan`` lands on the active document.
+    """
+
+    def __init__(self, attr: str):
+        self.attr = attr
+
+    def __get__(self, instance, owner=None):
+        if instance is None:
+            return self
+        return getattr(instance._state, self.attr)
+
+    def __set__(self, instance, value):
+        setattr(instance._state, self.attr, value)
+
+
+# ---------------------------------------------------------------------------
 # EzdxfBackend
 # ---------------------------------------------------------------------------
 
@@ -958,23 +1022,82 @@ def _layer_info_dxf(layer_obj, current_name: str) -> LayerInfo:
 class EzdxfBackend(AutoCADBackend):
     """File-based ezdxf backend – no live AutoCAD needed."""
 
+    # Old per-backend attributes, now routed to the active document (v1.6).
+    # `_doc` and `_doc_path` are explicit properties below (binding and
+    # re-keying rules); the rest are plain views.
+    _dirty = _ActiveField("dirty")
+    _current_layer = _ActiveField("current_layer")
+    _current_space = _ActiveField("current_space")
+    _undo_stack = _ActiveField("undo_stack")
+    _redo_stack = _ActiveField("redo_stack")
+    _transaction_stack = _ActiveField("transaction_stack")
+    _plan_spec = _ActiveField("plan_spec")
+    _preflight_result = _ActiveField("preflight_result")
+    _gdt_datums_defined = _ActiveField("gdt_datums_defined")
+    _gdt_datums_referenced = _ActiveField("gdt_datums_referenced")
+
     def __init__(self):
         if not _EZDXF_OK:
             raise RuntimeError("ezdxf is not installed. Run: pip install ezdxf")
-        self._doc: Any = None  # ezdxf Drawing object
-        self._doc_path: str | None = None
-        self._dirty: bool = False
-        self._current_layer: str = "0"
-        self._undo_stack: list[Path] = []  # user-facing undo history
-        self._redo_stack: list[Path] = []  # states stepped off by an undo
-        self._current_space: str = "Model"  # where entity_create_* writes
-        self._transaction_stack: list[Path] = []  # isolated transaction snapshots
+        # v1.6: one entry per open document; the old attributes above are
+        # views over the active one. `_void` is what they read and write when
+        # nothing is open, so `_reset_document_state()` on disconnect and
+        # `system_status()` on an empty backend keep working.
+        self._docs: dict[str, _DocState] = {}
+        self._active_key: str | None = None
+        self._void = _DocState(key="")
+        self._untitled_counter = 0
+        self._activation_counter = 0
         self._connected = False
         self._lock = asyncio.Lock()
         # R32: the document a timed-out call was abandoned on is untrusted until
         # it is replaced. See backends/quarantine.py for what that buys.
         self._quarantine: QuarantineRecord | None = None
         self._abandoned_calls: list[QuarantineRecord] = []
+
+    @property
+    def _state(self) -> _DocState:
+        if self._active_key is None:
+            return self._void
+        return self._docs[self._active_key]
+
+    @property
+    def _doc(self):
+        return self._state.doc
+
+    @_doc.setter
+    def _doc(self, value):
+        # `_restore_snapshot` and `transaction_rollback` rebind the active
+        # document; nothing may bind a Drawing while none is active — that is
+        # `_register_document`'s job, and it is what keeps the registry honest.
+        if self._active_key is None:
+            if value is None:
+                return
+            raise RuntimeError("EzdxfBackend: bind a Drawing through _register_document")
+        self._state.doc = value
+
+    @property
+    def _doc_path(self) -> str | None:
+        return self._state.path
+
+    @_doc_path.setter
+    def _doc_path(self, value: str | None):
+        # `drawing_save` / `drawing_save_as` assign here. A document keyed
+        # `untitled-N` that is saved to a file becomes keyed by that file, so
+        # `document_list` shows one identity per document and `document_close`
+        # can be told the file name. Two entries may end up sharing a path
+        # (save_as onto a file that is open in another entry); the resolver
+        # then reports the ambiguity instead of guessing.
+        state = self._state
+        state.path = value
+        if self._active_key is None or value is None:
+            return
+        new_key = os.path.abspath(value)
+        if new_key != self._active_key and new_key not in self._docs:
+            del self._docs[self._active_key]
+            state.key = new_key
+            self._docs[new_key] = state
+            self._active_key = new_key
 
     @property
     def name(self) -> str:
@@ -1058,6 +1181,26 @@ class EzdxfBackend(AutoCADBackend):
                     False, reason="acis_generation_requires_live_autocad"
                 ),
                 "lisp": FeatureCapability(False, reason="live_com_only"),
+                "documents": FeatureCapability(True, "registry"),
+                # Track E keys. `@capability` registers its key at import, and
+                # tests/test_capability_contract.py checks both maps from that
+                # moment on — so every key the contract module uses is declared
+                # here in the task that creates the module, not when the COM
+                # implementation lands (Task 23).
+                "live_application": FeatureCapability(
+                    False, reason="headless_engine_has_no_application_to_launch_or_attach"
+                ),
+                "preferences": FeatureCapability(
+                    False, reason="preferences_live_in_the_running_application_not_in_a_file"
+                ),
+                "interactive_prompt": FeatureCapability(
+                    False, reason="no_operator_to_prompt_headlessly"
+                ),
+                # Byte-identical to group C's Task 16 entry; the merge agent keeps one.
+                "dwgprops": FeatureCapability(
+                    False,
+                    reason="summary_fields_need_live_autocad;custom_properties_supported",
+                ),
             },
         )
 
@@ -1066,21 +1209,153 @@ class EzdxfBackend(AutoCADBackend):
         log.info("ezdxf backend ready")
 
     async def disconnect(self) -> None:
-        self._cleanup_undo_stack()
+        for state in self._docs.values():
+            state.discard_snapshots()
+        self._docs.clear()
+        self._active_key = None
+        self._void = _DocState(key="")
         self._reset_document_state()
-        # The document goes away with the backend, so nothing is left to protect.
+        # The documents go away with the backend, so nothing is left to protect.
         # The record stays in _abandoned_calls for anyone reading the transcript.
         self._clear_quarantine("disconnect")
         self._connected = False
 
     def _cleanup_undo_stack(self):
-        for stack in (self._undo_stack, self._redo_stack, self._transaction_stack):
-            while stack:
-                p = stack.pop()
-                try:
-                    p.unlink()
-                except OSError:
-                    pass
+        self._state.discard_snapshots()
+
+    # ── document registry (v1.6) ──────────────────────────────────────────────
+
+    def _register_document(self, doc, path: str | None) -> tuple[str, bool]:
+        """Add ``doc`` to the registry and make it active.
+
+        Returns ``(key, reloaded)``. A path that is already open is *reloaded*:
+        its old entry (and its snapshots) is dropped and the fresh read takes
+        its place — the pre-registry behaviour of ``drawing_open``, kept so a
+        save-then-reopen verification still reads the disk.
+        """
+        if path is None:
+            self._untitled_counter += 1
+            key = f"untitled-{self._untitled_counter}"
+            reloaded = False
+        else:
+            key = os.path.abspath(path)
+            previous = self._docs.pop(key, None)
+            reloaded = previous is not None
+            if previous is not None:
+                previous.discard_snapshots()
+        self._docs[key] = _DocState(key=key, doc=doc, path=path)
+        self._activate_key(key)
+        return key, reloaded
+
+    def _activate_key(self, key: str) -> None:
+        self._activation_counter += 1
+        self._docs[key].activated_seq = self._activation_counter
+        self._active_key = key
+
+    def _most_recent_key(self) -> str | None:
+        if not self._docs:
+            return None
+        return max(self._docs.values(), key=lambda state: state.activated_seq).key
+
+    def _resolve_document_key(self, name_or_path: str | None) -> str:
+        """Registry key for ``None`` (the active document), a key, a path or a basename."""
+        if name_or_path is None:
+            if self._active_key is None:
+                raise RuntimeError("No document open. Call drawing_new() or drawing_open() first.")
+            return self._active_key
+        if not isinstance(name_or_path, str):
+            raise TypeError(f"name_or_path must be a string, got {type(name_or_path).__name__}")
+        wanted = name_or_path.strip()
+        if not wanted:
+            raise ValueError("name_or_path must not be empty")
+        if wanted in self._docs:
+            return wanted
+        try:
+            as_path = os.path.abspath(wanted)
+        except (OSError, ValueError):
+            as_path = wanted
+        by_path = [
+            key
+            for key, state in self._docs.items()
+            if state.path and os.path.abspath(state.path) == as_path
+        ]
+        if len(by_path) == 1:
+            return by_path[0]
+        by_name = [
+            key for key, state in self._docs.items() if state.label.lower() == wanted.lower()
+        ]
+        if len(by_name) == 1:
+            return by_name[0]
+        if len(by_name) > 1:
+            raise ValueError(f"document {wanted!r} is ambiguous: {by_name}; pass the full path")
+        raise ValueError(f"no open document named {wanted!r}; open documents: {list(self._docs)}")
+
+    def _evict_quarantined_document(self) -> None:
+        """Drop the quarantined entry before a fresh document is registered.
+
+        Pre-registry, ``drawing_new`` *replaced* the only document, and the
+        quarantine relies on that: the runaway keeps the object it captured
+        and its writes land on an orphan nobody reads. With a registry the
+        quarantined entry would otherwise survive, and ``document_activate``
+        could hand back a drawing another thread is still mutating.
+        """
+        if self._quarantine is None or self._active_key is None:
+            return
+        state = self._docs.pop(self._active_key)
+        state.discard_snapshots()
+        self._active_key = self._most_recent_key()
+
+    def _document_row(self, key: str, state: _DocState) -> dict:
+        return {
+            "name": state.label,
+            "path": state.path,
+            "key": key,
+            "active": key == self._active_key,
+            "saved": not state.dirty,
+            "entity_count": len(state.doc.modelspace()),
+        }
+
+    def _close_document_sync(self, key: str, *, save: bool, discard: bool) -> dict:
+        """Close one registry entry. Runs on the worker thread under the lock."""
+        state = self._docs[key]
+        closing_active = key == self._active_key
+        quarantined = closing_active and self._quarantine is not None
+        label = state.label
+        saved = False
+        if state.dirty:
+            if save:
+                if quarantined:
+                    raise ValueError(
+                        f"document_close: {label!r} was quarantined after a call was "
+                        "abandoned mid-write and cannot be saved; pass discard=True to drop "
+                        "its changes"
+                    )
+                if not state.path:
+                    raise ValueError(
+                        f"document_close: {label!r} has never been saved, so save=True has "
+                        "nowhere to write; drawing_save_as(path) first, or pass discard=True"
+                    )
+                state.doc.saveas(state.path)
+                state.dirty = False
+                saved = True
+            elif not discard:
+                where = f" to {state.path}" if state.path else " (after drawing_save_as)"
+                raise ValueError(
+                    f"document_close: {label!r} has unsaved changes; pass save=True to write "
+                    f"them{where}, or discard=True to drop them"
+                )
+        discarded = state.dirty
+        state.discard_snapshots()
+        del self._docs[key]
+        result = {"ok": True, "closed": key, "saved": saved, "discarded_changes": discarded}
+        if closing_active:
+            released = self._clear_quarantine("document_close")
+            self._active_key = self._most_recent_key()
+            if released is not None:
+                result["quarantine_cleared"] = released.to_dict()
+        result["active"] = self._active_key
+        result["open_documents"] = len(self._docs)
+        return result
 
     def _require_doc(self):
         if self._doc is None:
@@ -1403,22 +1678,26 @@ class EzdxfBackend(AutoCADBackend):
     async def drawing_new(self, template: str | None = None) -> dict:
         def _sync():
             if template and Path(template).exists():
-                self._doc = ezdxf.readfile(template)
-                _normalise_dimstyle_rounding(self._doc)
+                doc = ezdxf.readfile(template)
+                _normalise_dimstyle_rounding(doc)
             else:
-                self._doc = ezdxf.new(dxfversion="R2010")
-                _apply_iso_dimstyle(self._doc)
-            # R32: the rebind above is the release — the runaway keeps the
-            # Drawing it captured, so its remaining writes land on an orphan.
-            # Clear before _reset_history_baseline, which snapshots the new doc.
+                doc = ezdxf.new(dxfversion="R2010")
+                _apply_iso_dimstyle(doc)
+            # R32: registering a fresh Drawing is the release — the runaway keeps
+            # the object it captured. The quarantined entry is evicted first so
+            # it can never be re-activated. Clear before _reset_history_baseline,
+            # which snapshots the new doc.
+            self._evict_quarantined_document()
             released = self._clear_quarantine("drawing_new")
-            self._doc_path = None
-            self._dirty = False
-            self._current_layer = "0"
+            key, _ = self._register_document(doc, None)
             self._reset_document_state()
-            self._current_space = "Model"
             self._reset_history_baseline()
-            result = {"ok": True, "name": "untitled.dxf"}
+            result = {
+                "ok": True,
+                "name": "untitled.dxf",
+                "document": key,
+                "open_documents": len(self._docs),
+            }
             if released is not None:
                 result["quarantine_cleared"] = released.to_dict()
             return result
@@ -1438,24 +1717,31 @@ class EzdxfBackend(AutoCADBackend):
                         f"DXF file exceeds MAX_DXF_BYTES limit "
                         f"({size} > {max_bytes}). Set MAX_DXF_BYTES env var to override."
                     )
-            self._doc = ezdxf.readfile(path)
-            _normalise_dimstyle_rounding(self._doc)
+            doc = ezdxf.readfile(path)
+            _normalise_dimstyle_rounding(doc)
             # R32: only reached if the read succeeded. Reopening the very path a
             # runaway doc.saveas is writing either fails loudly here (acceptable)
             # or hands back a truncated document (not) — _clear_quarantine
             # compares the two paths and says so.
+            self._evict_quarantined_document()
             released = self._clear_quarantine("drawing_open", path)
-            self._doc_path = path
-            self._dirty = False
+            key, reloaded = self._register_document(doc, path)
             try:
-                self._current_layer = self._doc.header.get("$CLAYER", "0")
+                self._current_layer = doc.header.get("$CLAYER", "0")
             except Exception as exc:
                 log.debug("reading $CLAYER from header: %s", exc)
                 self._current_layer = "0"
             self._reset_document_state()
-            self._current_space = "Model"
             self._reset_history_baseline()
-            result = {"ok": True, "name": Path(path).name, "path": path}
+            result = {
+                "ok": True,
+                "name": Path(path).name,
+                "path": path,
+                "document": key,
+                "open_documents": len(self._docs),
+            }
+            if reloaded:
+                result["reloaded"] = True
             if released is not None:
                 result["quarantine_cleared"] = released.to_dict()
             return result
@@ -1872,6 +2158,56 @@ class EzdxfBackend(AutoCADBackend):
             }
 
         return await self._async(_sync)
+
+    # ---------------------------------------------------------------------------
+    # ── environment (track E) ───────────────────────────────────────────────────
+    # ---------------------------------------------------------------------------
+
+    async def document_list(self) -> list[dict]:
+        def _sync():
+            return [self._document_row(key, state) for key, state in self._docs.items()]
+
+        return await self._async(_sync)
+
+    async def document_activate(self, name_or_path: str) -> dict:
+        if not isinstance(name_or_path, str):
+            raise TypeError(
+                f"document_activate: name_or_path must be a string, got {type(name_or_path).__name__}"
+            )
+
+        def _sync():
+            key = self._resolve_document_key(name_or_path)
+            previous = self._active_key
+            self._activate_key(key)
+            state = self._docs[key]
+            return {
+                "ok": True,
+                "active": key,
+                "previous": previous,
+                "name": state.label,
+                "path": state.path,
+            }
+
+        # Not a quarantine exit: a quarantined backend refuses to switch, because
+        # the runaway thread holds the one worker and the one orphaned lock.
+        return await self._async(_sync)
+
+    async def document_close(
+        self, name_or_path: str | None = None, save: bool = False, discard: bool = False
+    ) -> dict:
+        if save and discard:
+            raise ValueError("document_close: save and discard are mutually exclusive")
+        # Resolve once outside the lock to decide whether this is the active
+        # document (then it is a quarantine exit, like drawing_close); the
+        # closure resolves again under the lock before touching the registry.
+        target = self._resolve_document_key(name_or_path)
+        closing_active = target == self._active_key
+
+        def _sync():
+            key = self._resolve_document_key(name_or_path)
+            return self._close_document_sync(key, save=save, discard=discard)
+
+        return await self._async(_sync, quarantine_exit=closing_active)
 
     # ── viewports ────────────────────────────────────────────────────────────
 
@@ -2438,29 +2774,44 @@ class EzdxfBackend(AutoCADBackend):
         return await self._async(_sync)
 
     async def drawing_close(self, save: bool = True) -> dict:
+        """The active-document case of ``document_close``, with the 1.4 contract kept.
+
+        ``save=True`` saves when the document has a path and is not quarantined.
+        An untitled or quarantined document is closed *without* saving and the
+        result says so (``saved: False``, ``discarded_changes``, ``warning``) —
+        the pre-registry behaviour two shipped tests pin. ``document_close`` is
+        the strict tool: it refuses instead of warning.
+        """
+
         def _sync():
+            if self._active_key is None:
+                return {
+                    "ok": True,
+                    "closed": None,
+                    "saved": False,
+                    "active": None,
+                    "open_documents": 0,
+                }
+            key = self._active_key
+            state = self._docs[key]
             # R32: closing is a way out of a quarantine, but saving on the way is
             # not. That save is the exact defect measured — a valid DXF holding
             # 15200 of the 60000 entities the runaway went on to write, a
             # considered document of a state that never existed. Say what was
             # dropped instead of writing it.
             quarantined = self._quarantine is not None
-            if save and self._dirty and self._doc_path and not quarantined:
-                self._doc.saveas(self._doc_path)
-            self._cleanup_undo_stack()
-            self._doc = None
-            released = self._clear_quarantine("drawing_close")
-            self._doc_path = None
-            self._dirty = False
-            self._reset_document_state()
-            result = {"ok": True}
-            if released is not None:
-                result["quarantine_cleared"] = released.to_dict()
-                result["saved"] = False
+            dirty = state.dirty
+            can_save = save and dirty and bool(state.path) and not quarantined
+            result = self._close_document_sync(key, save=can_save, discard=not can_save)
+            if save and dirty and not can_save:
                 result["warning"] = (
                     "the document was quarantined after a call was abandoned mid-write, "
                     "so unsaved changes were discarded rather than serialised out of a "
                     "drawing another thread may still have been mutating"
+                    if quarantined
+                    else f"{key} had never been saved, so save=True had nowhere to write; "
+                    "its changes were discarded. drawing_save_as(path) before closing, or "
+                    "document_close(discard=True) to say so explicitly."
                 )
             return result
 
@@ -5503,6 +5854,8 @@ class EzdxfBackend(AutoCADBackend):
             "connected": True,
             "has_document": has_doc,
             "document_path": self._doc_path,
+            "open_documents": len(self._docs),
+            "active_document": self._active_key,
             "unsaved_changes": self._dirty,
             "transaction_depth": len(self._transaction_stack),
             "quarantine": self._quarantine.to_dict() if self._quarantine else None,

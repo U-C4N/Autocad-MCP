@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 166,
+    "tools": 169,
     "resources": 8,
     "prompts": 5,
     "groups": 20
@@ -14,7 +14,7 @@
     "blocks": 9,
     "corner_ops": 4,
     "dimensions": 5,
-    "drawing": 11,
+    "drawing": 14,
     "engineering": 10,
     "entity_creation": 18,
     "entity_modification": 16,
@@ -448,6 +448,46 @@
       "annotations": {
         "title": "Radius Dimension",
         "readOnlyHint": false
+      }
+    },
+    {
+      "name": "document_activate",
+      "group": "drawing",
+      "cost": "safe",
+      "summary": "Switch which open document every later tool call targets.",
+      "tags": [
+        "drawing"
+      ],
+      "annotations": {
+        "title": "Activate Document",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "document_close",
+      "group": "drawing",
+      "cost": "destructive",
+      "summary": "Close one open document by name; never drops unsaved work unless told to.",
+      "tags": [
+        "drawing"
+      ],
+      "annotations": {
+        "title": "Close Document",
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "document_list",
+      "group": "drawing",
+      "cost": "read",
+      "summary": "List the open documents: which is active, which have unsaved changes.",
+      "tags": [
+        "drawing"
+      ],
+      "annotations": {
+        "title": "List Documents",
+        "readOnlyHint": true
       }
     },
     {

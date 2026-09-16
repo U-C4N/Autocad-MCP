@@ -25,6 +25,7 @@ from backends.contracts import (
     EntityCreationContract,
     EntityModificationContract,
     EntityQueryContract,
+    EnvironmentContract,
     GdtContract,
     IdentityContract,
     LayerContract,
@@ -184,6 +185,7 @@ class AutoCADBackend(
     PremiumContract,
     GdtContract,
     SettingsContract,
+    EnvironmentContract,
 ):
     """All backends implement this interface.
 

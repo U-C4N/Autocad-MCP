@@ -72,12 +72,15 @@ class ToolAliases:
 #   PLINE -- a raw polyline (entity_create_polyline) or a P&ID line run
 #       between two ports (pid_line_draw), which is an LWPOLYLINE with a
 #       class, a number and markers; a drafter typing it could mean either.
+#   CLOSE -- the active document (drawing_close) or one named document
+#       (document_close); a drafter typing it could mean either.
 #
 # Every other AutoCAD command must map to exactly one tool.
 SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
     {
         "ARRAY",
         "BLOCK",
+        "CLOSE",
         "ERASE",
         "INSERT",
         "LAYER",
@@ -1425,6 +1428,42 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "instrument tag letters",
             "decode the tag",
             "loop number",
+        ),
+    ),
+    # ── Environment (track E, group V) ──────────────────────────────────────
+    "document_activate": ToolAliases(
+        acad=(),
+        synonyms=(
+            "switch drawing",
+            "switch to the other drawing",
+            "make this drawing active",
+            "go to the other open file",
+            "change the current document",
+        ),
+    ),
+    "document_close": ToolAliases(
+        acad=("CLOSE",),
+        synonyms=(
+            "close a drawing by name",
+            "close the other drawing",
+            "close without saving",
+            "discard changes and close",
+            "close all but this one",
+        ),
+    ),
+    # No "which ... are" / "which one is" phrasings here: the interrogative
+    # tokens are rare in the corpus, so two of them made this tool outrank
+    # `block_list` for the holdout "which blocks are defined". "drawings",
+    # "open", "active" and "documents" carry every document-list question
+    # to #1 on their own (measured 2026-09-16).
+    "document_list": ToolAliases(
+        acad=(),
+        synonyms=(
+            "open drawings",
+            "list documents",
+            "what files are open",
+            "the active drawing",
+            "currently open files",
         ),
     ),
 }

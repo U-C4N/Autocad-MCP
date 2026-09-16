@@ -1293,9 +1293,12 @@ async def drawing_close(
     save: Annotated[bool, "Save the drawing before closing"] = True,
     ctx: Context = None,
 ) -> dict:
-    """Close the current drawing. If save is True (default), the drawing is
-    saved to its current path before closing. After this call, you must call
-    drawing_new or drawing_open before any other tool."""
+    """Close the active document. If save is True (default), the drawing is
+    saved to its current path before closing; an untitled document is closed
+    and `warning` says its changes were discarded (headless) or the call is
+    refused (live, where the alternative is a modal Save dialog). The
+    active-document case of `document_close`; after the last document is
+    closed, call drawing_new or drawing_open before any other tool."""
     await ctx.info(f"Closing drawing (save={save})")
     return await _backend(ctx).drawing_close(save)
 
@@ -6813,6 +6816,92 @@ async def pid_tag_parse(
     from engineering.pid.tags import parse_tag
 
     return parse_tag(tag, kind, equipment_prefixes)
+
+
+# ---------------------------------------------------------------------------
+# ── SECTION 20: Environment (3 tools) ───────────────────────────────────────
+# ---------------------------------------------------------------------------
+
+
+@cad_tool(
+    summary="List the open documents: which is active, which have unsaved changes.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "List Documents", "readOnlyHint": True},
+    tags={"drawing"},
+)
+async def document_list(ctx: Context = None) -> dict:
+    """Every open document with `name`, `path`, `active`, `saved` and
+    `entity_count`.
+
+    Headless, the server keeps its own registry: `drawing_new` / `drawing_open`
+    add an entry (`untitled-N` or the file path) instead of replacing the only
+    one, and `document_activate` chooses which one every later tool targets.
+    Live, this is AutoCAD's `Documents` collection. No refusals: an empty
+    backend answers with an empty list. Pack: settings · lean: no.
+    """
+    rows = await _backend(ctx).document_list()
+    return {
+        "documents": rows,
+        "count": len(rows),
+        "active": next((r["name"] for r in rows if r["active"]), None),
+    }
+
+
+@cad_tool(summary="Switch which open document every later tool call targets.", cost="safe")
+@mcp.tool(
+    annotations={"title": "Activate Document", "readOnlyHint": False, "destructiveHint": False},
+    tags={"drawing"},
+)
+async def document_activate(
+    name_or_path: Annotated[
+        str, "A name from document_list (`gear.dxf`, `untitled-2`) or the full path"
+    ],
+    ctx: Context = None,
+) -> dict:
+    """Make one open document the active one; reports `previous`.
+
+    Matches the full path first, then the file name; an ambiguous name is
+    refused with the candidates, an unknown one with the list of open
+    documents. Headless, a document quarantined after an abandoned call cannot
+    be switched away from — `drawing_new`, `drawing_open` or closing it are
+    the ways out. Pack: settings · lean: no.
+    """
+    await ctx.info(f"Activating document {name_or_path!r}")
+    return await _backend(ctx).document_activate(name_or_path)
+
+
+@cad_tool(
+    summary="Close one open document by name; never drops unsaved work unless told to.",
+    cost="destructive",
+)
+@mcp.tool(
+    annotations={"title": "Close Document", "destructiveHint": True},
+    tags={"drawing"},
+)
+async def document_close(
+    name_or_path: Annotated[
+        str | None, "A name from document_list or the full path; omit for the active document"
+    ] = None,
+    save: Annotated[bool, "Write unsaved changes to the document's own path first"] = False,
+    discard: Annotated[bool, "Close even with unsaved changes, dropping them"] = False,
+    ctx: Context = None,
+) -> dict:
+    """Close a document and report `saved`, `discarded_changes` and the new `active`.
+
+    Refusals, all before anything is closed: unsaved changes with neither
+    `save` nor `discard`; `save` on a document that has never been saved (no
+    path to write — live, `Close(True)` would open AutoCAD's Save dialog and
+    block the COM thread); `save` together with `discard`. Closing the last
+    document leaves the backend with none open, which every tool already
+    reports. `drawing_close` is the same operation for the active document
+    with its 1.4 contract kept. Pack: settings · lean: no.
+    """
+    await ctx.info(
+        f"Closing document {name_or_path or '(active)'} (save={save}, discard={discard})"
+    )
+    return await _backend(ctx).document_close(name_or_path, save, discard)
 
 
 # ---------------------------------------------------------------------------

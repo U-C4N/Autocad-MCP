@@ -814,6 +814,14 @@ class ComBackend(AutoCADBackend):
                 "viewport_render": FeatureCapability(True, "native"),
                 "solid_3d": _solid_3d_capability(),
                 "lisp": FeatureCapability(True, "sanitized"),
+                "documents": FeatureCapability(True, "native"),
+                "live_application": FeatureCapability(True, "native"),
+                "preferences": FeatureCapability(True, "native", reason="whitelisted_keys_only"),
+                "interactive_prompt": FeatureCapability(
+                    True, "native", reason="cancel_returns_cancelled_true;timeout_returns_timed_out"
+                ),
+                # Byte-identical to group C's Task 16 entry; the merge agent keeps one.
+                "dwgprops": FeatureCapability(True, "native"),
             },
         )
 
@@ -1275,6 +1283,125 @@ class ComBackend(AutoCADBackend):
                     doc.ActiveLayout = doc.Layouts.Item(previous)
 
         return await self._run(_sync)
+
+    # ---------------------------------------------------------------------------
+    # ── environment (track E) ───────────────────────────────────────────────────
+    # ---------------------------------------------------------------------------
+
+    @staticmethod
+    def _com_documents(app) -> list:
+        return [app.Documents.Item(i) for i in range(int(app.Documents.Count))]
+
+    @staticmethod
+    def _com_document_row(doc, active) -> dict:
+        full_name = str(doc.FullName)
+        return {
+            "name": str(doc.Name),
+            "path": full_name or None,
+            "active": active is not None
+            and (str(doc.Name), full_name) == (str(active.Name), str(active.FullName)),
+            "saved": bool(doc.Saved),
+            "entity_count": int(doc.ModelSpace.Count),
+        }
+
+    def _com_find_document(self, app, name_or_path: str):
+        """Match a key the way ``_resolve_document_key`` does: full path, then name."""
+        if not isinstance(name_or_path, str):
+            raise TypeError(f"name_or_path must be a string, got {type(name_or_path).__name__}")
+        wanted = name_or_path.strip()
+        if not wanted:
+            raise ValueError("name_or_path must not be empty")
+        docs = self._com_documents(app)
+        try:
+            as_path = str(Path(wanted).resolve()).lower()
+        except (OSError, ValueError):
+            as_path = wanted.lower()
+        by_path = [
+            d
+            for d in docs
+            if str(d.FullName) and str(Path(str(d.FullName)).resolve()).lower() == as_path
+        ]
+        by_name = [d for d in docs if str(d.Name).lower() == wanted.lower()]
+        hits = by_path or by_name
+        if len(hits) == 1:
+            return hits[0]
+        names = [str(d.Name) for d in docs]
+        if len(hits) > 1:
+            raise ValueError(f"document {wanted!r} is ambiguous: {names}; pass the full path")
+        raise ValueError(f"no open document named {wanted!r}; open documents: {names}")
+
+    async def document_list(self) -> list[dict]:
+        def _sync():
+            app = _acad_app()
+            active = app.ActiveDocument if int(app.Documents.Count) else None
+            return [self._com_document_row(doc, active) for doc in self._com_documents(app)]
+
+        return await self._run(_sync)
+
+    async def document_activate(self, name_or_path: str) -> dict:
+        def _sync():
+            app = _acad_app()
+            previous = str(app.ActiveDocument.Name) if int(app.Documents.Count) else None
+            doc = self._com_find_document(app, name_or_path)
+            doc.Activate()
+            return {
+                "ok": True,
+                "active": str(doc.Name),
+                "previous": previous,
+                "name": str(doc.Name),
+                "path": str(doc.FullName) or None,
+            }
+
+        result = await self._run(_sync)
+        await self._ensure_document_state()
+        return result
+
+    async def document_close(
+        self, name_or_path: str | None = None, save: bool = False, discard: bool = False
+    ) -> dict:
+        if save and discard:
+            raise ValueError("document_close: save and discard are mutually exclusive")
+
+        def _sync():
+            app = _acad_app()
+            doc = (
+                _acad_doc() if name_or_path is None else self._com_find_document(app, name_or_path)
+            )
+            name = str(doc.Name)
+            path = str(doc.FullName) or None
+            dirty = not bool(doc.Saved)
+            if dirty:
+                if save:
+                    if not path:
+                        raise ValueError(
+                            f"document_close: {name!r} has never been saved; Close(True) would "
+                            "open AutoCAD's Save dialog and block the COM thread. "
+                            "drawing_save_as(path) first, or pass discard=True"
+                        )
+                elif not discard:
+                    where = f" to {path}" if path else " (after drawing_save_as)"
+                    raise ValueError(
+                        f"document_close: {name!r} has unsaved changes; pass save=True to "
+                        f"write them{where}, or discard=True to drop them"
+                    )
+            # A clean or untitled document is never asked to save: Close(True)
+            # on a clean file is a no-op write, on an untitled one a dialog.
+            doc.Close(bool(save and dirty and path))
+            count = int(app.Documents.Count)
+            return {
+                "ok": True,
+                "closed": name,
+                "path": path,
+                "saved": bool(save and dirty and path),
+                "discarded_changes": bool(dirty and not save),
+                "active": str(app.ActiveDocument.Name) if count else None,
+                "open_documents": count,
+                "backend": "com",
+            }
+
+        result = await self._run(_sync)
+        await self._ensure_document_state()
+        return result
 
     # ── selection filters (M8 / F1) ──────────────────────────────────────────
     #
@@ -2119,14 +2246,13 @@ class ComBackend(AutoCADBackend):
         return await self._run(_sync)
 
     async def drawing_close(self, save: bool = True) -> dict:
-        def _sync():
-            doc = _acad_doc()
-            doc.Close(save)
-            return {"ok": True}
+        """The active-document case of ``document_close``.
 
-        result = await self._run(_sync)
-        await self._ensure_document_state()
-        return result
+        ``Close(True)`` on a drawing that has never been saved opens AutoCAD's
+        Save dialog and blocks the single STA thread until ``COM_CALL_TIMEOUT``;
+        that is refused here by name rather than waited out.
+        """
+        return await self.document_close(None, save=save, discard=not save)
 
     async def drawing_undo(self) -> dict:
         def _sync():
