@@ -15,6 +15,7 @@ Measured before writing (ezdxf 1.4.4, 2026-09-16):
 
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
@@ -477,10 +478,36 @@ async def test_com_point_variables_travel_as_variant_double_arrays(com_backend):
         real_set(name, value)
 
     app.SetVariable = _capture
-    await backend.system_set_variable("LIMMAX", (300, 200))
+    res = await backend.system_set_variable("LIMMAX", (300, 200))
     variant = seen["LIMMAX"]
     assert variant.varianttype == pythoncom.VT_ARRAY | pythoncom.VT_R8
     assert tuple(variant.value) == (300.0, 200.0)
+    # The VARIANT is an ActiveX argument only. The reply carries the plain
+    # Python list -- a VARIANT in the dict cannot be serialised by pydantic,
+    # and the tool would then report failure after AutoCAD applied the write.
+    assert res == {"ok": True, "variable": "LIMMAX", "value": [300.0, 200.0]}
+    json.dumps(res)
+
+
+async def test_com_point_variable_reply_survives_the_mcp_output_schema(com_backend, monkeypatch):
+    """Through the real tool: `system_set_variable` returns its dict verbatim
+    under `output_schema={"type": "object"}`, so anything pydantic cannot
+    serialise turns into `ToolError: outputSchema defined but no structured
+    output returned` *after* `SetVariable` has landed -- a retry/undo trap."""
+    from fastmcp import Client
+
+    import server
+
+    backend, app = com_backend
+
+    async def _fake_make_backend():
+        return backend
+
+    monkeypatch.setattr(server, "_make_backend", _fake_make_backend)
+    async with Client(server.mcp) as client:
+        res = await client.call_tool("system_set_variable", {"name": "LIMMAX", "value": [300, 200]})
+    assert res.data == {"ok": True, "variable": "LIMMAX", "value": [300.0, 200.0]}
+    assert app.store["LIMMAX"] == (300.0, 200.0)
 
 
 async def test_com_refuses_before_touching_activex(com_backend):

@@ -4003,6 +4003,12 @@ class ComBackend(AutoCADBackend):
             # AutoCAD rejects e.g. a string "0" for the integer OSMODE. Probe the
             # current value's type and convert to match; pass through on failure.
             coerced = value
+            # `payload` is what SetVariable receives. It differs from `coerced`
+            # only for point variables, whose VARIANT wrapper must never reach
+            # the returned dict: pydantic cannot serialise
+            # win32com.client.VARIANT, so the tool would report failure *after*
+            # AutoCAD had already applied the write.
+            payload = value
             try:
                 current = app.GetVariable(name)
                 if isinstance(current, bool):
@@ -4017,10 +4023,11 @@ class ComBackend(AutoCADBackend):
                     # a bare Python tuple is marshalled as VT_VARIANT and rejected.
                     coords = [float(v) for v in value]
                     coords += [0.0] * (len(current) - len(coords))
-                    coerced = _av(coords[: len(current)])
+                    coerced = coords[: len(current)]
+                payload = _av(coerced) if isinstance(current, (tuple, list)) else coerced
             except Exception as exc:
                 log.debug("set_variable type probe for %s failed: %s", name, exc)
-            app.SetVariable(name, coerced)
+            app.SetVariable(name, payload)
             return {"ok": True, "variable": name, "value": coerced}
 
         return await self._run(_sync)
