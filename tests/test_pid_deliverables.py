@@ -166,3 +166,49 @@ async def test_csv_is_written_inside_allowed_paths(backend, tmp_path, monkeypatc
     with pytest.raises(ToolError, match="not inside any allowed directory"):
         await deliverable(backend, "line_list", csv_path=str(outside))
     assert not outside.exists(), "a refused path is never written"
+
+
+async def test_instrument_tapping_a_pipe_reports_the_pipe_line_number(backend):
+    # A transmitter whose signal line lands on the middle of a process line
+    # (not on a port) — the far end is a junction, and spec 9.5 says the row
+    # names the line number of what the junction joins.
+    pump = await place_symbol(backend, "centrifugal_pump", 100, 100, tag="P-101")
+    vessel = await place_symbol(backend, "vertical_vessel", 300, 120, tag="V-201")
+    pipe = await draw_line(
+        backend,
+        {"handle": pump["handle"], "port": "discharge"},
+        {"handle": vessel["handle"], "port": "N3"},
+        size="100",
+        service="P",
+        spec="CS1",
+    )
+    pt = await place_symbol(backend, "instrument", 193.5, 168, tag="PT-101", location="field")
+    await draw_line(
+        backend, {"handle": pt["handle"]}, {"x": 193.5, "y": 128}, line_class="pneumatic"
+    )
+    graph = await build_graph(backend)
+    signal = next(e for e in graph["edges"] if e["line_class"] == "pneumatic")
+    assert "junction" in (signal["to"] or {}), "the fixture must produce a junction end"
+    rows = instrument_index(graph)
+    row = next(r for r in rows if r["tag"] == "PT-101")
+    assert row["connected_to"] == pipe["line_number"] == "100-P-1-CS1"
+    assert row["signal_lines"] == 1
+
+
+async def test_instrument_on_untagged_equipment_reports_its_handle(backend):
+    # The vessel has no tag, so the only honest identity is its handle — never
+    # the signal line's own number (which Task 13 always stamps, so a fallback
+    # to it would silently mislabel every untagged mounting).
+    vessel = await place_symbol(backend, "vertical_vessel", 300, 120)
+    lt = await place_symbol(backend, "instrument", 300, 200, tag="LT-201", location="field")
+    signal = await draw_line(
+        backend,
+        {"handle": lt["handle"]},
+        {"handle": vessel["handle"], "port": "N1"},
+        line_class="electric",
+    )
+    graph = await build_graph(backend)
+    row = next(r for r in instrument_index(graph) if r["tag"] == "LT-201")
+    assert row["connected_to"] == vessel["handle"]
+    assert row["connected_to"] != signal["line_number"]
+    assert row["signal_lines"] == 1

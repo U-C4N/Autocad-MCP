@@ -54,9 +54,36 @@ def _bubble_part(node: dict, index: int) -> str | None:
     return "_".join(parts[3:]).lower() if len(parts) > 3 else None
 
 
+def _far_ends(node_id: str, edge: dict, nodes: dict, edges: dict, junctions: dict) -> list[str]:
+    """What the other end of an instrument's signal line reaches (spec 9.5).
+
+    A node end names that node's tag, or its handle when it has none. A
+    junction end (a tap into the middle of a pipe) names the line number of
+    every line the junction joins, or that line's handle when it is
+    unnumbered. The signal line's own number is never an answer: Task 13
+    stamps one on every line, so falling back to it would label every
+    untagged mounting with the wire instead of the thing it is mounted on.
+    """
+    names: list[str] = []
+    for ref in (edge["from"], edge["to"]):
+        if not ref:
+            continue  # dangling end — nothing to name
+        if "node" in ref:
+            if ref["node"] != node_id:
+                other = nodes[ref["node"]]
+                names.append(other.get("tag") or other["id"])
+        elif "junction" in ref:
+            for other_id in junctions[ref["junction"]]["edges"]:
+                if other_id != edge["id"]:
+                    other = edges.get(other_id) or {}
+                    names.append(other.get("line_number") or other_id)
+    return names
+
+
 def instrument_index(graph: dict) -> list[dict]:
     nodes = _node_map(graph)
     edges = {e["id"]: e for e in graph["edges"]}
+    junctions = {j["id"]: j for j in graph.get("junctions", [])}
     rows = []
     for node in graph["nodes"]:
         if node["kind"] != "instrument":
@@ -68,10 +95,7 @@ def instrument_index(graph: dict) -> list[dict]:
             for edge_id in port["edges"]:
                 edge = edges[edge_id]
                 signal_lines += 1
-                for ref in (edge["from"], edge["to"]):
-                    if ref and "node" in ref and ref["node"] != node["id"]:
-                        other = nodes[ref["node"]]
-                        connected.append(other.get("tag") or edge.get("line_number") or other["id"])
+                connected.extend(_far_ends(node["id"], edge, nodes, edges, junctions))
         rows.append(
             {
                 "tag": node.get("tag"),
