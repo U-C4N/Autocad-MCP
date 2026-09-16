@@ -5937,8 +5937,33 @@ class EzdxfBackend(AutoCADBackend):
         return default if entry is None else str(entry.dxf.value)
 
     @staticmethod
-    def _ensure_scale_entry(doc, name: str, paper: float, drawing: float) -> bool:
+    def _scale_entry_name(entry) -> str | None:
+        """The name a SCALE object carries in its AcDbScale group 300.
+
+        The dictionary *key* is not the name: AutoCAD saves ACAD_SCALELIST
+        keyed `A0`, `A1`, … and only group 300 says `1:50`. ezdxf loads SCALE
+        as `DXFTagStorage`, so the tag is read from the stored subclass.
+        """
+        xtags = getattr(entry, "xtags", None)
+        if xtags is None:
+            return None
+        for subclass in xtags.subclasses:
+            if subclass and subclass[0].code == 100 and subclass[0].value == "AcDbScale":
+                for tag in subclass:
+                    if tag.code == 300:
+                        return str(tag.value)
+        return None
+
+    @classmethod
+    def _ensure_scale_entry(cls, doc, name: str, paper: float, drawing: float) -> bool:
         """Add `name` to ACAD_SCALELIST unless present; True when added.
+
+        Presence is decided by the SCALE objects' group-300 names, never by
+        the dictionary key — an AutoCAD-authored drawing keys the list `A0`,
+        `A1`, … (its default metric list already carries 1:1 … 1:100, 2:1),
+        and matching on the key appended a duplicate `1:50` to every one of
+        them. A new entry is keyed by its name unless that key is taken, in
+        which case it takes the next free `A<n>` slot like AutoCAD does.
 
         ezdxf has no SCALE entity class, so the object is authored as raw tags
         and loaded through the factory (a `DXFTagStorage` that exports
@@ -5952,8 +5977,16 @@ class EzdxfBackend(AutoCADBackend):
         scales = doc.rootdict.get("ACAD_SCALELIST")
         if scales is None:
             scales = doc.rootdict.add_new_dict("ACAD_SCALELIST")
-        if scales.get(name) is not None:
-            return False
+        existing_keys = set(scales.keys())
+        for _key, entry in scales.items():
+            if cls._scale_entry_name(entry) == name:
+                return False
+        key = name
+        if key in existing_keys:
+            index = 0
+            while f"A{index}" in existing_keys:
+                index += 1
+            key = f"A{index}"
         handle = doc.entitydb.next_handle()
         unit = 1 if paper == drawing else 0
         text = (
@@ -5963,7 +5996,7 @@ class EzdxfBackend(AutoCADBackend):
         entry = factory.load(ExtendedTags.from_text(text), doc)
         doc.entitydb.add(entry)
         doc.objects.add_object(entry)
-        scales.add(name, entry)
+        scales.add(key, entry)
         return True
 
     def _set_annotation_scale(self, doc, value: Any) -> str:

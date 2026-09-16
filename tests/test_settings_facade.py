@@ -173,6 +173,71 @@ async def test_annotation_scale_writes_the_variable_dictionary_and_scale_list(ba
     assert backend._doc.audit().has_errors is False
 
 
+def _seed_autocad_style_scale_list(doc, names):
+    """ACAD_SCALELIST the way AutoCAD saves it: keyed A0, A1, ... with the scale
+    name only in the SCALE object's group 300 (the default metric list already
+    carries 1:1, 1:2, 1:5, 1:10, 1:20, 1:50, 1:100, 2:1 ...)."""
+    from ezdxf.entities import factory
+    from ezdxf.lldxf.extendedtags import ExtendedTags
+
+    scales = doc.rootdict.get("ACAD_SCALELIST")
+    if scales is None:
+        scales = doc.rootdict.add_new_dict("ACAD_SCALELIST")
+    for index, name in enumerate(names):
+        paper, drawing = (float(part) for part in name.split(":"))
+        handle = doc.entitydb.next_handle()
+        text = (
+            f"  0\nSCALE\n  5\n{handle}\n330\n{scales.dxf.handle}\n100\nAcDbScale\n"
+            f" 70\n0\n300\n{name}\n140\n{paper}\n141\n{drawing}\n290\n{int(paper == drawing)}\n"
+        )
+        entry = factory.load(ExtendedTags.from_text(text), doc)
+        doc.entitydb.add(entry)
+        doc.objects.add_object(entry)
+        scales.add(f"A{index}", entry)
+    return scales
+
+
+def _scale_names(scales):
+    return [
+        tag.value
+        for _key, entry in scales.items()
+        for subclass in entry.xtags.subclasses
+        for tag in subclass
+        if tag.code == 300
+    ]
+
+
+async def test_annotation_scale_matches_an_autocad_keyed_scale_list_by_name(backend, tmp_path):
+    """Regression: the presence check used to look the scale up by dictionary
+    *key*, so on any AutoCAD-authored drawing (keys A0, A1, ...) every write
+    appended a second SCALE object with the same name."""
+    scales = _seed_autocad_style_scale_list(backend._doc, ["1:1", "1:2", "1:50"])
+    assert list(scales.keys()) == ["A0", "A1", "A2"]
+
+    res = await backend.drawing_settings({"annotation_scale": "1:50"})
+    assert res["ok"] is True, res.get("errors")
+    assert res["changed"]["annotation_scale"][1] == {"name": "1:50", "value": 0.02}
+    assert list(scales.keys()) == ["A0", "A1", "A2"], "the existing entry is reused, not duplicated"
+    assert _scale_names(scales).count("1:50") == 1
+    assert backend._doc.rootdict.get("AcDbVariableDictionary")["CANNOSCALE"].dxf.value == "1:50"
+
+    # a scale the list does not carry is still appended, exactly once, under a
+    # key that does not collide with AutoCAD's A<n> keys
+    res = await backend.drawing_settings({"annotation_scale": "1:25"})
+    assert res["ok"] is True, res.get("errors")
+    assert _scale_names(scales).count("1:25") == 1
+    assert len(list(scales.keys())) == 4
+    await backend.drawing_settings({"annotation_scale": "1:25"})
+    assert len(list(scales.keys())) == 4
+
+    path = str(tmp_path / "autocad_keyed.dxf")
+    await backend.drawing_save_as(path)
+    await backend.drawing_open(path)
+    reopened = backend._doc.rootdict.get("ACAD_SCALELIST")
+    assert sorted(_scale_names(reopened)) == ["1:1", "1:2", "1:25", "1:50"]
+    assert backend._doc.audit().has_errors is False
+
+
 async def test_unit_formats_by_name_and_by_code(backend):
     res = await backend.drawing_settings({"linear_units": "architectural", "angular_units": "dms"})
     assert res["ok"] is True, res.get("errors")
