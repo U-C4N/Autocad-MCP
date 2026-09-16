@@ -814,6 +814,7 @@ class ComBackend(AutoCADBackend):
                 "viewport_render": FeatureCapability(True, "native"),
                 "solid_3d": _solid_3d_capability(),
                 "lisp": FeatureCapability(True, "sanitized"),
+                "registry_sysvar": FeatureCapability(True, "native"),
             },
         )
 
@@ -4010,6 +4011,13 @@ class ComBackend(AutoCADBackend):
                     coerced = int(float(value)) if isinstance(value, str) else int(value)
                 elif isinstance(current, float):
                     coerced = float(value)
+                elif isinstance(current, (tuple, list)):
+                    # 2D/3D point variables (LIMMIN, GRIDUNIT, SNAPUNIT, ...) travel
+                    # as VARIANT double arrays of the length AutoCAD itself reports;
+                    # a bare Python tuple is marshalled as VT_VARIANT and rejected.
+                    coords = [float(v) for v in value]
+                    coords += [0.0] * (len(current) - len(coords))
+                    coerced = _av(coords[: len(current)])
             except Exception as exc:
                 log.debug("set_variable type probe for %s failed: %s", name, exc)
             app.SetVariable(name, coerced)

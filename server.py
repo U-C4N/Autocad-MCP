@@ -5050,8 +5050,13 @@ async def drawing_settings(
                 "units (mm/cm/m/inch/feet), linear_precision, angular_precision, ltscale, "
                 "dimscale, dim_text_height, dim_arrow_size, dim_decimals, "
                 'decimal_separator ("." or ","), zero_suppression, text_size, point_mode, '
-                "point_size, osmode, fillet_radius. "
-                'Example: {"units": "mm", "dimscale": 1.0, "dim_text_height": 3.5}.'
+                "point_size, osmode, fillet_radius, limits ([[xmin,ymin],[xmax,ymax]]), "
+                "grid (bool), grid_spacing, snap (bool), snap_spacing, ortho (bool), "
+                "polar (bool), polar_angle (degrees), psltscale (bool), annotation_scale "
+                '("1:50"), linear_units (decimal|engineering|architectural|fractional|'
+                "scientific), angular_units (degrees|dms|grads|radians|surveyor), "
+                "dimstyle, textstyle (current style names). "
+                'Example: {"units": "mm", "limits": [[0, 0], [420, 297]], "grid": true}.'
             ),
         ),
     ] = None,
@@ -5060,14 +5065,26 @@ async def drawing_settings(
     """Read or change common AutoCAD drawing settings by friendly name.
 
     A convenience facade over the system variables (INSUNITS, LUPREC, LTSCALE,
-    DIMSCALE, DIMTXT, DIMASZ, DIMDEC, DIMDSEP, DIMZIN, TEXTSIZE, OSMODE, …) so
-    the user can say "set units to mm and dimension text to 3.5" without
-    memorising sysvar names. Call with no argument to get a full snapshot of the
-    current settings.
+    DIMSCALE, DIMTXT, DIMASZ, DIMDEC, DIMDSEP, DIMZIN, TEXTSIZE, OSMODE, LIMMIN/
+    LIMMAX, GRIDMODE/GRIDUNIT, SNAPMODE/SNAPUNIT, ORTHOMODE, AUTOSNAP/POLARANG,
+    PSLTSCALE, CANNOSCALE, LUNITS, AUNITS, DIMSTYLE, TEXTSTYLE) so the user can
+    say "set units to mm, limits to A3 and the grid on" without memorising
+    sysvar names. Call with no argument for a full snapshot; a write returns
+    `applied`, `changed` ({key: [old, new]} — only what moved) and `errors`.
 
     `dim_text_height` / `dim_arrow_size` / `dim_decimals` / `decimal_separator`
     / `zero_suppression` shape the *dimension* — `text_size` is TEXTSIZE, the
     height of a standalone TEXT entity, and does not touch dimensions.
+
+    Refusals, per key, nothing else rolled back: an unknown key; a value outside
+    its range (grid/snap spacing > 0, polar_angle 0–360, precision 0–8, …); a
+    malformed `limits` or `annotation_scale`; `polar` / `polar_angle` on the
+    headless engine (`capability: registry_sysvar` — AutoCAD keeps them in the
+    registry, a file cannot); `dimstyle` / `textstyle` when the backend has no
+    styles contract. On the live engine `annotation_scale` must name a scale in
+    the drawing's scale list (SCALELISTEDIT); the headless engine adds it.
+    Headlessly, grid/snap are stored on the active VPORT and the annotation
+    scale in the variable dictionary — the places AutoCAD reads them from.
     """
     if settings:
         await ctx.info(f"Applying drawing settings: {', '.join(settings)}")

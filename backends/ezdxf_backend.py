@@ -39,6 +39,7 @@ from .base import (
     normalize_lineweight,
     shoelace_area,
 )
+from .contracts.settings import parse_scale, scale_value
 from .quarantine import (
     AbandonedCall,
     DocumentQuarantineError,
@@ -58,6 +59,41 @@ __all__ = [
 #: always the most recent; older entries exist so a support transcript shows a
 #: document that has been abandoned on repeatedly rather than once.
 _MAX_ABANDONED_RECORDS = 10
+
+#: System variables that AutoCAD does not keep in the HEADER section. Grid and
+#: snap belong to the active VPORT table entry (DXF codes 76 / 15 / 75 / 14);
+#: measured 2026-09-16: `doc.header["$GRIDMODE"] = 1` raises `DXFKeyError`.
+_VPORT_SYSVARS: dict[str, tuple[str, str]] = {
+    "GRIDMODE": ("grid_on", "flag"),
+    "SNAPMODE": ("snap_on", "flag"),
+    "GRIDUNIT": ("grid_spacing", "point"),
+    "SNAPUNIT": ("snap_spacing", "point"),
+}
+
+#: Registry-saved or never-saved (AutoCAD System Variables reference, "Saved
+#: in" column). A file has nowhere to keep them, so the headless engine refuses
+#: a write with `capability: registry_sysvar` instead of storing a value that
+#: would vanish; `engineering.standards.sysvars` pins this set to its catalogue.
+_UNSAVED_SYSVARS: frozenset[str] = frozenset(
+    {
+        "AUTOSNAP",
+        "POLARANG",
+        "POLARMODE",
+        "ATTREQ",
+        "ATTDIA",
+        "SAVETIME",
+        "FILEDIA",
+        "XREFCTL",
+        "PROXYSHOW",
+        "CMDECHO",
+        "HIGHLIGHT",
+        "HPNAME",
+        "HPSCALE",
+        "HPANG",
+        "DWGNAME",
+        "DWGPREFIX",
+    }
+)
 
 log = logging.getLogger(__name__)
 
@@ -1058,6 +1094,9 @@ class EzdxfBackend(AutoCADBackend):
                     False, reason="acis_generation_requires_live_autocad"
                 ),
                 "lisp": FeatureCapability(False, reason="live_com_only"),
+                "registry_sysvar": FeatureCapability(
+                    False, reason="registry_saved_variables_have_no_home_in_a_file"
+                ),
             },
         )
 
@@ -5523,14 +5562,69 @@ class EzdxfBackend(AutoCADBackend):
     async def system_get_variable(self, name) -> Any:
         def _sync():
             doc = self._require_doc()
-            return doc.header.get(f"${name.upper()}", None)
+            key = str(name).upper()
+            if key in _VPORT_SYSVARS:
+                attr, shape = _VPORT_SYSVARS[key]
+                raw = getattr(self._active_vport(doc).dxf, attr)
+                if shape == "point":
+                    return (float(raw[0]), float(raw[1]))
+                return int(raw)
+            if key == "CANNOSCALE":
+                return self._dictionary_variable(doc, "CANNOSCALE", "1:1")
+            if key == "CANNOSCALEVALUE":
+                return scale_value(self._dictionary_variable(doc, "CANNOSCALE", "1:1"))
+            return doc.header.get(f"${key}", None)
 
         return await self._async(_sync)
 
     async def system_set_variable(self, name, value) -> dict:
+        from ezdxf.lldxf.const import DXFKeyError
+
         def _sync():
             doc = self._require_doc()
-            doc.header[f"${name.upper()}"] = value
+            key = str(name).upper()
+            if key in _UNSAVED_SYSVARS:
+                raise UnsupportedCapabilityError(
+                    "registry_sysvar",
+                    f"system_set_variable: {key} is saved in the AutoCAD registry (or not "
+                    "saved at all), never in the drawing, so the headless ezdxf backend has "
+                    "nowhere to keep it. Set it on the live COM backend.",
+                )
+            if key in _VPORT_SYSVARS:
+                attr, shape = _VPORT_SYSVARS[key]
+                vport = self._active_vport(doc)
+                if shape == "point":
+                    x, y = float(value[0]), float(value[1])
+                    if x <= 0 or y <= 0:
+                        raise ValueError(f"{key}: spacing must be greater than 0, got {value!r}")
+                    vport.dxf.set(attr, (x, y))
+                else:
+                    vport.dxf.set(attr, 1 if int(value) else 0)
+            elif key == "CANNOSCALE":
+                self._set_annotation_scale(doc, value)
+            elif key == "CANNOSCALEVALUE":
+                raise ValueError(
+                    "CANNOSCALEVALUE is read-only; set CANNOSCALE (e.g. '1:50') instead."
+                )
+            else:
+                try:
+                    doc.header[f"${key}"] = value
+                except DXFKeyError as exc:
+                    # Keeps the pinned "$$DIMTXT" text (tests/test_dimension_header_vars.py)
+                    # while saying why the write is refused rather than dropped.
+                    raise ValueError(
+                        f"system_set_variable: {exc} ezdxf has no header slot for it, so the "
+                        "value would be dropped at save; system_variable_describe(name) says "
+                        "where the variable lives."
+                    ) from exc
+                if key in ("LIMMIN", "LIMMAX"):
+                    # Measured: `Drawing.update_limits()` copies the model-space
+                    # LAYOUT's limits into the header on every write(), so a
+                    # header-only value is overwritten at save. The layout is
+                    # the source of truth; keep both in step.
+                    doc.modelspace().dxf_layout.dxf.set(
+                        key.lower(), (float(value[0]), float(value[1]))
+                    )
             self._mark_dirty()
             return {"ok": True, "variable": name, "value": value}
 
@@ -5808,3 +5902,77 @@ class EzdxfBackend(AutoCADBackend):
             return _entity_info_dxf(xline)
 
         return await self._async(_sync)
+
+    # ── settings (track E, group C) ───────────────────────────────────────────
+    #
+    # Where the variables the `drawing_settings` facade reaches actually live
+    # in a DXF file when they are not header variables.
+
+    @staticmethod
+    def _active_vport(doc):
+        """The `*Active` VPORT entry — grid and snap state live on it.
+
+        Owned here (group C). Group V's named views use the same entry and
+        carry a worktree-only copy that the merge agent deletes; this
+        definition is the one that ships.
+        """
+        entries = doc.viewports.get("*Active")
+        if not entries:
+            entries = [doc.viewports.new("*Active")]
+        return entries[0]
+
+    @staticmethod
+    def _variable_dictionary(doc, create: bool):
+        """`AcDbVariableDictionary` under the root dictionary (CANNOSCALE lives there)."""
+        vardict = doc.rootdict.get("AcDbVariableDictionary")
+        if vardict is None and create:
+            vardict = doc.rootdict.add_new_dict("AcDbVariableDictionary")
+        return vardict
+
+    def _dictionary_variable(self, doc, key: str, default: str) -> str:
+        vardict = self._variable_dictionary(doc, create=False)
+        if vardict is None:
+            return default
+        entry = vardict.get(key)
+        return default if entry is None else str(entry.dxf.value)
+
+    @staticmethod
+    def _ensure_scale_entry(doc, name: str, paper: float, drawing: float) -> bool:
+        """Add `name` to ACAD_SCALELIST unless present; True when added.
+
+        ezdxf has no SCALE entity class, so the object is authored as raw tags
+        and loaded through the factory (a `DXFTagStorage` that exports
+        verbatim). Measured: it round-trips, ezdxf registers the CLASS, and
+        `doc.audit()` is clean after reopen. AutoCAD only honours a CANNOSCALE
+        that names an entry of this list.
+        """
+        from ezdxf.entities import factory
+        from ezdxf.lldxf.extendedtags import ExtendedTags
+
+        scales = doc.rootdict.get("ACAD_SCALELIST")
+        if scales is None:
+            scales = doc.rootdict.add_new_dict("ACAD_SCALELIST")
+        if scales.get(name) is not None:
+            return False
+        handle = doc.entitydb.next_handle()
+        unit = 1 if paper == drawing else 0
+        text = (
+            f"  0\nSCALE\n  5\n{handle}\n330\n{scales.dxf.handle}\n100\nAcDbScale\n"
+            f" 70\n0\n300\n{name}\n140\n{paper}\n141\n{drawing}\n290\n{unit}\n"
+        )
+        entry = factory.load(ExtendedTags.from_text(text), doc)
+        doc.entitydb.add(entry)
+        doc.objects.add_object(entry)
+        scales.add(name, entry)
+        return True
+
+    def _set_annotation_scale(self, doc, value: Any) -> str:
+        name, paper, drawing = parse_scale(value)  # refused before any write
+        self._ensure_scale_entry(doc, name, paper, drawing)
+        vardict = self._variable_dictionary(doc, create=True)
+        entry = vardict.get("CANNOSCALE")
+        if entry is None:
+            vardict.add_dict_var("CANNOSCALE", name)
+        else:
+            entry.dxf.value = name
+        return name
