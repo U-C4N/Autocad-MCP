@@ -3330,6 +3330,64 @@ class ComBackend(AutoCADBackend):
 
         return await self._run(_sync)
 
+    #: ActiveX twins of the headless ``_ATTRIB_TO_TEXT`` carry, written onto
+    #: the TEXT in this order and *before* ``Rotation``: ``Normal`` is the
+    #: frame ``Rotation`` is measured in, ``Thickness`` rides on the frame,
+    #: and the style members are frame-independent. ``Alignment`` /
+    #: ``TextAlignmentPoint`` (halign/valign + align_point) and ``Color`` are
+    #: handled apart because ActiveX orders them against the insertion point.
+    _ATTRIB_FRAME_MEMBERS = (
+        "Normal",
+        "Thickness",
+        "StyleName",
+        "ObliqueAngle",
+        "ScaleFactor",
+        "Backward",
+        "UpsideDown",
+    )
+    _ATTRIB_TEXT_MEMBERS = _ATTRIB_FRAME_MEMBERS + ("Alignment", "TextAlignmentPoint", "Color")
+
+    @classmethod
+    def _capture_attrib_text_members(cls, attr) -> dict:
+        """Read the optional ATTRIB members a TEXT can take, skipping absent ones.
+
+        ``Normal`` is a WCS unit vector and is only worth carrying when it is
+        not already +Z; ``TextAlignmentPoint`` is meaningless (and refused by
+        ActiveX on write) for a left-aligned text, so it is dropped when
+        ``Alignment`` is ``acAlignmentLeft`` (0).
+        """
+        out: dict = {}
+        for name in cls._ATTRIB_TEXT_MEMBERS:
+            try:
+                raw = getattr(attr, name)
+            except Exception:
+                continue
+            if name in ("Normal", "TextAlignmentPoint"):
+                try:
+                    raw = tuple(float(v) for v in raw)
+                except (TypeError, ValueError):
+                    continue
+                if name == "Normal" and ocs.is_wcs_frame(raw):
+                    continue
+            elif name in ("Alignment", "Color"):
+                try:
+                    raw = int(raw)
+                except (TypeError, ValueError):
+                    continue
+            elif name in ("Backward", "UpsideDown"):
+                raw = bool(raw)
+            elif name == "StyleName":
+                raw = str(raw)
+            else:
+                try:
+                    raw = float(raw)
+                except (TypeError, ValueError):
+                    continue
+            out[name] = raw
+        if out.get("Alignment", 0) == 0:
+            out.pop("TextAlignmentPoint", None)
+        return out
+
     async def block_explode(self, handle) -> dict:
         """Explode an INSERT through ActiveX; ATTRIB values survive as TEXT.
 
@@ -3337,13 +3395,25 @@ class ComBackend(AutoCADBackend):
         ATTDEF entities) and discards the values; ActiveX ``Explode()`` does
         the same and, unlike the command, leaves the original reference in
         place. This is the BURST rule instead: each ATTRIB's value, placement,
-        height, rotation and layer are read before the explode, the ATTDEFs
-        the explode returns are deleted, one ``AddText`` per ATTRIB carries the
-        value (an invisible ATTRIB becomes an invisible TEXT), and the
-        reference itself is deleted. Unit-tested against a fake ActiveX
-        surface; ``Explode()``'s return shape is the ActiveX documented one
-        (an array of the new objects) and is exercised live by the settings
-        smoke.
+        height, rotation, layer, frame and text style are read before the
+        explode, the ATTDEFs the explode returns are deleted, one ``AddText``
+        per ATTRIB carries the value (an invisible ATTRIB becomes an invisible
+        TEXT), and the reference itself is deleted. Unit-tested against a fake
+        ActiveX surface; ``Explode()``'s return shape is the ActiveX documented
+        one (an array of the new objects) and is exercised live by the
+        settings smoke.
+
+        An ATTRIB is an OCS entity and ``AddText`` builds a +Z TEXT, so the
+        frame is carried the way the headless engine carries ``extrusion`` /
+        ``thickness``: ``Normal`` is written *before* ``Rotation`` (the
+        group-50 angle only means the same thing inside the same frame -- a
+        mirrored reference's ATTRIB sits on ``(0, 0, -1)`` and used to read
+        theta instead of 180deg-theta, with un-mirrored glyphs) and the WCS
+        ``InsertionPoint`` is re-asserted *after* it, because a frame change
+        moves the OCS origin under a point that was handed over in WCS. The
+        members ezdxf's ``_ATTRIB_TO_TEXT`` names have their ActiveX twins in
+        ``_ATTRIB_TEXT_MEMBERS``; each is optional and skipped when the object
+        does not expose it, never written as a guess.
 
         The TEXTs go into the reference's *owner* block
         (``ObjectIdToObject(OwnerID)``), which is where ``Explode()`` puts the
@@ -3379,6 +3449,7 @@ class ComBackend(AutoCADBackend):
                         "rotation": float(attr.Rotation),
                         "layer": str(attr.Layer),
                         "invisible": invisible,
+                        "members": self._capture_attrib_text_members(attr),
                     }
                 )
             exploded = ent.Explode()
@@ -3391,13 +3462,26 @@ class ComBackend(AutoCADBackend):
             attribute_texts = []
             for item in captured:
                 ins = item["insertion"]
-                text = owner.AddText(
-                    item["text"],
-                    _apoint(ins[0], ins[1], ins[2] if len(ins) > 2 else 0.0),
-                    item["height"],
-                )
+                point = _apoint(ins[0], ins[1], ins[2] if len(ins) > 2 else 0.0)
+                text = owner.AddText(item["text"], point, item["height"])
+                members = item["members"]
+                for name in self._ATTRIB_FRAME_MEMBERS:
+                    if name in members:
+                        setattr(text, name, members[name])
                 text.Rotation = item["rotation"]
+                if "Normal" in members:
+                    # The frame moved the OCS origin; the anchor was WCS.
+                    text.InsertionPoint = point
+                if "Alignment" in members:
+                    text.Alignment = members["Alignment"]
+                    if "TextAlignmentPoint" in members:
+                        tap = members["TextAlignmentPoint"]
+                        text.TextAlignmentPoint = _apoint(
+                            tap[0], tap[1], tap[2] if len(tap) > 2 else 0.0
+                        )
                 text.Layer = item["layer"]
+                if "Color" in members:
+                    text.Color = members["Color"]
                 if item["invisible"]:
                     text.Visible = False
                 attribute_texts.append(str(text.Handle))

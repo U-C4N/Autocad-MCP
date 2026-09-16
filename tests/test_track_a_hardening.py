@@ -109,6 +109,7 @@ class _FakeSpace:
         self.calls: list[tuple[str, tuple]] = []
         self.attributes = attributes or {}
         self.inserted: list[_FakeObject] = []
+        self.texts: list[_FakeObject] = []
         self.Name = name
         self.IsLayout = True
 
@@ -126,7 +127,9 @@ class _FakeSpace:
 
     def AddText(self, text, point, height):
         self.calls.append(("AddText", (text, tuple(point.value), height)))
-        return _FakeObject("AcDbText", f"T{len(self.calls)}")
+        obj = _FakeObject("AcDbText", f"T{len(self.calls)}")
+        self.texts.append(obj)
+        return obj
 
 
 @pytest.fixture
@@ -404,6 +407,121 @@ async def test_com_explode_refuses_a_nested_reference_before_explode(com):
     with pytest.raises(RuntimeError, match="nested inside block definition 'OUTER'"):
         await backend.block_explode("5C")
     assert dispatched == [] and space.calls == [] and ref.deleted is False
+
+
+async def test_com_explode_carries_the_attrib_frame_and_style_onto_the_text(com):
+    """The COM twin of the mirrored-reference test. ``AddText`` builds a +Z
+    TEXT; an ATTRIB reflected to ``Normal (0, 0, -1)`` has an OCS ``Rotation``
+    and mirrored glyphs, so the TEXT must take the frame *before* the angle
+    and have its WCS anchor re-asserted after the frame changes it. The
+    style members ezdxf carries (style, oblique, width, generation flags,
+    alignment + alignment point, colour) ride along the same way."""
+    backend, document, space = com
+    attrib = _FakeObject(
+        "AcDbAttribute",
+        "A1",
+        TagString="TAG",
+        TextString="P-101",
+        InsertionPoint=(-25.0, 13.0, 0.0),
+        Height=2.5,
+        Rotation=0.5236,
+        Layer="PID-TAG",
+        Invisible=False,
+        Normal=(0.0, 0.0, -1.0),
+        Thickness=0.7,
+        StyleName="ISO",
+        ObliqueAngle=0.2618,
+        ScaleFactor=0.8,
+        Backward=True,
+        UpsideDown=False,
+        Alignment=4,
+        TextAlignmentPoint=(-20.0, 13.0, 0.0),
+        Color=3,
+    )
+    ref = _FakeObject(
+        "AcDbBlockReference",
+        "6D",
+        Name="TB",
+        OwnerID=1,
+        GetAttributes=lambda: (attrib,),
+        Explode=lambda: (),
+    )
+    document.objects["6D"] = ref
+
+    result = await backend.block_explode("6D")
+
+    assert result["ok"] is True and result["attribute_texts"] == ["T1"]
+    assert space.calls == [("AddText", ("P-101", (-25.0, 13.0, 0.0), 2.5))]
+    text = space.texts[0]
+    # Point writes go through ``_apoint`` (a VARIANT); compare their payload.
+    writes = [
+        (name, tuple(value.value) if hasattr(value, "value") else value)
+        for name, value in text.writes
+    ]
+    names = [name for name, _ in writes]
+    assert ("Normal", (0.0, 0.0, -1.0)) in writes, "the ATTRIB's frame is carried"
+    assert names.index("Normal") < names.index("Rotation"), (
+        "Rotation is the OCS angle: it only means the same thing inside the same frame"
+    )
+    assert names.index("Normal") < names.index("InsertionPoint"), (
+        "the WCS anchor is re-asserted after the frame change moves the OCS origin"
+    )
+    assert names.index("Alignment") < names.index("TextAlignmentPoint"), (
+        "ActiveX rejects an alignment point on a left-aligned text"
+    )
+    assert dict(writes) == {
+        "Normal": (0.0, 0.0, -1.0),
+        "Thickness": 0.7,
+        "StyleName": "ISO",
+        "ObliqueAngle": 0.2618,
+        "ScaleFactor": 0.8,
+        "Backward": True,
+        "UpsideDown": False,
+        "Rotation": 0.5236,
+        "InsertionPoint": (-25.0, 13.0, 0.0),
+        "Alignment": 4,
+        "TextAlignmentPoint": (-20.0, 13.0, 0.0),
+        "Layer": "PID-TAG",
+        "Color": 3,
+    }
+
+
+async def test_com_explode_skips_frame_members_the_attrib_does_not_expose(com):
+    """A bare ATTRIB (the shape the earlier fakes use) still explodes: an
+    absent optional member is skipped, never written as a guess, and a
+    left-aligned ATTRIB never gets a TextAlignmentPoint."""
+    backend, document, space = com
+    attrib = _FakeObject(
+        "AcDbAttribute",
+        "A1",
+        TagString="TAG",
+        TextString="P-101",
+        InsertionPoint=(7.0, 15.2, 0.0),
+        Height=5.0,
+        Rotation=0.0,
+        Layer="0",
+        Invisible=False,
+        Alignment=0,
+        TextAlignmentPoint=(99.0, 99.0, 0.0),
+    )
+    ref = _FakeObject(
+        "AcDbBlockReference",
+        "7E",
+        Name="TB",
+        OwnerID=1,
+        GetAttributes=lambda: (attrib,),
+        Explode=lambda: (),
+    )
+    document.objects["7E"] = ref
+
+    result = await backend.block_explode("7E")
+
+    assert result["ok"] is True
+    names = [name for name, _ in space.texts[0].writes]
+    assert "Normal" not in names and "StyleName" not in names
+    assert "InsertionPoint" not in names, "a +Z text keeps the anchor AddText was given"
+    assert "TextAlignmentPoint" not in names, "left alignment has no alignment point"
+    assert names == ["Rotation", "Alignment", "Layer"]
 
 
 async def test_explode_of_a_mirrored_reference_keeps_the_tag_where_the_attrib_was(backend):
