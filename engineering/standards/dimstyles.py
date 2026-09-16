@@ -25,8 +25,11 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from engineering.standards.names import check_name
+
 __all__ = [
     "ANSI",
+    "ARROWHEAD_BLOCKS",
     "DIM_VARIABLE_RANGES",
     "DIM_VARIABLE_WHITELIST",
     "ISO_25",
@@ -34,8 +37,10 @@ __all__ = [
     "PRESETS",
     "PRESET_SOURCES",
     "PRESET_VARIABLES",
+    "canonical_arrowhead",
     "check_dim_value",
     "describe_preset",
+    "ezdxf_arrowhead",
     "resolve_dimstyle",
     "validate_overrides",
 ]
@@ -122,6 +127,23 @@ _LINEWEIGHT_TEXT = (
 )
 LINEWEIGHT_CODES: frozenset[int] = frozenset(int(code) for code in _LINEWEIGHT_TEXT.split())
 
+#: AutoCAD's nineteen named built-in arrowheads, spelled the way the DIMBLK
+#: documentation, the ``$DIMBLK`` header, ActiveX and a loaded ezdxf DIMSTYLE
+#: all spell them: the block name, underscore first. The twentieth, closed
+#: filled, has no block name and is ``""`` (the spec §4.1 default).
+#: ``tests/test_standards_presets.py`` pins this set equal to ezdxf's
+#: ``ARROWS.__acad__`` so the two vocabularies cannot drift apart unseen.
+ARROWHEAD_BLOCKS: frozenset[str] = frozenset(
+    "_ARCHTICK _BOXBLANK _BOXFILLED _CLOSED _CLOSEDBLANK _DATUMBLANK _DATUMFILLED "
+    "_DOT _DOTBLANK _DOTSMALL _INTEGRAL _NONE _OBLIQUE _OPEN _OPEN30 _OPEN90 "
+    "_ORIGIN _ORIGIN2 _SMALL".split()
+)
+
+#: The spellings of the closed filled default a caller may send: AutoCAD's own
+#: "enter a single period to return to closed filled", and the block name
+#: ezdxf gives the arrow it draws for it.
+_CLOSED_FILLED_ALIASES = frozenset({".", "CLOSEDFILLED", "_CLOSEDFILLED"})
+
 #: What ``dimstyle_create`` / ``dimstyle_modify`` will write, and the range each
 #: value must sit in. The shape of each entry:
 #:
@@ -131,7 +153,9 @@ LINEWEIGHT_CODES: frozenset[int] = frozenset(int(code) for code in _LINEWEIGHT_T
 #: * ``("int", low, high)`` — an integer (a float with no fraction is accepted).
 #: * ``("nonzero_float", low, high)`` — as ``float`` but ``0`` is refused.
 #: * ``("char",)`` — exactly one character.
-#: * ``("str",)`` — any string (arrowhead block names; ``""`` is the closed filled arrow).
+#: * ``("arrow",)`` — an arrowhead: ``""`` (closed filled), one of
+#:   :data:`ARROWHEAD_BLOCKS` given with or without its underscore in any case,
+#:   or a user block name under the symbol-name rule; see :func:`canonical_arrowhead`.
 #: * ``("name",)`` — a non-empty DXF symbol-table name.
 #: * a ``set`` — one of its members.
 DIM_VARIABLE_RANGES: dict[str, tuple | set] = {
@@ -148,7 +172,7 @@ DIM_VARIABLE_RANGES: dict[str, tuple | set] = {
     "DIMDSEP": ("char",),
     "DIMLUNIT": ("int", 1, 6),
     "DIMZIN": ("int", 0, 15),  # a bitmask
-    "DIMBLK": ("str",),
+    "DIMBLK": ("arrow",),
     "DIMTXSTY": ("name",),
     "DIMLWD": LINEWEIGHT_CODES,
     "DIMLWE": LINEWEIGHT_CODES,
@@ -167,17 +191,56 @@ DIM_VARIABLE_RANGES: dict[str, tuple | set] = {
     "DIMCLRE": ("int", 0, 256),
     "DIMCLRT": ("int", 0, 256),
     "DIMSAH": {0, 1},
-    "DIMBLK1": ("str",),
-    "DIMBLK2": ("str",),
+    "DIMBLK1": ("arrow",),
+    "DIMBLK2": ("arrow",),
     "DIMCEN": ("float", -1e6, 1e6),  # negative draws centre lines, 0 none
 }
 
 DIM_VARIABLE_WHITELIST: frozenset[str] = frozenset(DIM_VARIABLE_RANGES)
 
-#: DXF forbids these in a symbol-table name; the same rule ``security.py``
-#: applies to block and layer names, restated here so this module stays free
-#: of fastmcp.
-_ILLEGAL_NAME_CHARS = frozenset('<>/\\":;?*|,=`')
+
+def canonical_arrowhead(key: str, value: Any) -> str:
+    """``value`` as the arrowhead name DIMBLK stores, or ``TypeError`` /
+    ``ValueError`` naming ``key``.
+
+    ``""``, ``"."``, ``CLOSEDFILLED`` and ``_CLOSEDFILLED`` are the closed
+    filled default and come back as ``""``. A built-in is accepted with or
+    without its underscore in any case (``oblique``, ``_Dot``) and comes back
+    as its block name (``_OBLIQUE``, ``_DOT``) — AutoCAD's documented spelling,
+    what ActiveX takes verbatim and what ezdxf reports after a load. Anything
+    else is a user block name and must obey the symbol-name rule; whether the
+    block exists is the backend's question, asked against the open drawing.
+    """
+    if not isinstance(value, str):
+        raise TypeError(f"{key}: expected a string, got {type(value).__name__}")
+    if value == "":
+        return ""
+    text = value.strip()
+    if text.upper() in _CLOSED_FILLED_ALIASES:
+        return ""
+    if not text:
+        raise ValueError(
+            f'{key}: {value!r} is blank; use "" for the closed filled arrowhead or a block name'
+        )
+    upper = text.upper()
+    candidate = upper if upper.startswith("_") else "_" + upper
+    if candidate in ARROWHEAD_BLOCKS:
+        return candidate
+    return check_name(key, text, what="block name")
+
+
+def ezdxf_arrowhead(canonical: str) -> str:
+    """The name ezdxf's DIMSTYLE takes for a :func:`canonical_arrowhead` value.
+
+    ezdxf's ``ARROWS`` vocabulary drops the underscore (``_DOT`` → ``DOT``,
+    ``""`` stays ``""``) and its export raises ``DXFValueError`` on ``_DOT``
+    because no block of that name exists until it creates one from ``DOT``. A
+    user block is passed through unchanged. The COM engine needs no mapping:
+    AutoCAD takes the canonical spelling.
+    """
+    if canonical in ARROWHEAD_BLOCKS:
+        return canonical[1:]
+    return canonical
 
 
 def _number(key: str, value: Any) -> float:
@@ -226,21 +289,15 @@ def check_dim_value(name: str, value: Any) -> Any:
         if not low <= number <= high:
             raise ValueError(f"{key}: {int(number)} is out of range {low}..{high}")
         return int(number)
+    if kind == "arrow":
+        return canonical_arrowhead(key, value)
+    if kind == "name":
+        return check_name(key, value, what="style name")
     if not isinstance(value, str):
         raise TypeError(f"{key}: expected a string, got {type(value).__name__}")
-    if kind == "char":
-        if len(value) != 1:
-            raise ValueError(f"{key}: {value!r} must be exactly one character")
-        return value
-    if kind == "name":
-        text = value.strip()
-        if not text:
-            raise ValueError(f"{key}: a style name cannot be empty")
-        bad = sorted(set(text) & _ILLEGAL_NAME_CHARS)
-        if bad:
-            raise ValueError(f"{key}: {text!r} contains characters DXF forbids in a name: {bad}")
-        return text
-    return value  # "str"
+    if len(value) != 1:  # "char"
+        raise ValueError(f"{key}: {value!r} must be exactly one character")
+    return value
 
 
 def validate_overrides(overrides: dict | None) -> dict[str, Any]:

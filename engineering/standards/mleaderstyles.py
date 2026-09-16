@@ -11,6 +11,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from engineering.standards.names import check_name
+
 __all__ = ["MLEADER_KEYS", "MLEADER_PRESETS", "resolve_mleaderstyle"]
 
 MLEADER_PRESETS: dict[str, dict[str, Any]] = {
@@ -19,8 +21,6 @@ MLEADER_PRESETS: dict[str, dict[str, Any]] = {
 }
 
 MLEADER_KEYS: tuple[str, ...] = ("arrow_size", "landing_gap", "text_style", "text_height")
-
-_ILLEGAL_NAME_CHARS = frozenset('<>/\\":;?*|,=`')
 
 
 def _positive(key: str, value: Any, *, allow_zero: bool = False) -> float:
@@ -51,14 +51,7 @@ def resolve_mleaderstyle(preset: str, overrides: dict | None = None) -> dict[str
                 f"overrides: {raw_key!r} is not a leader style key; allowed: {list(MLEADER_KEYS)}"
             )
         if name == "text_style":
-            if not isinstance(value, str) or not value.strip():
-                raise ValueError("text_style: a text style name cannot be empty")
-            bad = sorted(set(value.strip()) & _ILLEGAL_NAME_CHARS)
-            if bad:
-                raise ValueError(
-                    f"text_style: {value!r} contains characters DXF forbids in a name: {bad}"
-                )
-            values[name] = value.strip()
+            values[name] = check_name(name, value, what="text style name")
         elif name == "landing_gap":
             values[name] = _positive(name, value, allow_zero=True)
         else:

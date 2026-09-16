@@ -12,7 +12,11 @@ it, and the caller sees ``font_resolved``.
 
 from __future__ import annotations
 
+import math
 from pathlib import PurePath
+from typing import Any
+
+from engineering.standards.names import check_name
 
 __all__ = [
     "MAX_OBLIQUE_DEG",
@@ -31,7 +35,20 @@ TEXT_PRESETS: dict[str, tuple[str, float, float]] = {
 #: AutoCAD's own limit for the STYLE command's obliquing angle.
 MAX_OBLIQUE_DEG = 85.0
 
-_ILLEGAL_NAME_CHARS = frozenset('<>/\\":;?*|,=`')
+
+def _number(key: str, value: Any) -> float:
+    """A finite number, or ``TypeError`` / ``ValueError`` naming ``key``.
+
+    ``nan`` and ``inf`` pass every ``<`` / ``>`` check, and a backend writing
+    them verbatim leaves ``50\\nnan`` in the STYLE record — the silent wrong
+    number the contract forbids.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{key}: expected a number, got {type(value).__name__}")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{key}: {value!r} is not a finite number")
+    return number
 
 
 def resolve_font(font: str) -> tuple[str, bool]:
@@ -67,26 +84,21 @@ def validate_textstyle(
 ) -> dict:
     """The typed request both engines write, or a ``ValueError``/``TypeError``
     naming the field. ``height`` 0 is AutoCAD's "prompt per text" and is legal;
-    the width factor must be positive; the oblique angle is AutoCAD's ±85°."""
-    if not isinstance(name, str) or not name.strip():
-        raise ValueError("name: a text style name cannot be empty")
-    clean = name.strip()
-    bad = sorted(set(clean) & _ILLEGAL_NAME_CHARS)
-    if bad:
-        raise ValueError(f"name: {clean!r} contains characters DXF forbids in a name: {bad}")
+    the width factor must be positive; the oblique angle is AutoCAD's ±85°;
+    every number must be finite. The name obeys the DXF symbol-name rule
+    (``engineering.standards.names``) — this is the only gate on the
+    ``textstyle_create`` path, and a name that passes must be one the drawing
+    can still be saved with."""
+    clean = check_name("name", name, what="text style name")
     font_file, known = resolve_font(font)
-    for key, value in (
-        ("height", height),
-        ("width_factor", width_factor),
-        ("oblique_deg", oblique_deg),
-    ):
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise TypeError(f"{key}: expected a number, got {type(value).__name__}")
-    if float(height) < 0.0:
+    height_value = _number("height", height)
+    width_value = _number("width_factor", width_factor)
+    oblique_value = _number("oblique_deg", oblique_deg)
+    if height_value < 0.0:
         raise ValueError(f"height: {height!r} is negative; 0 means 'ask per text'")
-    if float(width_factor) <= 0.0:
+    if width_value <= 0.0:
         raise ValueError(f"width_factor: {width_factor!r} must be greater than 0")
-    if abs(float(oblique_deg)) > MAX_OBLIQUE_DEG:
+    if abs(oblique_value) > MAX_OBLIQUE_DEG:
         raise ValueError(
             f"oblique_deg: {oblique_deg!r} is outside AutoCAD's +/-{MAX_OBLIQUE_DEG:g} degrees"
         )
@@ -94,7 +106,7 @@ def validate_textstyle(
         "name": clean,
         "font_file": font_file,
         "known": known,
-        "height": float(height),
-        "width_factor": float(width_factor),
-        "oblique_deg": float(oblique_deg),
+        "height": height_value,
+        "width_factor": width_value,
+        "oblique_deg": oblique_value,
     }
