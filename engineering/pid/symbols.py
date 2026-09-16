@@ -183,19 +183,32 @@ def transform_port(
     rotation_deg: float,
     scale: float,
     y_scale: float | None = None,
+    mirrored: bool = False,
+    strict: bool = True,
 ) -> dict:
     """Symbol-local port -> WCS, for an INSERT at (x, y) rotated by ``rotation_deg``.
 
     ``scale`` is the X factor; ``y_scale`` defaults to it (a uniform INSERT). A
     negative factor is a mirror — ``entity_mirror`` on an INSERT writes
     ``y_scale = -1`` — and is applied in full, to the point, the direction and
-    the radius, so the port lands where the mirrored geometry actually is. The
-    magnitudes must match: a stretched symbol has no circle for a radial port to
-    sit on, so it is refused instead of resolving to a point off the symbol.
+    the radius, so the port lands where the mirrored geometry actually is.
+
+    ``mirrored`` is the other spelling of a mirror: MIRROR3D and foreign DXFs
+    store it as extrusion -Z, whose OCS-to-WCS map is x -> -x, y -> y about the
+    (WCS) insertion point. It applies *after* rotation and scale, which is the
+    order the INSERT's own matrix composes them in — the same order ezdxf's
+    ``Insert.matrix44`` reports.
+
+    The scale magnitudes must match unless ``strict`` is False: a stretched
+    symbol has no circle for a radial port to sit on, so the drawing tools
+    refuse it instead of resolving to a point off the symbol. The reader,
+    which never refuses a drawing, passes ``strict=False``: a point port then
+    scales per axis (exact), and a radial port keeps the smaller factor's
+    circle — the caller says so in the node's confidence.
     """
     sx = float(scale)
     sy = sx if y_scale is None else float(y_scale)
-    if abs(abs(sx) - abs(sy)) > 1e-9:
+    if strict and abs(abs(sx) - abs(sy)) > 1e-9:
         raise ValueError(
             f"non-uniform INSERT scale (x_scale={sx:g}, y_scale={sy:g}): P&ID symbols "
             "are placed with one scale factor (a mirror may flip its sign); re-insert "
@@ -204,27 +217,34 @@ def transform_port(
     a = math.radians(rotation_deg)
     cos_a, sin_a = math.cos(a), math.sin(a)
     lx, ly = port.x * sx, port.y * sy
-    wx = x + lx * cos_a - ly * sin_a
-    wy = y + lx * sin_a + ly * cos_a
+    dx = lx * cos_a - ly * sin_a
+    dy = lx * sin_a + ly * cos_a
+    if mirrored:
+        dx = -dx
+    wx, wy = x + dx, y + dy
     if port.direction_deg is None:
         direction = None
     else:
         # Reflect first (a flipped X negates the angle about 90°, a flipped Y
         # negates it about 0°), then rotate — exact, so the uniform case keeps
-        # the same numbers it always had.
+        # the same numbers it always had. The frame mirror comes last, as it
+        # does for the point.
         d = float(port.direction_deg)
         if sx < 0:
             d = 180.0 - d
         if sy < 0:
             d = -d
-        direction = (d + rotation_deg) % 360.0
+        d = d + rotation_deg
+        if mirrored:
+            d = 180.0 - d
+        direction = d % 360.0
     return {
         "name": port.name,
         "x": wx,
         "y": wy,
         "direction_deg": direction,
         "kind": port.kind,
-        "radius": port.radius * abs(sx),
+        "radius": port.radius * min(abs(sx), abs(sy)),
         "inferred": False,
     }
 

@@ -606,3 +606,228 @@ def test_an_approximate_geometry_bbox_is_tightened_by_the_attribute_inclusive_bo
         (95.0, 100.0), _bbox(info(geometry_bbox=loose, bounding_box=outer)), 0.5
     )
     assert not _on_bbox_boundary((95.0, 100.0), _bbox(info(geometry_bbox=loose)), 0.5)
+
+
+# ── per-space resolution, mirrored inserts, tags above the box, per-axis scale ──
+
+
+async def test_scope_all_resolves_each_line_in_its_own_space(backend):
+    """The grids, box candidates and texts were pooled across layouts, so a
+    line in SHEET-2 attached to the Model gate that shares its coordinates,
+    and a line under a Model-only pump 'connected' across sheets."""
+    hv1 = (await place_symbol(backend, "gate", 0, 0, tag="HV-1"))["handle"]
+    await backend.layout_create("SHEET-2")
+    await backend.layout_set_current("SHEET-2")
+    hv2 = (await place_symbol(backend, "gate", 0, 0, tag="HV-2"))["handle"]
+    to_valve = (await backend.entity_create_line(-40, 0, -4, 0, layer="PROCESS-PIPING-MAIN")).handle
+    await backend.layout_set_current("Model")
+    pump = (await place_symbol(backend, "centrifugal_pump", 100, 100, tag="P-1"))["handle"]
+    await backend.layout_set_current("SHEET-2")
+    under_pump = (
+        await backend.entity_create_line(100, 150, 100, 106, layer="PROCESS-PIPING-MAIN")
+    ).handle
+    await backend.layout_set_current("Model")
+    graph = await build_graph(backend, scope="all")
+    nodes = {n["id"]: n for n in graph["nodes"]}
+    edges = {e["id"]: e for e in graph["edges"]}
+    assert nodes[hv1]["space"] == "Model" and nodes[hv2]["space"] == "SHEET-2"
+    assert edges[to_valve]["space"] == "SHEET-2"
+    assert edges[to_valve]["to"] == {"node": hv2, "port": "in"}
+    assert nodes[hv2]["ports"]["in"]["edges"] == [to_valve]
+    assert nodes[hv1]["ports"]["in"]["edges"] == []
+    assert edges[under_pump]["to"] is None
+    assert nodes[pump]["ports"]["discharge"]["edges"] == []
+    dangling = {(d["edge"], d["end"]): d for d in graph["dangling"]}
+    assert set(dangling) == {(to_valve, "from"), (under_pump, "from"), (under_pump, "to")}
+    assert dangling[(under_pump, "to")]["nearest"] is None  # the pump is on another sheet
+
+
+async def test_scope_all_keeps_junctions_and_tags_within_a_space(backend):
+    """A Model line's vertex must not make a junction for a SHEET-2 line
+    ending on the same coordinates, and a Model tag must not label a
+    SHEET-2 symbol."""
+    await backend.entity_create_line(0, 0, 50, 0, layer="PROCESS-PIPING-MAIN")
+    await backend.entity_create_text("P-9", 100, 113, 2.5)
+    await backend.layout_create("SHEET-2")
+    await backend.layout_set_current("SHEET-2")
+    branch = (await backend.entity_create_line(25, 0, 25, -30, layer="PROCESS-PIPING-MAIN")).handle
+    blk = backend._doc.blocks.new(name="CENTRIFUGAL_PUMP")
+    blk.add_circle((0, 0), 5)
+    pump = (await backend.block_insert("CENTRIFUGAL_PUMP", 100, 100)).handle
+    await backend.layout_set_current("Model")
+    graph = await build_graph(backend, scope="all")
+    edge = next(e for e in graph["edges"] if e["id"] == branch)
+    assert edge["from"] is None and graph["junctions"] == []
+    node = next(n for n in graph["nodes"] if n["id"] == pump)
+    assert node["tag"] is None and node["space"] == "SHEET-2"
+
+
+async def test_a_mirrored_insert_has_its_ports_on_the_mirror_image(backend):
+    """MIRROR3D and foreign DXFs store a mirror as extrusion -Z with the
+    stored insertion x unnegated. The reader took the catalogue ports on
+    the unmirrored image at confidence 1.0."""
+    from ezdxf.math import Vec3
+
+    pump = (await place_symbol(backend, "centrifugal_pump", 50, 20, rotation=30.0, tag="P-1"))[
+        "handle"
+    ]
+    ent = backend._doc.entitydb.get(pump)
+    ent.dxf.extrusion = (0, 0, -1)
+    ent.dxf.insert = (-50, 20, 0)  # the same WCS insertion point
+    info = (await backend.entity_get(pump)).properties
+    assert info["insertion"] == pytest.approx([50.0, 20.0])
+    assert info["mirrored"] is True
+    m = ent.matrix44()
+    local = {"discharge": (0.0, 6.0), "suction": (-4.0, 0.0)}
+    truth = {name: m.transform(Vec3(lx, ly, 0)) for name, (lx, ly) in local.items()}
+    graph = await build_graph(backend)
+    node = next(n for n in graph["nodes"] if n["id"] == pump)
+    assert node["mirrored"] is True and node["confidence"] == 1.0
+    ports = node["ports"]
+    assert (ports["discharge"]["x"], ports["discharge"]["y"]) == pytest.approx(
+        (53.0, 25.196), abs=1e-3
+    )
+    assert (ports["suction"]["x"], ports["suction"]["y"]) == pytest.approx((53.464, 18.0), abs=1e-3)
+    for name, p in truth.items():
+        assert (ports[name]["x"], ports[name]["y"]) == pytest.approx((p.x, p.y), abs=1e-9)
+        assert ports[name]["inferred"] is False
+    # 90° discharge turned to 120° reads as 60° in the mirror image
+    assert ports["discharge"]["direction_deg"] == pytest.approx(60.0)
+    assert ports["suction"]["direction_deg"] == pytest.approx((180.0 - 210.0) % 360.0)
+    line = (
+        await backend.entity_create_line(53.0, 40.0, 53.0, 25.196, layer="PROCESS-PIPING-MAIN")
+    ).handle
+    graph = await build_graph(backend)
+    edge = next(e for e in graph["edges"] if e["id"] == line)
+    assert edge["to"] == {"node": pump, "port": "discharge"}
+
+
+async def test_an_unmirrored_insert_reports_mirrored_false(backend):
+    pump = (await place_symbol(backend, "centrifugal_pump", 50, 20, tag="P-1"))["handle"]
+    assert (await backend.entity_get(pump)).properties["mirrored"] is False
+    graph = await build_graph(backend)
+    assert graph["nodes"][0]["mirrored"] is False and graph["nodes"][0]["notes"] == []
+
+
+async def test_equipment_tag_is_the_text_above_the_box_not_the_line_label_below(backend):
+    """Spec §9.2 step 6: the tag is the nearest text *above* the box. A full
+    circle around the top-centre let a line number lettered under the pump
+    win over the tag above it."""
+    blk = backend._doc.blocks.new(name="CENTRIFUGAL_PUMP")
+    blk.add_circle((0, 0), 5)
+    pump = (await backend.block_insert("CENTRIFUGAL_PUMP", 100, 100)).handle
+    await backend.entity_create_text("P-101", 100, 113, 2.5)
+    await backend.entity_create_text('4"-P-100-CS1', 100, 99, 2.5)
+    graph = await build_graph(backend)
+    node = next(n for n in graph["nodes"] if n["id"] == pump)
+    assert node["tag"] == "P-101" and node["tag_source"] == "text"
+
+
+async def test_valve_tag_is_the_text_above_the_box_not_the_note_below(backend):
+    blk = backend._doc.blocks.new(name="GATE_VALVE")
+    blk.add_lwpolyline([(-4, -2), (4, -2), (4, 2), (-4, 2)], close=True)
+    valve = (await backend.block_insert("GATE_VALVE", 50, 50)).handle
+    await backend.entity_create_text("HV-9", 50, 58, 2.5)
+    await backend.entity_create_text("NC", 50, 47, 2.5)
+    graph = await build_graph(backend)
+    node = next(n for n in graph["nodes"] if n["id"] == valve)
+    assert node["tag"] == "HV-9" and node["tag_source"] == "text"
+
+
+async def test_a_line_number_above_the_box_is_never_an_equipment_tag(backend):
+    blk = backend._doc.blocks.new(name="GATE_VALVE")
+    blk.add_lwpolyline([(-4, -2), (4, -2), (4, 2), (-4, 2)], close=True)
+    valve = (await backend.block_insert("GATE_VALVE", 50, 50)).handle
+    await backend.entity_create_text('4"-P-100-CS1', 50, 55, 2.5)
+    await backend.entity_create_text("HV-9", 50, 60, 2.5)
+    graph = await build_graph(backend)
+    node = next(n for n in graph["nodes"] if n["id"] == valve)
+    assert node["tag"] == "HV-9"
+
+
+async def test_a_text_flush_on_the_box_top_still_counts_as_above_it(backend):
+    """Insertion y >= top - 0.5 * height: a label whose baseline sits a hair
+    under the box top (lettered flush on the body) is still above it, while
+    one clearly inside the body is not."""
+    blk = backend._doc.blocks.new(name="GATE_VALVE")
+    blk.add_lwpolyline([(-4, -2), (4, -2), (4, 2), (-4, 2)], close=True)
+    valve = (await backend.block_insert("GATE_VALVE", 50, 50)).handle
+    # top is 52, so the threshold is 50.75: HV-9 (1.56 from the top-centre)
+    # counts as above it, NC (1.3 away, nearer) does not
+    await backend.entity_create_text("HV-9", 51.0, 50.8, 2.5)
+    await backend.entity_create_text("NC", 50.0, 50.7, 2.5)
+    graph = await build_graph(backend)
+    node = next(n for n in graph["nodes"] if n["id"] == valve)
+    assert node["tag"] == "HV-9"
+
+
+async def test_a_non_uniformly_scaled_symbol_is_measured_per_axis_not_inferred(backend):
+    """The reader re-ran the transform with the X factor for both axes and
+    marked the port `inferred` — a flag spec §9.1 reserves for foreign-block
+    ports. Per-axis scale is exact for a point port."""
+    pump = (await place_symbol(backend, "centrifugal_pump", 0, 0, tag="P-1"))["handle"]
+    backend._doc.entitydb.get(pump).dxf.yscale = 2.0
+    line = (await backend.entity_create_line(0, 40, 0, 12, layer="PROCESS-PIPING-MAIN")).handle
+    graph = await build_graph(backend)
+    node = next(n for n in graph["nodes"] if n["id"] == pump)
+    discharge = node["ports"]["discharge"]
+    assert (discharge["x"], discharge["y"]) == pytest.approx((0.0, 12.0))
+    assert discharge["inferred"] is False and discharge["direction_deg"] == pytest.approx(90.0)
+    assert node["confidence"] == 1.0 and node["notes"] == []
+    assert node["scale"] == pytest.approx(1.0) and node["y_scale"] == pytest.approx(2.0)
+    suction = node["ports"]["suction"]
+    assert (suction["x"], suction["y"]) == pytest.approx((-4.0, 0.0))
+    edge = next(e for e in graph["edges"] if e["id"] == line)
+    assert edge["to"] == {"node": pump, "port": "discharge"}
+    assert discharge["edges"] == [line]
+
+
+async def test_a_stretched_bubble_keeps_the_smaller_radius_and_says_so(backend):
+    """A stretched instrument bubble is an ellipse; no circle is exact, so the
+    radial port keeps min(sx, sy)·r and the node's confidence drops to 0.6
+    with a note — never `inferred`, which is for foreign-block ports."""
+    fic = (
+        await place_symbol(backend, "instrument", 0, 0, tag="FIC-1", type="dcs", location="primary")
+    )["handle"]
+    graph = await build_graph(backend)
+    radius = graph["nodes"][0]["ports"]["signal"]["radius"]
+    assert radius > 0
+    backend._doc.entitydb.get(fic).dxf.xscale = 2.0
+    graph = await build_graph(backend)
+    node = graph["nodes"][0]
+    port = node["ports"]["signal"]
+    assert port["radius"] == pytest.approx(radius) and port["inferred"] is False
+    assert node["confidence"] == 0.6 and node["notes"] == ["non-uniform scale"]
+    assert node["source"] == "catalog"
+    assert graph["stats"]["confidence_min"] == 0.6
+
+
+def test_com_block_reference_reports_mirrored_from_its_normal():
+    from types import SimpleNamespace
+
+    from backends.com_backend import _entity_info
+
+    def refuse(_name):
+        raise RuntimeError("no block table in this fake")
+
+    def blockref(**extra):
+        return SimpleNamespace(
+            ObjectName="AcDbBlockReference",
+            Name="PID_X",
+            InsertionPoint=(50.0, 20.0, 0.0),
+            XScaleFactor=1.0,
+            YScaleFactor=1.0,
+            Rotation=0.0,
+            Handle="B1",
+            Layer="0",
+            Color=256,
+            Linetype="ByLayer",
+            Visible=True,
+            Document=SimpleNamespace(Blocks=SimpleNamespace(Item=refuse)),
+            GetBoundingBox=lambda: ((45.0, 15.0, 0.0), (55.0, 25.0, 0.0)),
+            **extra,
+        )
+
+    assert _entity_info(blockref(Normal=(0.0, 0.0, -1.0))).properties["mirrored"] is True
+    assert _entity_info(blockref(Normal=(0.0, 0.0, 1.0))).properties["mirrored"] is False
+    assert _entity_info(blockref()).properties["mirrored"] is False

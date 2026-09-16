@@ -616,6 +616,12 @@ def _entity_info(entity) -> EntityInfo:
             props["x_scale"] = entity.XScaleFactor
             props["y_scale"] = entity.YScaleFactor
             props["rotation_deg"] = rad2deg(entity.Rotation)
+            # ezdxf parity: a block reference whose Normal points -Z is drawn
+            # on the mirror image (x -> -x) about its insertion point.
+            try:
+                props["mirrored"] = float(entity.Normal[2]) < 0
+            except Exception:
+                props["mirrored"] = False
             geometry_bbox = _com_geometry_bbox(entity)
             if geometry_bbox is not None:
                 props["geometry_bbox"] = geometry_bbox

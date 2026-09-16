@@ -66,6 +66,8 @@ class _Node:
     y: float
     rotation_deg: float
     scale: float
+    y_scale: float
+    mirrored: bool
     layer: str
     space: str
     bbox: tuple[float, float, float, float] | None
@@ -75,6 +77,7 @@ class _Node:
     ports: dict = field(default_factory=dict)
     tag: str | None = None
     tag_source: str | None = None
+    notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         parsed = None
@@ -93,12 +96,15 @@ class _Node:
             "y": self.y,
             "rotation_deg": self.rotation_deg,
             "scale": self.scale,
+            "y_scale": self.y_scale,
+            "mirrored": self.mirrored,
             "layer": self.layer,
             "space": self.space,
             "ports": self.ports,
             "description": self.attributes.get("DESC") or None,
             "source": self.source,
             "confidence": self.confidence,
+            "notes": list(self.notes),
         }
 
 
@@ -164,24 +170,30 @@ class _Edge:
 
 
 class _Grid:
-    """Uniform grid for nearest-within-tolerance queries."""
+    """Uniform grid for nearest-within-tolerance queries, one per space.
+
+    Every layout is its own sheet: a line end in SHEET-2 may only attach to
+    what is drawn in SHEET-2. Keying the cells by space is what keeps a
+    ``scope="all"`` read from joining two sheets that happen to share
+    coordinates — every layout starts at the origin.
+    """
 
     def __init__(self, cell: float):
         self.cell = cell
-        self.cells: dict[tuple[int, int], list] = {}
+        self.cells: dict[tuple[str, int, int], list] = {}
 
-    def _key(self, x: float, y: float) -> tuple[int, int]:
-        return (int(math.floor(x / self.cell)), int(math.floor(y / self.cell)))
+    def _key(self, space: str, x: float, y: float) -> tuple[str, int, int]:
+        return (space, int(math.floor(x / self.cell)), int(math.floor(y / self.cell)))
 
-    def add(self, x: float, y: float, item) -> None:
-        self.cells.setdefault(self._key(x, y), []).append((x, y, item))
+    def add(self, space: str, x: float, y: float, item) -> None:
+        self.cells.setdefault(self._key(space, x, y), []).append((x, y, item))
 
-    def near(self, x: float, y: float, radius: float):
-        kx, ky = self._key(x, y)
+    def near(self, space: str, x: float, y: float, radius: float):
+        _, kx, ky = self._key(space, x, y)
         reach = int(math.ceil(radius / self.cell))
         for dx in range(-reach, reach + 1):
             for dy in range(-reach, reach + 1):
-                for px, py, item in self.cells.get((kx + dx, ky + dy), []):
+                for px, py, item in self.cells.get((space, kx + dx, ky + dy), []):
                     d = math.hypot(px - x, py - y)
                     if d <= radius:
                         yield d, item
@@ -368,6 +380,7 @@ async def build_graph(
         rotation = float(info.properties.get("rotation_deg", 0.0))
         scale = float(info.properties.get("x_scale", 1.0))
         y_scale = float(info.properties.get("y_scale", scale))
+        mirrored = bool(info.properties.get("mirrored", False))
         base = dict(
             id=info.handle,
             block_name=name,
@@ -375,6 +388,8 @@ async def build_graph(
             y=float(ins[1]),
             rotation_deg=rotation,
             scale=scale,
+            y_scale=y_scale,
+            mirrored=mirrored,
             layer=info.layer,
             space=space,
             bbox=_bbox(info),
@@ -391,18 +406,24 @@ async def build_graph(
                 confidence=CONFIDENCE[source],
                 **base,
             )
+            stretched = abs(abs(scale) - abs(y_scale)) > 1e-9
             for pname, (lx, ly, ldir, kind, radius) in payload.get("ports", {}).items():
-                # Measured from the INSERT as it is: a mirrored symbol carries
-                # y_scale = -1 and its ports sit on the mirrored geometry.
+                # Measured from the INSERT as it is (spec §9.4): a mirror is
+                # either y_scale = -1 (entity_mirror) or extrusion -Z
+                # (MIRROR3D, foreign DXFs), and the ports sit on the mirrored
+                # geometry either way. A stretched INSERT (someone scaled one
+                # axis by hand) is measured per axis, which is exact for a
+                # point port; only a bubble has no circle to be exact on, and
+                # that is said in the node's confidence — never with
+                # `inferred`, which spec §9.1 reserves for foreign-block ports.
                 local = Port(pname, float(lx), float(ly), ldir, kind, float(radius))
-                try:
-                    port = transform_port(local, node.x, node.y, rotation, scale, y_scale)
-                except ValueError:
-                    # A stretched INSERT (someone scaled one axis by hand): the
-                    # reader never refuses a drawing, so it measures along the
-                    # X factor and says so instead of raising.
-                    port = transform_port(local, node.x, node.y, rotation, scale)
-                    port["inferred"] = True
+                port = transform_port(
+                    local, node.x, node.y, rotation, scale, y_scale, mirrored, strict=False
+                )
+                if stretched and local.radius > 0:
+                    node.confidence = min(node.confidence, CONFIDENCE["heuristic"])
+                    if "non-uniform scale" not in node.notes:
+                        node.notes.append("non-uniform scale")
                 node.ports[pname] = {**port, "edges": []}
             nodes[node.id] = node
             continue
@@ -479,7 +500,7 @@ async def build_graph(
                 # a bubble's line starts on its circle, not at its centre
                 radial_ports.append((node.id, pname, port["x"], port["y"], port["radius"]))
             else:
-                grid.add(port["x"], port["y"], ("port", node.id, pname))
+                grid.add(node.space, port["x"], port["y"], ("port", node.id, pname))
 
     # 4 — resolve endpoints
     junctions: list[dict] = []
@@ -494,11 +515,13 @@ async def build_graph(
         has side effects."""
         x, y = _end(edge, end)
         for node_id, pname, cx, cy, r in radial_ports:
+            if nodes[node_id].space != edge.space:
+                continue
             if abs(math.hypot(x - cx, y - cy) - r) <= tolerance:
                 nodes[node_id].ports[pname]["edges"].append(edge.id)
                 return {"node": node_id, "port": pname}
         best = None
-        for d, item in grid.near(x, y, tolerance):
+        for d, item in grid.near(edge.space, x, y, tolerance):
             if item[0] == "port" and (best is None or d < best[0]):
                 best = (d, item)
         if best:
@@ -512,6 +535,7 @@ async def build_graph(
                 n
                 for n in list(nodes.values()) + list(candidates.values())
                 if n.source in ("heuristic", "inferred")
+                and n.space == edge.space
                 and n.bbox
                 and _on_bbox_boundary((x, y), n.bbox, tolerance)
             ),
@@ -532,34 +556,40 @@ async def build_graph(
                 "inferred": True,
                 "edges": [edge.id],
             }
-            grid.add(x, y, ("port", node.id, pname))
+            grid.add(node.space, x, y, ("port", node.id, pname))
             return {"node": node.id, "port": pname}
         return None
 
-    def _junction_at(x, y, edge_id, other_id) -> dict:
+    def _junction_at(space, x, y, edge_id, other_id) -> dict:
         for j in junctions:
-            if math.hypot(j["x"] - x, j["y"] - y) <= tolerance:
+            if j["space"] == space and math.hypot(j["x"] - x, j["y"] - y) <= tolerance:
                 for e in (edge_id, other_id):
                     if e not in j["edges"]:
                         j["edges"].append(e)
                 return {"junction": j["id"]}
-        j = {"id": f"J{len(junctions) + 1}", "x": x, "y": y, "edges": [edge_id, other_id]}
+        j = {
+            "id": f"J{len(junctions) + 1}",
+            "x": x,
+            "y": y,
+            "edges": [edge_id, other_id],
+            "space": space,
+        }
         junctions.append(j)
         return {"junction": j["id"]}
 
     def _junction_or_dangling(edge: _Edge, end: str) -> dict | None:
         x, y = _end(edge, end)
-        for _d, item in grid.near(x, y, tolerance):
+        for _d, item in grid.near(edge.space, x, y, tolerance):
             if item[0] == "vertex" and item[1] != edge.id:
-                return _junction_at(x, y, edge.id, item[1])
+                return _junction_at(edge.space, x, y, edge.id, item[1])
         for other in edges.values():
-            if other.id == edge.id:
+            if other.id == edge.id or other.space != edge.space:
                 continue
             for a, b, bulge in other.segments():
                 if _point_segment_distance((x, y), a, b, bulge) <= tolerance:
-                    return _junction_at(x, y, edge.id, other.id)
+                    return _junction_at(edge.space, x, y, edge.id, other.id)
         nearest = None
-        for d, item in grid.near(x, y, 10.0 * tolerance):
+        for d, item in grid.near(edge.space, x, y, 10.0 * tolerance):
             if item[0] == "port" and (nearest is None or d < nearest[0]):
                 nearest = (d, item)
         dangling.append(
@@ -594,7 +624,7 @@ async def build_graph(
     # 4b — junctions and dangling ends over the edges that are in the graph
     for edge in edges.values():
         for v in edge.vertices:
-            grid.add(v[0], v[1], ("vertex", edge.id))
+            grid.add(edge.space, v[0], v[1], ("vertex", edge.id))
     for edge in edges.values():
         if edge.from_ref is None:
             edge.from_ref = _junction_or_dangling(edge, "from")
@@ -604,13 +634,29 @@ async def build_graph(
     # 5 — tags and line numbers from attributes or nearby text
     texts = [(info, space) for info, space in entities if info.type in TEXT_TYPES]
 
-    def _text_near(x, y, radius, pattern=None):
+    def _text_near(space, x, y, radius, pattern=None, above=None, exclude=None):
+        """Nearest text (by insertion) within ``radius`` of (x, y) in ``space``.
+
+        ``pattern`` keeps only matching content; ``exclude`` drops it. With
+        ``above`` (a box top), only a text whose insertion is at or above
+        ``above - height / 2`` counts — an equipment tag is lettered over the
+        symbol (spec §9.2 step 6), and a full circle around the top-centre
+        let a note or line label under the body win over the tag above it.
+        """
         best = None
-        for info, _space in texts:
+        for info, text_space in texts:
+            if text_space != space:
+                continue
             ins = info.properties.get("insertion")
             content = str(info.properties.get("text", "")).strip()
             if not ins or not content or (pattern and not pattern.match(content)):
                 continue
+            if exclude and exclude.match(content):
+                continue
+            if above is not None:
+                height = info.properties.get("height", info.properties.get("char_height", 0.0))
+                if float(ins[1]) < above - 0.5 * float(height or 0.0):
+                    continue
             d = math.hypot(float(ins[0]) - x, float(ins[1]) - y)
             if d <= radius and (best is None or d < best[0]):
                 best = (d, content)
@@ -628,18 +674,22 @@ async def build_graph(
         if node.tag is None:
             radius = max((p.get("radius", 0.0) for p in node.ports.values()), default=0.0)
             if node.kind == "instrument" and radius:
-                found = _text_near(node.x, node.y, radius)
+                found = _text_near(node.space, node.x, node.y, radius)
             else:
                 cx = ((node.bbox[0] + node.bbox[2]) / 2.0) if node.bbox else node.x
                 top = node.bbox[3] if node.bbox else node.y
-                found = _text_near(cx, top, label_search)
+                found = _text_near(
+                    node.space, cx, top, label_search, above=top, exclude=LINE_NUMBER_RE
+                )
             if found:
                 node.tag, node.tag_source = found, "text"
     for edge in edges.values():
         if edge.line_number:
             continue
         a, b = max(zip(edge.vertices, edge.vertices[1:], strict=False), key=lambda s: math.dist(*s))
-        found = _text_near((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, label_search, LINE_NUMBER_RE)
+        found = _text_near(
+            edge.space, (a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, label_search, LINE_NUMBER_RE
+        )
         if found:
             edge.line_number, edge.number_source = found, "label"
 

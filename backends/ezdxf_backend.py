@@ -845,6 +845,11 @@ def _entity_info_dxf(ent) -> EntityInfo:
             props["x_scale"] = ent.dxf.xscale if ent.dxf.hasattr("xscale") else 1.0
             props["y_scale"] = ent.dxf.yscale if ent.dxf.hasattr("yscale") else 1.0
             props["rotation_deg"] = ent.dxf.get("rotation", 0.0)
+            # MIRROR3D and foreign DXFs store a mirror as extrusion -Z (the
+            # stored x unnegated); `insertion` above is already WCS, but the
+            # block's content is drawn on the mirror image about it, so a
+            # reader that places catalogue ports needs to know.
+            props["mirrored"] = float(extrusion[2]) < 0
             # The drawn symbol alone. ``bounding_box`` below takes the ATTRIBs
             # with it, so a TAG above a valve pushes the box past the body and
             # a line ending on the body's real edge reads as *inside* it.

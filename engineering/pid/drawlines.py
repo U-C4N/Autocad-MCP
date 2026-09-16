@@ -65,8 +65,10 @@ async def resolve_endpoint(backend: AutoCADBackend, ref: dict) -> dict:
         ins = info.properties["insertion"]
         x_scale = float(info.properties.get("x_scale", 1.0))
         # The full INSERT transform: a mirrored symbol (``entity_mirror`` writes
-        # ``y_scale = -1``) has its ports on the mirrored geometry, not on the
-        # unmirrored one; a stretched symbol is refused by ``transform_port``.
+        # ``y_scale = -1``; MIRROR3D and foreign DXFs store extrusion -Z, which
+        # the engines report as ``mirrored``) has its ports on the mirrored
+        # geometry, not on the unmirrored one; a stretched symbol is refused
+        # by ``transform_port``.
         try:
             world = transform_port(
                 Port(port_name, float(lx), float(ly), ldir, kind, float(radius)),
@@ -75,6 +77,7 @@ async def resolve_endpoint(backend: AutoCADBackend, ref: dict) -> dict:
                 float(info.properties.get("rotation_deg", 0.0)),
                 x_scale,
                 float(info.properties.get("y_scale", x_scale)),
+                bool(info.properties.get("mirrored", False)),
             )
         except ValueError as exc:
             raise ValueError(f"{handle}: {exc}") from exc

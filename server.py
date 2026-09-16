@@ -6566,9 +6566,11 @@ async def pid_graph(
     Nodes: symbol INSERTs classified by catalogue name (confidence 1.0),
     ACADMCP_PID payload (0.95), tag attributes / block-name keywords (0.6) or
     a line touching an unknown INSERT (0.3); every node reports its `source`.
-    Ports come from the INSERT's real rotation and scale, measured. Edges:
-    lines and polylines; each end resolves to a port, a junction on another
-    line, or `dangling` with the nearest port as a hint. `stats.confidence_min`
+    Ports come from the INSERT's real rotation, scale and mirror, measured
+    (a stretched bubble drops the node to 0.6 with a note). Edges: lines and
+    polylines; each end resolves to a port, a junction on another line, or
+    `dangling` with the nearest port as a hint — always within its own
+    space, so `scope="all"` never joins two sheets. `stats.confidence_min`
     is the number to read before trusting a foreign drawing.
     """
     from engineering.pid.graph import build_graph

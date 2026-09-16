@@ -171,6 +171,33 @@ async def test_mirrored_symbol_ports_follow_the_mirrored_geometry(backend):
     assert (ep["x"], ep["y"], ep["direction_deg"]) == (100.0, 194.0, 270.0)
 
 
+async def test_an_extrusion_mirrored_symbol_resolves_its_port_on_the_mirror_image(backend):
+    """MIRROR3D (and foreign DXFs) store a mirror as extrusion -Z rather than
+    a negative scale; the port is where the mirrored geometry is."""
+    from ezdxf.math import Vec3
+
+    pump = await place_symbol(backend, "centrifugal_pump", 50, 20, rotation=30.0, tag="P-1")
+    ent = backend._doc.entitydb.get(pump["handle"])
+    ent.dxf.extrusion = (0, 0, -1)
+    ent.dxf.insert = (-50, 20, 0)  # the same WCS insertion point
+    truth = ent.matrix44().transform(Vec3(0, 6, 0))
+    ep = await resolve_endpoint(backend, {"handle": pump["handle"], "port": "discharge"})
+    assert (ep["x"], ep["y"]) == pytest.approx((truth.x, truth.y))
+    assert (ep["x"], ep["y"]) == pytest.approx((53.0, 25.196), abs=1e-3)
+    assert ep["direction_deg"] == pytest.approx(60.0)
+    # unrotated: the suction that faced -x at (46, 20) now faces +x at (54, 20)
+    pump = await place_symbol(backend, "centrifugal_pump", 150, 20, tag="P-2")
+    ent = backend._doc.entitydb.get(pump["handle"])
+    ent.dxf.extrusion = (0, 0, -1)
+    ent.dxf.insert = (-150, 20, 0)
+    ep = await resolve_endpoint(backend, {"handle": pump["handle"], "port": "suction"})
+    assert (ep["x"], ep["y"], ep["direction_deg"]) == pytest.approx((154.0, 20.0, 0.0))
+    result = await draw_line(
+        backend, {"handle": pump["handle"], "port": "suction"}, {"x": 200, "y": 20}
+    )
+    assert result["vertices"][0] == pytest.approx([154.0, 20.0])
+
+
 async def test_stretched_symbol_is_refused_not_resolved_off_the_geometry(backend):
     pump = await place_symbol(backend, "centrifugal_pump", 100, 100, tag="P-1")
     payload = await read_payload(backend, pump["handle"])
