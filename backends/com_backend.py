@@ -193,6 +193,30 @@ def _msp():
         return doc.ModelSpace
 
 
+def _require_block_defined(doc, name):
+    """``doc.Blocks.Item(name)``, or a ``ValueError`` before ``InsertBlock`` runs.
+
+    ``InsertBlock`` with an unknown name raises a bare COM error after the call
+    has already been dispatched; refusing here names the block, costs one
+    ``Blocks.Item`` probe and matches the headless engine's message. A layout
+    block (``IsLayout``) cannot be inserted into itself — same refusal by name.
+    Shared by ``block_insert`` and ``entity_create_block_ref``.
+    """
+    if not isinstance(name, str) or not name.strip():
+        raise TypeError("block name must be a non-empty string")
+    try:
+        block = doc.Blocks.Item(name)
+    except Exception as exc:
+        raise ValueError(f"block {name!r} is not defined") from exc
+    try:
+        is_layout = bool(block.IsLayout)
+    except Exception:
+        is_layout = False
+    if is_layout:
+        raise ValueError(f"block {name!r} is a layout block and cannot be inserted")
+    return block
+
+
 _BUILTIN_LINETYPES = {"continuous", "bylayer", "byblock"}
 
 
@@ -2479,6 +2503,7 @@ class ComBackend(AutoCADBackend):
         layer=None,
     ) -> EntityInfo:
         def _sync():
+            _require_block_defined(_acad_doc(), name)
             mspace = _msp()
             ref = mspace.InsertBlock(
                 _apoint(x, y),
@@ -3248,6 +3273,7 @@ class ComBackend(AutoCADBackend):
         layer=None,
     ) -> EntityInfo:
         def _sync():
+            _require_block_defined(_acad_doc(), name)
             mspace = _msp()
             ref = mspace.InsertBlock(
                 _apoint(x, y),

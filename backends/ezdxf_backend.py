@@ -1087,6 +1087,28 @@ class EzdxfBackend(AutoCADBackend):
             raise RuntimeError("No document open. Call drawing_new() or drawing_open() first.")
         return self._doc
 
+    def _require_block(self, name):
+        """The block definition ``name`` names, or a refusal before any write.
+
+        ``add_blockref`` never checks the name and ``add_auto_attribs`` skips
+        autofill when ``Insert.block()`` resolves to None, so a typo'd name
+        used to yield a dangling INSERT that dropped its attribute values and
+        that ``doc.audit()`` later deletes. A layout block (``*Model_Space``,
+        ``*Paper_Space``) is in ``doc.blocks`` too, but inserting one is the
+        reference cycle AutoCAD's INSERT refuses, so it is refused here by
+        name. Shared by ``block_insert`` and ``entity_create_block_ref`` so the
+        two tools that place a block reference agree on what a typo does.
+        """
+        doc = self._require_doc()
+        if not isinstance(name, str) or not name.strip():
+            raise TypeError("block name must be a non-empty string")
+        if name not in doc.blocks:
+            raise ValueError(f"block {name!r} is not defined")
+        blk = doc.blocks.get(name)
+        if blk.block_record.is_any_layout:
+            raise ValueError(f"block {name!r} is a layout block and cannot be inserted")
+        return blk
+
     def _msp(self):
         """The space new geometry goes into — model space, or the current layout.
 
@@ -3002,6 +3024,7 @@ class EzdxfBackend(AutoCADBackend):
     ) -> EntityInfo:
         def _sync():
             msp = self._msp()
+            self._require_block(name)
             ent = msp.add_blockref(
                 name,
                 (float(x), float(y)),
@@ -4485,13 +4508,7 @@ class EzdxfBackend(AutoCADBackend):
             }
             if layer:
                 attribs["layer"] = layer
-            # `add_blockref` never checks the name, and `add_auto_attribs`
-            # silently skips autofill when `Insert.block()` resolves to None,
-            # so a typo'd name used to yield a dangling INSERT that dropped its
-            # attribute values and that `doc.audit()` later deletes. Refuse
-            # before writing, as COM's `InsertBlock` does for an unknown name.
-            if name not in self._doc.blocks:
-                raise ValueError(f"block {name!r} is not defined")
+            self._require_block(name)
             ref = msp.add_blockref(name, (float(x), float(y)), dxfattribs=attribs)
             if attributes:
                 # `add_auto_blockref` wraps the INSERT in an anonymous *U block,

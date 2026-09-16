@@ -1656,7 +1656,14 @@ async def entity_create_block_ref(
     layer: Annotated[str | None, "Layer name"] = None,
     ctx: Context = None,
 ) -> dict:
-    """Insert a block reference (instance of an existing block definition)."""
+    """Insert a block reference (instance of an existing block definition).
+
+    Refused before any write, on both engines: a name that is not a block
+    definition in this drawing (`block 'X' is not defined` — check
+    `block_list`), a layout block (`*Model_Space` / `*Paper_Space`, a
+    reference cycle) and a non-string name. The same gate as `block_insert`;
+    this tool is the no-attributes form.
+    """
     await ctx.debug(f"Inserting block '{name}' at ({x},{y})")
     result = await _backend(ctx).entity_create_block_ref(
         name, x, y, scale_x, scale_y, rotation, layer
