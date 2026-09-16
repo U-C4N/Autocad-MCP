@@ -4521,8 +4521,38 @@ class EzdxfBackend(AutoCADBackend):
 
         return await self._async(_sync)
 
+    @staticmethod
+    def _owner_layout_for_explode(ent, handle: str):
+        """The layout that owns ``ent`` — model space or a paper-space layout.
+
+        Raises before any write when the owner is a block definition (a nested
+        reference) or cannot be resolved at all; guessing the current space
+        instead is how geometry ends up duplicated into the wrong tab.
+        """
+        try:
+            layout = ent.get_layout()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Entity {handle} has no resolvable owner layout ({exc}); refusing to "
+                "explode into a guessed space"
+            ) from exc
+        if layout is None or not layout.is_any_layout:
+            owner = getattr(layout, "name", None) or ent.dxf.get("owner", "?")
+            raise RuntimeError(
+                f"Entity {handle} is nested inside block definition {owner!r}; explode "
+                "the outer reference instead (exploding here would redefine the block "
+                "under every other reference)"
+            )
+        return layout
+
     #: ATTRIB DXF attributes carried onto the TEXT that replaces it on explode.
-    #: ``insert``/``align_point`` are already WCS on an attached ATTRIB.
+    #: An ATTRIB is an OCS entity: ``insert``/``align_point`` are numbers in the
+    #: plane of its own ``extrusion``, so the frame travels with them. Without
+    #: it the TEXT took the OCS numbers with the default +Z frame, and a
+    #: mirrored reference (ezdxf reflects the ATTRIB to extrusion ``(0, 0, -1)``
+    #: while the INSERT keeps +Z with ``yscale=-1``) put the tag 50 units away
+    #: on the other side of the mirror axis — audit clean, ``plane_normal``
+    #: None, nothing said. Same numbers in the same frame is the same place.
     _ATTRIB_TO_TEXT = (
         "layer",
         "color",
@@ -4536,6 +4566,8 @@ class EzdxfBackend(AutoCADBackend):
         "text_generation_flag",
         "insert",
         "align_point",
+        "extrusion",
+        "thickness",
     )
 
     async def block_explode(self, handle) -> dict:
@@ -4548,13 +4580,21 @@ class EzdxfBackend(AutoCADBackend):
         style and layer, carrying the *value*; an invisible ATTRIB becomes an
         invisible TEXT rather than appearing. The new handles are reported as
         ``attribute_texts``, separate from the geometry's ``inserted_handles``.
+
+        The members and the TEXTs go into the INSERT's *owner* layout, not the
+        current one: ``_get_entity`` resolves a handle in any layout, so a title
+        block on a sheet exploded while Model was current used to have its
+        geometry copied into model space and then die on ``delete_entity``
+        with the reference still alive on the sheet. A reference nested inside
+        a block definition is refused before anything is written — exploding
+        it there would redefine the block under every other reference.
         """
 
         def _sync():
             ent = self._get_entity(handle)
             if ent.dxftype() != "INSERT":
                 raise RuntimeError(f"Entity {handle} is not a block reference (INSERT)")
-            msp = self._msp()
+            msp = self._owner_layout_for_explode(ent, handle)
             inserted = []
             for sub in ent.virtual_entities():
                 sub_copy = sub.copy()

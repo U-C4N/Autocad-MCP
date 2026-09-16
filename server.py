@@ -3032,10 +3032,14 @@ async def block_explode(
     Every attached ATTRIB becomes a TEXT with the same value, placement,
     height, rotation and layer (an invisible attribute becomes an invisible
     TEXT); AutoCAD's plain EXPLODE would keep only the tag-name placeholders
-    and drop the values. Returns `inserted_handles` (the geometry),
-    `attribute_texts` (one TEXT handle per attribute), `exploded_handle` and
-    `backend`. Refused: a handle that is not a block reference (nothing is
-    written). Not undoable except through `drawing_undo` / a transaction.
+    and drop the values. Everything lands in the layout that owns the
+    reference (model space or its paper-space sheet), whichever tab is
+    current. Returns `inserted_handles` (the geometry), `attribute_texts`
+    (one TEXT handle per attribute), `exploded_handle` and `backend`.
+    Refused, with nothing written: a handle that is not a block reference,
+    and a reference nested inside a block definition (explode the outer
+    reference instead). Not undoable except through `drawing_undo` / a
+    transaction.
     """
     await ctx.warning(f"Exploding block reference {handle}")
     return await _backend(ctx).block_explode(handle)

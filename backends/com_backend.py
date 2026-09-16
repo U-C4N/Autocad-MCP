@@ -193,6 +193,38 @@ def _msp():
         return doc.ModelSpace
 
 
+def _owner_layout_block(doc, ent, handle):
+    """The block table record that owns ``ent``, refused unless it is a layout.
+
+    ``Explode()`` places the members in the owner space, so anything this
+    method adds alongside them must go there too — never ``ActiveLayout``,
+    which is whatever tab the user happens to have open. An owner that is a
+    block definition means ``ent`` is a nested reference; exploding it in place
+    would redefine the block under every other reference, so it is refused
+    before any call is dispatched. An owner that cannot be read at all is
+    refused too rather than guessed.
+    """
+    try:
+        owner = doc.ObjectIdToObject(ent.OwnerID)
+        is_layout = bool(owner.IsLayout)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Entity {handle} has no resolvable owner layout ({exc}); refusing to "
+            "explode into a guessed space"
+        ) from exc
+    if not is_layout:
+        try:
+            name = str(owner.Name)
+        except Exception:
+            name = "?"
+        raise RuntimeError(
+            f"Entity {handle} is nested inside block definition {name!r}; explode the "
+            "outer reference instead (exploding here would redefine the block under "
+            "every other reference)"
+        )
+    return owner
+
+
 def _require_block_defined(doc, name):
     """``doc.Blocks.Item(name)``, or a ``ValueError`` before ``InsertBlock`` runs.
 
@@ -3312,6 +3344,14 @@ class ComBackend(AutoCADBackend):
         surface; ``Explode()``'s return shape is the ActiveX documented one
         (an array of the new objects) and is exercised live by the settings
         smoke.
+
+        The TEXTs go into the reference's *owner* block
+        (``ObjectIdToObject(OwnerID)``), which is where ``Explode()`` puts the
+        members; ``HandleToObject`` resolves a handle in any layout, so a title
+        block on a sheet exploded while Model was active used to get its tag
+        text in model space with ``ok: True``. A reference nested inside a
+        block definition (owner ``IsLayout`` false) is refused before the
+        explode is dispatched.
         """
 
         def _sync():
@@ -3319,6 +3359,7 @@ class ComBackend(AutoCADBackend):
             ent = doc.HandleToObject(handle)
             if ent.ObjectName != "AcDbBlockReference":
                 raise RuntimeError(f"Entity {handle} is not a block reference (INSERT)")
+            owner = _owner_layout_block(doc, ent, handle)
             captured = []
             try:
                 attrs = ent.GetAttributes()
@@ -3347,11 +3388,10 @@ class ComBackend(AutoCADBackend):
                     obj.Delete()  # the tag placeholder EXPLODE leaves; the value is below
                     continue
                 inserted.append(str(obj.Handle))
-            mspace = _msp()
             attribute_texts = []
             for item in captured:
                 ins = item["insertion"]
-                text = mspace.AddText(
+                text = owner.AddText(
                     item["text"],
                     _apoint(ins[0], ins[1], ins[2] if len(ins) > 2 else 0.0),
                     item["height"],

@@ -103,12 +103,14 @@ class _FakeLayers:
 
 
 class _FakeSpace:
-    """The active layout block: records InsertBlock / AddText and hands back styled objects."""
+    """A layout block: records InsertBlock / AddText and hands back styled objects."""
 
-    def __init__(self, attributes: dict[str, str] | None = None):
+    def __init__(self, attributes: dict[str, str] | None = None, name: str = "*Model_Space"):
         self.calls: list[tuple[str, tuple]] = []
         self.attributes = attributes or {}
         self.inserted: list[_FakeObject] = []
+        self.Name = name
+        self.IsLayout = True
 
     def InsertBlock(self, point, name, sx, sy, sz, rotation):
         self.calls.append(("InsertBlock", (tuple(point.value), name, sx, sy, sz, rotation)))
@@ -132,9 +134,14 @@ def com(monkeypatch):
     """A ComBackend over a recording fake: ``document`` and ``space`` are inspectable."""
     from backends import com_backend as module
 
-    document = types.SimpleNamespace(Blocks=_FakeBlocks("TB"), Layers=_FakeLayers(), objects={})
+    document = types.SimpleNamespace(
+        Blocks=_FakeBlocks("TB"), Layers=_FakeLayers(), objects={}, owners={}
+    )
     document.HandleToObject = lambda handle: document.objects[handle]
+    # ``OwnerID`` -> block table record, the way ``ObjectIdToObject`` resolves it live.
+    document.ObjectIdToObject = lambda object_id: document.owners[object_id]
     space = _FakeSpace()
+    document.owners[1] = space  # the active layout; a sheet registers itself under 2
     monkeypatch.setattr(module, "_acad_doc", lambda: document)
     monkeypatch.setattr(module, "_msp", lambda: space)
     monkeypatch.setattr(module, "_regen", lambda: None)
@@ -308,6 +315,7 @@ async def test_com_explode_deletes_attdefs_adds_text_per_attrib_and_deletes_the_
         "AcDbBlockReference",
         "2F",
         Name="TB",
+        OwnerID=1,
         GetAttributes=lambda: (visible, hidden),
         Explode=lambda: (line, attdef),
     )
@@ -337,3 +345,125 @@ async def test_com_explode_refuses_a_non_insert_before_any_call(com):
     with pytest.raises(RuntimeError, match="not a block reference"):
         await backend.block_explode("3A")
     assert space.calls == []
+
+
+async def test_com_explode_adds_the_text_to_the_owner_block_not_the_active_layout(com):
+    """ActiveX ``Explode()`` places the members in the owner space; the tag
+    TEXT must land beside them, not in whatever tab is active."""
+    backend, document, space = com
+    sheet = _FakeSpace(name="Sheet")
+    document.owners[2] = sheet
+    title = _FakeObject(
+        "AcDbAttribute",
+        "A1",
+        TagString="TITLE",
+        TextString="GEAR-01",
+        InsertionPoint=(100.0, 50.0, 0.0),
+        Height=3.5,
+        Rotation=0.0,
+        Layer="TITLEBLOCK",
+        Invisible=False,
+    )
+    line = _FakeObject("AcDbLine", "L1")
+    ref = _FakeObject(
+        "AcDbBlockReference",
+        "4B",
+        Name="TB",
+        OwnerID=2,
+        GetAttributes=lambda: (title,),
+        Explode=lambda: (line,),
+    )
+    document.objects["4B"] = ref
+
+    result = await backend.block_explode("4B")
+
+    assert result["ok"] is True and result["inserted_handles"] == ["L1"]
+    assert sheet.calls == [("AddText", ("GEAR-01", (100.0, 50.0, 0.0), 3.5))]
+    assert space.calls == [], "nothing may be written into the active layout"
+    assert ref.deleted is True
+
+
+async def test_com_explode_refuses_a_nested_reference_before_explode(com):
+    backend, document, space = com
+    document.owners[3] = _FakeBlock("OUTER")  # a block definition, IsLayout False
+    dispatched = []
+
+    def _explode():
+        dispatched.append("Explode")
+        return ()
+
+    ref = _FakeObject(
+        "AcDbBlockReference",
+        "5C",
+        Name="TB",
+        OwnerID=3,
+        GetAttributes=lambda: (),
+        Explode=_explode,
+    )
+    document.objects["5C"] = ref
+    with pytest.raises(RuntimeError, match="nested inside block definition 'OUTER'"):
+        await backend.block_explode("5C")
+    assert dispatched == [] and space.calls == [] and ref.deleted is False
+
+
+async def test_explode_of_a_mirrored_reference_keeps_the_tag_where_the_attrib_was(backend):
+    """An ATTRIB is an OCS entity. Mirroring reflects it to extrusion
+    ``(0, 0, -1)`` while the INSERT keeps +Z with ``yscale=-1``; the TEXT
+    that replaces it must carry the frame, or it lands on the other side
+    of the mirror axis with a clean audit."""
+    from backends.ocs import to_wcs_2d
+
+    blk = backend._doc.blocks.new(name="SYM")
+    blk.add_line((0, 0), (10, 0))
+    blk.add_attdef("TAG", insert=(5, 3), text="", dxfattribs={"height": 2.5})
+    ref = await backend.block_insert("SYM", 20, 10, attributes={"TAG": "P-101"})
+    mirrored = await backend.entity_mirror(ref.handle, 0, 0, 0, 1, delete_original=True)
+    raw = backend._doc.entitydb[mirrored.handle]
+    (attrib,) = raw.attribs
+    assert tuple(attrib.dxf.extrusion) == (0.0, 0.0, -1.0), "the premise: a reflected ATTRIB"
+    expected = to_wcs_2d(attrib.dxf.extrusion, *attrib.dxf.insert)
+    assert expected == pytest.approx([-25.0, 13.0])
+
+    result = await backend.block_explode(mirrored.handle)
+
+    (line_handle,) = result["inserted_handles"]
+    (text_handle,) = result["attribute_texts"]
+    line = await backend.entity_get(line_handle)
+    text = await backend.entity_get(text_handle)
+    assert text.properties["insertion"] == pytest.approx(expected)
+    assert text.properties["insertion"][0] < 0 and line.properties["start"][0] < 0, (
+        "tag and geometry stay on the same side of the mirror axis"
+    )
+    assert backend._doc.audit().errors == []
+
+
+async def test_explode_writes_into_the_inserts_owner_layout_not_the_current_one(backend):
+    _define_tagged_block(backend)
+    await backend.layout_create("Sheet")
+    await backend.layout_set_current("Sheet")
+    ref = await backend.block_insert("TB", 100, 50, attributes={"TAG": "GEAR-01"})
+    await backend.layout_set_current("Model")
+    model_before = len(list(backend._doc.modelspace()))
+
+    result = await backend.block_explode(ref.handle)
+
+    assert result["ok"] is True
+    sheet = backend._doc.layouts.get("Sheet")
+    assert sorted(e.dxftype() for e in sheet) == ["LINE", "TEXT"]
+    assert len(list(backend._doc.modelspace())) == model_before, "model space untouched"
+    for handle in result["inserted_handles"] + result["attribute_texts"]:
+        assert backend._doc.entitydb[handle].get_layout().name == "Sheet"
+    with pytest.raises(RuntimeError, match="not found"):
+        await backend.entity_get(ref.handle)
+    assert backend._doc.audit().errors == []
+
+
+async def test_explode_refuses_a_nested_reference_before_writing(backend):
+    _define_tagged_block(backend)
+    outer = backend._doc.blocks.new(name="OUTER")
+    nested = outer.add_blockref("TB", (0, 0))
+    before = (len(list(backend._doc.modelspace())), len(list(outer)))
+    with pytest.raises(RuntimeError, match="nested inside block definition 'OUTER'"):
+        await backend.block_explode(nested.dxf.handle)
+    assert (len(list(backend._doc.modelspace())), len(list(outer))) == before
+    assert backend._doc.entitydb[nested.dxf.handle].is_alive
