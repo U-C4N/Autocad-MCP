@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+from engineering.pid.critique import has_pid_content, issues_for
 from engineering.pid.drawlines import draw_line
+from engineering.pid.graph import build_graph
 from engineering.pid.insert import place_symbol
 from engineering.plan_spec import ALL_CRITIQUE_FOCUSES
 from engineering.preflight import pid_plan_warnings, preflight_drawing
@@ -110,12 +112,136 @@ async def test_unconnected_equipment_is_informational(backend):
     assert len(issues) == 1 and issues[0].severity == "info"
 
 
+async def test_incompatible_is_silent_on_a_foreign_blocks_inferred_port(backend):
+    """A CTO-library control valve has no declared ports: the graph infers one
+    where the line lands and gives it a placeholder ``kind: "process"``. A signal
+    line to its actuator is correct, and the old "redraw as a process line"
+    error was a guess presented as a measurement."""
+    await backend.drawing_apply_iso_layers("pid")
+    await backend.block_define(
+        "CONTROL_VALVE",
+        [
+            {"type": "polyline", "points": [[-6, -3], [6, 3], [6, -3], [-6, 3]], "closed": True},
+            {"type": "line", "x1": 0, "y1": 0, "x2": 0, "y2": 6},
+            {"type": "arc", "cx": 0, "cy": 6, "r": 3, "start_deg": 0, "end_deg": 180},
+        ],
+        attdefs=[{"tag": "TAG", "x": 0, "y": 12, "height": 2.5}],
+    )
+    cv = await backend.block_insert(
+        "CONTROL_VALVE", 160, 100, attributes={"TAG": "FCV-101"}, layer="PROCESS-EQUIPMENT"
+    )
+    fic = await place_symbol(
+        backend, "instrument", 160, 140, tag="FIC-101", type="dcs", location="primary"
+    )
+    await draw_line(backend, {"handle": fic["handle"]}, {"x": 160, "y": 109}, line_class="electric")
+    graph = await build_graph(backend, include_foreign=True)
+    valve = next(n for n in graph["nodes"] if n["id"] == cv.handle)
+    assert valve["source"] == "heuristic" and valve["ports"]["p1"]["inferred"] is True
+    issues = await backend.drawing_critique(None)
+    assert [i.focus for i in issues if i.focus.startswith("pid_")] == []
+
+
+async def test_a_dangling_line_off_a_foreign_valve_is_still_reported(backend):
+    """The evidence rule must not silence the foreign path spec §9.3 pins: a
+    heuristic node (keyword name + TAG attribute) is recognised, so a plain
+    line leaving its box for nowhere is a real dangling end."""
+    await backend.block_define(
+        "GATE_VALVE",
+        [
+            {"type": "polyline", "points": [[-4, -2], [-4, 2], [0, 0]], "closed": True},
+            {"type": "polyline", "points": [[4, -2], [4, 2], [0, 0]], "closed": True},
+        ],
+        attdefs=[{"tag": "TAG", "x": 0, "y": 4, "height": 2.5}],
+    )
+    await backend.block_insert("GATE_VALVE", 50, 50, attributes={"TAG": "HV-9"})
+    line = await backend.entity_create_line(54, 50, 90, 50, layer="0")
+    issues = await backend.drawing_critique(["pid_dangling_line"])
+    assert [(i.severity, i.handles) for i in issues] == [("error", [line.handle])]
+
+
 async def test_mechanical_drawing_is_untouched_by_pid_focuses(backend):
     from engineering.layers import ensure_engineering_layers
 
     await ensure_engineering_layers(backend)
     await backend.entity_create_circle(0, 0, 20, layer="GEOMETRY")
     await backend.entity_create_line(-30, 0, 30, 0, layer="CENTER")
+    assert await backend.drawing_critique(list(PID_FOCUSES)) == []
+
+
+async def _bolt_with_note_leader(backend):
+    """A mechanical INSERT with a note leader from its edge — the shape that
+    files the bolt as an ``unknown_block`` at 0.3 and the leader as a foreign
+    edge with a free far end."""
+    await backend.block_define(
+        "BOLT_M10",
+        [
+            {"type": "circle", "cx": 0, "cy": 0, "r": 5},
+            {"type": "polyline", "points": [[-5, -5], [5, -5], [5, 5], [-5, 5]], "closed": True},
+        ],
+    )
+    bolt = await backend.block_insert("BOLT_M10", 100, 100, layer="GEOMETRY")
+    leader = await backend.entity_create_line(105, 100, 140, 120, layer="GEOMETRY")
+    await backend.entity_create_text("SEE NOTE 3", 141, 120, 3.5, layer="TEXT")
+    return bolt.handle, leader.handle
+
+
+async def test_a_mechanical_insert_with_a_note_leader_is_not_pid_content(backend):
+    """Spec §11.1: a drawing without P&ID content is never scored. The graph
+    still files the bolt as an ``unknown_block`` (that is the reader's job);
+    the critique must not mistake that 0.3 guess for a P&ID symbol and fail
+    the finalize gate on the leader's free end."""
+    await backend.drawing_apply_iso_layers("mech")
+    bolt, leader = await _bolt_with_note_leader(backend)
+    graph = await build_graph(backend, include_foreign=True)
+    assert [(n["id"], n["kind"], n["confidence"]) for n in graph["nodes"]] == [
+        (bolt, "unknown_block", 0.3)
+    ]
+    assert [d["edge"] for d in graph["dangling"]] == [leader]
+    assert has_pid_content(graph) is False
+    for focus in PID_FOCUSES:
+        assert issues_for(focus, graph) == [], focus
+    issues = await backend.drawing_critique(None)
+    assert [i.focus for i in issues if i.focus.startswith("pid_")] == []
+
+
+async def test_finalize_gate_passes_a_mechanical_sheet_with_a_note_leader(backend, tmp_path):
+    """The gate runs ``focus=None``, so the six focuses sit inside every
+    ``drawing_finalize`` — the mechanical sheet must pass it as it did before
+    they joined."""
+    import server
+
+    class _Ctx:
+        def __init__(self, backend):
+            self.lifespan_context = {"backend": backend}
+
+        async def warning(self, message):
+            pass
+
+    await backend.drawing_apply_iso_layers("mech")
+    await _bolt_with_note_leader(backend)
+    payload = await server.drawing_finalize(save_path=str(tmp_path / "bolt.dxf"), ctx=_Ctx(backend))
+    assert payload["critique"] == []
+
+
+async def test_a_note_leader_off_an_unknown_block_on_a_pid_is_not_dangling(backend):
+    """On a real P&ID the same leader is in the graph only because it touched
+    a 0.3 box; the one genuine finding (the free process line) stays."""
+    await _clean(backend)
+    await _bolt_with_note_leader(backend)
+    issues = await backend.drawing_critique(["pid_dangling_line"])
+    assert len(issues) == 1 and issues[0].detail["x"] == pytest.approx(220.0)
+
+
+async def test_readme_gear_sheet_is_untouched_by_pid_focuses(backend):
+    """The spec's own negative: all six return [] on the README gear sheet."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "render_readme_showcase.py"
+    spec = importlib.util.spec_from_file_location("render_readme_showcase", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    await module.build(backend)
     assert await backend.drawing_critique(list(PID_FOCUSES)) == []
 
 

@@ -2,7 +2,18 @@
 
 Every check is pure over the graph dict; ``run_critique`` builds the graph once
 into the per-run ``shared`` context so six focuses cost one read. A drawing
-with no P&ID nodes yields no issues — mechanical sheets are never scored here.
+with no recognised P&ID symbol yields no issues — mechanical sheets are never
+scored here.
+
+The checks score evidence, never a guess. ``build_graph(include_foreign=True)``
+files *any* INSERT as an ``unknown_block`` at confidence 0.3 the moment a plain
+LINE's end lands on its bounding box (spec §9.2 step 2) — a bolt with a note
+leader qualifies — and gives every foreign block's inferred port a placeholder
+``kind: "process"``. Neither is a measurement (spec §9.4: read the confidence
+before trusting a foreign graph), so no focus rests on them: an
+``unknown_block`` is not P&ID content, is never tagged or scored, and an edge
+anchored on nothing better is never called dangling; an inferred port is never
+called incompatible.
 """
 
 from __future__ import annotations
@@ -29,9 +40,44 @@ PID_FOCUSES = (
 _KEY = "pid_graph"
 
 
+def _recognised(node: dict) -> bool:
+    """A node the drawing vouches for: catalogue, XDATA or heuristic (a keyword
+    block name / tag attribute). ``unknown_block`` is a 0.3 touch guess."""
+    return node["kind"] != "unknown_block"
+
+
+def has_pid_content(graph: dict) -> bool:
+    """True when at least one recognised P&ID symbol is on the sheet."""
+    return any(_recognised(n) for n in graph["nodes"])
+
+
+def _scored_nodes(graph: dict) -> list[dict]:
+    return [n for n in graph["nodes"] if _recognised(n)]
+
+
+def _evidenced_edges(graph: dict) -> set[str]:
+    """Edge ids that are P&ID lines by evidence: a line class from XDATA or a
+    P&ID line layer, or an end on a recognised node. A foreign line whose only
+    anchor is an ``unknown_block`` box is in the graph on a guess."""
+    nodes = {n["id"]: n for n in graph["nodes"]}
+    out: set[str] = set()
+    for edge in graph["edges"]:
+        if edge.get("class_source"):
+            out.add(edge["id"])
+            continue
+        for ref in (edge["from"], edge["to"]):
+            if ref and "node" in ref and _recognised(nodes[ref["node"]]):
+                out.add(edge["id"])
+                break
+    return out
+
+
 def _dangling(graph: dict) -> list[Issue]:
+    evidenced = _evidenced_edges(graph)
     out = []
     for d in graph["dangling"]:
+        if d["edge"] not in evidenced:
+            continue
         nearest = d.get("nearest")
         if nearest:
             hint = (
@@ -56,7 +102,7 @@ def _dangling(graph: dict) -> list[Issue]:
 
 def _duplicate_tags(graph: dict) -> list[Issue]:
     seen: dict[str, list[str]] = {}
-    for node in graph["nodes"]:
+    for node in _scored_nodes(graph):
         # connectors carry free text ("TO P&ID-002"), never a unique tag
         if node.get("tag") and node["kind"] != "connector":
             seen.setdefault(node["tag"].upper(), []).append(node["id"])
@@ -87,6 +133,12 @@ def _incompatible(graph: dict) -> list[Issue]:
             if not ref or "node" not in ref:
                 continue
             port = nodes[ref["node"]]["ports"].get(ref["port"], {})
+            if port.get("inferred"):
+                # A foreign block's port kind is a placeholder, not a
+                # measurement: a signal line to a CTO control valve's actuator
+                # is right, and "redraw as a process line" would be the wrong
+                # fix. Only a declared (catalogue / XDATA) port kind is judged.
+                continue
             actual = port.get("kind")
             if actual in ("process", "signal") and actual != cls.kind:
                 out.append(
@@ -126,7 +178,7 @@ def _untagged(graph: dict) -> list[Issue]:
 
 def _illegal(graph: dict) -> list[Issue]:
     out = []
-    for n in graph["nodes"]:
+    for n in _scored_nodes(graph):
         if not n.get("tag") or n["kind"] == "connector":
             continue
         parsed = parse_tag(n["tag"], kind="instrument" if n["kind"] == "instrument" else "auto")
@@ -170,7 +222,7 @@ _CHECKS = {
 
 
 def issues_for(focus: str, graph: dict) -> list[Issue]:
-    if not graph["nodes"]:
+    if not has_pid_content(graph):
         return []
     return _CHECKS[focus](graph)
 
