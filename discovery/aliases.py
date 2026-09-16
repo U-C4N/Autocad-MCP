@@ -1417,6 +1417,16 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "batch p&id",
         ),
     ),
+    "pid_tag_parse": ToolAliases(
+        acad=(),
+        synonyms=(
+            "what does fic mean",
+            "isa 5.1 tag",
+            "instrument tag letters",
+            "decode the tag",
+            "loop number",
+        ),
+    ),
 }
 
 

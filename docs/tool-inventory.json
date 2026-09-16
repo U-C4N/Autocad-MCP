@@ -3,8 +3,8 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 165,
-    "resources": 6,
+    "tools": 166,
+    "resources": 8,
     "prompts": 5,
     "groups": 20
   },
@@ -21,7 +21,7 @@
     "entity_query": 9,
     "layers": 14,
     "layouts": 12,
-    "pid": 8,
+    "pid": 9,
     "premium": 12,
     "solids": 5,
     "system": 7,
@@ -1831,6 +1831,20 @@
       }
     },
     {
+      "name": "pid_tag_parse",
+      "group": "pid",
+      "cost": "read",
+      "summary": "Parse an ISA-5.1 instrument tag or an equipment tag; explains every letter.",
+      "tags": [
+        "pid",
+        "query"
+      ],
+      "annotations": {
+        "title": "P&ID: Parse Tag",
+        "readOnlyHint": true
+      }
+    },
+    {
       "name": "point_from_snap",
       "group": "premium",
       "cost": "read",
@@ -2388,6 +2402,29 @@
       "mime_type": "application/json",
       "tags": [
         "layer"
+      ],
+      "templated": false,
+      "parameters": []
+    },
+    {
+      "uri": "autocad://pid/symbols",
+      "name": "P&ID Symbol Catalogue",
+      "description": "Every P&ID symbol pid_symbol_insert can place: families, variants, ports, parameters",
+      "mime_type": "application/json",
+      "tags": [
+        "pid"
+      ],
+      "templated": false,
+      "parameters": []
+    },
+    {
+      "uri": "autocad://standards/isa51",
+      "name": "ISA-5.1 Identification Letters",
+      "description": "ISA-5.1-2009 Table 4.1 letter tables, the tag grammar and its disambiguation rules",
+      "mime_type": "application/json",
+      "tags": [
+        "pid",
+        "standards"
       ],
       "templated": false,
       "parameters": []

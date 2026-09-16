@@ -6369,7 +6369,7 @@ async def solid_boolean(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 17: P&ID (8 tools) ──────────────────────────────────────────────
+# ── SECTION 17: P&ID (9 tools) ──────────────────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -6713,6 +6713,34 @@ async def pid_from_spec(
     return await run_spec(_backend(ctx), spec, dry_run)
 
 
+@cad_tool(
+    summary="Parse an ISA-5.1 instrument tag or an equipment tag; explains every letter.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "P&ID: Parse Tag", "readOnlyHint": True},
+    tags={"pid", "query"},
+)
+async def pid_tag_parse(
+    tag: Annotated[str, "e.g. FIC-101, 10-PDT-203A, P-101A"],
+    kind: Annotated[str, "auto | instrument | equipment"] = "auto",
+    equipment_prefixes: Annotated[
+        dict | None,
+        "Replace the default equipment prefix map, e.g. {'Q': 'quench tower'}",
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """ISA-5.1-2009 Table 4.1 as a grammar: first letter, modifier, readout and
+    output functions, trailing high/low, loop number and suffix — with the
+    standard's description ("Flow Indicating Controller") or the first
+    offending letter. Equipment prefixes are not standardised, so the default
+    map (P pump, V vessel, E exchanger, ...) can be replaced per call.
+    """
+    from engineering.pid.tags import parse_tag
+
+    return parse_tag(tag, kind, equipment_prefixes)
+
+
 # ---------------------------------------------------------------------------
 # ── RESOURCES ───────────────────────────────────────────────────────────────
 # ---------------------------------------------------------------------------
@@ -6838,6 +6866,34 @@ async def resource_entities_by_layer(layer_name: str, ctx: Context = None) -> st
         return json.dumps({"error": str(exc)})
 
 
+@mcp.resource(
+    "autocad://pid/symbols",
+    name="P&ID Symbol Catalogue",
+    description="Every P&ID symbol pid_symbol_insert can place: families, variants, ports, parameters",
+    mime_type="application/json",
+    annotations={"readOnlyHint": True},
+    tags={"pid"},
+)
+async def resource_pid_symbols() -> str:
+    from engineering.pid.symbols import CATALOG_VERSION, list_symbols
+
+    return json.dumps({"catalog_version": CATALOG_VERSION, "symbols": list_symbols()}, indent=2)
+
+
+@mcp.resource(
+    "autocad://standards/isa51",
+    name="ISA-5.1 Identification Letters",
+    description="ISA-5.1-2009 Table 4.1 letter tables, the tag grammar and its disambiguation rules",
+    mime_type="application/json",
+    annotations={"readOnlyHint": True},
+    tags={"pid", "standards"},
+)
+async def resource_isa51() -> str:
+    from engineering.pid.tags import describe_tables
+
+    return json.dumps(describe_tables(), indent=2)
+
+
 # ---------------------------------------------------------------------------
 # ── PROMPTS ──────────────────────────────────────────────────────────────────
 # ---------------------------------------------------------------------------
@@ -6887,38 +6943,39 @@ def prompt_pid_diagram(
     revision: str = "Rev A",
 ) -> str:
     """Generate a prompt for creating a P&ID (Piping and Instrumentation Diagram)."""
-    return f"""You are creating a P&ID for '{project_name}' ({revision}).
+    return f"""You are creating a P&ID for '{project_name}' ({revision}) with the server's P&ID tools.
+Never hand-draw a symbol from lines and circles: every valve, pump, vessel and instrument is a
+catalogue block with ports, and every line is drawn port-to-port.
 
-LAYER SETUP:
-  - PROCESS_LINES   color=7  lineweight=50  (main process piping)
-  - UTILITY_LINES   color=3  lineweight=25  (utility services)
-  - INSTRUMENTS     color=2  lineweight=25  (instrument circles)
-  - EQUIPMENT       color=5  lineweight=50  (vessels, pumps, HX)
-  - VALVES          color=4  lineweight=25  (valve symbols)
-  - TAGS            color=7  lineweight=13  (tag numbers)
-  - ANNOTATIONS     color=8  lineweight=13  (notes)
-  - BORDER          color=7  lineweight=100 (drawing border)
+REFERENCE SIZES (symbol-local mm at A3/A1 paper scale): instrument bubble Ø10, valve body 8×4,
+pump Ø8, grid 5. Keep equipment ≥ 40 mm apart so line numbers and tags have room.
 
-STANDARD SYMBOLS (draw as entities):
-  - Vessels: rectangle with domed ends
-  - Pumps: circle with triangle (impeller)
-  - Heat Exchangers: two overlapping rectangles
-  - Valves: two triangles point-to-point
-  - Control valves: valve symbol + circle above
-  - Instruments: circle with tag number
+WORKFLOW
+1. drawing_plan(intent="{project_name} P&ID", sheet_size="A3", layer_set_id="pid")
+2. drawing_apply_iso_layers("pid")
+3. pid_symbol_list() — read the catalogue once; pid_tag_parse(tag) when unsure about ISA-5.1 letters
+4. pid_symbol_insert(symbol, x, y, tag=...) for each item:
+     equipment  tag P-101 / V-201 / E-301 (desc="Feed pump")
+     valves     symbol=gate|globe|ball|... with actuator=diaphragm|piston|motor|solenoid|hand and fail=FO|FC|FL
+     instruments symbol="instrument", type=discrete|dcs|computer|plc, location=field|primary|auxiliary|..., tag="FIC-101"
+     vessels    params={{"width", "height", "nozzles": [{{"name": "N1", "side": "top", "fraction": 0.5}}]}}
+   Each call returns the block's ports in WCS — use them, never guess coordinates.
+5. pid_line_draw(from_={{"handle", "port"}}, to={{"handle", "port"}}, line_class=process_major|process_minor|
+   utility|pneumatic|electric|hydraulic|capillary|data, size="100", service="P", spec="CS1")
+   A bubble's radial port needs no name. Read `crossings` and `port_reuse` in the response.
+6. pid_graph() — `dangling` must be empty and `stats.confidence_min` 1.0 for a drawing you made.
+7. drawing_critique(focus=None) — must return [] (pid_dangling_line, pid_duplicate_tag,
+   pid_incompatible_connection, pid_untagged_instrument, pid_illegal_tag, pid_unconnected_equipment
+   are part of it).
+8. pid_instrument_index() / pid_line_list() / pid_equipment_list() for the deliverables.
+9. drawing_finalize(save_path=...) — the score is the objective quality metric.
 
-INSTRUMENT TAG FORMAT: [Function][Loop Number][Suffix]
-  Examples: FT-101 (flow transmitter), FIC-101 (flow indicator controller)
+ONE-CALL ALTERNATIVE: pid_from_spec(spec) draws the whole sheet in one transaction from
+{{sheet, equipment[], valves[], instruments[], lines[], connectors[]}} and returns the graph and the
+critique; use dry_run=true first to see the planned routes and crossings.
 
-WORKFLOW:
-1. layer_create() for all layers
-2. entity_create_rectangle() for drawing border
-3. Place major equipment first (vessels, columns)
-4. Draw process lines (polylines) connecting equipment
-5. Place valve symbols at control points
-6. Add instrument bubbles (circles + text)
-7. Add line numbers and stream labels
-8. Add title block text
+OFF-PAGE: pid_symbol_insert("offpage", direction="out"|"in", tag="TO P&ID-002", link="L-17"); two connectors
+sharing a link are paired by pid_graph.
 """
 
 

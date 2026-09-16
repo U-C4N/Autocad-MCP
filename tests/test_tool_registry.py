@@ -512,8 +512,10 @@ async def test_tool_group_sizes_are_unchanged():
     `pid_symbol_insert`, then 2 -> 3 when `pid_line_draw` joined, 3 -> 4
     when the reader `pid_graph` joined and 4 -> 7 when the three graph
     deliverables (`pid_instrument_index` / `pid_line_list` /
-    `pid_equipment_list`) joined and 7 -> 8 when `pid_from_spec` (a whole
-    sheet from one declarative spec, in one transaction) joined; the `pid`
+    `pid_equipment_list`) joined, 7 -> 8 when `pid_from_spec` (a whole
+    sheet from one declarative spec, in one transaction) joined and 8 -> 9
+    when `pid_tag_parse` (the ISA-5.1 tag grammar as a read-only tool)
+    joined; the `pid`
     tag is ranked first in `_GROUP_TAG_PRIORITY` so those tools file under
     `pid` rather than under their secondary `query` / `create` tags. Every
     other number here has been unchanged since the snapshot was taken.
@@ -532,7 +534,7 @@ async def test_tool_group_sizes_are_unchanged():
         "entity_query": 9,
         "layers": 14,
         "layouts": 12,
-        "pid": 8,
+        "pid": 9,
         "premium": 12,
         "solids": 5,
         "system": 7,
@@ -541,4 +543,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 165
+    assert sum(sizes.values()) == 166
