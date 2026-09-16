@@ -218,3 +218,122 @@ async def test_com_block_insert_shares_the_same_gate(com):
     with pytest.raises(ValueError, match="'NO_SUCH_BLOCK' is not defined"):
         await backend.block_insert("NO_SUCH_BLOCK", 1, 2, attributes={"TAG": "P-1"})
     assert space.calls == []
+
+
+# ── Task 2: block_explode keeps ATTRIB text ──────────────────────────────────
+
+
+async def test_explode_emits_a_text_per_attrib_at_the_attribs_placement(backend):
+    from ezdxf.enums import TextEntityAlignment
+
+    blk = backend._doc.blocks.new(name="TB2")
+    blk.add_line((0, 0), (10, 0))
+    tag = blk.add_attdef("TAG", insert=(0, 3), text="", dxfattribs={"height": 2.5})
+    tag.set_placement((0, 3), align=TextEntityAlignment.CENTER)
+    hidden = blk.add_attdef("LINK", insert=(0, -3), text="L-1", dxfattribs={"height": 2.0})
+    hidden.is_invisible = True
+    ref = await backend.block_insert(
+        "TB2", 10, 10, scale_x=2.0, scale_y=2.0, rotation=30.0, attributes={"TAG": "P-101"}
+    )
+    raw_ref = backend._doc.entitydb[ref.handle]
+    expected = {a.dxf.tag: (tuple(a.dxf.insert)[:2], a.dxf.height) for a in raw_ref.attribs}
+
+    result = await backend.block_explode(ref.handle)
+
+    assert result["ok"] is True and result["exploded_handle"] == ref.handle
+    assert result["backend"] == "ezdxf"
+    assert [(await backend.entity_get(h)).type for h in result["inserted_handles"]] == ["LINE"]
+    assert len(result["attribute_texts"]) == 2
+    texts = {}
+    for handle in result["attribute_texts"]:
+        info = await backend.entity_get(handle)
+        assert info.type == "TEXT"
+        texts[info.properties["text"]] = info
+    tag_text = texts["P-101"]
+    assert tuple(tag_text.properties["insertion"]) == pytest.approx(expected["TAG"][0])
+    assert tag_text.properties["height"] == expected["TAG"][1] == 5.0
+    assert tag_text.properties["rotation"] == pytest.approx(30.0)
+    raw = backend._doc.entitydb[tag_text.handle]
+    assert raw.get_align_enum().name == "CENTER", "alignment survives the conversion"
+    assert raw.dxf.invisible == 0
+    assert backend._doc.entitydb[texts["L-1"].handle].dxf.invisible == 1
+    with pytest.raises(RuntimeError, match="not found"):
+        await backend.entity_get(ref.handle)
+    assert backend._doc.audit().errors == []
+
+
+async def test_explode_without_attribs_reports_an_empty_list(backend):
+    line = await backend.entity_create_line(0, 0, 10, 0)
+    await backend.block_create_from_entities("PLAIN", [line.handle])
+    ref = await backend.block_insert("PLAIN", 0, 0)
+    result = await backend.block_explode(ref.handle)
+    assert result["attribute_texts"] == [] and len(result["inserted_handles"]) == 1
+
+
+async def test_explode_refuses_a_non_insert_without_writing(backend):
+    line = await backend.entity_create_line(0, 0, 10, 0)
+    before = len(list(backend._msp()))
+    with pytest.raises(RuntimeError, match="not a block reference"):
+        await backend.block_explode(line.handle)
+    assert len(list(backend._msp())) == before
+
+
+async def test_com_explode_deletes_attdefs_adds_text_per_attrib_and_deletes_the_reference(com):
+    backend, document, space = com
+    attdef = _FakeObject("AcDbAttributeDefinition", "D1")
+    line = _FakeObject("AcDbLine", "L1")
+    visible = _FakeObject(
+        "AcDbAttribute",
+        "A1",
+        TagString="TAG",
+        TextString="P-101",
+        InsertionPoint=(7.0, 15.2, 0.0),
+        Height=5.0,
+        Rotation=0.5236,
+        Layer="PID-TAG",
+        Invisible=False,
+    )
+    hidden = _FakeObject(
+        "AcDbAttribute",
+        "A2",
+        TagString="LINK",
+        TextString="L-1",
+        InsertionPoint=(13.0, 4.8, 0.0),
+        Height=4.0,
+        Rotation=0.5236,
+        Layer="0",
+        Invisible=True,
+    )
+    ref = _FakeObject(
+        "AcDbBlockReference",
+        "2F",
+        Name="TB",
+        GetAttributes=lambda: (visible, hidden),
+        Explode=lambda: (line, attdef),
+    )
+    document.objects["2F"] = ref
+
+    result = await backend.block_explode("2F")
+
+    assert result == {
+        "ok": True,
+        "exploded_handle": "2F",
+        "inserted_handles": ["L1"],
+        "attribute_texts": ["T1", "T2"],
+        "backend": "com",
+    }
+    assert attdef.deleted is True, "the value-less ATTDEF placeholder is removed"
+    assert line.deleted is False
+    assert ref.deleted is True, "ActiveX Explode leaves the reference; BURST removes it"
+    assert [c for c in space.calls] == [
+        ("AddText", ("P-101", (7.0, 15.2, 0.0), 5.0)),
+        ("AddText", ("L-1", (13.0, 4.8, 0.0), 4.0)),
+    ]
+
+
+async def test_com_explode_refuses_a_non_insert_before_any_call(com):
+    backend, document, space = com
+    document.objects["3A"] = _FakeObject("AcDbLine", "3A")
+    with pytest.raises(RuntimeError, match="not a block reference"):
+        await backend.block_explode("3A")
+    assert space.calls == []

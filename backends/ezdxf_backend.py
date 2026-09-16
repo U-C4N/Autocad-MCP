@@ -4521,21 +4521,65 @@ class EzdxfBackend(AutoCADBackend):
 
         return await self._async(_sync)
 
+    #: ATTRIB DXF attributes carried onto the TEXT that replaces it on explode.
+    #: ``insert``/``align_point`` are already WCS on an attached ATTRIB.
+    _ATTRIB_TO_TEXT = (
+        "layer",
+        "color",
+        "style",
+        "height",
+        "rotation",
+        "width",
+        "oblique",
+        "halign",
+        "valign",
+        "text_generation_flag",
+        "insert",
+        "align_point",
+    )
+
     async def block_explode(self, handle) -> dict:
+        """Explode an INSERT into its members; ATTRIB values survive as TEXT.
+
+        ``virtual_entities()`` yields the definition's geometry only — no
+        ATTDEF, no ATTRIB — so an exploded tagged symbol used to lose its tag
+        text silently. This is the BURST rule (Express Tools): every attached
+        ATTRIB becomes a TEXT at the same WCS placement, height, rotation,
+        style and layer, carrying the *value*; an invisible ATTRIB becomes an
+        invisible TEXT rather than appearing. The new handles are reported as
+        ``attribute_texts``, separate from the geometry's ``inserted_handles``.
+        """
+
         def _sync():
             ent = self._get_entity(handle)
             if ent.dxftype() != "INSERT":
                 raise RuntimeError(f"Entity {handle} is not a block reference (INSERT)")
             msp = self._msp()
-            # Decompose: add individual entities to modelspace
             inserted = []
             for sub in ent.virtual_entities():
                 sub_copy = sub.copy()
                 msp.add_entity(sub_copy)
                 inserted.append(sub_copy.dxf.handle)
+            attribute_texts = []
+            for attrib in ent.attribs:
+                dxfattribs = {
+                    key: attrib.dxf.get(key)
+                    for key in self._ATTRIB_TO_TEXT
+                    if attrib.dxf.hasattr(key)
+                }
+                text = msp.add_text(attrib.dxf.text, dxfattribs=dxfattribs)
+                if attrib.is_invisible:
+                    text.dxf.invisible = 1
+                attribute_texts.append(text.dxf.handle)
             msp.delete_entity(ent)
             self._mark_dirty()
-            return {"ok": True, "inserted_handles": inserted}
+            return {
+                "ok": True,
+                "exploded_handle": handle,
+                "inserted_handles": inserted,
+                "attribute_texts": attribute_texts,
+                "backend": "ezdxf",
+            }
 
         return await self._async(_sync)
 

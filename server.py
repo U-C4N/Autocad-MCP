@@ -3026,7 +3026,17 @@ async def block_explode(
     handle: Annotated[str, "Block reference (INSERT) entity handle"],
     ctx: Context = None,
 ) -> dict:
-    """Explode a block reference into its individual component entities."""
+    """Explode a block reference into its component entities, keeping its
+    attribute text (the Express Tools BURST rule, on both engines).
+
+    Every attached ATTRIB becomes a TEXT with the same value, placement,
+    height, rotation and layer (an invisible attribute becomes an invisible
+    TEXT); AutoCAD's plain EXPLODE would keep only the tag-name placeholders
+    and drop the values. Returns `inserted_handles` (the geometry),
+    `attribute_texts` (one TEXT handle per attribute), `exploded_handle` and
+    `backend`. Refused: a handle that is not a block reference (nothing is
+    written). Not undoable except through `drawing_undo` / a transaction.
+    """
     await ctx.warning(f"Exploding block reference {handle}")
     return await _backend(ctx).block_explode(handle)
 

@@ -3299,11 +3299,77 @@ class ComBackend(AutoCADBackend):
         return await self._run(_sync)
 
     async def block_explode(self, handle) -> dict:
+        """Explode an INSERT through ActiveX; ATTRIB values survive as TEXT.
+
+        AutoCAD's EXPLODE keeps the attribute *definitions* (the tag names as
+        ATTDEF entities) and discards the values; ActiveX ``Explode()`` does
+        the same and, unlike the command, leaves the original reference in
+        place. This is the BURST rule instead: each ATTRIB's value, placement,
+        height, rotation and layer are read before the explode, the ATTDEFs
+        the explode returns are deleted, one ``AddText`` per ATTRIB carries the
+        value (an invisible ATTRIB becomes an invisible TEXT), and the
+        reference itself is deleted. Unit-tested against a fake ActiveX
+        surface; ``Explode()``'s return shape is the ActiveX documented one
+        (an array of the new objects) and is exercised live by the settings
+        smoke.
+        """
+
         def _sync():
             doc = _acad_doc()
             ent = doc.HandleToObject(handle)
-            ent.Explode()
-            return {"ok": True, "exploded_handle": handle}
+            if ent.ObjectName != "AcDbBlockReference":
+                raise RuntimeError(f"Entity {handle} is not a block reference (INSERT)")
+            captured = []
+            try:
+                attrs = ent.GetAttributes()
+            except Exception as exc:
+                log.debug("GetAttributes failed before explode: %s", exc)
+                attrs = ()
+            for attr in attrs:
+                try:
+                    invisible = bool(attr.Invisible)
+                except Exception:
+                    invisible = False
+                captured.append(
+                    {
+                        "text": str(attr.TextString),
+                        "insertion": tuple(attr.InsertionPoint),
+                        "height": float(attr.Height),
+                        "rotation": float(attr.Rotation),
+                        "layer": str(attr.Layer),
+                        "invisible": invisible,
+                    }
+                )
+            exploded = ent.Explode()
+            inserted = []
+            for obj in exploded or ():
+                if obj.ObjectName == "AcDbAttributeDefinition":
+                    obj.Delete()  # the tag placeholder EXPLODE leaves; the value is below
+                    continue
+                inserted.append(str(obj.Handle))
+            mspace = _msp()
+            attribute_texts = []
+            for item in captured:
+                ins = item["insertion"]
+                text = mspace.AddText(
+                    item["text"],
+                    _apoint(ins[0], ins[1], ins[2] if len(ins) > 2 else 0.0),
+                    item["height"],
+                )
+                text.Rotation = item["rotation"]
+                text.Layer = item["layer"]
+                if item["invisible"]:
+                    text.Visible = False
+                attribute_texts.append(str(text.Handle))
+            ent.Delete()
+            _regen()
+            return {
+                "ok": True,
+                "exploded_handle": handle,
+                "inserted_handles": inserted,
+                "attribute_texts": attribute_texts,
+                "backend": "com",
+            }
 
         return await self._run(_sync)
 
