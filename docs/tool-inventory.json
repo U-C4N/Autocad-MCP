@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 164,
+    "tools": 165,
     "resources": 6,
     "prompts": 5,
     "groups": 20
@@ -21,7 +21,7 @@
     "entity_query": 9,
     "layers": 14,
     "layouts": 12,
-    "pid": 7,
+    "pid": 8,
     "premium": 12,
     "solids": 5,
     "system": 7,
@@ -1729,6 +1729,21 @@
       "annotations": {
         "title": "P&ID: Equipment List",
         "readOnlyHint": true
+      }
+    },
+    {
+      "name": "pid_from_spec",
+      "group": "pid",
+      "cost": "mutate",
+      "summary": "Draw a whole P&ID from one declarative spec in one transaction; returns graph + critique.",
+      "tags": [
+        "batch",
+        "create",
+        "pid"
+      ],
+      "annotations": {
+        "title": "P&ID: From Spec",
+        "readOnlyHint": false
       }
     },
     {

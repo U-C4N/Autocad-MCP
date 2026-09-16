@@ -1408,6 +1408,15 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
         acad=(),
         synonyms=("equipment list", "equipment schedule", "valve list"),
     ),
+    "pid_from_spec": ToolAliases(
+        acad=(),
+        synonyms=(
+            "whole p&id in one call",
+            "p&id from json",
+            "draw the process from a spec",
+            "batch p&id",
+        ),
+    ),
 }
 
 

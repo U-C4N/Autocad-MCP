@@ -6369,7 +6369,7 @@ async def solid_boolean(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 17: P&ID (7 tools) ──────────────────────────────────────────────
+# ── SECTION 17: P&ID (8 tools) ──────────────────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -6679,6 +6679,38 @@ async def pid_equipment_list(
     return await deliverable(
         _backend(ctx), "equipment_list", csv_path, tolerance=tolerance, scope=scope
     )
+
+
+@cad_tool(
+    summary=(
+        "Draw a whole P&ID from one declarative spec in one transaction; returns graph + critique."
+    ),
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "P&ID: From Spec", "readOnlyHint": False},
+    tags={"pid", "create", "batch"},
+)
+async def pid_from_spec(
+    spec: Annotated[
+        dict,
+        "{sheet, equipment[], valves[], instruments[], lines[], connectors[]} — see the P&ID prompt",
+    ],
+    dry_run: Annotated[bool, "Validate and route in memory; draw nothing"] = False,
+    ctx: Context = None,
+) -> dict:
+    """Equipment, valves, instruments and connectors placed, then every line
+    drawn port-to-port, inside one transaction: any bad item rolls the whole
+    sheet back and the error names it (`lines[2].to`). The response carries the
+    graph read back from the drawing and the P&ID critique issues, so the
+    caller sees dangling ends or duplicate tags in the same round trip.
+    `dry_run` returns the planned vertices and crossings without touching the
+    drawing.
+    """
+    from engineering.pid.spec import run_spec
+
+    await ctx.info("P&ID from spec" + (" (dry run)" if dry_run else ""))
+    return await run_spec(_backend(ctx), spec, dry_run)
 
 
 # ---------------------------------------------------------------------------
