@@ -65,9 +65,25 @@ async def test_prompt_walks_the_tool_workflow(client):
     assert "circle with triangle" not in text, "no hand-drawn symbols"
 
 
-def test_catalog_contact_sheet_renders_every_symbol(tmp_path):
+def test_catalog_contact_sheet_renders_every_symbol(tmp_path, monkeypatch):
     pytest.importorskip("matplotlib")
+    import engineering.pid.insert as insert_module
+    from engineering.pid.symbols import all_specs
     from scripts.render_pid_catalog import render
 
     result = render(tmp_path / "sheet.png")
-    assert result["symbols"] >= 100 and result["bytes"] > 10_000
+    assert result["blank"] == [], "every catalogue symbol must leave geometry on the sheet"
+    assert result["symbols"] == len(all_specs()) >= 100 and result["bytes"] > 10_000
+
+    # The evidence has to come from the drawing and the picture, not from the
+    # catalogue's length: a builder that draws nothing yields a labels-only
+    # sheet whose PNG is well past the byte threshold, so the symbol count and
+    # the ink share are what tell the two apart.
+    async def draw_nothing(*_args, **_kwargs):
+        return {"handle": "0", "ports": {}}
+
+    monkeypatch.setattr(insert_module, "insert_symbol", draw_nothing)
+    labels_only = render(tmp_path / "labels_only.png")
+    assert labels_only["symbols"] == 0 and len(labels_only["blank"]) == len(all_specs())
+    assert labels_only["bytes"] > 10_000, "bytes alone would not have caught this"
+    assert result["ink"] > labels_only["ink"] * 1.1, (result["ink"], labels_only["ink"])
