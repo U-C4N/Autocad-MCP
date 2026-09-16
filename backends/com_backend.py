@@ -348,16 +348,113 @@ def _com_bulges(entity, coords, closed: bool, length) -> list[float]:
     return [_com_bulge(entity, i) for i in range(count)]
 
 
+def _is_right_angle(rotation: float) -> bool:
+    """True when ``rotation`` (radians) is a multiple of a quarter turn."""
+    quarter = rotation / (math.pi / 2.0)
+    return abs(quarter - round(quarter)) <= 1e-9
+
+
+def _arc_extent_points(cx, cy, radius, start, end):
+    """The points that bound a counter-clockwise circular arc: its two ends
+    and every quadrant point (0, 90, 180, 270 degrees) the sweep passes."""
+    sweep = (end - start) % (2.0 * math.pi)
+    pts = [
+        (cx + radius * math.cos(start), cy + radius * math.sin(start)),
+        (cx + radius * math.cos(end), cy + radius * math.sin(end)),
+    ]
+    for q in range(4):
+        angle = q * math.pi / 2.0
+        if (angle - start) % (2.0 * math.pi) <= sweep:
+            pts.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+    return pts
+
+
+def _com_member_extent_points(member, xform, sx, sy, rotation):
+    """WCS points whose extents are exactly the transformed member's extents,
+    for the members a P&ID symbol is drawn from; None when the member's
+    geometry is not one this reads (text, hatch, spline, ellipse, a nested
+    reference) so the caller falls back to its box and says so.
+
+    A LINE, a POINT and a straight polyline are bounded by their vertices
+    under any affine map. A CIRCLE becomes an ellipse under an axis scale, and
+    its extents after a rotation are closed-form. An ARC and a bulged
+    polyline segment stay circular only under a uniform scale; a reflection
+    (``sx * sy < 0``) reverses their sense.
+    """
+    name = member.ObjectName
+    uniform = abs(abs(sx) - abs(sy)) <= 1e-12
+    mirrored = sx * sy < 0
+    if name == "AcDbLine":
+        s, e = member.StartPoint, member.EndPoint
+        return [xform(s[0], s[1]), xform(e[0], e[1])]
+    if name == "AcDbPoint":
+        c = member.Coordinates
+        return [xform(c[0], c[1])]
+    if name == "AcDbCircle":
+        c = member.Center
+        r = float(member.Radius)
+        cx, cy = xform(c[0], c[1])
+        a, b = r * abs(sx), r * abs(sy)
+        cos_r, sin_r = math.cos(rotation), math.sin(rotation)
+        hx = math.hypot(a * cos_r, b * sin_r)
+        hy = math.hypot(a * sin_r, b * cos_r)
+        return [(cx - hx, cy - hy), (cx + hx, cy + hy)]
+    if name == "AcDbArc":
+        if not uniform:
+            return None
+        c = member.Center
+        r = float(member.Radius)
+        cx, cy = xform(c[0], c[1])
+        ends = []
+        for angle in (float(member.StartAngle), float(member.EndAngle)):
+            px, py = xform(c[0] + r * math.cos(angle), c[1] + r * math.sin(angle))
+            ends.append(math.atan2(py - cy, px - cx))
+        if mirrored:
+            ends.reverse()
+        return _arc_extent_points(cx, cy, r * abs(sx), ends[0], ends[1])
+    if name in _COM_LWPOLYLINE_NAMES:
+        coords = list(member.Coordinates)
+        closed = bool(member.Closed)
+        bulges = _com_bulges(member, coords, closed, member.Length)
+        pts = [xform(coords[i], coords[i + 1]) for i in range(0, len(coords) - 1, 2)]
+        if not any(bulges):
+            return pts
+        if not uniform:
+            return None
+        from ezdxf.math import Vec2, bulge_to_arc
+
+        segments = list(zip(pts, pts[1:], bulges, strict=False))
+        if closed and len(pts) > 1:
+            segments.append((pts[-1], pts[0], bulges[len(pts) - 1]))
+        out = list(pts)
+        for a, b, bulge in segments:
+            if not bulge or math.dist(a, b) < 1e-12:
+                continue
+            centre, start, end, radius = bulge_to_arc(
+                Vec2(a), Vec2(b), -bulge if mirrored else bulge
+            )
+            out.extend(_arc_extent_points(centre.x, centre.y, radius, start, end))
+        return out
+    return None
+
+
 def _com_geometry_bbox(entity) -> dict | None:
     """WCS extents of a block reference's *drawn* geometry, attributes excluded.
 
     ``GetBoundingBox`` on an INSERT takes its ATTRIBs with it, so a TAG lettered
     above a valve pushes the box past the body — a line ending on the body's
     real edge then lies *inside* the box. The definition's members are read in
-    block space (skipping ``AcDbAttributeDefinition``), each member's box is
-    carried through the INSERT (origin, scale, rotation) corner by corner, and
-    the extents of those corners is the answer. None when there is nothing
-    drawn or ActiveX refuses any step — the caller then omits the key.
+    block space (skipping ``AcDbAttributeDefinition``) and carried through the
+    INSERT (origin, scale, rotation).
+
+    At a right-angle rotation (the P&ID case) each member's own box maps to
+    an axis-aligned box, so carrying its corners is exact. Off a right angle
+    the box of a rotated box is too large — a 45-degree-turned circle of
+    radius 5 would read as 7.07 — so each member's real geometry is measured
+    (`_com_member_extent_points`); a member that cannot be, or refuses, is
+    carried by its corners and the result is marked ``approximate: True`` so
+    no reader mistakes it for the extents the ezdxf engine reports. None when
+    there is nothing drawn or ActiveX refuses — the caller then omits the key.
     """
     try:
         try:
@@ -373,24 +470,46 @@ def _com_geometry_bbox(entity) -> dict | None:
         sx, sy = float(entity.XScaleFactor), float(entity.YScaleFactor)
         rot = float(entity.Rotation)
         cos_r, sin_r = math.cos(rot), math.sin(rot)
+        right_angle = _is_right_angle(rot)
+
+        def xform(bx, by):
+            lx = (float(bx) - float(origin[0])) * sx
+            ly = (float(by) - float(origin[1])) * sy
+            return (
+                float(ins[0]) + lx * cos_r - ly * sin_r,
+                float(ins[1]) + lx * sin_r + ly * cos_r,
+            )
+
         xs: list[float] = []
         ys: list[float] = []
+        approximate = False
         for i in range(blk.Count):
             member = blk.Item(i)
             if member.ObjectName == "AcDbAttributeDefinition":
                 continue
-            try:
-                lo, hi = member.GetBoundingBox()
-            except Exception:
-                continue
-            for bx, by in ((lo[0], lo[1]), (hi[0], lo[1]), (lo[0], hi[1]), (hi[0], hi[1])):
-                lx = (float(bx) - float(origin[0])) * sx
-                ly = (float(by) - float(origin[1])) * sy
-                xs.append(float(ins[0]) + lx * cos_r - ly * sin_r)
-                ys.append(float(ins[1]) + lx * sin_r + ly * cos_r)
+            pts = None
+            if not right_angle:
+                try:
+                    pts = _com_member_extent_points(member, xform, sx, sy, rot)
+                except Exception as exc:
+                    log.debug("exact extents of block member failed: %s", exc)
+                    pts = None
+            if pts is None:
+                try:
+                    lo, hi = member.GetBoundingBox()
+                except Exception:
+                    continue
+                corners = ((lo[0], lo[1]), (hi[0], lo[1]), (lo[0], hi[1]), (hi[0], hi[1]))
+                pts = [xform(bx, by) for bx, by in corners]
+                approximate = approximate or not right_angle
+            xs.extend(x for x, _ in pts)
+            ys.extend(y for _, y in pts)
         if not xs:
             return None
-        return {"min": [min(xs), min(ys)], "max": [max(xs), max(ys)]}
+        box = {"min": [min(xs), min(ys)], "max": [max(xs), max(ys)]}
+        if approximate:
+            box["approximate"] = True
+        return box
     except Exception as exc:
         log.debug("geometry bbox failed for block reference: %s", exc)
         return None

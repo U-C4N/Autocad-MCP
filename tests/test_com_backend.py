@@ -604,3 +604,171 @@ def test_com_geometry_bbox_is_omitted_when_the_block_draws_nothing_or_activex_re
     assert _com_geometry_bbox(ent) is None
     props = _entity_info(ent).properties
     assert "geometry_bbox" not in props and props["rotation_deg"] == 0.0
+
+
+# ── geometry_bbox off a right angle: the geometry, not the box of a box ──────
+#
+# Rotating a member's axis-aligned box and taking the extents of the corners
+# is exact only at multiples of 90 degrees. A circle of radius 5 turned 45
+# degrees is still x in [-5, 5]; its box's corners reach 7.07. The ezdxf
+# engine measures the real geometry, so the live engine must too — or say
+# that it could not.
+
+
+def _circle(cx, cy, r):
+    return _Entity(
+        "AcDbCircle",
+        Center=(cx, cy, 0.0),
+        Radius=r,
+        GetBoundingBox=lambda: ((cx - r, cy - r, 0.0), (cx + r, cy + r, 0.0)),
+    )
+
+
+def _line(x0, y0, x1, y1):
+    return _Entity(
+        "AcDbLine",
+        StartPoint=(x0, y0, 0.0),
+        EndPoint=(x1, y1, 0.0),
+        GetBoundingBox=lambda: ((min(x0, x1), min(y0, y1), 0.0), (max(x0, x1), max(y0, y1), 0.0)),
+    )
+
+
+def _arc(cx, cy, r, start_deg, end_deg):
+    import math
+
+    return _Entity(
+        "AcDbArc",
+        Center=(cx, cy, 0.0),
+        Radius=r,
+        StartAngle=math.radians(start_deg),
+        EndAngle=math.radians(end_deg),
+        GetBoundingBox=lambda: ((cx - r, cy - r, 0.0), (cx + r, cy + r, 0.0)),
+    )
+
+
+def _polyline(points, bulges, closed=False):
+    import math
+
+    coords = [c for p in points for c in p]
+    chord = sum(math.dist(a, b) for a, b in zip(points, points[1:], strict=False))
+    if closed:
+        chord += math.dist(points[-1], points[0])
+    length = chord + (1.0 if any(bulges) else 0.0)  # "longer than its chord" is all that matters
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    return _Entity(
+        "AcDbPolyline",
+        Coordinates=coords,
+        Closed=closed,
+        Length=length,
+        GetBulge=lambda i: bulges[i],
+        GetBoundingBox=lambda: ((min(xs), min(ys), 0.0), (max(xs), max(ys), 0.0)),
+    )
+
+
+def test_com_geometry_bbox_of_a_rotated_circle_and_diagonal_line_is_exact():
+    import math
+
+    from backends.com_backend import _com_geometry_bbox
+
+    ent = _blockref(
+        "PUMP_C",
+        {"PUMP_C": _Block([_circle(0.0, 0.0, 5.0)])},
+        insertion=(100.0, 100.0, 0.0),
+        rotation=math.radians(45.0),
+    )
+    box = _com_geometry_bbox(ent)
+    assert box["min"] == pytest.approx([95.0, 95.0]) and box["max"] == pytest.approx([105.0, 105.0])
+    assert "approximate" not in box
+    # a diagonal line turned 45 degrees stands upright: x is exactly 0
+    ent = _blockref(
+        "DIAG", {"DIAG": _Block([_line(0.0, 0.0, 10.0, 10.0)])}, rotation=math.radians(45.0)
+    )
+    box = _com_geometry_bbox(ent)
+    assert box["min"] == pytest.approx([0.0, 0.0], abs=1e-9)
+    assert box["max"] == pytest.approx([0.0, math.sqrt(200.0)], abs=1e-9)
+    assert "approximate" not in box
+
+
+@pytest.mark.parametrize(
+    ("rotation_deg", "sx", "sy"),
+    [(37.0, 1.0, 1.0), (45.0, 1.5, 1.5), (-120.0, 1.0, -1.0), (37.0, 2.0, -2.0)],
+)
+def test_com_geometry_bbox_off_a_right_angle_matches_the_ezdxf_engine(rotation_deg, sx, sy):
+    """Same block, same INSERT, both engines: a circle, an arc, a bulged
+    polyline and a diagonal line, turned and scaled and mirrored."""
+    import math
+
+    import ezdxf
+    from ezdxf import bbox as _bbox
+
+    from backends.com_backend import _com_geometry_bbox
+
+    doc = ezdxf.new()
+    blk = doc.blocks.new("MIXED")
+    blk.add_circle((3.0, 0.0), 5.0)
+    blk.add_arc((0.0, 8.0), 4.0, 200.0, 330.0)
+    blk.add_lwpolyline([(-6, -6, 0.0), (0, -6, 0.8), (0, -12, 0.0)], format="xyb")
+    blk.add_line((-2.0, 1.0), (7.0, 9.0))
+    blk.add_attdef("TAG", insert=(0, 15), text="", dxfattribs={"height": 2.5})
+    ref = doc.modelspace().add_blockref(
+        "MIXED",
+        (50.0, 20.0),
+        dxfattribs={"rotation": rotation_deg, "xscale": sx, "yscale": sy},
+    )
+    expected = _bbox.extents(
+        e for e in ref.virtual_entities() if e.dxftype() not in ("ATTRIB", "ATTDEF")
+    )
+
+    members = [
+        _circle(3.0, 0.0, 5.0),
+        _arc(0.0, 8.0, 4.0, 200.0, 330.0),
+        _polyline([(-6.0, -6.0), (0.0, -6.0), (0.0, -12.0)], [0.0, 0.8, 0.0]),
+        _line(-2.0, 1.0, 7.0, 9.0),
+        _Entity(
+            "AcDbAttributeDefinition", GetBoundingBox=lambda: ((0.0, 15.0, 0.0), (8.0, 17.5, 0.0))
+        ),
+    ]
+    ent = _blockref(
+        "MIXED",
+        {"MIXED": _Block(members)},
+        insertion=(50.0, 20.0, 0.0),
+        sx=sx,
+        sy=sy,
+        rotation=math.radians(rotation_deg),
+    )
+    box = _com_geometry_bbox(ent)
+    assert "approximate" not in box
+    # ezdxf flattens the curves (default 0.01), so agreement is to that
+    assert box["min"] == pytest.approx([expected.extmin.x, expected.extmin.y], abs=0.02)
+    assert box["max"] == pytest.approx([expected.extmax.x, expected.extmax.y], abs=0.02)
+
+
+def test_com_geometry_bbox_is_marked_approximate_when_a_rotated_member_cannot_be_measured():
+    import math
+
+    from backends.com_backend import _com_geometry_bbox, _entity_info
+
+    hatch = _Entity("AcDbHatch", GetBoundingBox=lambda: ((-5.0, -5.0, 0.0), (5.0, 5.0, 0.0)))
+    blocks = {"FILLED": _Block([_circle(0.0, 0.0, 5.0), hatch])}
+    # at a right angle the corners are exact — no marker, no geometry reads
+    ent = _blockref("FILLED", blocks, insertion=(100.0, 100.0, 0.0), rotation=math.pi)
+    box = _com_geometry_bbox(ent)
+    assert box == {"min": [95.0, 95.0], "max": [105.0, 105.0]}
+    # off one, the hatch is carried by its corners and the box says so
+    ent = _blockref("FILLED", blocks, insertion=(100.0, 100.0, 0.0), rotation=math.radians(45.0))
+    props = _entity_info(ent).properties
+    box = props["geometry_bbox"]
+    assert box["approximate"] is True
+    half = 5.0 * math.sqrt(2.0)
+    assert box["min"] == pytest.approx([100.0 - half, 100.0 - half])
+    assert box["max"] == pytest.approx([100.0 + half, 100.0 + half])
+    # a non-uniformly scaled arc is an elliptical arc: not measured, said so
+    ent = _blockref(
+        "ARC",
+        {"ARC": _Block([_arc(0.0, 0.0, 4.0, 0.0, 90.0)])},
+        sx=2.0,
+        sy=1.0,
+        rotation=math.radians(30.0),
+    )
+    assert _com_geometry_bbox(ent)["approximate"] is True

@@ -185,20 +185,92 @@ async def test_a_foreign_vessel_takes_lines_on_every_edge_regardless_of_where_it
     assert {(d["edge"], d["end"]) for d in graph["dangling"]} == {(top, "from"), (side, "from")}
 
 
-async def test_a_line_drawn_into_a_foreign_body_attaches_to_the_nearest_block(backend):
-    """An end strictly inside the drawn symbol is a connection, and when two
-    foreign boxes hold it the one inserted nearest wins."""
+async def test_a_line_drawn_into_a_foreign_body_is_dangling_unless_tolerance_reaches_the_edge(
+    backend,
+):
+    """Spec §9.2 step 3: a foreign port is an end within ``tolerance`` of the
+    block's bounding-box *boundary*. The interior is not a port — a border
+    INSERT's interior is the whole sheet."""
+    small = backend._doc.blocks.new(name="GATE_VALVE")
+    small.add_lwpolyline([(-4, -2), (4, -2), (4, 2), (-4, 2)], close=True)
+    valve = (await backend.block_insert("GATE_VALVE", 20, 0, attributes={"TAG": "HV-2"})).handle
+    # body x in [16, 24]; the line overshoots 2 mm into it
+    line = (await backend.entity_create_line(60, 0, 22, 0, layer="PROCESS-PIPING-MAIN")).handle
+    graph = await build_graph(backend, tolerance=0.5)
+    edge = next(e for e in graph["edges"] if e["id"] == line)
+    assert edge["to"] is None
+    assert {(d["edge"], d["end"]) for d in graph["dangling"]} == {(line, "from"), (line, "to")}
+    assert next(n for n in graph["nodes"] if n["id"] == valve)["ports"] == {}
+    graph = await build_graph(backend, tolerance=2.0)
+    edge = next(e for e in graph["edges"] if e["id"] == line)
+    assert edge["to"] == {"node": valve, "port": "p1"}
+    assert {(d["edge"], d["end"]) for d in graph["dangling"]} == {(line, "from")}
+
+
+async def test_two_foreign_boundaries_sharing_an_end_go_to_the_nearest_insertion(backend):
     big = backend._doc.blocks.new(name="VESSEL_BIG")
     big.add_lwpolyline([(-30, -30), (30, -30), (30, 30), (-30, 30)], close=True)
     small = backend._doc.blocks.new(name="GATE_VALVE")
     small.add_lwpolyline([(-4, -2), (4, -2), (4, 2), (-4, 2)], close=True)
     vessel = (await backend.block_insert("VESSEL_BIG", 0, 0, attributes={"TAG": "V-2"})).handle
-    valve = (await backend.block_insert("GATE_VALVE", 20, 0, attributes={"TAG": "HV-2"})).handle
-    line = (await backend.entity_create_line(60, 0, 22, 0, layer="PROCESS-PIPING-MAIN")).handle
+    # the valve sits flush with the vessel's right wall: both boundaries hold (30, 0)
+    valve = (await backend.block_insert("GATE_VALVE", 26, 0, attributes={"TAG": "HV-2"})).handle
+    line = (await backend.entity_create_line(60, 0, 30, 0, layer="PROCESS-PIPING-MAIN")).handle
     graph = await build_graph(backend)
     edge = next(e for e in graph["edges"] if e["id"] == line)
-    assert edge["to"]["node"] == valve
+    assert edge["to"] == {"node": valve, "port": "p1"}
     assert next(n for n in graph["nodes"] if n["id"] == vessel)["ports"] == {}
+
+
+async def test_a_sheet_border_insert_never_swallows_junctions_or_dangling_ends(backend):
+    """The border is an INSERT whose box encloses the whole sheet. Accepting
+    ends strictly inside a foreign box made every end that missed a port a
+    port of the border: no junction, no dangling end, the signal line
+    'connected' to A3_BORDER."""
+    border = backend._doc.blocks.new(name="A3_BORDER")
+    border.add_lwpolyline([(0, 0), (420, 0), (420, 297), (0, 297)], close=True)
+    sheet = (await backend.block_insert("A3_BORDER", 0, 0)).handle
+    ids = await _small_pid(backend)
+    branch = await draw_line(
+        backend, {"x": 130, "y": 111}, {"x": 130, "y": 60}, line_class="process_minor"
+    )
+    graph = await build_graph(backend)
+    assert graph["unclassified"] == [{"handle": sheet, "block_name": "A3_BORDER"}]
+    assert sheet not in {n["id"] for n in graph["nodes"]}
+    assert [(j["id"], j["x"], j["y"]) for j in graph["junctions"]] == [("J1", 130.0, 111.0)]
+    assert set(graph["junctions"][0]["edges"]) == {branch["handle"], ids["l1"]["handle"]}
+    dangling = {(d["edge"], d["end"]) for d in graph["dangling"]}
+    assert dangling == {(ids["sig"]["handle"], "to"), (branch["handle"], "to")}
+    assert graph["stats"]["dangling"] == 2 and graph["stats"]["unclassified"] == 1
+    edges = {e["id"]: e for e in graph["edges"]}
+    assert edges[ids["sig"]["handle"]]["to"] is None
+    assert edges[branch["handle"]]["from"] == {"junction": "J1"}
+
+
+async def test_a_foreign_title_block_does_not_connect_the_valve_or_adopt_loose_lines(backend):
+    title = backend._doc.blocks.new(name="TITLEBLOCK_A3")
+    title.add_lwpolyline([(0, 0), (420, 0), (420, 297), (0, 297)], close=True)
+    title.add_lwpolyline([(240, 0), (240, 60), (420, 60)])
+    blk = backend._doc.blocks.new(name="GATE_VALVE")
+    blk.add_lwpolyline([(-4, -2), (-4, 2), (0, 0)], close=True)
+    blk.add_lwpolyline([(4, -2), (4, 2), (0, 0)], close=True)
+    blk.add_attdef("TAG", insert=(0, 4), text="", dxfattribs={"height": 2.5})
+    sheet = (await backend.block_insert("TITLEBLOCK_A3", 0, 0)).handle
+    valve = (await backend.block_insert("GATE_VALVE", 50, 50, attributes={"TAG": "HV-9"})).handle
+    left = (await backend.entity_create_line(10, 50, 46, 50, layer="PROCESS-PIPING-MAIN")).handle
+    right = (await backend.entity_create_line(54, 50, 120, 50, layer="PROCESS-PIPING-MAIN")).handle
+    loose = (await backend.entity_create_line(200, 200, 260, 200, layer="0")).handle
+    graph = await build_graph(backend)
+    edges = {e["id"]: e for e in graph["edges"]}
+    assert set(edges) == {left, right}
+    assert loose not in edges and "unknown" not in graph["stats"]["edges_by_class"]
+    assert edges[left]["to"] == {"node": valve, "port": "p1"}
+    assert edges[right]["from"] == {"node": valve, "port": "p2"}
+    assert edges[left]["from"] is None and edges[right]["to"] is None
+    assert {(d["edge"], d["end"]) for d in graph["dangling"]} == {(left, "from"), (right, "to")}
+    assert graph["stats"]["dangling"] == 2
+    assert graph["unclassified"] == [{"handle": sheet, "block_name": "TITLEBLOCK_A3"}]
+    assert {n["id"] for n in graph["nodes"]} == {valve}
 
 
 async def test_include_foreign_false_ignores_untagged_blocks(backend):
@@ -499,3 +571,38 @@ def test_com_polyline_bulges_are_read_only_when_length_says_an_arc_exists():
     curved, calls = fake((0.0, 0.0, 10.0, 0.0, 10.0, 10.0), 10 + 5 * math.pi, [0.0, 1.0, 0.0])
     assert _entity_info(curved).properties["bulges"] == [0.0, 1.0, 0.0]
     assert calls == [0, 1, 2]
+
+
+def test_an_approximate_geometry_bbox_is_tightened_by_the_attribute_inclusive_box():
+    """The COM engine marks a rotated INSERT's box ``approximate`` when a
+    member could only be carried by its corners: the box then overshoots the
+    body, and a line ending on the body's true edge would sit *inside* it and
+    dangle. The drawn geometry lies inside ``bounding_box`` too, so every
+    wall takes the tighter of the two; an exact box is used as it is."""
+    from backends.base import EntityInfo
+    from engineering.pid.graph import _bbox, _on_bbox_boundary
+
+    def info(**props):
+        return EntityInfo(
+            handle="1",
+            type="INSERT",
+            layer="0",
+            color=256,
+            linetype="ByLayer",
+            visible=True,
+            properties=props,
+        )
+
+    exact = {"min": [95.0, 95.0], "max": [105.0, 105.0]}
+    outer = {"min": [95.0, 95.0], "max": [105.0, 118.0]}  # the TAG above the body
+    assert _bbox(info(geometry_bbox=exact, bounding_box=outer)) == (95.0, 95.0, 105.0, 105.0)
+    loose = {"min": [92.93, 92.93], "max": [107.07, 107.07], "approximate": True}
+    assert _bbox(info(geometry_bbox=loose, bounding_box=outer)) == (95.0, 95.0, 105.0, 107.07)
+    assert _bbox(info(geometry_bbox=loose)) == (92.93, 92.93, 107.07, 107.07)
+    assert _bbox(info(bounding_box=outer)) == (95.0, 95.0, 105.0, 118.0)
+    assert _bbox(info()) is None
+    # a line ending on the body's true left edge attaches through the tightened box
+    assert _on_bbox_boundary(
+        (95.0, 100.0), _bbox(info(geometry_bbox=loose, bounding_box=outer)), 0.5
+    )
+    assert not _on_bbox_boundary((95.0, 100.0), _bbox(info(geometry_bbox=loose)), 0.5)

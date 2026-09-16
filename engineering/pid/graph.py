@@ -263,23 +263,51 @@ def _bbox(info: EntityInfo):
     edge on that side lies *inside* the box. Both engines report
     ``geometry_bbox`` (attributes excluded) for an INSERT that draws anything;
     the attribute-inclusive box is the fallback for a reader that lacks it.
+
+    An engine may mark ``geometry_bbox`` ``approximate`` (the COM engine does
+    for an INSERT rotated off a right angle whose members it cannot measure
+    exactly): the box then encloses the drawn geometry but may overshoot it,
+    and a line ending on the body's true edge would sit *inside* that box
+    and dangle. The drawn geometry lies inside the attribute-inclusive box
+    too, so the tighter wall of the two is taken on every side.
     """
-    bb = info.properties.get("geometry_bbox") or info.properties.get("bounding_box")
-    if not bb:
+    geometry = info.properties.get("geometry_bbox")
+    outer = info.properties.get("bounding_box")
+    boxes = [
+        (float(bb["min"][0]), float(bb["min"][1]), float(bb["max"][0]), float(bb["max"][1]))
+        for bb in (geometry, outer)
+        if bb
+    ]
+    if not boxes:
         return None
-    return (float(bb["min"][0]), float(bb["min"][1]), float(bb["max"][0]), float(bb["max"][1]))
+    if geometry and outer and geometry.get("approximate"):
+        return (
+            max(boxes[0][0], boxes[1][0]),
+            max(boxes[0][1], boxes[1][1]),
+            min(boxes[0][2], boxes[1][2]),
+            min(boxes[0][3], boxes[1][3]),
+        )
+    return boxes[0]
 
 
-def _touches_bbox(p, bbox, tolerance) -> bool:
-    """Within ``tolerance`` of the box's boundary, or strictly inside it.
+def _on_bbox_boundary(p, bbox, tolerance) -> bool:
+    """Within ``tolerance`` of the box's boundary (spec §9.2 step 3).
 
-    A line drawn into the symbol is a connection just as one that stops on
-    its edge is: foreign P&IDs overshoot into the body as often as they meet
-    it, and a box tested on its boundary alone called those ends dangling.
+    The boundary, not the interior: a foreign block's box is only a proxy for
+    where its ports are, and its edges are the only place a port can be. An
+    end strictly inside was once accepted as "drawn into the body" — but a
+    sheet border or title block is an INSERT too, its box encloses the whole
+    drawing, and every end that missed a port then attached to the border
+    instead of becoming the junction or dangling end the tool exists to
+    report. Overshoot into a body is the tolerance's business.
     """
     x, y = p
     xmin, ymin, xmax, ymax = bbox
-    return xmin - tolerance <= x <= xmax + tolerance and ymin - tolerance <= y <= ymax + tolerance
+    inside_x = xmin - tolerance <= x <= xmax + tolerance
+    inside_y = ymin - tolerance <= y <= ymax + tolerance
+    near_vertical = min(abs(x - xmin), abs(x - xmax)) <= tolerance and inside_y
+    near_horizontal = min(abs(y - ymin), abs(y - ymax)) <= tolerance and inside_x
+    return near_vertical or near_horizontal
 
 
 async def _collect(backend: AutoCADBackend, scope: str) -> list[tuple[EntityInfo, str]]:
@@ -461,9 +489,9 @@ async def build_graph(
         return edge.vertices[0] if end == "from" else edge.vertices[-1]
 
     def _attach(edge: _Edge, end: str) -> dict | None:
-        """``{node, port}`` when this end sits on a port, or on or inside a
-        foreign block's drawn box; None otherwise. Only a successful match has
-        side effects."""
+        """``{node, port}`` when this end sits on a port, or on the boundary of
+        a foreign block's drawn box; None otherwise. Only a successful match
+        has side effects."""
         x, y = _end(edge, end)
         for node_id, pname, cx, cy, r in radial_ports:
             if abs(math.hypot(x - cx, y - cy) - r) <= tolerance:
@@ -477,15 +505,15 @@ async def build_graph(
             _, (_kind, node_id, pname) = best
             nodes[node_id].ports[pname]["edges"].append(edge.id)
             return {"node": node_id, "port": pname}
-        # Several foreign boxes can hold the same end (a valve drawn inside a
-        # vessel's outline, a nested detail); the one inserted nearest wins.
+        # Two foreign boundaries can share the end (a valve drawn flush with
+        # a vessel's outline, a nested detail); the one inserted nearest wins.
         node = min(
             (
                 n
                 for n in list(nodes.values()) + list(candidates.values())
                 if n.source in ("heuristic", "inferred")
                 and n.bbox
-                and _touches_bbox((x, y), n.bbox, tolerance)
+                and _on_bbox_boundary((x, y), n.bbox, tolerance)
             ),
             key=lambda n: math.hypot(x - n.x, y - n.y),
             default=None,
