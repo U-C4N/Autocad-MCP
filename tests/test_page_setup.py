@@ -222,6 +222,62 @@ async def test_apply_portrait_a4(backend, tmp_path):
     assert abs(width - 210.0) <= 0.5 and abs(height - 297.0) <= 0.5
 
 
+def _ink_columns(png_path: str) -> tuple[int, int, int]:
+    """(first inked column, last inked column, image width) of a rendered PNG."""
+    from PIL import Image
+
+    image = Image.open(png_path).convert("L")
+    width, height = image.size
+    pixels = image.load()
+    inked = [x for x in range(width) if any(pixels[x, y] < 128 for y in range(height))]
+    assert inked, "the render is blank"
+    return inked[0], inked[-1], width
+
+
+async def test_rotated_layout_renders_the_whole_sheet(backend, tmp_path):
+    """plot_rotation 1 is AutoCAD's landscape-on-portrait-media convention.
+
+    A drawing authored in AutoCAD stores ISO A4 landscape as paper 210 x 297
+    with ``plot_rotation`` 1; paper-space X then runs along the 297 mm side.
+    The MediaBox alone cannot see a frame that has been clipped inside a
+    correctly sized page, so this test looks at the ink: the frame's right
+    edge (x = 277, the printable width) must reach the right of the sheet.
+    """
+    pytest.importorskip("matplotlib", reason="rendering needs the [pdf] extra")
+    pytest.importorskip("PIL", reason="pixel check needs Pillow")
+    await _sheet(backend, "Rot")
+    lay = backend._doc.layouts.get("Rot")
+    lay.page_setup(
+        size=(210, 297),
+        margins=(20, 7.5, 20, 7.5),
+        units="mm",
+        rotation=1,
+        scale=16,
+        name="ISO_A4",
+        device="DWG To PDF.pc3",
+    )
+    lay.add_lwpolyline([(0, 0), (277, 0), (277, 190), (0, 190)], close=True)
+
+    row = (await backend.page_setup_list("Rot"))[0]
+    assert row["size_mm"] == [297.0, 210.0] and row["orientation"] == "landscape"
+
+    png = tmp_path / "rot.png"
+    result = await backend.drawing_export_pdf(str(png), layout="Rot")
+    assert result["ok"] is True, result
+    assert result["paper_mm"] == [297.0, 210.0]
+    assert result["rotation_applied"] is False
+
+    first, last, width = _ink_columns(str(png))
+    # x = 277 sits at 277 / 297 of the sheet from the left margin, i.e. well
+    # past the 0.707-scaled box the unrotated window produced (col 1314/1753).
+    assert last >= int(width * 0.9), (first, last, width)
+
+    pdf = tmp_path / "rot.pdf"
+    await backend.drawing_export_pdf(str(pdf), layout="Rot")
+    mm_w, mm_h = read_mediabox(str(pdf))
+    assert abs(mm_w - 297.0) <= 0.5 and abs(mm_h - 210.0) <= 0.5
+
+
 async def test_apply_materialises_the_default_flags_before_setting_centre(backend):
     """Measured: set_flag_state starts from 0 on a fresh layout, so a naive
     plot_centered(True) writes 4 and drops lineweights/plot-styles/viewports-first."""

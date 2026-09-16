@@ -2379,21 +2379,40 @@ class EzdxfBackend(AutoCADBackend):
         """The sheet as a matplotlib figure: size in inches plus the axes window.
 
         Used by ``drawing_export_pdf`` so the PDF's /MediaBox *is* the paper.
-        ``plot_rotation`` 1/3 swaps the figure; the content is not rotated by
-        the headless renderer (reported, not hidden).
+
+        ``plot_rotation`` 1/3 is AutoCAD's landscape-on-portrait-media
+        convention: the media stays 210 x 297 and the sheet is turned, so
+        paper-space X runs along the 297 mm side. The figure *and* the axes
+        window both take the turned size — sizing only the figure left the
+        window 210 wide inside a 297 mm page, and ``set_aspect("equal")`` then
+        shrank the axes box to 0.707 and cut everything past x = 210 minus the
+        margin (measured: a 277 mm frame lost its right 27%, with ``ok: True``
+        and a MediaBox that read as correct). The margins turn with the sheet,
+        mapped the way ezdxf's own ``Page.from_dxf_layout`` maps them. What
+        the headless renderer still does not do is rotate the *content* on the
+        media (reported as ``rotation_applied``, not hidden).
         """
         dxf = layout.dxf_layout.dxf
         width, height = float(dxf.paper_width), float(dxf.paper_height)
         rotation = int(dxf.plot_rotation)
         unit = 25.4 if int(dxf.plot_paper_units) == 0 else 1.0
-        x0 = -(float(dxf.left_margin) + float(dxf.plot_origin_x_offset))
-        y0 = -(float(dxf.bottom_margin) + float(dxf.plot_origin_y_offset))
-        fig_w, fig_h = (height, width) if rotation in (1, 3) else (width, height)
+        top, right = float(dxf.top_margin), float(dxf.right_margin)
+        bottom, left = float(dxf.bottom_margin), float(dxf.left_margin)
+        if rotation == 1:
+            sheet_w, sheet_h, left, bottom = height, width, top, left
+        elif rotation == 2:
+            sheet_w, sheet_h, left, bottom = width, height, right, top
+        elif rotation == 3:
+            sheet_w, sheet_h, left, bottom = height, width, bottom, right
+        else:
+            sheet_w, sheet_h = width, height
+        x0 = -(left + float(dxf.plot_origin_x_offset))
+        y0 = -(bottom + float(dxf.plot_origin_y_offset))
         return {
-            "size_mm": [round(fig_w, 2), round(fig_h, 2)],
-            "figsize": (fig_w / 25.4, fig_h / 25.4),
-            "xlim": (x0 / unit, (x0 + width) / unit),
-            "ylim": (y0 / unit, (y0 + height) / unit),
+            "size_mm": [round(sheet_w, 2), round(sheet_h, 2)],
+            "figsize": (sheet_w / 25.4, sheet_h / 25.4),
+            "xlim": (x0 / unit, (x0 + sheet_w) / unit),
+            "ylim": (y0 / unit, (y0 + sheet_h) / unit),
             "rotation_applied": rotation == 0,
         }
 
