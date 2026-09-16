@@ -231,9 +231,12 @@ def _point_segment_distance(p, a, b, bulge: float = 0.0) -> float:
     sagitta = abs(bulge) * chord / 2.0
     # The centre sits on the chord's normal: opposite the arc while it is less
     # than a semicircle, on the arc's side once it is more (|bulge| > 1). A
-    # positive bulge bows to the right of a→b, so its centre is to the left.
+    # positive bulge bows to the right of a→b, so its centre is to the left —
+    # and ``radius - sagitta`` goes negative past the semicircle, which is
+    # exactly what carries the centre across the chord. ``copysign`` used to
+    # discard that sign, so a bulge-2 arc was tested as its own reflection.
     nx, ny = -dy / chord, dx / chord  # left of a→b
-    offset = math.copysign(radius - sagitta, bulge)
+    offset = (radius - sagitta) * (1.0 if bulge > 0 else -1.0)
     cx, cy = (ax + bx) / 2.0 + offset * nx, (ay + by) / 2.0 + offset * ny
     start = math.atan2(ay - cy, ax - cx)
     phi = math.atan2(py - cy, px - cx)
@@ -253,20 +256,30 @@ def _keyword_kind(block_name: str) -> str | None:
 
 
 def _bbox(info: EntityInfo):
-    bb = info.properties.get("bounding_box")
+    """The foreign symbol's box: its drawn geometry when the engine reports it.
+
+    ``bounding_box`` takes the ATTRIBs with it, so a TAG lettered above a
+    valve pushes the box past the body and a line ending on the body's real
+    edge on that side lies *inside* the box. Both engines report
+    ``geometry_bbox`` (attributes excluded) for an INSERT that draws anything;
+    the attribute-inclusive box is the fallback for a reader that lacks it.
+    """
+    bb = info.properties.get("geometry_bbox") or info.properties.get("bounding_box")
     if not bb:
         return None
     return (float(bb["min"][0]), float(bb["min"][1]), float(bb["max"][0]), float(bb["max"][1]))
 
 
-def _on_bbox_boundary(p, bbox, tolerance) -> bool:
+def _touches_bbox(p, bbox, tolerance) -> bool:
+    """Within ``tolerance`` of the box's boundary, or strictly inside it.
+
+    A line drawn into the symbol is a connection just as one that stops on
+    its edge is: foreign P&IDs overshoot into the body as often as they meet
+    it, and a box tested on its boundary alone called those ends dangling.
+    """
     x, y = p
     xmin, ymin, xmax, ymax = bbox
-    inside_x = xmin - tolerance <= x <= xmax + tolerance
-    inside_y = ymin - tolerance <= y <= ymax + tolerance
-    near_vertical = min(abs(x - xmin), abs(x - xmax)) <= tolerance and inside_y
-    near_horizontal = min(abs(y - ymin), abs(y - ymax)) <= tolerance and inside_x
-    return near_vertical or near_horizontal
+    return xmin - tolerance <= x <= xmax + tolerance and ymin - tolerance <= y <= ymax + tolerance
 
 
 async def _collect(backend: AutoCADBackend, scope: str) -> list[tuple[EntityInfo, str]]:
@@ -448,8 +461,9 @@ async def build_graph(
         return edge.vertices[0] if end == "from" else edge.vertices[-1]
 
     def _attach(edge: _Edge, end: str) -> dict | None:
-        """``{node, port}`` when this end sits on a port or a foreign block's
-        bounding box; None otherwise. Only a successful match has side effects."""
+        """``{node, port}`` when this end sits on a port, or on or inside a
+        foreign block's drawn box; None otherwise. Only a successful match has
+        side effects."""
         x, y = _end(edge, end)
         for node_id, pname, cx, cy, r in radial_ports:
             if abs(math.hypot(x - cx, y - cy) - r) <= tolerance:
@@ -463,27 +477,35 @@ async def build_graph(
             _, (_kind, node_id, pname) = best
             nodes[node_id].ports[pname]["edges"].append(edge.id)
             return {"node": node_id, "port": pname}
-        for node in list(nodes.values()) + list(candidates.values()):
-            if (
-                node.source in ("heuristic", "inferred")
-                and node.bbox
-                and _on_bbox_boundary((x, y), node.bbox, tolerance)
-            ):
-                if node.id in candidates:
-                    nodes[node.id] = candidates.pop(node.id)
-                pname = f"p{len(node.ports) + 1}"
-                node.ports[pname] = {
-                    "name": pname,
-                    "x": x,
-                    "y": y,
-                    "direction_deg": None,
-                    "kind": "process",
-                    "radius": 0.0,
-                    "inferred": True,
-                    "edges": [edge.id],
-                }
-                grid.add(x, y, ("port", node.id, pname))
-                return {"node": node.id, "port": pname}
+        # Several foreign boxes can hold the same end (a valve drawn inside a
+        # vessel's outline, a nested detail); the one inserted nearest wins.
+        node = min(
+            (
+                n
+                for n in list(nodes.values()) + list(candidates.values())
+                if n.source in ("heuristic", "inferred")
+                and n.bbox
+                and _touches_bbox((x, y), n.bbox, tolerance)
+            ),
+            key=lambda n: math.hypot(x - n.x, y - n.y),
+            default=None,
+        )
+        if node is not None:
+            if node.id in candidates:
+                nodes[node.id] = candidates.pop(node.id)
+            pname = f"p{len(node.ports) + 1}"
+            node.ports[pname] = {
+                "name": pname,
+                "x": x,
+                "y": y,
+                "direction_deg": None,
+                "kind": "process",
+                "radius": 0.0,
+                "inferred": True,
+                "edges": [edge.id],
+            }
+            grid.add(x, y, ("port", node.id, pname))
+            return {"node": node.id, "port": pname}
         return None
 
     def _junction_at(x, y, edge_id, other_id) -> dict:

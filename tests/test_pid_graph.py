@@ -138,6 +138,69 @@ async def test_foreign_blocks_classify_with_reduced_confidence_and_inferred_port
     assert graph["stats"]["entities_scanned"] >= 3
 
 
+async def test_a_foreign_line_ending_on_the_body_behind_the_tag_text_attaches(backend):
+    """The INSERT's ``bounding_box`` takes the ATTRIB with it, so the TAG
+    lettered above the valve pushed the box to x~60 and a line ending on the
+    body's real right edge (54,50) was *inside* the box — and dangled."""
+    blk = backend._doc.blocks.new(name="GATE_VALVE")
+    blk.add_lwpolyline([(-4, -2), (-4, 2), (0, 0)], close=True)
+    blk.add_lwpolyline([(4, -2), (4, 2), (0, 0)], close=True)
+    blk.add_attdef("TAG", insert=(0, 4), text="", dxfattribs={"height": 2.5})
+    valve = (await backend.block_insert("GATE_VALVE", 50, 50, attributes={"TAG": "HV-9"})).handle
+    props = (await backend.entity_get(valve)).properties
+    assert props["geometry_bbox"]["min"] == pytest.approx([46.0, 48.0])
+    assert props["geometry_bbox"]["max"] == pytest.approx([54.0, 52.0])
+    assert props["bounding_box"]["max"][0] > 54.0  # the attribute-inclusive box
+    line = (await backend.entity_create_line(54, 50, 90, 50, layer="PROCESS-PIPING-MAIN")).handle
+    graph = await build_graph(backend)
+    edge = next(e for e in graph["edges"] if e["id"] == line)
+    assert edge["from"] == {"node": valve, "port": "p1"}
+    node = next(n for n in graph["nodes"] if n["id"] == valve)
+    port = node["ports"]["p1"]
+    assert port["inferred"] is True and (port["x"], port["y"]) == pytest.approx((54.0, 50.0))
+    assert (line, "from") not in {(d["edge"], d["end"]) for d in graph["dangling"]}
+
+
+async def test_a_foreign_vessel_takes_lines_on_every_edge_regardless_of_where_its_tag_sits(
+    backend,
+):
+    blk = backend._doc.blocks.new(name="VESSEL_V")
+    blk.add_lwpolyline([(-5, -10), (5, -10), (5, 10), (-5, 10)], close=True)
+    blk.add_attdef("TAG", insert=(0, 13), text="", dxfattribs={"height": 2.5})
+    vessel = (await backend.block_insert("VESSEL_V", 100, 100, attributes={"TAG": "V-1"})).handle
+    props = (await backend.entity_get(vessel)).properties
+    assert props["geometry_bbox"]["min"] == pytest.approx([95.0, 90.0])
+    assert props["geometry_bbox"]["max"] == pytest.approx([105.0, 110.0])
+    top = (await backend.entity_create_line(100, 140, 100, 110, layer="PROCESS-PIPING-MAIN")).handle
+    side = (
+        await backend.entity_create_line(140, 100, 105, 100, layer="PROCESS-PIPING-MAIN")
+    ).handle
+    graph = await build_graph(backend)
+    edges = {e["id"]: e for e in graph["edges"]}
+    assert edges[top]["to"]["node"] == vessel and edges[side]["to"]["node"] == vessel
+    node = next(n for n in graph["nodes"] if n["id"] == vessel)
+    assert node["kind"] == "equipment" and node["tag"] == "V-1"
+    ends = {(round(p["x"], 6), round(p["y"], 6)) for p in node["ports"].values()}
+    assert ends == {(100.0, 110.0), (105.0, 100.0)}
+    assert {(d["edge"], d["end"]) for d in graph["dangling"]} == {(top, "from"), (side, "from")}
+
+
+async def test_a_line_drawn_into_a_foreign_body_attaches_to_the_nearest_block(backend):
+    """An end strictly inside the drawn symbol is a connection, and when two
+    foreign boxes hold it the one inserted nearest wins."""
+    big = backend._doc.blocks.new(name="VESSEL_BIG")
+    big.add_lwpolyline([(-30, -30), (30, -30), (30, 30), (-30, 30)], close=True)
+    small = backend._doc.blocks.new(name="GATE_VALVE")
+    small.add_lwpolyline([(-4, -2), (4, -2), (4, 2), (-4, 2)], close=True)
+    vessel = (await backend.block_insert("VESSEL_BIG", 0, 0, attributes={"TAG": "V-2"})).handle
+    valve = (await backend.block_insert("GATE_VALVE", 20, 0, attributes={"TAG": "HV-2"})).handle
+    line = (await backend.entity_create_line(60, 0, 22, 0, layer="PROCESS-PIPING-MAIN")).handle
+    graph = await build_graph(backend)
+    edge = next(e for e in graph["edges"] if e["id"] == line)
+    assert edge["to"]["node"] == valve
+    assert next(n for n in graph["nodes"] if n["id"] == vessel)["ports"] == {}
+
+
 async def test_include_foreign_false_ignores_untagged_blocks(backend):
     blk = backend._doc.blocks.new(name="GATE_VALVE")
     blk.add_line((0, 0), (1, 0))
@@ -256,6 +319,75 @@ def test_point_to_arc_distance_follows_the_bulge():
     assert _point_segment_distance((5, -2.5), a, b, 0.5) == pytest.approx(0.0)  # sagitta
     assert _point_segment_distance((5, 2.5), a, b, 0.5) == pytest.approx(5.0)
     assert _point_segment_distance((5, 0), a, b, 0.0) == pytest.approx(0.0)  # straight
+
+
+def _arc_distance_sampled(p, a, b, bulge, samples=20000):
+    """Nearest distance from ``p`` to the bulge arc, measured on ezdxf's own
+    arc (centre, angles, radius) by dense sampling — an independent answer."""
+    from ezdxf.math import Vec2, bulge_to_arc
+
+    centre, start, end, radius = bulge_to_arc(Vec2(a), Vec2(b), bulge)
+    if end < start:
+        end += 2.0 * math.pi
+    return min(
+        math.dist(
+            p,
+            (
+                centre.x + radius * math.cos(start + (end - start) * i / samples),
+                centre.y + radius * math.sin(start + (end - start) * i / samples),
+            ),
+        )
+        for i in range(samples + 1)
+    )
+
+
+def test_point_to_arc_distance_past_a_semicircle_keeps_the_centre_on_the_arcs_side():
+    """For |bulge| > 1 the centre crosses the chord (``radius - sagitta`` goes
+    negative). ``copysign`` threw that sign away, so a bulge-2 arc was tested
+    as its own reflection: the apex read as far away and empty paper as on it."""
+    from ezdxf.math import bulge_center
+
+    from engineering.pid.graph import _point_segment_distance
+
+    a, b = (0.0, 0.0), (10.0, 0.0)
+    assert tuple(bulge_center(a, b, 2.0)) == pytest.approx((5.0, -3.75))
+    assert tuple(bulge_center(a, b, -2.0)) == pytest.approx((5.0, 3.75))
+    # centre (5,-3.75), r 6.25 -> apex (5,-10); the mirror image is (5,10)
+    assert _point_segment_distance((5, -10), a, b, 2.0) == pytest.approx(0.0)
+    assert _point_segment_distance((5, 10), a, b, 2.0) == pytest.approx(
+        _arc_distance_sampled((5, 10), a, b, 2.0), abs=1e-6
+    )
+    assert _point_segment_distance((5, 10), a, b, 2.0) == pytest.approx(math.hypot(5, 10))
+    assert _point_segment_distance((5, 10), a, b, -2.0) == pytest.approx(0.0)
+    assert _point_segment_distance((5, -10), a, b, -2.0) == pytest.approx(
+        _arc_distance_sampled((5, -10), a, b, -2.0), abs=1e-6
+    )
+    assert _point_segment_distance((5, -10), a, b, -2.0) == pytest.approx(math.hypot(5, 10))
+
+
+async def test_a_line_ending_on_the_apex_of_an_arc_past_a_semicircle_is_a_junction(backend):
+    msp = backend._doc.modelspace()
+    pipe = msp.add_lwpolyline(
+        [(-20, 0, 0), (0, 0, 2), (10, 0, 0), (30, 0, 0)],
+        format="xyb",
+        dxfattribs={"layer": "PROCESS-PIPING-MAIN"},
+    ).dxf.handle
+    on_arc = (
+        await backend.entity_create_line(5, -10, 5, -30, layer="PROCESS-PIPING-SECONDARY")
+    ).handle
+    on_paper = (
+        await backend.entity_create_line(5, 10, 5, 30, layer="PROCESS-PIPING-SECONDARY")
+    ).handle
+    graph = await build_graph(backend)
+    edges = {e["id"]: e for e in graph["edges"]}
+    assert edges[on_arc]["from"] and "junction" in edges[on_arc]["from"]
+    assert edges[on_paper]["from"] is None
+    assert [j["id"] for j in graph["junctions"]] == [edges[on_arc]["from"]["junction"]]
+    junction = graph["junctions"][0]
+    assert (junction["x"], junction["y"]) == pytest.approx((5.0, -10.0))
+    assert set(junction["edges"]) == {pipe, on_arc}
+    dangling = {(d["edge"], d["end"]) for d in graph["dangling"]}
+    assert (on_paper, "from") in dangling and (on_arc, "from") not in dangling
 
 
 async def test_a_mirrored_arc_is_tested_on_the_side_the_drawing_holds(backend):

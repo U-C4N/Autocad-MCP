@@ -348,6 +348,54 @@ def _com_bulges(entity, coords, closed: bool, length) -> list[float]:
     return [_com_bulge(entity, i) for i in range(count)]
 
 
+def _com_geometry_bbox(entity) -> dict | None:
+    """WCS extents of a block reference's *drawn* geometry, attributes excluded.
+
+    ``GetBoundingBox`` on an INSERT takes its ATTRIBs with it, so a TAG lettered
+    above a valve pushes the box past the body — a line ending on the body's
+    real edge then lies *inside* the box. The definition's members are read in
+    block space (skipping ``AcDbAttributeDefinition``), each member's box is
+    carried through the INSERT (origin, scale, rotation) corner by corner, and
+    the extents of those corners is the answer. None when there is nothing
+    drawn or ActiveX refuses any step — the caller then omits the key.
+    """
+    try:
+        try:
+            doc = entity.Document
+        except Exception:
+            doc = _acad_doc()
+        blk = doc.Blocks.Item(entity.Name)
+        try:
+            origin = tuple(blk.Origin)
+        except Exception:
+            origin = (0.0, 0.0, 0.0)
+        ins = entity.InsertionPoint
+        sx, sy = float(entity.XScaleFactor), float(entity.YScaleFactor)
+        rot = float(entity.Rotation)
+        cos_r, sin_r = math.cos(rot), math.sin(rot)
+        xs: list[float] = []
+        ys: list[float] = []
+        for i in range(blk.Count):
+            member = blk.Item(i)
+            if member.ObjectName == "AcDbAttributeDefinition":
+                continue
+            try:
+                lo, hi = member.GetBoundingBox()
+            except Exception:
+                continue
+            for bx, by in ((lo[0], lo[1]), (hi[0], lo[1]), (lo[0], hi[1]), (hi[0], hi[1])):
+                lx = (float(bx) - float(origin[0])) * sx
+                ly = (float(by) - float(origin[1])) * sy
+                xs.append(float(ins[0]) + lx * cos_r - ly * sin_r)
+                ys.append(float(ins[1]) + lx * sin_r + ly * cos_r)
+        if not xs:
+            return None
+        return {"min": [min(xs), min(ys)], "max": [max(xs), max(ys)]}
+    except Exception as exc:
+        log.debug("geometry bbox failed for block reference: %s", exc)
+        return None
+
+
 # What a lightweight polyline calls itself over ActiveX. The live name is
 # ``AcDbPolyline`` (measured on AutoCAD 2026, 2026-08-06 — the member profile in
 # tests/test_com_backend.py); ``AcDbLWPolyline`` is the DXF-flavoured spelling
@@ -449,6 +497,9 @@ def _entity_info(entity) -> EntityInfo:
             props["x_scale"] = entity.XScaleFactor
             props["y_scale"] = entity.YScaleFactor
             props["rotation_deg"] = rad2deg(entity.Rotation)
+            geometry_bbox = _com_geometry_bbox(entity)
+            if geometry_bbox is not None:
+                props["geometry_bbox"] = geometry_bbox
     except Exception as exc:
         log.debug("Type-specific entity properties extraction failed: %s", exc)
 

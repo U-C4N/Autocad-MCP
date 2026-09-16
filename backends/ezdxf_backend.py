@@ -845,6 +845,24 @@ def _entity_info_dxf(ent) -> EntityInfo:
             props["x_scale"] = ent.dxf.xscale if ent.dxf.hasattr("xscale") else 1.0
             props["y_scale"] = ent.dxf.yscale if ent.dxf.hasattr("yscale") else 1.0
             props["rotation_deg"] = ent.dxf.get("rotation", 0.0)
+            # The drawn symbol alone. ``bounding_box`` below takes the ATTRIBs
+            # with it, so a TAG above a valve pushes the box past the body and
+            # a line ending on the body's real edge reads as *inside* it.
+            # `virtual_entities` already applies the INSERT transform, so this
+            # is WCS; the key is omitted when the block draws nothing.
+            try:
+                from ezdxf import bbox as _bbox
+
+                _gb = _bbox.extents(
+                    e for e in ent.virtual_entities() if e.dxftype() not in ("ATTRIB", "ATTDEF")
+                )
+                if _gb.has_data:
+                    props["geometry_bbox"] = {
+                        "min": [float(_gb.extmin.x), float(_gb.extmin.y)],
+                        "max": [float(_gb.extmax.x), float(_gb.extmax.y)],
+                    }
+            except Exception as exc:
+                log.debug("geometry bbox failed for INSERT %s: %s", ent.dxf.name, exc)
         elif ent_type == "ELLIPSE":
             props["center"] = _v2(ent.dxf.center)
             props["major_axis"] = _v2(ent.dxf.major_axis)

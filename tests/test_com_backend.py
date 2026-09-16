@@ -481,3 +481,126 @@ async def test_a_3dsolid_is_refused_by_name_because_activex_has_no_area_for_it()
 
     with pytest.raises(RuntimeError, match="no surface-area member"):
         await backend.entity_measure("S01")
+
+
+# ── geometry_bbox on a block reference: the drawn body, not its tag ─────────
+#
+# ``GetBoundingBox`` on an INSERT takes the ATTRIBs with it, so a TAG lettered
+# above a valve pushes the box past the body and a line ending on the body's
+# real edge reads as *inside* the box. The definition's members are read in
+# block space, attribute definitions skipped, and carried through the INSERT.
+
+
+class _Block:
+    """An AcadBlock: ``Count`` members reachable by ``Item(i)``."""
+
+    def __init__(self, members, origin=(0.0, 0.0, 0.0)):
+        self._members = members
+        self.Count = len(members)
+        self.Origin = origin
+
+    def Item(self, i):
+        return self._members[i]
+
+
+def _blockref(name, blocks, insertion=(0.0, 0.0, 0.0), sx=1.0, sy=1.0, rotation=0.0, **extra):
+    doc = SimpleNamespace(Blocks=SimpleNamespace(Item=lambda n: blocks[n]))
+    return _Entity(
+        "AcDbBlockReference",
+        Name=name,
+        Document=doc,
+        InsertionPoint=insertion,
+        XScaleFactor=sx,
+        YScaleFactor=sy,
+        ZScaleFactor=1.0,
+        Rotation=rotation,
+        Handle="B1",
+        Layer="0",
+        Color=256,
+        Linetype="ByLayer",
+        Visible=True,
+        **extra,
+    )
+
+
+def _gate_valve_block():
+    body_left = _Entity("AcDbPolyline", GetBoundingBox=lambda: ((-4.0, -2.0, 0.0), (0.0, 2.0, 0.0)))
+    body_right = _Entity("AcDbPolyline", GetBoundingBox=lambda: ((0.0, -2.0, 0.0), (4.0, 2.0, 0.0)))
+    tag = _Entity(
+        "AcDbAttributeDefinition",
+        GetBoundingBox=lambda: ((0.0, 4.0, 0.0), (10.75, 6.5, 0.0)),
+    )
+    return _Block([body_left, body_right, tag])
+
+
+def test_com_geometry_bbox_is_the_drawn_body_without_the_attribute():
+    from backends.com_backend import _entity_info
+
+    ent = _blockref(
+        "GATE_VALVE",
+        {"GATE_VALVE": _gate_valve_block()},
+        insertion=(50.0, 50.0, 0.0),
+        # what ActiveX answers for the INSERT itself: the TAG is in it
+        GetBoundingBox=lambda: ((46.0, 48.0, 0.0), (60.75, 56.5, 0.0)),
+    )
+    props = _entity_info(ent).properties
+    assert props["bounding_box"] == {"min": [46.0, 48.0], "max": [60.75, 56.5]}
+    assert props["geometry_bbox"]["min"] == pytest.approx([46.0, 48.0])
+    assert props["geometry_bbox"]["max"] == pytest.approx([54.0, 52.0])
+    assert props["block_name"] == "GATE_VALVE" and props["insertion"] == [50.0, 50.0]
+
+
+def test_com_geometry_bbox_follows_the_inserts_scale_rotation_and_block_origin():
+    import math
+
+    from backends.com_backend import _com_geometry_bbox
+
+    # scale 2 and a quarter turn: body x∈[-4,4] y∈[-2,2] → x∈[-4,4] y∈[-8,8]
+    ent = _blockref(
+        "GATE_VALVE",
+        {"GATE_VALVE": _gate_valve_block()},
+        insertion=(10.0, 20.0, 0.0),
+        sx=2.0,
+        sy=2.0,
+        rotation=math.pi / 2,
+    )
+    box = _com_geometry_bbox(ent)
+    assert box["min"] == pytest.approx([6.0, 12.0]) and box["max"] == pytest.approx([14.0, 28.0])
+    # a mirrored INSERT (YScaleFactor -1) keeps the same extents for a symmetric body
+    ent = _blockref("GATE_VALVE", {"GATE_VALVE": _gate_valve_block()}, sy=-1.0)
+    box = _com_geometry_bbox(ent)
+    assert box["min"] == pytest.approx([-4.0, -2.0]) and box["max"] == pytest.approx([4.0, 2.0])
+    # the block's base point is what lands on the insertion point
+    blk = _Block(
+        [_Entity("AcDbLine", GetBoundingBox=lambda: ((10.0, 10.0, 0.0), (20.0, 10.0, 0.0)))],
+        origin=(10.0, 10.0, 0.0),
+    )
+    ent = _blockref("OFFSET", {"OFFSET": blk}, insertion=(100.0, 100.0, 0.0))
+    box = _com_geometry_bbox(ent)
+    assert box["min"] == pytest.approx([100.0, 100.0]) and box["max"] == pytest.approx(
+        [110.0, 100.0]
+    )
+
+
+def test_com_geometry_bbox_is_omitted_when_the_block_draws_nothing_or_activex_refuses():
+    from backends.com_backend import _com_geometry_bbox, _entity_info
+
+    only_tag = _Block(
+        [
+            _Entity(
+                "AcDbAttributeDefinition", GetBoundingBox=lambda: ((0.0, 4.0, 0.0), (5.0, 6.5, 0.0))
+            )
+        ]
+    )
+    assert _com_geometry_bbox(_blockref("TAG_ONLY", {"TAG_ONLY": only_tag})) is None
+    props = _entity_info(_blockref("TAG_ONLY", {"TAG_ONLY": only_tag})).properties
+    assert "geometry_bbox" not in props and props["block_name"] == "TAG_ONLY"
+
+    def _refuse(_name):
+        raise RuntimeError("Key not found")
+
+    ent = _blockref("MISSING", {})
+    ent.Document = SimpleNamespace(Blocks=SimpleNamespace(Item=_refuse))
+    assert _com_geometry_bbox(ent) is None
+    props = _entity_info(ent).properties
+    assert "geometry_bbox" not in props and props["rotation_deg"] == 0.0
