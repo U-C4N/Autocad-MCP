@@ -8,16 +8,19 @@ scored here.
 The checks score evidence, never a guess. ``build_graph(include_foreign=True)``
 files *any* INSERT as an ``unknown_block`` at confidence 0.3 the moment a plain
 LINE's end lands on its bounding box (spec §9.2 step 2) — a bolt with a note
-leader qualifies — and gives every foreign block's inferred port a placeholder
-``kind: "process"``. Neither is a measurement (spec §9.4: read the confidence
-before trusting a foreign graph), so no focus rests on them: an
-``unknown_block`` is not P&ID content, is never tagged or scored, and an edge
-anchored on nothing better is never called dangling; an inferred port is never
-called incompatible.
+leader qualifies, and so does the sheet frame — and gives every foreign block's
+inferred port a placeholder ``kind: "process"``. Neither is a measurement (spec
+§9.4: read the confidence before trusting a foreign graph), so no focus rests
+on them in *either* direction: an ``unknown_block`` is not P&ID content, is
+never tagged or scored, and an edge anchored on nothing better is never called
+dangling — but it is nothing the drawing vouches for either, so a P&ID line by
+evidence whose end resolves to one *is* dangling (spec §11.1: the end resolves
+to nothing); an inferred port is never called incompatible.
 """
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 from engineering.plan_spec import Issue
@@ -72,12 +75,63 @@ def _evidenced_edges(graph: dict) -> set[str]:
     return out
 
 
-def _dangling(graph: dict) -> list[Issue]:
-    evidenced = _evidenced_edges(graph)
-    out = []
-    for d in graph["dangling"]:
-        if d["edge"] not in evidenced:
+def _nearest_recognised_port(graph: dict, nodes: dict, space, x: float, y: float) -> dict | None:
+    """The same hint the graph gives a free end (spec §9.2 step 5: the nearest
+    port within ``10·tolerance``), over ports the drawing vouches for. A
+    bubble's radial port is matched on its circle, not its centre, so it is
+    left out exactly as the graph's grid leaves it out."""
+    reach = 10.0 * graph["tolerance"]
+    best = None
+    for node in nodes.values():
+        if not _recognised(node) or node["space"] != space:
             continue
+        for pname, port in node["ports"].items():
+            if port.get("radius", 0.0) > 0:
+                continue
+            d = math.hypot(port["x"] - x, port["y"] - y)
+            if d <= reach and (best is None or d < best["distance"]):
+                best = {"node": node["id"], "port": pname, "distance": round(d, 6)}
+    return best
+
+
+def _dangling_ends(graph: dict) -> list[dict]:
+    """Free ends of evidenced edges, in the graph's ``dangling`` row shape.
+
+    Two sources, one rule (spec §11.1: the end resolves to nothing). The graph's
+    own ``dangling`` rows are ends it could attach to nothing at all. An end the
+    graph attached to an ``unknown_block`` is the other half: that node is a 0.3
+    touch guess with a port invented at the line's own end, so a sheet frame,
+    a logo or a note symbol "connects" whatever line happens to stop on its box.
+    A 0.3 guess cannot create a finding, and it cannot suppress one either.
+    """
+    evidenced = _evidenced_edges(graph)
+    nodes = {n["id"]: n for n in graph["nodes"]}
+    rows = [d for d in graph["dangling"] if d["edge"] in evidenced]
+    for edge in graph["edges"]:
+        if edge["id"] not in evidenced:
+            continue
+        for end in ("from", "to"):
+            ref = edge[end]
+            if not ref or "node" not in ref or _recognised(nodes[ref["node"]]):
+                continue
+            port = nodes[ref["node"]]["ports"][ref["port"]]
+            x, y = port["x"], port["y"]
+            rows.append(
+                {
+                    "edge": edge["id"],
+                    "end": end,
+                    "x": x,
+                    "y": y,
+                    "nearest": _nearest_recognised_port(graph, nodes, edge["space"], x, y),
+                    "touches": ref["node"],
+                }
+            )
+    return rows
+
+
+def _dangling(graph: dict) -> list[Issue]:
+    out = []
+    for d in _dangling_ends(graph):
         nearest = d.get("nearest")
         if nearest:
             hint = (
@@ -87,6 +141,9 @@ def _dangling(graph: dict) -> list[Issue]:
             )
         else:
             hint = "no port within reach; connect this end with pid_line_draw or delete the line"
+        detail = {"end": d["end"], "x": d["x"], "y": d["y"], "nearest": nearest, "hint": hint}
+        if d.get("touches"):
+            detail["touches"] = d["touches"]
         out.append(
             Issue(
                 "error",
@@ -94,7 +151,7 @@ def _dangling(graph: dict) -> list[Issue]:
                 f"Line {d['edge']} {d['end']} end at ({d['x']:.2f}, {d['y']:.2f}) "
                 "connects to nothing.",
                 [d["edge"]],
-                {"end": d["end"], "x": d["x"], "y": d["y"], "nearest": nearest, "hint": hint},
+                detail,
             )
         )
     return out

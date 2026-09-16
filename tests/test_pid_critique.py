@@ -232,6 +232,102 @@ async def test_a_note_leader_off_an_unknown_block_on_a_pid_is_not_dangling(backe
     assert len(issues) == 1 and issues[0].detail["x"] == pytest.approx(220.0)
 
 
+async def _frame_and_pump(backend):
+    """A sheet frame as a block reference (a CTO title block is one) and a
+    catalogue pump: the shape that files the frame as an ``unknown_block`` at
+    0.3 the moment a P&ID line stops on its border."""
+    await backend.drawing_apply_iso_layers("pid")
+    await backend.block_define(
+        "FRAME_A3",
+        [{"type": "polyline", "points": [[0, 0], [420, 0], [420, 297], [0, 297]], "closed": True}],
+    )
+    frame = await backend.block_insert("FRAME_A3", 0, 0, layer="TITLEBLOCK")
+    pump = await place_symbol(backend, "centrifugal_pump", 100, 100, tag="P-101")
+    return frame.handle, pump
+
+
+async def test_a_pid_line_ending_on_a_sheet_frame_insert_is_dangling(backend):
+    """Spec §11.1: an edge end that resolves to nothing is dangling. The graph
+    attaches the process line to the frame's box and invents port ``p1`` at
+    the line's own end, so its ``dangling`` list is empty — but a 0.3 touch
+    guess is nothing the drawing vouches for, and it can no more suppress a
+    finding than create one. Landing on the frame and stopping 2 mm short of
+    it must be the same error."""
+    frame, pump = await _frame_and_pump(backend)
+    line = await draw_line(
+        backend, {"handle": pump["handle"], "port": "discharge"}, {"x": 420, "y": 106}
+    )
+    graph = await build_graph(backend, include_foreign=True)
+    node = next(n for n in graph["nodes"] if n["id"] == frame)
+    assert node["kind"] == "unknown_block" and node["ports"]["p1"]["inferred"] is True
+    edge = next(e for e in graph["edges"] if e["id"] == line["handle"])
+    assert edge["to"] == {"node": frame, "port": "p1"} and graph["dangling"] == []
+
+    issues = await backend.drawing_critique(list(PID_FOCUSES))
+    assert [(i.severity, i.focus, i.handles, i.detail["end"]) for i in issues] == [
+        ("error", "pid_dangling_line", [line["handle"]], "to")
+    ]
+    assert issues[0].detail["x"] == pytest.approx(420.0)
+    assert issues[0].detail["y"] == pytest.approx(106.0)
+    assert issues[0].detail["touches"] == frame
+    assert issues[0].detail["nearest"] is None and "hint" in issues[0].detail
+
+
+async def test_stopping_short_of_the_frame_is_the_same_finding(backend):
+    _frame, pump = await _frame_and_pump(backend)
+    line = await draw_line(
+        backend, {"handle": pump["handle"], "port": "discharge"}, {"x": 418, "y": 106}
+    )
+    issues = await backend.drawing_critique(["pid_dangling_line"])
+    assert [(i.severity, i.handles, i.detail["end"]) for i in issues] == [
+        ("error", [line["handle"]], "to")
+    ]
+
+
+async def test_finalize_gate_fails_a_pid_line_that_ends_on_the_frame(backend, tmp_path):
+    """The gate runs ``focus=None``; a process line "connected" to the title
+    block must not pass it."""
+    import server
+
+    class _Ctx:
+        def __init__(self, backend):
+            self.lifespan_context = {"backend": backend}
+
+        async def warning(self, message):
+            pass
+
+    from fastmcp.exceptions import ToolError
+
+    _frame, pump = await _frame_and_pump(backend)
+    await draw_line(backend, {"handle": pump["handle"], "port": "discharge"}, {"x": 420, "y": 106})
+    with pytest.raises(ToolError, match="pid_dangling_line"):
+        await server.drawing_finalize(save_path=str(tmp_path / "pid.dxf"), ctx=_Ctx(backend))
+
+
+async def test_unknown_block_end_hint_names_the_nearest_recognised_port(backend):
+    """The hint a free end gets from the graph (nearest port within
+    10·tolerance) is computed the same way for an end the graph hung on an
+    ``unknown_block``: over ports the drawing vouches for, never the invented
+    ``p1``."""
+    frame, pump = await _frame_and_pump(backend)
+    cv = await place_symbol(backend, "globe", 418, 106, tag="FCV-101")
+    port = cv["ports"]["in"]
+    await backend.entity_move(frame, port["x"] - 420, 0)
+    out = pump["ports"]["discharge"]
+    line = await backend.entity_create_line(
+        out["x"], out["y"], port["x"], port["y"] + 1.0, layer="PROCESS-PIPING-MAIN"
+    )
+    graph = await build_graph(backend, include_foreign=True)
+    edge = next(e for e in graph["edges"] if e["id"] == line.handle)
+    assert edge["to"]["node"] == frame, "the end sits on the frame's border, 1 mm off the port"
+    issues = await backend.drawing_critique(["pid_dangling_line"])
+    assert [i.handles for i in issues] == [[line.handle]]
+    nearest = issues[0].detail["nearest"]
+    assert nearest["node"] == cv["handle"] and nearest["port"] == "in"
+    assert nearest["distance"] == pytest.approx(1.0)
+    assert f"'{cv['handle']}'" in issues[0].detail["hint"]
+
+
 async def test_readme_gear_sheet_is_untouched_by_pid_focuses(backend):
     """The spec's own negative: all six return [] on the README gear sheet."""
     import importlib.util
