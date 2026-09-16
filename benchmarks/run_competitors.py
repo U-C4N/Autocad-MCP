@@ -16,7 +16,7 @@ from pathlib import Path
 
 from backends.capability import UnsupportedCapabilityError
 from benchmarks.adapters.base import BenchmarkAdapter, TaskResult
-from benchmarks.tasks_v3 import DEFAULT_MATRIX, MATRICES, TaskSpec, task_by_id
+from benchmarks.tasks_v4 import DEFAULT_MATRIX, MATRICES, TaskSpec, task_by_id
 
 
 def _load_registry() -> dict[str, dict]:

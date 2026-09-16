@@ -293,6 +293,34 @@ async def radius_dim_ignores_the_leader_length():
     return all(abs(v - 20.0) < 1e-6 for v in values)
 
 
+# ── P&ID (v1.6, track A) ──────────────────────────────────────────────────────
+
+
+async def pid_block_define_attdef_roundtrip():
+    b = await _b()
+    await b.block_define(
+        "PID_T",
+        [{"type": "line", "x1": 0, "y1": 0, "x2": 8, "y2": 0}],
+        [{"tag": "TAG", "x": 0, "y": 3, "height": 2.5}],
+    )
+    ref = await b.block_insert("PID_T", 5, 5, attributes={"TAG": "HV-1"})
+    return await b.block_get_attributes(ref.handle) == {"TAG": "HV-1"}
+
+
+async def pid_tag_parse_fic():
+    from engineering.pid.tags import parse_tag
+
+    return parse_tag("FIC-101")["description"] == "Flow Indicating Controller"
+
+
+async def pid_graph_edge_count():
+    from engineering.pid.spec import EXAMPLE_SPEC, run_spec
+
+    b = await _b()
+    result = await run_spec(b, EXAMPLE_SPEC)
+    return len(result["graph"]["edges"]) == 4 and result["graph"]["stats"]["dangling"] == 0
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -320,6 +348,9 @@ CHECKS = {
     "two_vertex_circle_has_area": (two_vertex_circle_has_area, "Measurement"),
     "diameter_dim_measures_the_diameter": (diameter_dim_measures_the_diameter, "Dimensions"),
     "radius_dim_ignores_the_leader_length": (radius_dim_ignores_the_leader_length, "Dimensions"),
+    "pid_block_define_attdef_roundtrip": (pid_block_define_attdef_roundtrip, "P&ID"),
+    "pid_tag_parse_fic": (pid_tag_parse_fic, "P&ID"),
+    "pid_graph_edge_count": (pid_graph_edge_count, "P&ID"),
 }
 
 

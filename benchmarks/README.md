@@ -41,12 +41,13 @@ Unsupported tasks remain in the fixed-matrix denominator with score zero,
 preventing partial implementations from receiving an inflated score.
 
 ```bash
-python -m benchmarks.run_competitors --list --matrix v3
-python -m benchmarks.run_competitors --server autocad-mcp-pro --backend ezdxf --matrix v3 --json
+python -m benchmarks.run_competitors --list --matrix v4
+python -m benchmarks.run_competitors --server autocad-mcp-pro --backend ezdxf --matrix v4 --json
 python -m benchmarks.run_competitors --task table_mleader --task hatch_islands --json
 ```
 
-The release-machine ezdxf self-check is **15/15 (100.0)** on the v3 matrix.
+The release-machine ezdxf self-check is **16/16 (100.0)** on the v4 matrix
+(`--matrix v3` / `--matrix v2` reproduce the earlier sets).
 Repository stars and raw tool counts do not contribute to the score. Adapter
 registration lives in `competitors.yaml`.
 
@@ -85,6 +86,18 @@ zero we invented would be indistinguishable from a zero we measured.
 `--matrix v2` stays available so a v1.4 report can be reproduced rather than
 only described, and `--publish` writes the artifact-path-free file that
 `results/published/` holds.
+
+### Matrix v4 (v1.6) — the P&ID round trip
+
+`tasks_v4.py` keeps the v3 fifteen unchanged and adds one task the reader can
+fail on its own:
+
+| Task | Category | Verified against |
+|---|---|---|
+| `pid_roundtrip` | pid | the example spec drawn through `pid_from_spec`'s code, then read back by the graph builder, which never sees the spec: 5 nodes, 4 edges, 0 dangling ends, `confidence_min` 1.0, zero critique issues, an instrument index of exactly `FIC-101` wired to `FCV-101`, and the two authored line numbers back on the two process lines while the two unnumbered lines carry sequence-built numbers from XDATA |
+
+The competitor reports carry no result for it, for the same reason they carry
+none for the v3 five. `--matrix v3` reproduces the v1.5 set exactly.
 
 ## Live competitor lane (v1.4)
 
@@ -203,7 +216,7 @@ python benchmarks/compare_versions.py --json results.json
 
 ### Result — v1.5.1 vs v1.5.0 (release gate)
 
-26 checks, ezdxf backend, one subprocess per check. Machine-readable report:
+29 checks, ezdxf backend, one subprocess per check. Machine-readable report:
 [`results/published/ab-v1.5.0-vs-v1.5.1.json`](results/published/ab-v1.5.0-vs-v1.5.1.json).
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |

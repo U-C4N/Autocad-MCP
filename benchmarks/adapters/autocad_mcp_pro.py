@@ -1,4 +1,4 @@
-"""Reference adapter for this repository, covering the v3 task matrix.
+"""Reference adapter for this repository, covering the v4 task matrix.
 
 Every task verifies against a value worked out independently of the code under
 test — a closed-form area, a count of entities placed on purpose, a token
@@ -12,7 +12,7 @@ import math
 from pathlib import Path
 
 from benchmarks.adapters.base import BenchmarkAdapter, TaskResult
-from benchmarks.tasks_v3 import TaskSpec
+from benchmarks.tasks_v4 import TaskSpec
 from engineering.delivery import deliver_drawing
 from engineering.layers import ensure_engineering_layers, ensure_standard_linetypes
 from engineering.refiner import refine_drawing
@@ -360,6 +360,65 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
                 "vertex_shoelace_area": naive,
                 "fraction_lost_by_reading_points_back": round(lost, 4),
                 "boundary_agrees": abs(loop["area"] - measured["area"]) < 1e-9,
+            },
+            [],
+        )
+
+    async def _task_pid_roundtrip(self):
+        """Five symbols, four lines, read back with nothing dangling.
+
+        The spec is drawn through the same code ``pid_from_spec`` calls; the
+        graph, the instrument index and the line list are then read back from
+        the drawing by the reader, which never sees the spec. Every expected
+        number below is counted from the spec by hand.
+        """
+        from engineering.layers import apply_layer_set
+        from engineering.pid.deliverables import instrument_index, line_list
+        from engineering.pid.spec import EXAMPLE_SPEC, run_spec
+
+        await apply_layer_set(self.backend, "pid")
+        result = await run_spec(self.backend, EXAMPLE_SPEC)
+        graph = result["graph"]
+        index = instrument_index(graph)
+        lines = line_list(graph)
+        # The spec numbers its two process lines; the signal line and the
+        # connector line are left to the default ``number_format``, which with
+        # no size/service/spec/insulation collapses to the bare sequence
+        # number. Both must come back through XDATA, not a label search.
+        authored = "100-P-1001-CS1"
+        numbers = {(r["from_tag"], r["to_tag"]): r["line_number"] for r in lines}
+        authored_ok = (
+            numbers.get(("P-101", "FCV-101")) == authored
+            and numbers.get(("FCV-101", "V-201")) == authored
+        )
+        sequenced = [r for r in lines if r["line_number"] != authored]
+        sequenced_ok = len(sequenced) == 2 and all(
+            r["line_number"].isdigit() and r["number_source"] == "xdata" for r in sequenced
+        )
+        passed = (
+            len(graph["nodes"]) == 5
+            and len(graph["edges"]) == 4
+            and graph["stats"]["dangling"] == 0
+            and graph["stats"]["confidence_min"] == 1.0
+            and result["critique"] == []
+            and [r["tag"] for r in index] == ["FIC-101"]
+            and index[0]["connected_to"] == "FCV-101"
+            and len(lines) == 4
+            and authored_ok
+            and sequenced_ok
+        )
+        return (
+            passed,
+            {
+                "nodes": len(graph["nodes"]),
+                "edges": len(graph["edges"]),
+                "dangling": graph["stats"]["dangling"],
+                "confidence_min": graph["stats"]["confidence_min"],
+                "critique_issues": len(result["critique"]),
+                "instrument_index_rows": len(index),
+                "line_list_rows": len(lines),
+                "authored_line_numbers_kept": authored_ok,
+                "unnumbered_lines_sequenced": sequenced_ok,
             },
             [],
         )

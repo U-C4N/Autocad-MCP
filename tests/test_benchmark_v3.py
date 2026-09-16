@@ -100,7 +100,7 @@ async def test_each_new_task_passes_on_the_headless_backend(task, tmp_path):
 
 @pytest.mark.asyncio
 async def test_the_full_v3_matrix_runs_green(tmp_path):
-    report = await run_tasks(AutoCADMCPProAdapter(), TASKS_V3, tmp_path, timeout=180.0)
+    report = await run_tasks(AutoCADMCPProAdapter(), TASKS_V3, tmp_path, timeout=180.0, matrix="v3")
 
     assert report["summary"]["attempted"] == 15
     assert report["summary"]["passed"] == 15, [

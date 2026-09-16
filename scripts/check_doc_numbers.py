@@ -73,7 +73,7 @@ def derived() -> dict[str, object]:
     }
 
     from benchmarks import correctness_suite
-    from benchmarks.tasks_v3 import TASKS_V3
+    from benchmarks.tasks_v4 import TASKS_V4
 
     return {
         "collected_tests": _collected_tests(),
@@ -87,7 +87,7 @@ def derived() -> dict[str, object]:
         "ab_fixed": ab["fixed"],
         "ab_regressed": ab["regressed"],
         "suite_checks": len(correctness_suite.CHECKS),
-        "v3_tasks": len(TASKS_V3),
+        "v4_tasks": len(TASKS_V4),
         "perf_ms": perf,
     }
 
@@ -158,7 +158,7 @@ CHECKS: list[tuple[str, str, str, str]] = [
         "ab_fixed",
     ),
     ("CLAUDE.md", "A/B suite size", r"correctness_suite\.py` \((\d+) checks\)", "ab_total"),
-    ("CLAUDE.md", "v3 task count", r"the current set \((\d+) tasks", "v3_tasks"),
+    ("CLAUDE.md", "v4 task count", r"the current set \((\d+) tasks", "v4_tasks"),
 ]
 
 

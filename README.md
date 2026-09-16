@@ -143,7 +143,7 @@ Self-measurement, produced by scripts in [`benchmarks/`](https://github.com/U-C4
 
 ### Correctness — every release re-proves itself
 
-26 deterministic headless checks against the previous tag and the current tree, each in its own subprocess so a hard crash counts as a miss rather than killing the run.
+29 deterministic headless checks against the previous tag and the current tree, each in its own subprocess so a hard crash counts as a miss rather than killing the run.
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---|---:|---:|---:|---:|
