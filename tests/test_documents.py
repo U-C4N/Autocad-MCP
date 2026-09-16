@@ -179,6 +179,91 @@ async def test_resolver_refuses_a_shared_path_even_on_an_exact_key_hit(backend, 
     assert len(await backend.document_list()) == 2, "a refusal closes nothing"
 
 
+# Two spellings of one file only exist where the filesystem folds case;
+# ``os.path.normcase`` is the identity on POSIX, so these tests skip there.
+_case_folding_fs = pytest.mark.skipif(
+    os.path.normcase("A") == "A", reason="filesystem is case-sensitive"
+)
+
+
+@_case_folding_fs
+async def test_opening_a_case_variant_of_an_open_file_reloads_it(backend, tmp_path):
+    """Registration keys by file identity, not by spelling.
+
+    ``drawing_open`` of an already-open file spelled with another case used to
+    register a *second* entry (key compared as plain strings), and from there
+    every lookup of either entry was refused as ambiguous.
+    """
+    path = tmp_path / "Gear.dxf"
+    await backend.drawing_save(str(path))
+    await backend.entity_create_circle(0, 0, 5)  # unsaved edit
+    reopened = await backend.drawing_open(str(path).lower())
+    assert reopened["reloaded"] is True
+    assert reopened["open_documents"] == 1
+    rows = await backend.document_list()
+    assert len(rows) == 1 and rows[0]["entity_count"] == 0, "reload reads the disk"
+    assert (await backend.document_activate(str(path)))["ok"] is True
+
+
+@_case_folding_fs
+async def test_resolver_accepts_any_spelling_of_a_registered_path(backend, tmp_path):
+    """``document_activate`` / ``document_close`` compare paths as the OS does.
+
+    The live engine lowercases before comparing (``_com_find_document``); a
+    lowercase drive letter or a case variant used to be refused headless as
+    'no open document named ...' - a dual-engine parity break.
+    """
+    path = tmp_path / "Gear.dxf"
+    await backend.drawing_save(str(path))
+    key = os.path.abspath(str(path))
+    await backend.drawing_new()
+    spelled = str(path)
+    for variant in (
+        spelled.lower(),
+        spelled[0].lower() + spelled[1:],
+        spelled[0].upper() + spelled[1:],
+        spelled.upper(),
+    ):
+        await backend.document_activate("untitled-2")
+        assert (await backend.document_activate(variant))["active"] == key, variant
+    assert len(await backend.document_list()) == 2
+    closed = await backend.document_close(spelled.lower())
+    assert closed["closed"] == key and closed["open_documents"] == 1
+
+
+@_case_folding_fs
+async def test_saving_to_a_case_variant_of_the_own_path_keeps_one_entry(backend, tmp_path):
+    path = tmp_path / "Self.dxf"
+    await backend.drawing_save(str(path))
+    key = os.path.abspath(str(path))
+    await backend.entity_create_circle(0, 0, 1)
+    assert (await backend.drawing_save_as(str(path).lower()))["ok"] is True
+    rows = await backend.document_list()
+    assert len(rows) == 1 and rows[0]["saved"] is True
+    assert backend._active_key == key, "the same file keeps its key"
+    assert (await backend.document_activate(key))["ok"] is True
+
+
+async def test_drawing_close_with_save_refuses_a_shared_path(backend, tmp_path):
+    """``drawing_close`` bypasses the resolver, so the close itself must check.
+
+    With two entries on one file, ``drawing_close(save=True)`` wrote the active
+    entry's bytes over the file the other entry holds and reported
+    ``saved: True`` - the surviving row then claimed the disk held its content.
+    """
+    path = tmp_path / "dup.dxf"
+    await backend.drawing_save(str(path))
+    await backend.entity_create_line(0, 0, 1, 1)  # the owner is dirty
+    await backend.drawing_new()
+    await backend.entity_create_circle(0, 0, 5)
+    backend._docs[backend._active_key].path = str(path)  # corrupt the registry behind its back
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="share the file"):
+        await backend.drawing_close(save=True)
+    assert path.read_bytes() == before, "a refusal writes nothing"
+    assert len(await backend.document_list()) == 2, "a refusal closes nothing"
+
+
 async def test_activate_by_basename_full_path_or_key(backend, tmp_path):
     path = tmp_path / "gear.dxf"
     await backend.drawing_save(str(path))
@@ -301,6 +386,30 @@ async def test_document_list_tool_over_the_wire(monkeypatch):
             await client.call_tool("document_close", {"name_or_path": "untitled-1"})
         ).structured_content
         assert closed["closed"] == "untitled-1" and closed["active"] == "untitled-2"
+
+
+@_case_folding_fs
+async def test_document_activate_accepts_a_lowercase_drive_over_the_wire(monkeypatch, tmp_path):
+    """The wire canonicalises ``drawing_open`` paths (``validate_path`` resolves
+    them to disk casing) but not ``document_activate`` / ``document_close``
+    names, so a client spelling the drive letter in lowercase used to be
+    refused headless while the live engine accepted it."""
+    monkeypatch.setenv("AUTOCAD_MCP_BACKEND", "ezdxf")
+    path = tmp_path / "Gear.dxf"
+    spelled = str(path)
+    lowered_drive = spelled[0].lower() + spelled[1:]
+    async with Client(server.mcp) as client:
+        await client.call_tool("drawing_new", {"bootstrap": False})
+        await client.call_tool("drawing_save", {"path": spelled})
+        await client.call_tool("drawing_new", {"bootstrap": False})
+        activated = (
+            await client.call_tool("document_activate", {"name_or_path": lowered_drive})
+        ).structured_content
+        assert activated["name"] == "Gear.dxf" and activated["previous"] == "untitled-2"
+        closed = (
+            await client.call_tool("document_close", {"name_or_path": spelled.lower()})
+        ).structured_content
+        assert closed["closed"] == os.path.abspath(spelled) and closed["open_documents"] == 1
 
 
 # ── live engine, against a fake ActiveX surface ──────────────────────────────

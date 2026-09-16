@@ -1103,26 +1103,48 @@ class EzdxfBackend(AutoCADBackend):
             )
         state = self._state
         state.path = value
-        if new_key != self._active_key:
+        # Re-key only when the *file* changes: another spelling of the file
+        # the entry already holds (a case variant on Windows) keeps the key a
+        # caller may be holding.
+        if not self._same_file(new_key, self._active_key):
             del self._docs[self._active_key]
             state.key = new_key
             self._docs[new_key] = state
             self._active_key = new_key
 
-    def _path_holder(self, abs_path: str, *, exclude: str | None = None) -> str | None:
-        """Key of the entry (other than ``exclude``) that holds ``abs_path``, or None.
+    @staticmethod
+    def _file_identity(path: str) -> str:
+        """The string two spellings of one file share: ``normcase(abspath(path))``.
 
-        Compared with ``os.path.normcase`` so that on Windows two spellings of
-        one file count as the same file; on POSIX that is plain equality.
+        Every registry comparison goes through this. On Windows it folds case
+        and separators, so ``C:\\Work\\Gear.dxf`` and ``c:/work/gear.dxf`` are one
+        file; on POSIX ``normcase`` is the identity and only ``..`` / ``.`` /
+        duplicate separators are folded. Keys themselves stay spelled as the
+        caller spelled them - the identity is for comparing, not for showing.
         """
-        wanted = os.path.normcase(abs_path)
+        try:
+            return os.path.normcase(os.path.abspath(path))
+        except (OSError, ValueError):  # a path this OS cannot normalise
+            return os.path.normcase(path)
+
+    @classmethod
+    def _same_file(cls, a: str, b: str) -> bool:
+        return cls._file_identity(a) == cls._file_identity(b)
+
+    def _path_holder(self, path: str, *, exclude: str | None = None) -> str | None:
+        """Key of the entry (other than ``exclude``) that holds ``path``, or None.
+
+        Compared by ``_file_identity`` so that on Windows two spellings of one
+        file count as the same file; on POSIX that is plain equality.
+        """
+        wanted = self._file_identity(path)
         for key, state in self._docs.items():
             if key == exclude:
                 continue
             candidates = [key]
             if state.path:
-                candidates.append(os.path.abspath(state.path))
-            if any(os.path.normcase(c) == wanted for c in candidates):
+                candidates.append(state.path)
+            if any(self._file_identity(c) == wanted for c in candidates):
                 return key
         return None
 
@@ -1132,7 +1154,7 @@ class EzdxfBackend(AutoCADBackend):
         Runs before ``doc.saveas`` so a refusal leaves the disk, the registry
         and the active document exactly as they were.
         """
-        holder = self._path_holder(os.path.abspath(path), exclude=self._active_key)
+        holder = self._path_holder(path, exclude=self._active_key)
         if holder is None:
             return
         label = self._docs[holder].label
@@ -1273,7 +1295,10 @@ class EzdxfBackend(AutoCADBackend):
         Returns ``(key, reloaded)``. A path that is already open is *reloaded*:
         its old entry (and its snapshots) is dropped and the fresh read takes
         its place — the pre-registry behaviour of ``drawing_open``, kept so a
-        save-then-reopen verification still reads the disk.
+        save-then-reopen verification still reads the disk. "Already open" is
+        decided by ``_path_holder`` (file identity), not by the key string:
+        the same file spelled with another case used to register a second
+        entry, after which every lookup of either was refused as ambiguous.
         """
         if path is None:
             self._untitled_counter += 1
@@ -1281,10 +1306,12 @@ class EzdxfBackend(AutoCADBackend):
             reloaded = False
         else:
             key = os.path.abspath(path)
-            previous = self._docs.pop(key, None)
-            reloaded = previous is not None
-            if previous is not None:
-                previous.discard_snapshots()
+            previous_key = self._path_holder(key)
+            reloaded = previous_key is not None
+            if previous_key is not None:
+                self._docs.pop(previous_key).discard_snapshots()
+                if self._active_key == previous_key:
+                    self._active_key = None
         self._docs[key] = _DocState(key=key, doc=doc, path=path)
         self._activate_key(key)
         return key, reloaded
@@ -1317,14 +1344,14 @@ class EzdxfBackend(AutoCADBackend):
             # say so rather than hand back whichever entry the key names.
             self._refuse_shared_path(wanted, self._docs[wanted])
             return wanted
-        try:
-            as_path = os.path.abspath(wanted)
-        except (OSError, ValueError):
-            as_path = wanted
+        # Paths compare by file identity (``normcase`` on Windows), as the
+        # live engine's ``_com_find_document`` lowercases before comparing: a
+        # lowercase drive letter or a case variant names the same document.
+        as_path = self._file_identity(wanted)
         by_path = [
             key
             for key, state in self._docs.items()
-            if state.path and os.path.abspath(state.path) == as_path
+            if state.path and self._file_identity(state.path) == as_path
         ]
         if len(by_path) == 1:
             self._refuse_shared_path(wanted, self._docs[by_path[0]])
@@ -1355,7 +1382,7 @@ class EzdxfBackend(AutoCADBackend):
         if not state.path:
             return
         abs_path = os.path.abspath(state.path)
-        other = self._path_holder(abs_path, exclude=state.key)
+        other = self._path_holder(state.path, exclude=state.key)
         if other is not None:
             raise ValueError(
                 f"document {wanted!r} is ambiguous: entries {sorted([state.key, other])} "
@@ -1407,6 +1434,11 @@ class EzdxfBackend(AutoCADBackend):
                         f"document_close: {label!r} has never been saved, so save=True has "
                         "nowhere to write; drawing_save_as(path) first, or pass discard=True"
                     )
+                # ``drawing_close`` reaches here without the resolver, so the
+                # one-entry-per-file check is made at the write itself: a
+                # save onto a file another entry holds would leave that
+                # entry claiming ``saved: True`` over someone else's bytes.
+                self._refuse_shared_path(label, state)
                 state.doc.saveas(state.path)
                 state.dirty = False
                 saved = True
@@ -1554,10 +1586,7 @@ class EzdxfBackend(AutoCADBackend):
                 record.call,
             )
         if new_path and record.document_path:
-            try:
-                same = os.path.abspath(new_path) == os.path.abspath(record.document_path)
-            except (OSError, ValueError):  # a path this OS cannot normalise
-                same = new_path == record.document_path
+            same = self._same_file(new_path, record.document_path)
             if same:
                 log.warning(
                     "%s is reopening %s, the same path the abandoned %r call was working "
