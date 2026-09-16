@@ -1396,6 +1396,18 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "process graph",
         ),
     ),
+    "pid_instrument_index": ToolAliases(
+        acad=(),
+        synonyms=("instrument index", "instrument list", "loop list", "tag list"),
+    ),
+    "pid_line_list": ToolAliases(
+        acad=(),
+        synonyms=("line list", "pipe list", "line schedule", "line numbers"),
+    ),
+    "pid_equipment_list": ToolAliases(
+        acad=(),
+        synonyms=("equipment list", "equipment schedule", "valve list"),
+    ),
 }
 
 

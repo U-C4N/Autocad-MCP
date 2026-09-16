@@ -509,8 +509,11 @@ async def test_tool_group_sizes_are_unchanged():
     `entity_set_xdata` joined SECTION 5 (the getter is tagged `query`, the
     setter `modify`, so the pair splits across two groups). `pid` appeared
     (0 -> 2) when v1.6's SECTION 17 opened with `pid_symbol_list` /
-    `pid_symbol_insert`, then 2 -> 3 when `pid_line_draw` joined and 3 -> 4
-    when the reader `pid_graph` joined; the `pid` tag is ranked first in `_GROUP_TAG_PRIORITY` so those tools file under
+    `pid_symbol_insert`, then 2 -> 3 when `pid_line_draw` joined, 3 -> 4
+    when the reader `pid_graph` joined and 4 -> 7 when the three graph
+    deliverables (`pid_instrument_index` / `pid_line_list` /
+    `pid_equipment_list`) joined; the `pid` tag is ranked first in
+    `_GROUP_TAG_PRIORITY` so those tools file under
     `pid` rather than under their secondary `query` / `create` tags. Every
     other number here has been unchanged since the snapshot was taken.
     """
@@ -528,7 +531,7 @@ async def test_tool_group_sizes_are_unchanged():
         "entity_query": 9,
         "layers": 14,
         "layouts": 12,
-        "pid": 4,
+        "pid": 7,
         "premium": 12,
         "solids": 5,
         "system": 7,
@@ -537,4 +540,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 161
+    assert sum(sizes.values()) == 164

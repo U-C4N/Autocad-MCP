@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 161,
+    "tools": 164,
     "resources": 6,
     "prompts": 5,
     "groups": 20
@@ -21,7 +21,7 @@
     "entity_query": 9,
     "layers": 14,
     "layouts": 12,
-    "pid": 4,
+    "pid": 7,
     "premium": 12,
     "solids": 5,
     "system": 7,
@@ -1718,6 +1718,20 @@
       }
     },
     {
+      "name": "pid_equipment_list",
+      "group": "pid",
+      "cost": "read",
+      "summary": "Equipment list derived from the P&ID graph (tag, kind, ports, connections); optional CSV.",
+      "tags": [
+        "pid",
+        "query"
+      ],
+      "annotations": {
+        "title": "P&ID: Equipment List",
+        "readOnlyHint": true
+      }
+    },
+    {
       "name": "pid_graph",
       "group": "pid",
       "cost": "read",
@@ -1728,6 +1742,20 @@
       ],
       "annotations": {
         "title": "P&ID: Connectivity Graph",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "pid_instrument_index",
+      "group": "pid",
+      "cost": "read",
+      "summary": "Instrument index derived from the P&ID graph (tag, function, loop, connections); optional CSV.",
+      "tags": [
+        "pid",
+        "query"
+      ],
+      "annotations": {
+        "title": "P&ID: Instrument Index",
         "readOnlyHint": true
       }
     },
@@ -1743,6 +1771,20 @@
       "annotations": {
         "title": "P&ID: Draw Line",
         "readOnlyHint": false
+      }
+    },
+    {
+      "name": "pid_line_list",
+      "group": "pid",
+      "cost": "read",
+      "summary": "Line list derived from the P&ID graph (number, class, size, spec, from/to); optional CSV.",
+      "tags": [
+        "pid",
+        "query"
+      ],
+      "annotations": {
+        "title": "P&ID: Line List",
+        "readOnlyHint": true
       }
     },
     {
