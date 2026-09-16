@@ -17,22 +17,31 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 
 <sub><b>Not a mockup.</b> Every line on this sheet was drawn by the tools this server exposes — ISO layers, involute gear geometry, DIN 6885 keyway, section A-A, ISO 129 dimensions, an ISO 286 <code>H7</code> bore fit, ISO 7200 title block — then rendered headlessly by <code>view_screenshot</code>. <code>drawing_critique</code> returns <b>0 issues</b> on it. Rebuild it with <code>python scripts/render_readme_showcase.py</code>.</sub>
 
+<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/pid-showcase.png" alt="P&ID sheet: a centrifugal pump, a diaphragm-actuated globe control valve, a vertical vessel with two nozzles, a flow controller bubble and an off-page connector, joined by numbered process lines and an electric signal line" width="800">
+
+<sub><b>The same server as a P&ID drafter.</b> <code>pid_from_spec</code> placed five catalogue symbols as real blocks with <code>TAG</code> attributes and named ports, routed four port-to-port lines with ISA-5.1 classes and line numbers in one transaction, then <code>pid_graph</code> read the sheet back: 5 nodes, 4 edges, 0 dangling ends, <code>confidence_min</code> 1.0. Rebuild it with <code>python scripts/render_readme_pid.py</code>.</sub>
+
+<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/pid-catalog.png" alt="Contact sheet of the 43 P&ID catalogue symbols: valve bodies with actuators, pumps and compressors, heat exchangers, vessels, instrument bubbles, line markers and connectors" width="800">
+
+<sub><b>The catalogue, authored in code.</b> 43 ISO 10628-2 / ISA-5.1 symbols — 11 valve bodies × 6 actuators, 6 rotating machines, 4 heat exchangers, 6 parametric vessels, 7 inline items, the instrument bubble in 4 types × 5 locations, 5 line markers, 3 connectors — every one placed through <code>pid_symbol_insert</code>'s own path. Rebuild it with <code>python scripts/render_pid_catalog.py</code>.</sub>
+
 </div>
 
-> **v1.5 release snapshot:** 166 tools · 8 resources · 5 prompt templates · 1369 collected tests.
-> 154 is the **registered** count; a default install advertises 149 over `tools/list`,
+> **v1.5 release snapshot:** 166 tools · 8 resources · 5 prompt templates · 2423 collected tests.
+> 166 is the **registered** count; a default install advertises 161 over `tools/list`,
 > because `ENABLE_3D` is unset. `system_about` is the runtime authority.
 
 ## Why this exists
 
-**A big MCP server is expensive to be connected to.** The full catalog costs a client **40,305 tokens** before it has asked for anything. Discovery mode replaces it with two tools and costs **356**.
+**A big MCP server is expensive to be connected to.** The full catalog costs a client **44,930 tokens** before it has asked for anything. Discovery mode replaces it with two tools and costs **356**.
 
-**A drafter searches for `FILLET`, not `entity_fillet`.** Those command names appeared in no tool name or description — `df = 0` against a stock index, not badly ranked but *absent*. The fix was data: an authored corpus of **158 AutoCAD command names and 672 synonym phrases** covering all 154 tools. A test refuses to let a tool exist without one.
+**A drafter searches for `FILLET`, not `entity_fillet`.** Those command names appeared in no tool name or description — `df = 0` against a stock index, not badly ranked but *absent*. The fix was data: an authored corpus of **162 AutoCAD command names and 731 synonym phrases** covering all 166 tools. A test refuses to let a tool exist without one.
 
 | Advertised surface | Tools seen | Idle cost |
 |---|---:|---:|
-| `TOOL_PROFILE=full` (default) | 149 | 40,305 tokens |
-| `TOOL_PROFILE=lean` | 47 | 12,131 tokens |
+| `TOOL_PROFILE=full` (default) | 161 | 44,930 tokens |
+| `TOOL_PACKS=core` (full profile) | 152 | 41,420 tokens |
+| `TOOL_PROFILE=lean` | 50 | 14,007 tokens |
 | `DISCOVERY_MODE=search` | 2 | **356 tokens** |
 
 > [!NOTE]
@@ -91,7 +100,8 @@ Claude Desktop, Cursor, or any stdio MCP host. For HTTP: `autocad-mcp --transpor
 | Geometry | lines, arcs, polylines, splines, hatches, trim/extend/fillet/chamfer, handle-preserving edits |
 | Annotation | ISO 129 toleranced dimensions, ISO 286 fits (`fit="H7"`), TABLE, MLEADER, GD&T frames and datums (ISO 1101) |
 | Engineering generators | involute gears (front + section A-A), DIN 6885 keyed bores, ISO A3 title block |
-| Discovery | `search_tools` ranked over an AutoCAD command and synonym corpus — `FILLET`, `BPOLY`, `QSELECT`, `WBLOCK`, `OVERKILL`, `CHSPACE` each rank **#1** of the 149-tool advertised catalog |
+| P&ID | catalogue blocks with ports and tags (ISO 10628-2 / ISA-5.1), port-to-port lines with ISA-5.1 classes and line numbers, `pid_graph` reads any P&ID back with confidence, instrument index / line list / equipment list, `pid_from_spec` one-call sheets |
+| Discovery | `search_tools` ranked over an AutoCAD command and synonym corpus — `FILLET`, `BPOLY`, `QSELECT`, `WBLOCK`, `OVERKILL`, `CHSPACE` each rank **#1** of the 161-tool advertised catalog |
 | Batching | `cad_batch` runs a step list in one round trip; `fields=` projects 11 result-heavy tools |
 | Paper space | tab lifecycle, viewports, `entity_change_space` (CHSPACE), `drawing_export_pdf(layout=…)` |
 | Selection | window vs crossing stated back to the caller; a polygon tested against its own shape, not its bounding box |
@@ -103,7 +113,7 @@ Claude Desktop, Cursor, or any stdio MCP host. For HTTP: `autocad-mcp --transpor
 | Quality loop | `drawing_preflight` → `drawing_plan` → `drawing_critique` → `drawing_refine` → `drawing_finalize` (0–100 score) |
 | Delivery | `drawing_deliver`: DXF/PDF/PNG + SHA-256 manifest + reopen-parity checks |
 
-<sub>154 tools in 19 groups. Plus 6 resources that cost nothing in the tool budget (<code>autocad://drawing/info</code>, <code>layers</code>, <code>blocks</code>, <code>entities/stats</code>, <code>entities/{layer_name}</code>, <code>system/status</code>) and 5 prompt templates.</sub>
+<sub>166 tools in 20 groups; <code>TOOL_PACKS=core</code> hides the nine <code>pid_*</code> tools from a client that never draws a P&ID. Plus 8 resources that cost nothing in the tool budget (<code>autocad://drawing/info</code>, <code>layers</code>, <code>blocks</code>, <code>entities/stats</code>, <code>entities/{layer_name}</code>, <code>system/status</code>, <code>pid/symbols</code>, <code>standards/isa51</code>) and 5 prompt templates.</sub>
 
 **Two rules worth knowing.** Every coordinate in and out of a tool is WCS on both engines — the one exception is TEXT `rotation`, which stays in the entity frame because a mirrored TEXT is mirror-imaged and no scalar angle expresses that. And never read vertices back and shoelace them: that loses **28.2%** of the area on a semicircular edge, silently. `analysis_measure_entity(handle)` reads the real geometry and states its own accuracy.
 
@@ -147,22 +157,23 @@ Self-measurement, produced by scripts in [`benchmarks/`](https://github.com/U-C4
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---|---:|---:|---:|---:|
-| v1.5.0 *(baseline)* | 24 / 26 | 92.3 % | — | — |
-| **v1.5.1** *(this release)* | **26 / 26** | **100 %** | 2 | **0** |
+| v1.5.1 *(baseline)* | 26 / 29 | 89.7 % | — | — |
+| **v1.6.0-dev** *(this branch)* | **29 / 29** | **100 %** | 3 | **0** |
 
-Against the older `v1.4.0` baseline the same suite reports **21 / 26 → 26 / 26, five fixed, zero regressed**. Three of the five are new capability (`miss → pass`); two are repaired defects (`fail → pass`) — the diameter and radius callouts, which measured the leader as geometry and dimensioned a 40 mm bore as 60 at default settings.
+The three fixed rows are the P&ID checks, new capability (`miss → pass`): `block_define` round-trips an ATTDEF, `pid_tag_parse` reads `FIC-101`, and `pid_graph` counts the example sheet's four edges. The 26 checks v1.5.1 was gated on all still pass. Against the older `v1.4.0` baseline the same 26 reported **21 / 26 → 26 / 26, five fixed, zero regressed** — two of those were repaired defects (`fail → pass`), the diameter and radius callouts, which measured the leader as geometry and dimensioned a 40 mm bore as 60 at default settings.
 
-### The task matrix — five tasks that can fail
+### The task matrix — six tasks that can fail
 
-An earlier matrix scored this server 10/10, which carried no information: every task in it exercised something the server was built around. Five were added because they *can* fail, and three did while being written.
+An earlier matrix scored this server 10/10, which carried no information: every task in it exercised something the server was built around. Five were added in 1.5 because they *can* fail, and three did while being written; 1.6 adds a sixth that the P&ID reader can fail on its own.
 
 | Task | Verified against |
 |---|---|
 | `tool_discovery` | six AutoCAD command names, each ranking #1 |
-| `token_budget` | 40,305 → 356 tokens, against a ceiling fixed in advance |
+| `token_budget` | 44,930 → 356 tokens, against a ceiling fixed in advance |
 | `hatch_islands` | 300 filled with the island, 400 ignoring it |
 | `selection_filter` | window 1, crossing 2, bounding box 3, polygon 1 |
 | `measure_from_handle` | 139.2699 against the 100.0 a vertex shoelace gives |
+| `pid_roundtrip` | the example sheet drawn by `pid_from_spec`, read back by `pid_graph`, which never sees the spec: 5 nodes, 4 edges, 0 dangling, `confidence_min` 1.0, `FIC-101` wired to `FCV-101` |
 
 ### Headless performance
 
@@ -183,6 +194,14 @@ A page that only lists strengths is a page that has not been measured.
 **Path validation is per-tool, and unscoped until you scope it.** With `ALLOWED_PATHS` empty — the default — the only positive bound is a ten-entry system-directory denylist that does not include `C:/Users`, `/home`, `/root` or `/var`. **Set `ALLOWED_PATHS`.**
 
 **Non-AutoCAD ProgIDs are unverified.** `CAD_PROGID` changes which COM application the backend attaches to; nothing beyond the connection has been tested against BricsCAD, ZWCAD or GstarCAD.
+
+### Known limitations of the P&ID track
+
+**The router is orthogonal and blind.** `pid_line_draw` picks `auto` from seven orthogonal candidates — straight, one bend, two bends through the midline, or a stub out of each port joined by three bends — by fewest bends then length (or takes `direct`, or the waypoints you pass), and *counts* the lines it crosses — `crossings` comes back in every result and `pid_from_spec` sums it — but it does not route around them. Obstacle-avoiding routing is out of 1.6; move the symbol or pass waypoints.
+
+**A foreign drawing is read at the confidence it earns, and no higher.** A block this server did not place classifies by its `TAG`-style attribute or a keyword in its name at 0.6 with inferred ports, or at 0.3 when a line merely touches it — and a 0.3 guess can neither raise nor suppress a critique finding. On the live engine an INSERT turned off a right angle whose members ActiveX cannot measure reports an *approximate* box; `pid_graph` takes the tighter wall of that and the attribute-inclusive box on every side, but a line ending on such a body's true edge can still be reported `dangling` with the nearest port as the hint. Read `stats.confidence_min` first.
+
+**Same-file only, DXF headlessly.** Off-page connectors link within one drawing; links across files are not resolved. The headless engine reads DXF; a DWG P&ID is read through the live backend. No DEXPI/Proteus export and no ISA-5.2 binary-logic symbols in this release, recorded in the spec so nobody re-derives the cut.
 
 ## Configuration
 

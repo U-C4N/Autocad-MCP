@@ -214,29 +214,45 @@ python benchmarks/compare_versions.py v1.0.0     # vs a tag/ref
 python benchmarks/compare_versions.py --json results.json
 ```
 
-### Result — v1.5.1 vs v1.5.0 (release gate)
+### Result — this branch (1.6.0-dev) vs v1.5.1 (release gate)
 
 29 checks, ezdxf backend, one subprocess per check. Machine-readable report:
+[`results/published/ab-v1.5.1-vs-v1.6.0-dev.json`](results/published/ab-v1.5.1-vs-v1.6.0-dev.json).
+
+| Version | Checks passing | Pass rate | Fixed | Regressed |
+|---------|----------------|-----------|-------|-----------|
+| **v1.5.1** (baseline)     | 26 / 29 | 89.7 % | — | — |
+| **v1.6.0-dev** (this branch) | 29 / 29 | 100 % | 3 | **0** |
+
+The three are the P&ID checks Track A added — `pid_block_define_attdef_roundtrip`,
+`pid_tag_parse_fic`, `pid_graph_edge_count` — all `miss → pass`: v1.5.1 has
+none of the methods. Every one of the 26 checks it was released on still
+passes, so the track added capability without moving a number it had already
+earned.
+
+### Result — v1.5.1 vs v1.5.0
+
+26 checks at the time, ezdxf backend, one subprocess per check. Machine-readable report:
 [`results/published/ab-v1.5.0-vs-v1.5.1.json`](results/published/ab-v1.5.0-vs-v1.5.1.json).
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---------|----------------|-----------|-------|-----------|
-| **v1.5.0** (baseline)     | 24 / 26 | 92.3 % | — | — |
-| **v1.5.1** (this release) | 26 / 26 | 100 % | 2 | **0** |
+| v1.5.0 (baseline)     | 24 / 26 | 92.3 % | — | — |
+| v1.5.1 (that release) | 26 / 26 | 100 % | 2 | **0** |
 
 v1.5.0 fails `diameter_dim_measures_the_diameter` and
 `radius_dim_ignores_the_leader_length`: it has both methods and gets both
 wrong. That is the defect 1.5.1 exists to fix and the reason 1.5.0 is yanked.
 
-### Result — this release vs v1.4.0
+### Result — v1.5.1 vs v1.4.0
 
-Same suite, older baseline:
+Same 26-check suite, older baseline:
 [`results/published/ab-v1.4.0-vs-v1.5.1.json`](results/published/ab-v1.4.0-vs-v1.5.1.json).
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---------|----------------|-----------|-------|-----------|
-| **v1.4.0** (baseline)     | 21 / 26 | 80.8 % | — | — |
-| **v1.5.1** (this release) | 26 / 26 | 100 % | 5 | **0** |
+| v1.4.0 (baseline)     | 21 / 26 | 80.8 % | — | — |
+| v1.5.1 (that release) | 26 / 26 | 100 % | 5 | **0** |
 
 > This row used to read `v1.5.0 | 24 / 26 | 92.3 % | 5`, which was impossible on
 > its face — 21 passing plus 5 fixed is 26, not 24 — and it contradicted the

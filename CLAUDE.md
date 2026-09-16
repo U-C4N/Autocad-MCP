@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AutoCAD MCP Pro is a FastMCP 3.0 server that exposes ~154 tools, 6 resources, and 5 prompt templates for AutoCAD automation. (The exact tool count is reported dynamically by `system_status` / `system_about` — never hardcode it.) It runs with a dual-engine architecture: a live COM backend (Windows/AutoCAD required) and a headless ezdxf backend (works anywhere).
+AutoCAD MCP Pro is a FastMCP 3.0 server that exposes ~166 tools, 8 resources, and 5 prompt templates for AutoCAD automation. (The exact tool count is reported dynamically by `system_status` / `system_about` — never hardcode it.) It runs with a dual-engine architecture: a live COM backend (Windows/AutoCAD required) and a headless ezdxf backend (works anywhere).
 
 ## Running the Server
 
@@ -76,9 +76,9 @@ Tools are organized into sections (counts are indicative — `system_about` is a
 2. Entity Creation (14 tools): `entity_create_*` (includes `entity_create_table`, `leader_create_mleader`)
 3. Dimensions (5 tools): `dimension_*`
 4. Entity Modification (16 tools): `entity_move/copy/rotate/scale/mirror/offset/delete/array_*`, corner ops (`entity_trim/extend/fillet/chamfer`), plus in-place `entity_edit_text` (TEXT/MTEXT content/height/rotation) and `entity_edit_geometry` (CIRCLE/LINE/ARC — center/radius/endpoints/angles), both handle-preserving
-5. Entity Query (4 tools): `entity_get`, `entity_list`, `entity_delete_many`, `selection_get`
+5. Entity Query (9 tools): `entity_get`, `entity_list`, `entity_delete_many`, `selection_get`, `selection_window/polygon/filter`, and `entity_get_xdata` / `entity_set_xdata` (typed by group code)
 6. Layer Management (14 tools incl. 2 linetype_*): `layer_*`, `linetype_list`, `linetype_load`
-7. Block Operations (7 tools): `block_*`
+7. Block Operations (8 tools): `block_*` — includes `block_define` (a block from typed primitive specs + ATTDEFs, no source entities needed)
 8. Analysis & Query (8 tools): `analysis_*` — plus Batch (2), Templates (2), Validation (1)
 9. View & Screenshot (4 tools — includes `view_zoom_and_screenshot`): `view_*`
 10. Transactions (3 tools): `transaction_begin/commit/rollback`
@@ -88,8 +88,11 @@ Tools are organized into sections (counts are indicative — `system_about` is a
 14. GD&T (ISO 1101 / ASME Y14.5): `gd_frame` (feature control frames), `datum_feature` — enforced by the `gdt` critique focus
 15. Layouts & Paper Space (12 tools): tab lifecycle `layout_list/create/set_current/delete/rename/copy`, viewports `viewport_create/list/set_scale/lock/delete`, and `entity_change_space` (CHSPACE — tagged `layout` *and* `modify`, and `layout` wins the group priority, so it files here). `drawing_export_pdf` takes an optional `layout` param and **does** project model content through viewports on both engines (`viewport_render` — v1.4 declared this COM-only and was wrong; the headless renderer only omits the viewport borders). `entity_change_space` is the mirror case — ezdxf-only (`chspace`), because ActiveX exposes no change-space member and the COM route is unverified.
 16. 3D Solids (5 tools, opt-in via `ENABLE_3D=true`, COM only): `solid_box/cylinder/extrude/revolve/boolean` — hidden from discovery and rejected while disabled; ezdxf reports `solid_3d` as unsupported (no headless ACIS).
+17. P&ID (9 tools, pack `pid`): `pid_symbol_list/insert` (ISO 10628-2 + ISA-5.1 catalogue authored in code, real blocks with TAG attributes, named ports, ACADMCP_PID XDATA), `pid_line_draw` (port-to-port orthogonal routing, ISA-5.1 line classes → layer/linetype/marker blocks, line numbers), `pid_tag_parse` (ISA-5.1 grammar), the reader `pid_graph` and its deliverables `pid_instrument_index/line_list/equipment_list`, and `pid_from_spec` (whole sheet, one transaction). Six `pid_*` critique focuses (`pid_dangling_line`, `pid_duplicate_tag`, `pid_incompatible_connection`, `pid_untagged_instrument`, `pid_illegal_tag`, `pid_unconnected_equipment`) run under `focus=None` and inside `drawing_finalize`; they return nothing on a drawing without P&ID nodes. Two resources (`autocad://pid/symbols`, `autocad://standards/isa51`) carry the catalogue and the ISA-5.1 letter tables. Both engines implement every P&ID contract; the COM paths were executed live once by `scripts/smoke_pid_com.py` (AutoCAD 2026).
 
-**Tool profiles:** `TOOL_PROFILE=lean|full` (default `full`) controls the advertised surface — `lean` ≈ 47 curated drafting tools (including `cad_batch`, since a client with a tight tool cap is exactly the client paying most per turn). Applied in the lifespan; reported by `system_about`. The `core` profile was removed in v1.5.0 (the discovery layer replaced it); `TOOL_PROFILE=core` falls back to `full` with a warning.
+**Tool profiles:** `TOOL_PROFILE=lean|full` (default `full`) controls the advertised surface — `lean` ≈ 50 curated drafting tools (47 with `TOOL_PACKS=core`; including `cad_batch`, since a client with a tight tool cap is exactly the client paying most per turn). Applied in the lifespan; reported by `system_about`. The `core` profile was removed in v1.5.0 (the discovery layer replaced it); `TOOL_PROFILE=core` falls back to `full` with a warning.
+
+**Tool packs:** `TOOL_PACKS=all|core,pid` (default `all`) advertises only the vertical packs a client uses; `core` is always on and is everything no other pack claims; unknown names are ignored with a warning; a `lean` profile intersects with the enabled packs. `system_about` reports `tool_packs`.
 
 **Tool discovery:** `DISCOVERY_MODE=off|search` (default `off`). `search` replaces the advertised catalog with `search_tools` + `call_tool`, ranking hits over an AutoCAD command / synonym corpus (`discovery/aliases.py`) layered on fastmcp's BM25 index.
 
@@ -101,7 +104,7 @@ Tools are organized into sections (counts are indicative — `system_about` is a
 
 **Measuring:** never read vertices back and shoelace them — that loses 28.2% of the area on a semicircular edge, silently. `analysis_measure_entity(handle)` reads the real geometry, and its payload states its own accuracy: `exact`, `flatten_tolerance`, `assumed_closed`, `self_intersecting`. A HATCH reports the area it *fills* (outer loops minus islands) plus `hatch_style`; on a curved hatch edge `flatten_tolerance` is not the accuracy knob, because ezdxf hands boundaries over as cubic Beziers whose ~0.028% circle error is already baked in. `boundary_trace` / `boundary_from_entities` report the same number `analysis_measure_entity` gives for the polyline they just drew — if those ever diverge, one of them is approximating and neither says so.
 
-**Benchmark matrix:** `benchmarks/tasks_v4.py` is the current set (16 tasks; `--matrix v3` / `--matrix v2` reproduce the earlier sets). The published competitor reports are pinned v1.4 runs against v2 and are **never** back-filled for the five v3 tasks or the v4 `pid_roundtrip` — the chart shows them `not run`, not zero. `benchmarks/correctness_suite.py` (29 checks) is the release A/B gate: `python benchmarks/compare_versions.py v1.4.0`.
+**Benchmark matrix:** `benchmarks/tasks_v4.py` is the current set (16 tasks; `--matrix v3` / `--matrix v2` reproduce the earlier sets). The published competitor reports are pinned v1.4 runs against v2 and are **never** back-filled for the five v3 tasks or the v4 `pid_roundtrip` — the chart shows them `not run`, not zero. `benchmarks/correctness_suite.py` (29 checks) is the release A/B gate: `python benchmarks/compare_versions.py v1.5.1` (the published report is `benchmarks/results/published/ab-v1.5.1-vs-v1.6.0-dev.json`; `scripts/check_doc_numbers.py` names it in `AB_REPORT`).
 
 ### Adding a New Tool
 
@@ -126,6 +129,9 @@ Tools are organized into sections (counts are indicative — `system_about` is a
 - **Screenshot**: COM uses Win32 window capture (Pillow required); ezdxf renders via matplotlib.
 - **`_dc(obj)`**: converts dataclasses to dicts recursively for JSON serialization.
 - **Engineering layer scaffold**: `drawing_new` auto-bootstraps standard linetypes (CENTER, HIDDEN, PHANTOM) and engineering layers (GEOMETRY, DIM, CENTER, HIDDEN, PHANTOM, HATCH, TEXT, TITLEBLOCK). Pass `bootstrap=False` to opt out.
+- **Generic contracts added in 1.6:** `block_define(name, entities, attdefs)` (typed primitives + ATTDEFs, both engines; `overwrite` replaces contents so INSERTs keep the name) and `entity_get/set_xdata` (typed by group code; 255-char strings, 16 KB per entity, enforced before writing).
+- **P&ID reader rules:** `pid_graph` never modifies the drawing, reads geometry from the drawing (an INSERT's real rotation/scale) rather than the catalogue, and reports `source`/`confidence` per node (catalog 1.0, xdata 0.95, heuristic 0.6, inferred 0.3) — never raised by agreement between heuristics. Read `stats.confidence_min` before trusting a foreign drawing.
+- **`TOOL_PACKS=all|core,pid`** advertises only the packs a client uses; `core` is always on; `system_about` reports `tool_packs`.
 - **Production drawings**: For real engineering output, use the `engineering/` package primitives via the `gear_*` / `keyway_*` / `titleblock_*` MCP tools — do NOT hand-draw teeth/keyways/sections with raw `entity_create_*` calls. Always end with `drawing_finalize` for the 8-step validator.
 
 ### Premium Drawing Rules

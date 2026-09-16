@@ -5,6 +5,175 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Track A of 1.6: the server becomes a P&ID expert and a P&ID reader. Nine
+`pid_*` tools in a new SECTION 17, two generic contracts every engine
+implements, six critique focuses that join `drawing_finalize`, and a
+`TOOL_PACKS` gate so a mechanical-only client never pays for the P&ID
+surface. Spec: `docs/superpowers/specs/2026-09-15-v1.6-pid-design.md`.
+
+### Added
+
+- **P&ID — 9 tools, pack `pid`.**
+  - `pid_symbol_list` / `pid_symbol_insert`: a 43-symbol ISO 10628-2 /
+    ISA-5.1 catalogue authored in code (11 valve bodies × 6 actuators, 6
+    rotating machines, 4 heat exchangers, 6 parametric vessels with nozzle
+    ports, 7 inline items, the instrument bubble in 4 types × 5 locations,
+    5 line markers, 3 connectors), placed as real blocks with a `TAG`
+    ATTRIB, named ports, and an `ACADMCP_PID` XDATA payload. Ports are
+    transformed through the INSERT's real rotation, scale and mirror; a
+    stretched symbol (`|x_scale| ≠ |y_scale|`) has no circle for a radial
+    port and is refused rather than answered with a wrong point.
+  - `pid_line_draw`: port-to-port orthogonal routing (`auto` picks from seven
+    candidates by fewest bends, then length; `direct`; or waypoints), eight
+    ISA-5.1 line classes mapped to layer / linetype / marker blocks, and line
+    numbers filled from a format (default
+    `{size}-{service}-{seq}-{spec}-{insulation}`; an empty field drops out
+    with its separator). A route that cannot honour the `stub` on both
+    ports is refused by name (`route((0,0), 0°, (3,8), 180°, stub=5)`
+    raises) rather than drawn short; a non-axis port direction, a NaN
+    coordinate and an unfillable format token are refused before anything
+    is written. Lines it crosses are **counted and
+    reported** (`crossings`), never silently drawn over — and never refused.
+  - `pid_tag_parse`: the ISA-5.1 identification-letter grammar (Table 4.1,
+    pinned by `tests/data/isa51_tags.json`), with the equipment-prefix map.
+  - `pid_graph`: the reader. Every symbol INSERT becomes a node with a
+    `source` and a `confidence` — catalogue name 1.0, `ACADMCP_PID` payload
+    0.95, `TAG`-style attribute or keyword block name 0.6 with inferred
+    ports, an INSERT a plain line merely touches 0.3. Confidence is the
+    minimum of its inputs, never raised by agreement between heuristics.
+    Each line end resolves to a port, a junction on another line, or
+    `dangling` with the nearest connectable port as a hint, always within
+    its own space (`scope="all"` never joins two layouts). Edge `length` is
+    the bulge-aware length the engine reports, not a chord walk (12.5 %
+    short on a semicircular jump).
+  - `pid_instrument_index` / `pid_line_list` / `pid_equipment_list`: derived
+    from the graph only, optionally written as CSV. An instrument tapping a
+    pipe reports the pipe's line number, never its own signal wire.
+  - `pid_from_spec`: a whole sheet from one JSON spec in one transaction —
+    rolled back entirely on the first refusal — returning the handles, the
+    graph and the critique; `dry_run=True` routes in memory and touches
+    nothing.
+- **`block_define(name, entities, attdefs)`** on both engines: a block from
+  typed primitive specs (line, circle, arc, polyline, text, solid) and
+  ATTDEFs, no source entities needed; `overwrite=True` replaces the contents
+  so existing INSERTs keep the name. Validation runs before any write: a
+  DXF-illegal layer name, a duplicate or trailing-newline ATTDEF tag, a
+  multi-line or trailing-caret string are `TypeError`/`ValueError` naming
+  `entities[i]` / `attdefs[i]`, and nothing is created.
+- **`entity_get_xdata` / `entity_set_xdata`** on both engines, typed by DXF
+  group code. The two limits AutoCAD enforces silently are enforced loudly
+  and before the write: a string over **255 characters** and an entity
+  budget of **16 KB across every application** (three 15 KB apps on one
+  entity used to pass headlessly and would have failed `SetXData` live).
+  LF/CR in a string is refused — it split a DXF tag, the saved file failed
+  to reopen and, because every undo snapshot is a DXF save,
+  `transaction_rollback` broke after one such write. `nan`/`inf` are refused
+  rather than written as literal text that reads back as `null`.
+- **Six critique focuses** — `pid_dangling_line`, `pid_duplicate_tag`,
+  `pid_incompatible_connection`, `pid_untagged_instrument`,
+  `pid_illegal_tag`, `pid_unconnected_equipment` — run under `focus=None`
+  and inside `drawing_finalize`, over one cached graph. They score
+  evidence only: a drawing without a recognised P&ID node returns `[]`, a
+  0.3 touch guess can neither create nor suppress a finding, and a line
+  ending on a sheet frame (an INSERT the drawing does not vouch for) is
+  dangling. `drawing_refine` hints name only ports `pid_line_draw` accepts.
+- **Two resources:** `autocad://pid/symbols` (the catalogue with ports and
+  parameter schemas) and `autocad://standards/isa51` (the letter tables and
+  the grammar's disambiguation rules).
+- **Benchmark evidence.** `benchmarks/tasks_v4.py` adds `pid_roundtrip`
+  (the example sheet drawn through `pid_from_spec`, read back by a graph
+  builder that never sees the spec); the correctness suite grows to 29 with
+  three P&ID checks. A/B against `v1.5.1`: **26 / 29 → 29 / 29, three
+  `miss → pass`, zero regressed** (`ab-v1.5.1-vs-v1.6.0-dev.json`).
+- `scripts/smoke_pid_com.py` runs the track once against the live AutoCAD
+  on the machine, in a new document; `scripts/render_pid_catalog.py` and
+  `scripts/render_readme_pid.py` rebuild the two README images.
+
+### Fixed
+
+- **Headless `block_insert(attributes=…)` lost its ATTRIBs.** The ezdxf path
+  used `add_auto_blockref`, which wraps the INSERT in an anonymous `*U`
+  block: the handle it returned reported `block_name` `*U1`, and
+  `block_get_attributes` on it returned `{}`. Reproduce on v1.5.1 with
+  `block_create_from_entities` of a block with one ATTDEF, then
+  `block_insert(name, attributes={"TAG": "P-101"})` and
+  `block_get_attributes(handle)`. It now inserts the named block with
+  `add_auto_attribs`, so the INSERT carries the name and the ATTRIBs, on
+  both engines alike. `block_insert` of an undefined name is refused before
+  writing (it used to return a handle whose dangling INSERT `drawing_audit`
+  later deleted).
+- Live LWPOLYLINEs report as `POLYLINE` through ActiveX (`AcDbPolyline`),
+  which the P&ID line reader's type filter excluded: on AutoCAD every
+  auto-built line number restarted at seq 1 and `crossings` was always 0.
+  Both spellings are accepted; the COM `_entity_info` polyline branch now
+  returns `points` (and per-vertex `bulges`) for a live LWPOLYLINE.
+- Polyline `bulges` now leave both engines in WCS: a mirrored polyline's
+  arcs were handed out in the entity frame next to WCS points, so a reader
+  tested them on the wrong side of the chord.
+- INSERT properties gain `geometry_bbox` (drawn geometry only, ATTRIBs
+  excluded) and `mirrored` on both engines. The COM box is exact at right
+  angles and measured off them; a member ActiveX cannot measure is carried
+  by its corners and the box says `approximate: true`.
+
+### Changed
+
+- **`TOOL_PACKS=all|core,pid`** (default `all`) advertises only the vertical
+  packs a client uses; `core` is always on and unknown names are ignored
+  with a warning. It composes with `TOOL_PROFILE=lean` (which now carries
+  `pid_symbol_insert`, `pid_line_draw` and `pid_graph`: 50 tools, 47 with
+  `TOOL_PACKS=core`) and `ENABLE_3D`; `system_about` reports `tool_packs`.
+  Measured idle cost: 161 tools / 44,930 tokens by default, 152 / 41,420
+  with `TOOL_PACKS=core`.
+- `PID_LAYERS` (`drawing_apply_iso_layers("pid")`) gains `PROCESS-LINE-TEXT`;
+  `drawing_plan` / `drawing_preflight` report `LAYER_SET_INTENT_MISMATCH`
+  when a P&ID intent is planned onto a non-`pid` layer set.
+- The `prompt_pid_diagram` prompt template is rewritten onto the tools (`pid_from_spec`,
+  `pid_symbol_insert`, `pid_line_draw`, `pid_graph`) instead of describing
+  primitives.
+- `CritiqueFocus` grows by the six `pid_*` values; benchmark matrix v4
+  (`--matrix v3` / `v2` reproduce the earlier sets); correctness suite 29.
+- README release snapshot: 166 tools · 8 resources · 5 prompts · 2423
+  collected tests. The collected-test figure is this machine's; CI has not
+  run on this tree yet, and the pre-existing 1369-vs-1363 drift between the
+  README and Linux collection predates the track and is superseded by the
+  new figure.
+
+### Live COM smoke
+
+`scripts/smoke_pid_com.py`, AutoCAD 2026 (`25.1s (LMS Tech)`), Windows 11,
+2026-09-16, in a new document (`Drawing2.dwg`) — `block_define` →
+`pid_symbol_insert` → `entity_set_xdata` → `pid_line_draw` → `pid_graph` →
+six focuses → `entity_get_xdata`, all through the COM engine, exit 0:
+
+```json
+{
+  "autocad": "25.1s (LMS Tech)",
+  "active_document": "Drawing2.dwg",
+  "handles": {"P-101": "98", "V-201": "A8", "FCV-101": "B8", "FIC-101": "C5", "OP-1": "CF"},
+  "graph_stats": {
+    "nodes_by_kind": {"connector": 1, "equipment": 2, "instrument": 1, "valve": 1},
+    "edges_by_class": {"electric": 1, "process_major": 3},
+    "dangling": 0,
+    "unclassified": 0,
+    "confidence_min": 1.0,
+    "entities_scanned": 16
+  },
+  "crossings_total": 0,
+  "critique_issues": 0,
+  "critique": [],
+  "xdata_chunks": 2
+}
+```
+
+The headless engine reports the identical `graph_stats`, `crossings_total`,
+`critique_issues` and `xdata_chunks` on the same spec. The first attempt
+exited 2 on this machine because of a stale `win32com` `gen_py` cache for the
+AutoCAD type library (a package directory holding only a `__pycache__`) — an
+environment fault, not a backend one; deleting `%TEMP%\gen_py\3.11` cleared
+it and no backend change was needed.
+
 ## [1.5.1] — 2026-08-06
 
 A patch for three defects found *after* 1.5.0 went to PyPI, two of them by the

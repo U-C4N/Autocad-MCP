@@ -27,6 +27,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+#: The published A/B report the README and benchmarks/README quote. Bump this,
+#: the two row labels below and the prose together, or the gate reports drift.
+AB_REPORT = "benchmarks/results/published/ab-v1.5.1-vs-v1.6.0-dev.json"
+AB_BASELINE_LABEL = r"v1\.5\.1"
+AB_CURRENT_LABEL = r"v1\.6\.0-dev"
+
 
 def _read(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
@@ -66,7 +72,7 @@ def derived() -> dict[str, object]:
     """Every number a document is allowed to quote, computed from the tree."""
     sys.path.insert(0, str(ROOT))
     inventory = _json("docs/tool-inventory.json")["totals"]
-    ab = _json("benchmarks/results/published/ab-v1.5.0-vs-v1.5.1.json")["summary"]
+    ab = _json(AB_REPORT)["summary"]
     perf = {
         w["workload_id"]: w["wall_ms"]
         for w in _json("benchmarks/results/published/perf-ezdxf.json")["workloads"]
@@ -81,6 +87,7 @@ def derived() -> dict[str, object]:
         "resources": inventory["resources"],
         "prompts": inventory["prompts"],
         "groups": inventory["groups"],
+        "ab_baseline_ref": ab["baseline_ref"],
         "ab_total": ab["total"],
         "ab_old_pass": ab["old_pass"],
         "ab_old_pct": ab["old_pct"],
@@ -112,19 +119,29 @@ CHECKS: list[tuple[str, str, str, str]] = [
         "prompts",
     ),
     ("README.md", "A/B suite size", r"(\d+) deterministic headless checks", "ab_total"),
-    ("README.md", "A/B baseline pass", r"v1\.5\.0 \*\(baseline\)\* \| (\d+) / \d+", "ab_old_pass"),
-    ("README.md", "A/B suite denominator", r"v1\.5\.0 \*\(baseline\)\* \| \d+ / (\d+)", "ab_total"),
+    (
+        "README.md",
+        "A/B baseline pass",
+        AB_BASELINE_LABEL + r" \*\(baseline\)\* \| (\d+) / \d+",
+        "ab_old_pass",
+    ),
+    (
+        "README.md",
+        "A/B suite denominator",
+        AB_BASELINE_LABEL + r" \*\(baseline\)\* \| \d+ / (\d+)",
+        "ab_total",
+    ),
     ("benchmarks/README.md", "A/B suite size", r"(\d+) checks, ezdxf backend", "ab_total"),
     (
         "benchmarks/README.md",
         "A/B baseline pass",
-        r"\*\*v1\.5\.0\*\* \(baseline\)\s*\| (\d+) / \d+",
+        r"\*\*" + AB_BASELINE_LABEL + r"\*\* \(baseline\)\s*\| (\d+) / \d+",
         "ab_old_pass",
     ),
     (
         "benchmarks/README.md",
         "A/B suite denominator",
-        r"\*\*v1\.5\.0\*\* \(baseline\)\s*\| \d+ / (\d+)",
+        r"\*\*" + AB_BASELINE_LABEL + r"\*\* \(baseline\)\s*\| \d+ / (\d+)",
         "ab_total",
     ),
     (
@@ -136,25 +153,26 @@ CHECKS: list[tuple[str, str, str, str]] = [
     (
         "README.md",
         "A/B baseline pass rate",
-        r"v1\.5\.0 \*\(baseline\)\* \| \d+ / \d+ \| ([\d.]+) %",
+        AB_BASELINE_LABEL + r" \*\(baseline\)\* \| \d+ / \d+ \| ([\d.]+) %",
         "ab_old_pct",
     ),
     (
         "README.md",
         "A/B fixed count",
-        r"v1\.5\.1\*\* \*\(this release\)\* \| \*\*\d+ / \d+\*\* \| \*\*\d+ %\*\* \| (\d+)",
+        AB_CURRENT_LABEL
+        + r"\*\* \*\(this branch\)\* \| \*\*\d+ / \d+\*\* \| \*\*\d+ %\*\* \| (\d+)",
         "ab_fixed",
     ),
     (
         "benchmarks/README.md",
         "A/B baseline pass rate",
-        r"\*\*v1\.5\.0\*\* \(baseline\)\s*\| \d+ / \d+ \| ([\d.]+) %",
+        r"\*\*" + AB_BASELINE_LABEL + r"\*\* \(baseline\)\s*\| \d+ / \d+ \| ([\d.]+) %",
         "ab_old_pct",
     ),
     (
         "benchmarks/README.md",
         "A/B fixed count",
-        r"\*\*v1\.5\.1\*\* \(this release\) \| \d+ / \d+ \| \d+ % \| (\d+)",
+        r"\*\*" + AB_CURRENT_LABEL + r"\*\* \(this branch\) \| \d+ / \d+ \| \d+ % \| (\d+)",
         "ab_fixed",
     ),
     ("CLAUDE.md", "A/B suite size", r"correctness_suite\.py` \((\d+) checks\)", "ab_total"),
@@ -169,8 +187,8 @@ def run(verbose: bool = False) -> int:
         print(
             f"DRIFT  correctness_suite.py has {values['suite_checks']} checks but the published "
             f"A/B report was run over {values['ab_total']} -- regenerate the report:\n"
-            f"       python benchmarks/compare_versions.py v1.5.0 "
-            f"--json benchmarks/results/published/ab-v1.5.0-vs-v1.5.1.json"
+            f"       python benchmarks/compare_versions.py {values['ab_baseline_ref']} "
+            f"--json {AB_REPORT}"
         )
         return 1
 
