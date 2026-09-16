@@ -5401,7 +5401,10 @@ async def drawing_finalize(
     ctx: Context = None,
 ) -> dict:
     """Premium completion gate: runs BOTH the 8-step validator AND the premium critique focuses
-    (iso128, layer_color, dim_overlap, untrimmed_corner, duplicate_entities, construction_left),
+    (iso128, layer_color, dim_overlap, untrimmed_corner, duplicate_entities, construction_left,
+    gdt, plus the P&ID focuses pid_dangling_line, pid_duplicate_tag,
+    pid_incompatible_connection, pid_untagged_instrument, pid_illegal_tag,
+    pid_unconnected_equipment — silent on a sheet with no P&ID symbols),
     then saves to disk, exports a screenshot, and returns the DWG path.
 
     Raises ToolError if any validator 'error' finding is present, or if critique reports an
@@ -5629,7 +5632,13 @@ async def drawing_plan(
         requirements,
         spec_hash,
     )
-    return _dc(plan)
+    from engineering.preflight import pid_plan_warnings
+
+    out = _dc(plan)
+    warnings = pid_plan_warnings(intent, layer_set_id)
+    if warnings:
+        out["warnings"] = warnings
+    return out
 
 
 @cad_tool(
@@ -5650,7 +5659,10 @@ async def drawing_critique(
         Field(
             default=None,
             description="Subset of: iso128, layer_color, dim_overlap, untrimmed_corner, "
-            "duplicate_entities, construction_left. None = run all.",
+            "duplicate_entities, construction_left, gdt, and the P&ID focuses "
+            "pid_dangling_line, pid_duplicate_tag, pid_incompatible_connection, "
+            "pid_untagged_instrument, pid_illegal_tag, pid_unconnected_equipment "
+            "(silent on a drawing with no P&ID symbols). None = run all.",
         ),
     ] = None,
     ctx: Context = None,

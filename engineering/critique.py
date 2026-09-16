@@ -408,6 +408,10 @@ _FOCUS_DISPATCH = {
     "gdt": _check_gdt,
 }
 
+from .pid.critique import PID_DISPATCH  # noqa: E402  (registered after the mechanical focuses)
+
+_FOCUS_DISPATCH.update(PID_DISPATCH)
+
 
 async def run_critique(
     backend: AutoCADBackend,
@@ -416,6 +420,9 @@ async def run_critique(
     """Dispatch each requested focus check and return aggregated issues."""
     foci = list(focus) if focus is not None else list(ALL_CRITIQUE_FOCUSES)
     issues: list[Issue] = []
+    # Per-run context: the P&ID focuses build the connectivity graph once
+    # here and share it, so six focuses cost one read of the drawing.
+    shared: dict = {}
     for f in foci:
         check = _FOCUS_DISPATCH.get(f)
         if check is None:
@@ -427,5 +434,8 @@ async def run_critique(
                 )
             )
             continue
-        issues.extend(await check(backend))
+        if getattr(check, "needs_shared", False):
+            issues.extend(await check(backend, shared))
+        else:
+            issues.extend(await check(backend))
     return issues

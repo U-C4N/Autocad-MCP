@@ -5,9 +5,26 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass, field
 from numbers import Real
 from typing import Any
+
+PID_INTENT_RE = re.compile(
+    r"\b(p&id|pid|piping and instrumentation|process flow|instrument)\b", re.IGNORECASE
+)
+
+
+def intent_reads_as_pid(intent: str) -> bool:
+    return bool(PID_INTENT_RE.search(str(intent or "")))
+
+
+def pid_plan_warnings(intent: str, layer_set_id: str) -> list[str]:
+    if intent_reads_as_pid(intent) and str(layer_set_id).strip().lower() != "pid":
+        return [
+            f"intent reads as a P&ID but the layer set is '{layer_set_id}'; pass layer_set_id='pid'"
+        ]
+    return []
 
 
 @dataclass(frozen=True)
@@ -201,6 +218,12 @@ def preflight_drawing(
     for valid, code, field_name, value, message in parameter_rules:
         if not valid:
             conflicts.append(PreflightConflict(code, field_name, [value], message))
+    for message in pid_plan_warnings(intent, normalized_layer_set):
+        conflicts.append(
+            PreflightConflict(
+                "LAYER_SET_INTENT_MISMATCH", "layer_set_id", [layer_set_id, "pid"], message
+            )
+        )
 
     normalized_spec = {
         "intent": str(intent).strip(),

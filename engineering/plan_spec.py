@@ -21,6 +21,12 @@ CritiqueFocus = Literal[
     "duplicate_entities",
     "construction_left",
     "gdt",
+    "pid_dangling_line",
+    "pid_duplicate_tag",
+    "pid_incompatible_connection",
+    "pid_untagged_instrument",
+    "pid_illegal_tag",
+    "pid_unconnected_equipment",
 ]
 SnapType = Literal["end", "mid", "center", "quad", "int", "perp", "near"]
 
@@ -32,6 +38,12 @@ ALL_CRITIQUE_FOCUSES: tuple[CritiqueFocus, ...] = (
     "duplicate_entities",
     "construction_left",
     "gdt",
+    "pid_dangling_line",
+    "pid_duplicate_tag",
+    "pid_incompatible_connection",
+    "pid_untagged_instrument",
+    "pid_illegal_tag",
+    "pid_unconnected_equipment",
 )
 
 
