@@ -22,6 +22,7 @@ from engineering.standards.dimstyles import (
     check_dim_value,
     describe_preset,
     ezdxf_arrowhead,
+    reported_arrowhead,
     resolve_dimstyle,
     validate_overrides,
 )
@@ -206,6 +207,51 @@ def test_validate_overrides_alone_is_what_modify_uses():
     assert check_dim_value("DIMBLK", "_OBLIQUE") == "_OBLIQUE"
 
 
+# ── tolerances: DIMTP / DIMTM are signed ────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("fit", "expected"),
+    [
+        ("p6", {"DIMTP": 0.035, "DIMTM": -0.022}),  # double positive: -DIMTM is +0.022
+        ("f7", {"DIMTP": -0.02, "DIMTM": 0.041}),  # double negative: DIMTP below zero
+        ("H7", {"DIMTP": 0.021, "DIMTM": 0.0}),
+        ("h6", {"DIMTP": 0.0, "DIMTM": 0.013}),
+    ],
+)
+def test_a_style_holds_the_same_signed_deviations_a_dimension_gets(fit, expected):
+    """``dimension_linear(fit=...)`` writes ``build_dim_override``'s DIMTP/DIMTM
+    onto one dimension; a dimension style must accept the identical numbers,
+    signs included, or a p6 / f7 fit can be drawn but never styled — and an
+    agent obeying an "at least 0" refusal would ship a sign-flipped tolerance."""
+    from engineering.fits import fit_lookup
+    from engineering.tolerances import build_dim_override
+
+    deviation = fit_lookup(fit, 20.0)
+    override, _ = build_dim_override(deviation.upper_mm, -deviation.lower_mm, "deviation", None)
+    styled = {k: v for k, v in override.items() if k.upper() in DIM_VARIABLE_WHITELIST}
+    assert {"dimtol", "dimtp", "dimtm"} <= set(styled)
+    typed = resolve_dimstyle("iso-25", styled)
+    assert typed["DIMTOL"] == 1
+    assert typed["DIMTP"] == pytest.approx(expected["DIMTP"])
+    assert typed["DIMTM"] == pytest.approx(expected["DIMTM"])
+    assert typed["DIMTM"] == pytest.approx(override["dimtm"]), "sign preserved, not abs()"
+    assert typed["DIMTP"] == pytest.approx(override["dimtp"])
+
+
+@pytest.mark.parametrize("var", ["DIMTP", "DIMTM"])
+def test_tolerance_limits_are_signed_finite_floats(var):
+    assert DIM_VARIABLE_RANGES[var] == ("float", -1e6, 1e6)
+    assert check_dim_value(var, -0.022) == -0.022
+    assert check_dim_value(var, 0) == 0.0
+    with pytest.raises(ValueError, match=var):
+        check_dim_value(var, float("-inf"))
+    with pytest.raises(ValueError, match=var):
+        check_dim_value(var, -1e7)
+    with pytest.raises(TypeError, match=var):
+        check_dim_value(var, "-0.022")
+
+
 # ── arrowheads: DIMBLK / DIMBLK1 / DIMBLK2 ──────────────────────────────────
 
 
@@ -296,6 +342,47 @@ def test_the_canonical_spelling_is_not_what_the_headless_writer_takes():
     doc.dimstyles.new("X").dxf.dimblk = "_OBLIQUE"
     with pytest.raises(DXFValueError, match="_OBLIQUE"):
         doc.write(io.StringIO())
+
+
+@pytest.mark.parametrize(
+    ("stored", "reported"),
+    [
+        ("OBLIQUE", "_OBLIQUE"),  # what ezdxf holds in-session after the writer set it
+        ("_OBLIQUE", "_OBLIQUE"),  # what ezdxf holds after a reload; what COM reports
+        ("", ""),
+        (None, ""),
+        ("_CLOSEDFILLED", ""),
+        ("MYARROW", "MYARROW"),
+        ("MY ARROW,1", "MY ARROW,1"),  # a foreign drawing's name: passed through, never raised
+        ("   ", "   "),
+    ],
+)
+def test_reported_arrowhead_spells_a_stored_name_one_way_and_never_raises(stored, reported):
+    assert reported_arrowhead(stored) == reported
+
+
+@pytest.mark.parametrize("canonical", ["_OBLIQUE", "_DOT", "", "MYARROW"])
+def test_a_style_reports_the_same_arrowhead_before_and_after_a_reload(canonical):
+    """The spec §8.3 witness at the data layer: a raw read spells ``OBLIQUE``
+    in-session and ``_OBLIQUE`` after reopen, so ``dimstyle_modify`` re-setting
+    the same value would report a change. Through ``reported_arrowhead`` the two
+    reads agree with each other and with what ``check_dim_value`` accepts."""
+    import io
+
+    import ezdxf
+
+    doc = ezdxf.new("R2018")
+    if canonical == "MYARROW":
+        doc.blocks.new("MYARROW").add_line((0, 0), (1, 1))
+    style = doc.dimstyles.new("X")
+    style.dxf.dimblk = ezdxf_arrowhead(canonical)
+    in_session = reported_arrowhead(style.dxf.dimblk)
+    buffer = io.StringIO()
+    doc.write(buffer)
+    buffer.seek(0)
+    reloaded = reported_arrowhead(ezdxf.read(buffer).dimstyles.get("X").dxf.dimblk)
+    assert in_session == reloaded == canonical
+    assert check_dim_value("DIMBLK", in_session) == canonical
 
 
 # ── the symbol-name rule ────────────────────────────────────────────────────

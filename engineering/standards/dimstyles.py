@@ -41,6 +41,7 @@ __all__ = [
     "check_dim_value",
     "describe_preset",
     "ezdxf_arrowhead",
+    "reported_arrowhead",
     "resolve_dimstyle",
     "validate_overrides",
 ]
@@ -179,8 +180,13 @@ DIM_VARIABLE_RANGES: dict[str, tuple | set] = {
     "DIMSCALE": ("float", 0.0, 1e6),  # 0 means "scale to the viewport"
     # tolerances, rounding, fit, colours, arrowheads — the rest of the whitelist
     "DIMTOL": {0, 1},
-    "DIMTP": ("float", 0.0, 1e6),
-    "DIMTM": ("float", 0.0, 1e6),
+    # Both signed, as AutoCAD documents them: the displayed lower deviation is
+    # -DIMTM, so a double-positive fit (ISO 286 p6, +0.035/+0.022) stores
+    # DIMTM -0.022 and a double-negative one (f7, -0.020/-0.041) stores DIMTP
+    # -0.020 — exactly what engineering/tolerances.py::build_dim_override emits
+    # per dimension; a style must be able to hold the same numbers.
+    "DIMTP": ("float", -1e6, 1e6),
+    "DIMTM": ("float", -1e6, 1e6),
     "DIMTOLJ": ("int", 0, 2),
     "DIMTFAC": ("float", 1e-9, 1e6),
     "DIMLFAC": ("nonzero_float", -1e6, 1e6),
@@ -227,6 +233,27 @@ def canonical_arrowhead(key: str, value: Any) -> str:
     if candidate in ARROWHEAD_BLOCKS:
         return candidate
     return check_name(key, text, what="block name")
+
+
+def reported_arrowhead(raw: Any) -> str:
+    """A *stored* arrowhead name in the canonical spelling, never raising.
+
+    The read-side twin of :func:`canonical_arrowhead`: ezdxf reports the name
+    the writer stored (``OBLIQUE``) in-session and the block name
+    (``_OBLIQUE``) after a reload, so a raw read would spell one style two
+    ways and make re-setting a value to itself look like a change (spec §8.3).
+    A built-in in any spelling comes back as its block name and the closed
+    filled aliases as ``""``; ``None`` is ``""``; anything else — a user block,
+    or a foreign drawing's name the symbol-name rule would refuse — passes
+    through unchanged, because a read must not raise.
+    """
+    if raw is None:
+        return ""
+    text = str(raw)
+    try:
+        return canonical_arrowhead("DIMBLK", text)
+    except (TypeError, ValueError):
+        return text
 
 
 def ezdxf_arrowhead(canonical: str) -> str:

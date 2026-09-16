@@ -19,6 +19,7 @@ from engineering.standards.dimstyles import (
     check_dim_value,
     describe_preset,
     ezdxf_arrowhead,
+    reported_arrowhead,
     resolve_dimstyle,
     validate_overrides,
 )
@@ -37,6 +38,7 @@ __all__ = [
     "check_dim_value",
     "describe_preset",
     "ezdxf_arrowhead",
+    "reported_arrowhead",
     "resolve_dimstyle",
     "resolve_font",
     "resolve_mleaderstyle",
