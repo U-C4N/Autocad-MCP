@@ -1085,19 +1085,61 @@ class EzdxfBackend(AutoCADBackend):
         # `drawing_save` / `drawing_save_as` assign here. A document keyed
         # `untitled-N` that is saved to a file becomes keyed by that file, so
         # `document_list` shows one identity per document and `document_close`
-        # can be told the file name. Two entries may end up sharing a path
-        # (save_as onto a file that is open in another entry); the resolver
-        # then reports the ambiguity instead of guessing.
-        state = self._state
-        state.path = value
+        # can be told the file name. The registry holds one entry per file:
+        # `_refuse_path_held_elsewhere` turns a save onto a file that another
+        # entry holds away *before* the bytes are written (AutoCAD refuses
+        # SAVEAS onto an open drawing for the same reason), and this setter
+        # raises rather than let two entries share a path, because the
+        # resolver could then only guess which one a caller means.
         if self._active_key is None or value is None:
+            self._state.path = value
             return
         new_key = os.path.abspath(value)
-        if new_key != self._active_key and new_key not in self._docs:
+        holder = self._path_holder(new_key, exclude=self._active_key)
+        if holder is not None:
+            raise RuntimeError(
+                f"EzdxfBackend: registry entry {holder!r} already holds {new_key!r}; "
+                "a file is held by one open document"
+            )
+        state = self._state
+        state.path = value
+        if new_key != self._active_key:
             del self._docs[self._active_key]
             state.key = new_key
             self._docs[new_key] = state
             self._active_key = new_key
+
+    def _path_holder(self, abs_path: str, *, exclude: str | None = None) -> str | None:
+        """Key of the entry (other than ``exclude``) that holds ``abs_path``, or None.
+
+        Compared with ``os.path.normcase`` so that on Windows two spellings of
+        one file count as the same file; on POSIX that is plain equality.
+        """
+        wanted = os.path.normcase(abs_path)
+        for key, state in self._docs.items():
+            if key == exclude:
+                continue
+            candidates = [key]
+            if state.path:
+                candidates.append(os.path.abspath(state.path))
+            if any(os.path.normcase(c) == wanted for c in candidates):
+                return key
+        return None
+
+    def _refuse_path_held_elsewhere(self, op: str, path: str) -> None:
+        """Refuse ``op`` onto a file that another open document holds.
+
+        Runs before ``doc.saveas`` so a refusal leaves the disk, the registry
+        and the active document exactly as they were.
+        """
+        holder = self._path_holder(os.path.abspath(path), exclude=self._active_key)
+        if holder is None:
+            return
+        label = self._docs[holder].label
+        raise ValueError(
+            f"{op}: {label!r} is already open as document {holder!r}; a file is held by "
+            "one open document at a time - document_close it first, or save to another path"
+        )
 
     @property
     def name(self) -> str:
@@ -1269,6 +1311,11 @@ class EzdxfBackend(AutoCADBackend):
         if not wanted:
             raise ValueError("name_or_path must not be empty")
         if wanted in self._docs:
+            # An exact key hit is still refused when a second entry holds the
+            # same file: the registry is meant to keep one entry per file (the
+            # save paths enforce it), and if that is ever broken a lookup must
+            # say so rather than hand back whichever entry the key names.
+            self._refuse_shared_path(wanted, self._docs[wanted])
             return wanted
         try:
             as_path = os.path.abspath(wanted)
@@ -1280,15 +1327,40 @@ class EzdxfBackend(AutoCADBackend):
             if state.path and os.path.abspath(state.path) == as_path
         ]
         if len(by_path) == 1:
+            self._refuse_shared_path(wanted, self._docs[by_path[0]])
             return by_path[0]
+        if len(by_path) > 1:
+            raise ValueError(
+                f"document {wanted!r} is ambiguous: entries {by_path} share the file "
+                f"{as_path!r}; the registry must hold one entry per file"
+            )
         by_name = [
             key for key, state in self._docs.items() if state.label.lower() == wanted.lower()
         ]
         if len(by_name) == 1:
+            self._refuse_shared_path(wanted, self._docs[by_name[0]])
             return by_name[0]
         if len(by_name) > 1:
+            # Same basename in two directories is a real ambiguity the full
+            # path settles; two entries on one file is the invariant breach,
+            # and "pass the full path" would send the caller to the exact-key
+            # shortcut that this resolver refuses for the same reason.
+            for key in by_name:
+                self._refuse_shared_path(wanted, self._docs[key])
             raise ValueError(f"document {wanted!r} is ambiguous: {by_name}; pass the full path")
         raise ValueError(f"no open document named {wanted!r}; open documents: {list(self._docs)}")
+
+    def _refuse_shared_path(self, wanted: str, state: _DocState) -> None:
+        """Raise if any other entry holds the file ``state`` holds."""
+        if not state.path:
+            return
+        abs_path = os.path.abspath(state.path)
+        other = self._path_holder(abs_path, exclude=state.key)
+        if other is not None:
+            raise ValueError(
+                f"document {wanted!r} is ambiguous: entries {sorted([state.key, other])} "
+                f"share the file {abs_path!r}; the registry must hold one entry per file"
+            )
 
     def _evict_quarantined_document(self) -> None:
         """Drop the quarantined entry before a fresh document is registered.
@@ -1759,6 +1831,7 @@ class EzdxfBackend(AutoCADBackend):
             doc = self._require_doc()
             if not save_path:
                 raise RuntimeError("No path specified and no current file path.")
+            self._refuse_path_held_elsewhere("drawing_save", save_path)
             doc.saveas(save_path)
             self._doc_path = save_path
             self._dirty = False
@@ -1774,6 +1847,7 @@ class EzdxfBackend(AutoCADBackend):
 
         def _sync():
             doc = self._require_doc()
+            self._refuse_path_held_elsewhere("drawing_save_as", path)
             doc.saveas(path)
             self._doc_path = path
             self._dirty = False

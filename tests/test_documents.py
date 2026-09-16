@@ -107,6 +107,78 @@ async def test_saving_rekeys_an_untitled_document_to_its_file(backend, tmp_path)
     assert backend._active_key == os.path.abspath(str(path))
 
 
+async def test_save_refuses_a_path_that_another_open_document_holds(backend, tmp_path):
+    """One entry per file: SAVEAS onto an open drawing is refused, as AutoCAD does.
+
+    Without the refusal the registry held two entries for one path, the
+    resolver's exact-key shortcut picked the stale one on close, and the file
+    ended up holding the *other* document's bytes while ``saved`` stayed True.
+    """
+    import ezdxf
+
+    path = tmp_path / "gear.dxf"
+    await backend.drawing_save(str(path))
+    key = os.path.abspath(str(path))
+    await backend.entity_create_line(0, 0, 1, 1)  # A: dirty, on disk empty
+    second = (await backend.drawing_new())["document"]
+    await backend.entity_create_circle(0, 0, 5)
+    before = path.read_bytes()
+
+    for call in (backend.drawing_save_as, backend.drawing_save):
+        with pytest.raises(ValueError, match="gear.dxf.*already open.*document_close"):
+            await call(str(path))
+        assert path.read_bytes() == before, "a refusal writes nothing"
+
+    rows = {r["key"]: r for r in await backend.document_list()}
+    assert set(rows) == {key, second}, "a refusal re-keys nothing"
+    assert rows[second]["path"] is None and rows[second]["saved"] is False
+    assert rows[key]["saved"] is False
+    # The rejected document is untouched and can still be saved elsewhere.
+    other = tmp_path / "other.dxf"
+    await backend.drawing_save_as(str(other))
+    assert [e.dxftype() for e in ezdxf.readfile(str(other)).modelspace()] == ["CIRCLE"]
+    # The by-name lookup is unambiguous and closes the entry that owns the file.
+    await backend.entity_create_line(2, 2, 3, 3)
+    closed = await backend.document_close("gear.dxf", save=True)
+    assert closed["closed"] == key and closed["saved"] is True
+    assert [e.dxftype() for e in ezdxf.readfile(str(path)).modelspace()] == ["LINE"]
+
+
+async def test_save_to_the_document_own_path_is_not_a_collision(backend, tmp_path):
+    path = tmp_path / "self.dxf"
+    await backend.drawing_save(str(path))
+    await backend.drawing_new()
+    await backend.document_activate("self.dxf")
+    await backend.entity_create_circle(0, 0, 1)
+    assert (await backend.drawing_save())["ok"] is True
+    await backend.entity_create_circle(0, 0, 2)
+    assert (await backend.drawing_save(str(path)))["ok"] is True
+    await backend.entity_create_circle(0, 0, 3)
+    # A spelling that differs from the key still names the same file.
+    spelled = str(tmp_path / "sub" / ".." / "self.dxf")
+    assert (await backend.drawing_save_as(spelled))["ok"] is True
+    assert len(await backend.document_list()) == 2
+    assert backend._active_key == os.path.abspath(str(path))
+
+
+async def test_resolver_refuses_a_shared_path_even_on_an_exact_key_hit(backend, tmp_path):
+    """The save refusal keeps the registry one-entry-per-file; if that invariant
+    is ever broken anyway, every lookup of the pair refuses instead of guessing."""
+    path = tmp_path / "dup.dxf"
+    await backend.drawing_save(str(path))
+    key = os.path.abspath(str(path))
+    second = (await backend.drawing_new())["document"]
+    with pytest.raises(RuntimeError, match="already holds"):
+        backend._doc_path = str(path)  # the setter enforces the invariant
+    backend._docs[second].path = str(path)  # corrupt the registry behind its back
+    for wanted in (key, second, "dup.dxf", str(path)):
+        with pytest.raises(ValueError, match="share the file"):
+            backend._resolve_document_key(wanted)
+    with pytest.raises(ValueError, match="share the file"):
+        await backend.document_close(key, save=True)
+    assert len(await backend.document_list()) == 2, "a refusal closes nothing"
+
+
 async def test_activate_by_basename_full_path_or_key(backend, tmp_path):
     path = tmp_path / "gear.dxf"
     await backend.drawing_save(str(path))
