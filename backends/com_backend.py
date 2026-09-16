@@ -811,6 +811,7 @@ class ComBackend(AutoCADBackend):
                 "refiner": FeatureCapability(True, "shared"),
                 "delivery": FeatureCapability(True, "shared"),
                 "paper_space": FeatureCapability(True, "native"),
+                "dwt_write": FeatureCapability(True, "native"),
                 "viewport_render": FeatureCapability(True, "native"),
                 "solid_3d": _solid_3d_capability(),
                 "lisp": FeatureCapability(True, "sanitized"),
@@ -1953,6 +1954,183 @@ class ComBackend(AutoCADBackend):
     # a typed refusal carrying that key rather than an unverified
     # CopyObjects-and-delete that would destroy and recreate geometry in the
     # operator's open drawing when it goes wrong.
+
+    # ── page setup (track E) ─────────────────────────────────────────────────
+    #
+    # Layout is an IAcadPlotConfiguration. Constants from the AutoCAD 2026
+    # typelib: AcPlotPaperUnits acMillimeters=1; AcPlotRotation ac0degrees=0;
+    # AcPlotType acExtents=1 / acLayout=5; AcPlotScale acScaleToFit=0, ac1_1=16
+    # (the full table is engineering.standards.papers.ACTIVEX_PLOT_SCALE).
+    # Fake-tested in tests/test_page_setup.py; executed live by
+    # scripts/smoke_settings_com.py (Task 24).
+
+    _AC_MILLIMETERS = 1
+    _AC_NO_ROTATION = 0
+
+    @staticmethod
+    def _com_page_setup_row(layout) -> dict:
+        from engineering.standards.papers import (
+            PLOT_TYPE_NAMES,
+            activex_scale_label,
+            paper_from_size,
+            scale_label,
+        )
+
+        def _get(attr):
+            try:
+                return getattr(layout, attr)
+            except Exception as exc:
+                log.debug("Layout.%s read failed: %s", attr, exc)
+                return None
+
+        units = _get("PaperUnits")
+        factor = 25.4 if units == 0 else 1.0
+        size = None
+        try:
+            width, height = layout.GetPaperSize()
+            size = [round(float(width) * factor, 2), round(float(height) * factor, 2)]
+        except Exception as exc:
+            log.debug("Layout.GetPaperSize failed: %s", exc)
+        margins = None
+        try:
+            (left, bottom), (right, top) = layout.GetPaperMargins()
+            margins = [round(float(v) * factor, 3) for v in (top, bottom, left, right)]
+        except Exception as exc:
+            log.debug("Layout.GetPaperMargins failed: %s", exc)
+        rotation = _get("PlotRotation") or 0
+        if size and int(rotation) in (1, 3):
+            size = [size[1], size[0]]
+        if _get("UseStandardScale"):
+            scale = activex_scale_label(_get("StandardScale") or 0)
+        else:
+            try:
+                numerator, denominator = layout.GetCustomScale()
+                scale = scale_label(float(numerator), float(denominator))
+            except Exception as exc:
+                log.debug("Layout.GetCustomScale failed: %s", exc)
+                scale = None
+        media = _get("CanonicalMediaName")
+        plot_type = _get("PlotType")
+        return {
+            "layout": layout.Name,
+            "paper": (paper_from_size(*size) if size else None) or media,
+            "canonical_media_name": media,
+            "size_mm": size,
+            "orientation": (
+                None if not size else ("landscape" if size[0] >= size[1] else "portrait")
+            ),
+            "plot_style": _get("StyleSheet"),
+            "scale": scale,
+            "plot_area": PLOT_TYPE_NAMES.get(plot_type, plot_type),
+            "device": _get("ConfigName"),
+            "margins_mm": margins,
+            "center": bool(_get("CenterPlot")),
+        }
+
+    def _com_paper_layout(self, doc, raw: str, operation: str):
+        resolved = self._find_layout(doc, raw)
+        if resolved is None:
+            available = [n for n in self._layout_names(doc) if n != "Model"]
+            raise ValueError(
+                f"{operation}: layout {raw!r} not found (paper-space layouts: "
+                f"{', '.join(available) or 'none'})"
+            )
+        if resolved == "Model":
+            raise ValueError(
+                f"{operation}: Model space has no sheet; plot it with "
+                "drawing_export_pdf(layout=None) or apply the setup to a paper-space layout"
+            )
+        return doc.Layouts.Item(resolved)
+
+    async def page_setup_list(self, layout: str | None = None) -> list[dict]:
+        def _sync():
+            doc = _acad_doc()
+            if layout is not None and self._layout_name(layout):
+                target = self._com_paper_layout(doc, layout, "page_setup_list")
+                return [self._com_page_setup_row(target)]
+            return [
+                self._com_page_setup_row(doc.Layouts.Item(name))
+                for name in self._layout_names(doc)
+                if name != "Model"
+            ]
+
+        return await self._run(_sync)
+
+    async def page_setup_apply(self, layout: str, setup: dict) -> dict:
+        from engineering.standards.papers import require_page_setup
+
+        resolved = require_page_setup(setup)
+        if resolved["margins_mm"] is not None:
+            raise ValueError(
+                "page_setup_apply: margins_mm cannot be written on the COM backend — AutoCAD "
+                "takes the printable margins from the plotter configuration (.pc3). Omit "
+                "margins_mm; the device's margins are read back in the result."
+            )
+
+        def _sync():
+            doc = _acad_doc()
+            target = self._com_paper_layout(doc, layout, "page_setup_apply")
+            before = self._com_page_setup_row(target)
+            previous_device = before["device"]
+            target.RefreshPlotDeviceInfo()
+            target.ConfigName = resolved["device"]
+            target.RefreshPlotDeviceInfo()
+            media = resolved["canonical_media_name"]
+            names = [str(n) for n in (target.GetCanonicalMediaNames() or ())]
+            if media not in names:
+                # Roll the one write back before refusing, so a refusal leaves
+                # the layout as it was.
+                target.ConfigName = previous_device
+                nearest = [n for n in names if n.split("_(")[0] == media.split("_(")[0]]
+                raise ValueError(
+                    f"page_setup_apply: device {resolved['device']!r} has no media "
+                    f"{media!r} (same paper on this device: {', '.join(nearest) or 'none'}; "
+                    f"{len(names)} media in total)"
+                )
+            target.CanonicalMediaName = media
+            target.PaperUnits = self._AC_MILLIMETERS
+            target.PlotRotation = self._AC_NO_ROTATION
+            target.StyleSheet = resolved["plot_style"]
+            target.PlotWithPlotStyles = True
+            target.PlotType = int(resolved["plot_type"])
+            code = resolved["activex_standard_scale"]
+            if code is not None:
+                target.StandardScale = int(code)
+                target.UseStandardScale = True
+            else:
+                numerator, denominator = (float(v) for v in resolved["scale_ratio"])
+                target.SetCustomScale(numerator, denominator)
+                target.UseStandardScale = False
+            target.CenterPlot = bool(resolved["center"])
+            after = self._com_page_setup_row(target)
+            changed = {
+                key: [before[key], after[key]]
+                for key in after
+                if key != "layout" and before.get(key) != after[key]
+            }
+            return {
+                "ok": True,
+                "layout": target.Name,
+                "applied": dict(resolved),
+                "changed": changed,
+                "plot_style_known": bool(resolved["plot_style_known"]),
+                "viewports_kept": True,
+                "backend": "com",
+            }
+
+        return await self._run(_sync)
+
+    async def plot_style_list(self) -> list[dict]:
+        # Completed in Task 18 (installed ctb scan); the catalogue rows already answer.
+        from engineering.standards.papers import CTB_CATALOG
+
+        return [{"name": name, "source": "catalog", "installed": None} for name in CTB_CATALOG]
+
+    async def drawing_template_save(self, path, name=None, description=None) -> dict:
+        # Completed in Task 20; declared here so the ABC instantiates.
+        raise UnsupportedCapabilityError(
+            "dwt_write", "drawing_template_save: not implemented yet (Task 20)"
+        )
 
     # ── 3D solids (native ActiveX; gated behind ENABLE_3D at the tool layer) ─
 

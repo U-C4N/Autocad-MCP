@@ -1044,6 +1044,9 @@ class EzdxfBackend(AutoCADBackend):
                 "refiner": FeatureCapability(True, "shared"),
                 "delivery": FeatureCapability(True, "shared"),
                 "paper_space": FeatureCapability(True, "native"),
+                "dwt_write": FeatureCapability(
+                    False, reason="dwt_is_a_dwg_container_requires_live_autocad"
+                ),
                 # Measured, not assumed: a sheet holding nothing but a viewport
                 # renders the model geometry that viewport looks at, at its
                 # scale and position, clipped to its window. v1.4 declared this
@@ -1525,13 +1528,29 @@ class EzdxfBackend(AutoCADBackend):
                 from ezdxf.addons.drawing import Frontend, RenderContext
                 from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
 
-                fig = _new_agg_figure()
+                # Track E: for a sheet, the figure *is* the paper. Sized from
+                # the layout's page setup and left unadjusted, so the PDF's
+                # /MediaBox is the paper size — the evidence page_setup_apply
+                # is judged by. Measured: adjust_figure=True gave 691.2 x 345.6
+                # pt whatever the sheet was.
+                paper = None
+                if resolved is not None and resolved != "Model":
+                    paper = self._paper_frame(target)
+                fig = _new_agg_figure(figsize=paper["figsize"] if paper else None)
                 ax = fig.add_axes([0, 0, 1, 1])
                 ctx = RenderContext(doc)
-                out = MatplotlibBackend(ax)
+                out = MatplotlibBackend(ax, adjust_figure=paper is None)
                 Frontend(ctx, out).draw_layout(target, finalize=True)
+                if paper is not None:
+                    ax.set_xlim(*paper["xlim"])
+                    ax.set_ylim(*paper["ylim"])
+                    ax.set_aspect("equal", adjustable="box")
                 fig.savefig(path, dpi=150)
                 result = {"ok": True, "path": path}
+                if paper is not None:
+                    result["paper_mm"] = paper["size_mm"]
+                    if not paper["rotation_applied"]:
+                        result["rotation_applied"] = False
                 if resolved is not None and resolved != "Model":
                     result["layout"] = resolved
                     result["note"] = (
@@ -2293,6 +2312,182 @@ class EzdxfBackend(AutoCADBackend):
         """Render a dimension measurement the way a dimension text reads."""
         text = f"{float(value):.4f}".rstrip("0").rstrip(".")
         return text or "0"
+
+    # ── page setup (track E) ─────────────────────────────────────────────────
+
+    def _paper_layout(self, raw: str, operation: str):
+        """Resolve a paper-space layout by name, refusing Model and unknowns."""
+        doc = self._require_doc()
+        resolved = self._find_layout(raw)
+        if resolved is None:
+            available = [n for n in doc.layouts.names_in_taborder() if n != "Model"]
+            raise ValueError(
+                f"{operation}: layout {raw!r} not found (paper-space layouts: "
+                f"{', '.join(available) or 'none'})"
+            )
+        if resolved == "Model":
+            raise ValueError(
+                f"{operation}: Model space has no sheet; plot it with "
+                "drawing_export_pdf(layout=None) or apply the setup to a paper-space layout"
+            )
+        return doc.layouts.get(resolved)
+
+    @staticmethod
+    def _page_setup_row(layout) -> dict:
+        from engineering.standards.papers import (
+            PLOT_TYPE_NAMES,
+            dxf_scale_label,
+            paper_from_size,
+            scale_label,
+        )
+
+        dxf = layout.dxf_layout.dxf
+        flags = int(dxf.get("plot_layout_flags", dxf.get_default("plot_layout_flags")))
+        # DXF stores every paper size and margin in millimetres, whatever
+        # plot_paper_units says (ezdxf's acdb_plot_settings, verified).
+        width, height = float(dxf.paper_width), float(dxf.paper_height)
+        rotation = int(dxf.plot_rotation)
+        if rotation in (1, 3):
+            width, height = height, width
+        media = str(dxf.paper_size)
+        numerator, denominator = float(dxf.scale_numerator), float(dxf.scale_denominator)
+        if flags & layout.USE_STANDARD_SCALE:
+            scale = dxf_scale_label(int(dxf.standard_scale_type), numerator, denominator)
+        else:
+            scale = scale_label(numerator, denominator)
+        return {
+            "layout": layout.name,
+            "paper": paper_from_size(width, height) or media,
+            "canonical_media_name": media,
+            "size_mm": [round(width, 2), round(height, 2)],
+            "orientation": "landscape" if width >= height else "portrait",
+            "plot_style": str(dxf.current_style_sheet),
+            "scale": scale,
+            "plot_area": PLOT_TYPE_NAMES.get(int(dxf.plot_type), str(dxf.plot_type)),
+            "device": str(dxf.plot_configuration_file),
+            "margins_mm": [
+                round(float(dxf.top_margin), 3),
+                round(float(dxf.bottom_margin), 3),
+                round(float(dxf.left_margin), 3),
+                round(float(dxf.right_margin), 3),
+            ],
+            "center": bool(flags & layout.PLOT_CENTERED),
+        }
+
+    @staticmethod
+    def _paper_frame(layout) -> dict:
+        """The sheet as a matplotlib figure: size in inches plus the axes window.
+
+        Used by ``drawing_export_pdf`` so the PDF's /MediaBox *is* the paper.
+        ``plot_rotation`` 1/3 swaps the figure; the content is not rotated by
+        the headless renderer (reported, not hidden).
+        """
+        dxf = layout.dxf_layout.dxf
+        width, height = float(dxf.paper_width), float(dxf.paper_height)
+        rotation = int(dxf.plot_rotation)
+        unit = 25.4 if int(dxf.plot_paper_units) == 0 else 1.0
+        x0 = -(float(dxf.left_margin) + float(dxf.plot_origin_x_offset))
+        y0 = -(float(dxf.bottom_margin) + float(dxf.plot_origin_y_offset))
+        fig_w, fig_h = (height, width) if rotation in (1, 3) else (width, height)
+        return {
+            "size_mm": [round(fig_w, 2), round(fig_h, 2)],
+            "figsize": (fig_w / 25.4, fig_h / 25.4),
+            "xlim": (x0 / unit, (x0 + width) / unit),
+            "ylim": (y0 / unit, (y0 + height) / unit),
+            "rotation_applied": rotation == 0,
+        }
+
+    async def page_setup_list(self, layout: str | None = None) -> list[dict]:
+        def _sync():
+            doc = self._require_doc()
+            if layout is not None and self._layout_name(layout):
+                return [self._page_setup_row(self._paper_layout(layout, "page_setup_list"))]
+            return [
+                self._page_setup_row(doc.layouts.get(name))
+                for name in doc.layouts.names_in_taborder()
+                if name != "Model"
+            ]
+
+        return await self._async(_sync)
+
+    async def page_setup_apply(self, layout: str, setup: dict) -> dict:
+        from engineering.standards.papers import require_page_setup
+
+        resolved = require_page_setup(setup)
+
+        def _sync():
+            from ezdxf.lldxf.const import STD_SCALES
+
+            target = self._paper_layout(layout, "page_setup_apply")
+            before = self._page_setup_row(target)
+            dxf = target.dxf_layout.dxf
+            # Measured: a fresh layout has no stored plot_layout_flags, and
+            # set_flag_state starts from 0 — toggling one bit would drop
+            # plot-styles (32), lineweights (128) and viewports-first (512).
+            if not dxf.hasattr("plot_layout_flags"):
+                dxf.plot_layout_flags = dxf.get_default("plot_layout_flags")
+            width, height = (float(v) for v in resolved["size_mm"])
+            dxf.page_setup_name = ""
+            dxf.plot_configuration_file = resolved["device"]
+            dxf.paper_size = resolved["canonical_media_name"]
+            dxf.paper_width = width
+            dxf.paper_height = height
+            dxf.plot_paper_units = 1  # millimetres
+            dxf.plot_rotation = 0  # orientation rides on width/height, as AutoCAD names media
+            if resolved["margins_mm"] is not None:
+                top, bottom, left, right = (float(v) for v in resolved["margins_mm"])
+                dxf.top_margin, dxf.bottom_margin = top, bottom
+                dxf.left_margin, dxf.right_margin = left, right
+            dxf.plot_origin_x_offset = 0.0
+            dxf.plot_origin_y_offset = 0.0
+            dxf.unit_factor = 1.0
+            dxf.current_style_sheet = resolved["plot_style"]
+            target.use_plot_styles(True)
+            target.set_plot_type(int(resolved["plot_type"]))
+            code = resolved["dxf_standard_scale_type"]
+            if code is not None:
+                dxf.standard_scale_type = int(code)
+                numerator, denominator = STD_SCALES.get(int(code), (1.0, 1.0))
+                dxf.scale_numerator, dxf.scale_denominator = float(numerator), float(denominator)
+                target.use_standard_scale(True)
+            else:
+                numerator, denominator = (float(v) for v in resolved["scale_ratio"])
+                dxf.standard_scale_type = 16
+                dxf.scale_numerator, dxf.scale_denominator = numerator, denominator
+                target.use_standard_scale(False)
+            target.plot_centered(bool(resolved["center"]))
+            # Limits follow the paper; viewports are deliberately left alone
+            # (Paperspace.page_setup() would delete them).
+            target.reset_paper_limits()
+            self._mark_dirty()
+            after = self._page_setup_row(target)
+            changed = {
+                key: [before[key], after[key]]
+                for key in after
+                if key != "layout" and before.get(key) != after[key]
+            }
+            return {
+                "ok": True,
+                "layout": target.name,
+                "applied": dict(resolved),
+                "changed": changed,
+                "plot_style_known": bool(resolved["plot_style_known"]),
+                "viewports_kept": True,
+                "backend": "ezdxf",
+            }
+
+        return await self._async(_sync)
+
+    async def plot_style_list(self) -> list[dict]:
+        from engineering.standards.papers import CTB_CATALOG
+
+        return [{"name": name, "source": "catalog", "installed": None} for name in CTB_CATALOG]
+
+    async def drawing_template_save(self, path, name=None, description=None) -> dict:
+        # Completed in Task 20; declared here so the ABC instantiates.
+        raise UnsupportedCapabilityError(
+            "dwt_write", "drawing_template_save: not implemented yet (Task 20)"
+        )
 
     # ── 3D solids (unsupported headlessly — honest capability boundary) ─────
 
