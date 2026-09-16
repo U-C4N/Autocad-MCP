@@ -102,6 +102,10 @@ class Settings:
         # server.REMOVED_TOOL_PROFILES).
         self.tool_profile: str = os.environ.get("TOOL_PROFILE", "full").lower().strip()
 
+        # Tool packs: "all" (default) advertises every vertical pack; a comma
+        # list ("core,pid") advertises only those. core cannot be disabled.
+        self.tool_packs: str = os.environ.get("TOOL_PACKS", "all").lower().strip()
+
         # Tool discovery: "off" (default) advertises the full catalog; "search"
         # replaces it with a search tool plus a call_tool proxy (see
         # discovery/transform.py and server._apply_discovery_mode).

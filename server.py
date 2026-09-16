@@ -923,6 +923,13 @@ LEAN_TOOL_NAMES = frozenset(
         # lever is turn elimination (9.07x), so a lean surface without cad_batch
         # withholds the saving from the callers who need it most.
         "cad_batch",
+        # P&ID — the three tools a lean client needs to draw and read a P&ID
+        # (symbol insertion, line drawing, the reader). Still subject to
+        # TOOL_PACKS: lean intersects with the enabled packs, so
+        # TOOL_PACKS=core hides them from a lean surface too.
+        "pid_symbol_insert",
+        "pid_line_draw",
+        "pid_graph",
     }
 )
 
@@ -930,14 +937,64 @@ SOLID_TOOL_NAMES = frozenset(
     {"solid_box", "solid_cylinder", "solid_extrude", "solid_revolve", "solid_boolean"}
 )
 
+# Tool packs: vertical domains a client can opt out of advertising. `core` is
+# everything not claimed by another pack and is always on. ~300 tools would
+# push the full catalog to ~80k idle tokens; a client that only drafts
+# mechanically should not pay for the P&ID surface.
+TOOL_PACK_NAMES = ("core", "pid")
+PACK_TOOL_NAMES: dict[str, frozenset[str]] = {
+    "pid": frozenset(
+        {
+            "pid_symbol_list",
+            "pid_symbol_insert",
+            "pid_line_draw",
+            "pid_tag_parse",
+            "pid_graph",
+            "pid_instrument_index",
+            "pid_line_list",
+            "pid_equipment_list",
+            "pid_from_spec",
+        }
+    ),
+}
+
 _active_tool_profile: dict | None = None
 
 
+def _enabled_packs() -> tuple[set[str], list[str]]:
+    """Resolve TOOL_PACKS into (enabled packs, ignored unknown entries).
+
+    ``all`` (or an empty value) enables every pack; a comma list enables the
+    named packs on top of ``core``, which can never be dropped. Unknown names
+    are ignored with a warning rather than failing startup.
+    """
+    raw = (config.settings.tool_packs or "all").lower()
+    requested = [p.strip() for p in raw.split(",") if p.strip()]
+    if not requested or "all" in requested:
+        return set(TOOL_PACK_NAMES), []
+    enabled = {"core"}
+    ignored: list[str] = []
+    for pack in requested:
+        if pack in TOOL_PACK_NAMES:
+            enabled.add(pack)
+        else:
+            ignored.append(pack)
+            log.warning(
+                "Unknown TOOL_PACKS entry %r ignored. Valid packs: %s.",
+                pack,
+                ", ".join(TOOL_PACK_NAMES),
+            )
+    return enabled, ignored
+
+
 def _profile_enabled_names(profile: str, registered: set[str]) -> set[str]:
+    packs, _ignored = _enabled_packs()
+    hidden_by_pack: set[str] = set().union(
+        *(names for pack, names in PACK_TOOL_NAMES.items() if pack not in packs)
+    )
+    enabled = set(registered) - hidden_by_pack
     if profile == "lean":
-        enabled = registered & LEAN_TOOL_NAMES
-    else:
-        enabled = set(registered)
+        enabled &= LEAN_TOOL_NAMES
     if not config.settings.enable_3d:
         # Capability-aware discovery: don't advertise opt-in 3D tools that
         # would only reject the call.
@@ -983,6 +1040,12 @@ async def _apply_tool_profile(profile: str | None = None) -> dict:
         "enabled_count": len(enabled),
         "disabled_count": len(disabled),
         "disabled_tools": disabled,
+    }
+    packs, ignored = _enabled_packs()
+    _active_tool_profile["tool_packs"] = {
+        "enabled": sorted(packs),
+        "available": list(TOOL_PACK_NAMES),
+        "ignored": ignored,
     }
     if requested != selected:
         # Surface the fallback where an MCP client can actually see it: a
@@ -3454,7 +3517,7 @@ BATCH_ON_ERROR_MODES = ("stop", "continue", "rollback")
 BATCH_ERROR_KINDS = (
     "denied",  # on cad_batch's deny set; never executed
     "malformed_step",  # not a {tool, args, bind} object
-    "unknown_tool",  # not registered, or hidden by TOOL_PROFILE / ENABLE_3D
+    "unknown_tool",  # not registered, or hidden by TOOL_PROFILE / TOOL_PACKS / ENABLE_3D
     "invalid_args",  # rejected by the tool's own JSON Schema
     "unresolved_ref",  # a $reference that no earlier step successfully bound
     "unsupported",  # this backend cannot do it (carries `capability`)
@@ -4134,7 +4197,7 @@ async def cad_batch(
                 _invalid(
                     "unknown_tool",
                     f"{name!r} is not a callable tool here (unregistered, or hidden by "
-                    "the active TOOL_PROFILE / ENABLE_3D gate).",
+                    "the active TOOL_PROFILE / TOOL_PACKS / ENABLE_3D gate).",
                 )
             elif card.get("cost") == "escape":
                 # The deny set is computed from the local registry; this repeats
@@ -5083,6 +5146,16 @@ async def system_about(ctx: Context = None) -> dict:
     # dict omitted all engineering/premium/corner-ops tools + drawing_close and
     # misfiled entity_delete_many under entity_creation).
     tool_count = await _registered_tool_count()
+    tool_packs = (_active_tool_profile or {}).get("tool_packs")
+    if tool_packs is None:
+        # Not applied yet (system_about called outside the lifespan): resolve
+        # once rather than twice so an unknown pack warns once.
+        packs, ignored = _enabled_packs()
+        tool_packs = {
+            "enabled": sorted(packs),
+            "available": list(TOOL_PACK_NAMES),
+            "ignored": ignored,
+        }
     out = {
         "name": "AutoCAD MCP Pro",
         "version": __version__,
@@ -5093,6 +5166,7 @@ async def system_about(ctx: Context = None) -> dict:
         "capabilities": b.capabilities().to_dict()["features"] if b else {},
         "tool_profile": _active_tool_profile
         or {"profile": config.settings.tool_profile, "applied": False},
+        "tool_packs": tool_packs,
     }
     # R20: omit total_tools when unknown rather than reporting a fake -1.
     if tool_count is not None:

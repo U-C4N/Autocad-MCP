@@ -189,13 +189,14 @@ A page that only lists strengths is a page that has not been measured.
 Nothing loads a `.env` file — export these, or set them in your MCP client's `env` block.
 
 <details>
-<summary><b>All 16 environment variables</b></summary>
+<summary><b>All 17 environment variables</b></summary>
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `AUTOCAD_MCP_BACKEND` | `auto` | `auto`, `com`, or `ezdxf` |
 | `CAD_PROGID` | `AutoCAD.Application` | COM ProgID the live backend attaches to |
-| `TOOL_PROFILE` | `full` | `lean` (47 curated tools) or `full` |
+| `TOOL_PROFILE` | `full` | `lean` (50 curated tools) or `full` |
+| `TOOL_PACKS` | `all` | Vertical packs to advertise: `core,pid` (`core` always on) |
 | `DISCOVERY_MODE` | `off` | `search` replaces the catalog with `search_tools` + `call_tool` |
 | `ENABLE_3D` | `false` | Expose the opt-in `solid_*` tools (COM) |
 | `LOG_LEVEL` | `INFO` | Python logging level |
