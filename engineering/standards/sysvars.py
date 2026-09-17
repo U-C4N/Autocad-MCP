@@ -12,9 +12,21 @@ variable ezdxf will export, the active VPORT (grid/snap), the variable
 dictionary (CANNOSCALE) or the model-space layout (limits). Registry-saved
 and never-saved variables are ``False`` because a file has nowhere to keep
 them, and ``EzdxfBackend.system_set_variable`` refuses them with
-``capability: registry_sysvar``. A handful of drawing-saved variables are also
-``False`` because ezdxf 1.4 has no header slot for them (CTAB, VIEWCTR,
-VIEWSIZE, ISOLINES, FACETRES); that refusal is a plain ``ValueError``.
+``capability: registry_sysvar`` (OSMODE is one of them: ``$OSMODE`` is an R12
+header variable that ezdxf never exports for R2000+, so a headless write
+looked accepted and vanished at save until it joined the refused set). A
+handful of drawing-saved variables are also ``False`` because ezdxf 1.4 has no
+header slot for them (CTAB, VIEWCTR, VIEWSIZE, ISOLINES, FACETRES); that
+refusal is a plain ``ValueError``.
+
+Angles are **radians** at the ``system_get_variable`` / ``system_set_variable``
+boundary on both engines - the unit ActiveX ``GetVariable`` / ``SetVariable``
+and AutoLISP ``getvar`` use (measured on AutoCAD 2026: ``SETVAR ANGBASE 90``
+reads back 1.5707963267948966, and so does HPANG after ``SETVAR HPANG 45``).
+The DXF header stores ``$ANGBASE`` in degrees (group code 50; the same
+document saved by AutoCAD carries ``$ANGBASE = 90.0``), so the headless engine
+translates that one variable at its boundary and the two engines report the
+same number. ``drawing_settings`` speaks degrees for its friendly keys.
 
 Sources: the AutoCAD 2026 System Variables reference (type / saved-in /
 initial value columns), the DXF Reference HEADER and VPORT sections, and
@@ -464,9 +476,10 @@ _ENTRIES: tuple[SysVar, ...] = (
     _v(
         "OSMODE",
         "int",
-        "running object snap bitmask (1 end, 2 mid, 4 cen, 8 nod, 16 qua, 32 int, 64 ins, 128 per, 256 tan, 512 nea, 1024 quick, 2048 app, 4096 ext, 8192 par, 16384 off); headlessly held in memory only, DXF R2000+ does not carry it",
+        "running object snap bitmask (1 end, 2 mid, 4 cen, 8 nod, 16 qua, 32 int, 64 ins, 128 per, 256 tan, 512 nea, 1024 quick, 2048 app, 4096 ext, 8192 par, 16384 off); registry-saved, and a DXF R2000+ file carries no $OSMODE, so the headless engine refuses it",
         range_=(0, 32767),
         default=4133,
+        saved_in="registry",
         friendly_key="osmode",
     ),
     # ── current properties ───────────────────────────────────────────────────
@@ -543,7 +556,7 @@ _ENTRIES: tuple[SysVar, ...] = (
     _v(
         "ANGBASE",
         "float",
-        "direction of angle 0 relative to the current UCS, in radians",
+        "direction of angle 0 relative to the current UCS, in radians on both engines (90 degrees = 1.5708; the DXF header stores degrees and the headless engine translates)",
         default=0.0,
     ),
     _v("ANGDIR", "bool", "positive angle direction: 0 counter-clockwise, 1 clockwise", default=0),
@@ -655,7 +668,7 @@ _ENTRIES: tuple[SysVar, ...] = (
     _v(
         "HPANG",
         "float",
-        "default hatch pattern angle in degrees",
+        "default hatch pattern angle in radians, as ActiveX and AutoLISP hold it (45 degrees = 0.7854)",
         default=0.0,
         saved_in="not_saved",
     ),

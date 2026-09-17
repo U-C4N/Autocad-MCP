@@ -73,12 +73,18 @@ _VPORT_SYSVARS: dict[str, tuple[str, str]] = {
 #: Registry-saved or never-saved (AutoCAD System Variables reference, "Saved
 #: in" column). A file has nowhere to keep them, so the headless engine refuses
 #: a write with `capability: registry_sysvar` instead of storing a value that
-#: would vanish; `engineering.standards.sysvars` pins this set to its catalogue.
+#: would vanish, and reads report `None` rather than the value ezdxf's document
+#: template happens to hold in memory; `engineering.standards.sysvars` pins this
+#: set to its catalogue. OSMODE / ATTREQ / ATTDIA are the trap: ezdxf accepts
+#: `doc.header["$OSMODE"]` (an R12 header variable, `maxdxf="AC1009"` in
+#: `HEADER_VAR_MAP`) but never exports it for R2000+ - measured 2026-09-17: a
+#: write of 4134 to a fresh AC1024 document read back `None` after save + open.
 _UNSAVED_SYSVARS: frozenset[str] = frozenset(
     {
         "AUTOSNAP",
         "POLARANG",
         "POLARMODE",
+        "OSMODE",
         "ATTREQ",
         "ATTDIA",
         "SAVETIME",
@@ -94,6 +100,13 @@ _UNSAVED_SYSVARS: frozenset[str] = frozenset(
         "DWGPREFIX",
     }
 )
+
+#: Header variables the DXF file stores in degrees (group code 50) while the
+#: sysvar boundary speaks radians - the unit ActiveX `GetVariable` and AutoLISP
+#: `getvar` use, so both engines report the same number. Measured on AutoCAD
+#: 2026 (2026-09-17): `SETVAR ANGBASE 90` reads back 1.5707963267948966 over
+#: COM and the DXF AutoCAD saves carries `$ANGBASE = 90.0`.
+_HEADER_DEGREE_SYSVARS: frozenset[str] = frozenset({"ANGBASE"})
 
 log = logging.getLogger(__name__)
 
@@ -5573,7 +5586,12 @@ class EzdxfBackend(AutoCADBackend):
                 return self._dictionary_variable(doc, "CANNOSCALE", "1:1")
             if key == "CANNOSCALEVALUE":
                 return scale_value(self._dictionary_variable(doc, "CANNOSCALE", "1:1"))
-            return doc.header.get(f"${key}", None)
+            if key in _UNSAVED_SYSVARS:
+                return None  # a file holds no value; the template's memory is not one
+            raw = doc.header.get(f"${key}", None)
+            if key in _HEADER_DEGREE_SYSVARS and raw is not None:
+                return math.radians(float(raw))
+            return raw
 
         return await self._async(_sync)
 
@@ -5607,8 +5625,11 @@ class EzdxfBackend(AutoCADBackend):
                     "CANNOSCALEVALUE is read-only; set CANNOSCALE (e.g. '1:50') instead."
                 )
             else:
+                stored = value
+                if key in _HEADER_DEGREE_SYSVARS:
+                    stored = math.degrees(float(value))
                 try:
-                    doc.header[f"${key}"] = value
+                    doc.header[f"${key}"] = stored
                 except DXFKeyError as exc:
                     # Keeps the pinned "$$DIMTXT" text (tests/test_dimension_header_vars.py)
                     # while saying why the write is refused rather than dropped.

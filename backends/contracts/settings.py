@@ -44,8 +44,9 @@ class SettingsContract:
         unknown key; a value outside ``_SETTING_RANGES``; a malformed
         ``limits`` / ``annotation_scale``; ``annotation_scale`` on an R12 file
         headlessly (no OBJECTS section, so the value would vanish at save —
-        save as R2000 or newer first); ``polar`` / ``polar_angle`` on the
-        headless engine (registry-saved — ``capability: registry_sysvar``);
+        save as R2000 or newer first); ``osmode`` / ``polar`` / ``polar_angle``
+        on the headless engine (registry-saved — ``capability: registry_sysvar``;
+        a snapshot reports them as ``None`` there, a file holds no value);
         ``dimstyle`` / ``textstyle`` when the backend has no styles contract.
 
         Note that a no-argument snapshot is one ``system_get_variable`` per key
@@ -145,6 +146,8 @@ _SETTING_MAP: dict[str, tuple[str, str]] = {
     "text_size": ("TEXTSIZE", "float"),
     "point_mode": ("PDMODE", "int"),
     "point_size": ("PDSIZE", "float"),
+    # OSMODE is registry-saved (a DXF R2000+ file has no $OSMODE), so the
+    # headless engine refuses it like the polar pair below.
     "osmode": ("OSMODE", "int"),
     "fillet_radius": ("FILLETRAD", "float"),
     # ── track E: the environment a drawing lives in ──────────────────────

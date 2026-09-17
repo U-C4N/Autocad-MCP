@@ -1,13 +1,17 @@
 """SYSVAR_CATALOG: authored facts about AutoCAD system variables, pinned to the engines.
 
 Every `engines["ezdxf"]` claim is checked against the real headless backend
-(read, and write of the default where the variable is writable); every
-`saved_in` that is not "drawing" is checked to be exactly the set the backend
-refuses with `capability: registry_sysvar`. The catalogue cannot say a thing
-the backend does not do.
+(read, and - where the variable is writable - a write of a value that differs
+from the fresh document's, followed by a save and a reopen, so a header slot
+ezdxf holds in memory but never exports cannot pass); every `saved_in` that is
+not "drawing" is checked to be exactly the set the backend refuses with
+`capability: registry_sysvar`. The catalogue cannot say a thing the backend
+does not do.
 """
 
 from __future__ import annotations
+
+import math
 
 import pytest
 
@@ -71,10 +75,47 @@ SPEC_NAMES = (
     "ISOLINES FACETRES DISPSILH"
 ).split()
 
-#: The two engines legitimately represent these differently (a character vs.
-#: its code; a colour name vs. its ACI number), so their default cannot be
-#: written verbatim headlessly. Everything else round-trips its default.
-_REPRESENTATION_DIFFERS = {"DIMDSEP", "CECOLOR"}
+#: A value that is not the fresh document's, for every writable headless entry
+#: the generic rule below cannot pick one for: the two engines represent DIMDSEP
+#: and CECOLOR differently (a character vs. its code; a colour name vs. its ACI
+#: number), so the headless form is written; the name-valued ones must name
+#: something the drawing has (`drawing_new` bootstraps GEOMETRY and CENTER;
+#: `_set_annotation_scale` seeds AutoCAD's default scale list).
+_PROBE_VALUES: dict[str, object] = {
+    "DIMDSEP": 44,  # ',' as the character code the header holds (a fresh document has 46)
+    "CECOLOR": 1,  # ACI red; the header holds the number
+    "CLAYER": "GEOMETRY",
+    "CELTYPE": "CENTER",
+    "CANNOSCALE": "1:2",
+}
+
+
+def _probe_value(var: SysVar, fresh):
+    """A legal value for ``var`` that differs from ``fresh``, so the write is not a no-op."""
+    if var.name in _PROBE_VALUES:
+        return _PROBE_VALUES[var.name]
+    if var.type == "bool":
+        return 0 if int(fresh) else 1
+    if var.type == "enum":
+        return next(code for code in var.enum if code != int(fresh))
+    if var.type in ("int", "float"):
+        step = 1 if var.type == "int" else 1.0
+        low, high = var.range if var.range is not None else (-math.inf, math.inf)
+        candidate = fresh + step
+        return candidate if candidate <= high else fresh - step
+    if var.type == "point":
+        return (float(fresh[0]) + 1.0, float(fresh[1]) + 2.0)
+    return f"{fresh}_PROBE"
+
+
+def _same(var: SysVar, back, expected) -> bool:
+    if var.type == "point":
+        return tuple(float(v) for v in back[:2]) == tuple(float(v) for v in expected[:2])
+    if var.type in ("bool", "int", "enum"):
+        return int(back) == int(expected)
+    if var.type == "float":
+        return float(back) == pytest.approx(float(expected))
+    return back == expected
 
 
 # ── the data is complete ────────────────────────────────────────────────────
@@ -200,20 +241,79 @@ async def test_every_ezdxf_true_entry_reads_on_a_fresh_document(backend):
 
 
 @asyncio_test
-async def test_every_writable_ezdxf_true_entry_round_trips_its_default(backend):
-    for name, var in SYSVAR_CATALOG.items():
-        if not var.engines["ezdxf"] or var.read_only or name in _REPRESENTATION_DIFFERS:
-            continue
-        await backend.system_set_variable(name, var.default)
+async def test_every_writable_ezdxf_true_entry_survives_a_save_and_reopen(backend, tmp_path):
+    """The write must land in the file, not only in memory.
+
+    The earlier form of this gate wrote each entry's *default* and read it back
+    without saving: 56 of its 66 writes were no-ops (default == fresh value)
+    and the rest could not tell a header slot ezdxf exports from one it holds
+    in memory and drops at save (`$OSMODE`, R12-only). Every write here moves
+    the value, and every read-back is from a reopened file.
+    """
+    writable = {
+        name: var
+        for name, var in SYSVAR_CATALOG.items()
+        if var.engines["ezdxf"] and not var.read_only
+    }
+    probes: dict[str, object] = {}
+    for name, var in writable.items():
+        fresh = await backend.system_get_variable(name)
+        probe = _probe_value(var, fresh)
+        assert not _same(var, fresh, probe), f"{name}: the probe is a no-op write"
+        out = await backend.system_set_variable(name, probe)
+        assert out["ok"] is True, name
+        probes[name] = probe
+
+    path = str(tmp_path / "sysvars.dxf")
+    await backend.drawing_save_as(path)
+    await backend.drawing_open(path)
+
+    lost = {}
+    for name, probe in probes.items():
         back = await backend.system_get_variable(name)
-        if var.type == "point":
-            assert tuple(float(v) for v in back[:2]) == tuple(float(v) for v in var.default), name
-        elif var.type in ("bool", "int", "enum"):
-            assert int(back) == int(var.default), name
-        elif var.type == "float":
-            assert float(back) == pytest.approx(float(var.default)), name
-        else:
-            assert back == var.default, name
+        if back is None or not _same(writable[name], back, probe):
+            lost[name] = (probe, back)
+    assert lost == {}, f"engines.ezdxf is True but the value did not survive the file: {lost}"
+
+
+@asyncio_test
+async def test_osmode_is_registry_saved_and_the_headless_engine_says_so(backend):
+    """`$OSMODE` is an R12 header variable; ezdxf keeps it in memory and never
+    exports it for R2000+, so a write used to report `ok: True` and vanish at
+    save. It is registry-saved in AutoCAD and refused headlessly like POLARANG;
+    the read reports `None` instead of the template's memory."""
+    row = describe_sysvar("OSMODE")
+    assert row["saved_in"] == "registry" and row["engines"] == {"ezdxf": False, "com": True}
+    assert await backend.system_get_variable("OSMODE") is None
+    with pytest.raises(UnsupportedCapabilityError) as excinfo:
+        await backend.system_set_variable("OSMODE", 4134)
+    assert excinfo.value.capability == "registry_sysvar"
+    # the facade follows: no guess in the snapshot, a per-key refusal on write
+    assert (await backend.drawing_settings())["settings"]["osmode"] is None
+    res = await backend.drawing_settings({"osmode": 4134})
+    assert "registry" in res["errors"]["osmode"]
+
+
+@asyncio_test
+async def test_angbase_is_radians_at_the_boundary_and_degrees_in_the_file(backend, tmp_path):
+    """ActiveX `GetVariable("ANGBASE")` and AutoLISP `getvar` hold radians
+    (measured: `SETVAR ANGBASE 90` reads back 1.5707963267948966), while the
+    DXF header stores `$ANGBASE` in degrees (the same drawing saved by AutoCAD
+    carries 90.0). The headless engine translates, so both engines report the
+    same number and the catalogue's "radians" is true on both."""
+    assert "radians" in describe_sysvar("ANGBASE")["meaning"]
+    assert "radians" in describe_sysvar("HPANG")["meaning"]
+    await backend.system_set_variable("ANGBASE", math.pi / 2)
+    assert backend._doc.header["$ANGBASE"] == pytest.approx(90.0)
+    assert await backend.system_get_variable("ANGBASE") == pytest.approx(math.pi / 2)
+
+    path = str(tmp_path / "angbase.dxf")
+    await backend.drawing_save_as(path)
+    text = open(path, encoding="utf-8").read()
+    start = text.index("$ANGBASE")
+    assert "90.0" in text[start : start + 40], text[start : start + 40]
+    await backend.drawing_open(path)
+    assert await backend.system_get_variable("ANGBASE") == pytest.approx(math.pi / 2)
 
 
 @asyncio_test

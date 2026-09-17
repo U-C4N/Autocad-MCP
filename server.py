@@ -5093,11 +5093,12 @@ async def drawing_settings(
 
     Refusals, per key, nothing else rolled back: an unknown key; a value outside
     its range (grid/snap spacing > 0, polar_angle 0–360, precision 0–8, …); a
-    malformed `limits` or `annotation_scale`; `polar` / `polar_angle` on the
-    headless engine (`capability: registry_sysvar` — AutoCAD keeps them in the
-    registry, a file cannot); `dimstyle` / `textstyle` when the backend has no
-    styles contract. On the live engine `annotation_scale` must name a scale in
-    the drawing's scale list (SCALELISTEDIT) and AutoCAD refuses the write on a
+    malformed `limits` or `annotation_scale`; `osmode` / `polar` / `polar_angle`
+    on the headless engine (`capability: registry_sysvar` — AutoCAD keeps them in
+    the registry, a file cannot, and a headless snapshot reports them as `None`);
+    `dimstyle` / `textstyle` when the backend has no styles contract. On the
+    live engine `annotation_scale` must name a scale in the drawing's scale list
+    (SCALELISTEDIT) and AutoCAD refuses the write on a
     paper-space layout with no active viewport; the headless engine adds the
     scale, seeding AutoCAD's default list first when the drawing has none,
     and refuses it on an R12 file (no OBJECTS section, so the value would
