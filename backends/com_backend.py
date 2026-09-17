@@ -1662,6 +1662,9 @@ class ComBackend(AutoCADBackend):
             view = self._com_view(doc, clean)
             replaced = view is not None
             if view is None:
+                # Measured (AutoCAD 2026): Views.Add creates a plan view —
+                # Direction (0, 0, 1), Target (0, 0, 0) — so unlike ezdxf's
+                # VIEW default of (1, 1, 1) nothing has to be forced here.
                 view = doc.Views.Add(clean)
             view.Center = _av([cx, cy])
             view.Height = float(h)

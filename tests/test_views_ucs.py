@@ -106,6 +106,57 @@ async def test_view_replace_restore_and_list(backend):
     assert "BAD" not in backend._doc.views
 
 
+async def test_view_is_written_as_a_plan_view_on_disk(backend, tmp_path):
+    """ezdxf's VIEW default is ``direction=(1, 1, 1)`` — an isometric view. The
+    tool stores the plan window of ``center``/``height``, so the entry must
+    say so explicitly (DXF 11/21/31, 12/22/32 and 50) or AutoCAD restores it
+    oblique and reads ``center`` in that DCS."""
+    await backend.entity_create_line(0, 0, 100, 50)
+    await backend.view_named_save("OVERALL")
+    view = backend._doc.views.get("OVERALL")
+    assert tuple(view.dxf.direction) == (0.0, 0.0, 1.0)
+    assert tuple(view.dxf.target) == (0.0, 0.0, 0.0)
+    assert view.dxf.view_twist == 0.0
+
+    import ezdxf
+
+    path = tmp_path / "views.dxf"
+    await backend.drawing_save_as(str(path))
+    reopened = ezdxf.readfile(str(path)).views.get("OVERALL")
+    assert tuple(reopened.dxf.direction) == (0.0, 0.0, 1.0)
+    assert tuple(reopened.dxf.target) == (0.0, 0.0, 0.0)
+    assert tuple(reopened.dxf.center)[:2] == (50.0, 25.0)
+
+
+async def test_view_restore_carries_the_orientation_into_the_vport(backend):
+    """A foreign drawing's VIEW may be oblique or twisted; restoring it must
+    not silently flatten it to a plan view of the same center."""
+    backend._doc.views.add(
+        "ISO",
+        dxfattribs={
+            "center": (5.0, 6.0, 0.0),
+            "height": 20.0,
+            "width": 30.0,
+            "direction": (1.0, 1.0, 1.0),
+            "target": (1.0, 2.0, 3.0),
+            "view_twist": 15.0,
+        },
+    )
+    result = await backend.view_named_restore("iso")
+    assert result["name"] == "ISO" and result["center"] == [5.0, 6.0]
+    (vport,) = backend._doc.viewports.get("*Active")
+    assert tuple(vport.dxf.direction) == (1.0, 1.0, 1.0)
+    assert tuple(vport.dxf.target) == (1.0, 2.0, 3.0)
+    assert vport.dxf.view_twist == 15.0
+    # ...and restoring a view the tool saved puts the VPORT back on plan.
+    await backend.view_named_save("PLAN", center=[0, 0], height=10)
+    await backend.view_named_restore("PLAN")
+    (vport,) = backend._doc.viewports.get("*Active")
+    assert tuple(vport.dxf.direction) == (0.0, 0.0, 1.0)
+    assert tuple(vport.dxf.target) == (0.0, 0.0, 0.0)
+    assert vport.dxf.view_twist == 0.0
+
+
 # ── headless: UCS ───────────────────────────────────────────────────────────
 
 

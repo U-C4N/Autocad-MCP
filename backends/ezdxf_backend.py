@@ -2576,7 +2576,22 @@ class EzdxfBackend(AutoCADBackend):
             stored = existing.dxf.name if replaced else clean
             if replaced:
                 doc.views.remove(stored)
-            doc.views.add(stored, dxfattribs={"center": (cx, cy, 0.0), "height": h, "width": w})
+            # The tool stores a plan window. ezdxf's VIEW default is
+            # direction=(1, 1, 1) — an isometric view — so the orientation must
+            # be written explicitly or AutoCAD restores the entry oblique and
+            # reads ``center`` in that DCS. Measured: the VPORT default is plan,
+            # which is why a save→restore round trip alone never shows it.
+            doc.views.add(
+                stored,
+                dxfattribs={
+                    "center": (cx, cy, 0.0),
+                    "height": h,
+                    "width": w,
+                    "direction": (0.0, 0.0, 1.0),
+                    "target": (0.0, 0.0, 0.0),
+                    "view_twist": 0.0,
+                },
+            )
             self._mark_dirty()
             return {
                 "ok": True,
@@ -2610,6 +2625,14 @@ class EzdxfBackend(AutoCADBackend):
             vport.dxf.height = h
             if h > 0:
                 vport.dxf.aspect_ratio = w / h
+            # The orientation travels with the window: a foreign drawing's
+            # VIEW may be oblique or twisted, and flattening it to a plan view
+            # of the same center would be a silent lie. The attribute read
+            # mirrors what the file carries: ezdxf forces these tags on export,
+            # so an unset direction is (1, 1, 1) on disk as well as here.
+            vport.dxf.direction = tuple(view.dxf.direction)
+            vport.dxf.target = tuple(view.dxf.target)
+            vport.dxf.view_twist = float(view.dxf.view_twist)
             self._mark_dirty()
             return {
                 "ok": True,
