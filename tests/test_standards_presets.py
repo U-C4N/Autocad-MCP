@@ -200,6 +200,35 @@ def test_unknown_preset_is_refused():
         resolve_dimstyle("iso-25", [("DIMTXT", 2.5)])
 
 
+@pytest.mark.parametrize(
+    "separator",
+    ["\n", "\t", "\x00", "\x7f", chr(0x1F600), chr(0x8000), chr(0xFFFF)],
+    ids=["newline", "tab", "nul", "del", "non-bmp", "first-above-signed-short", "u-ffff"],
+)
+def test_dimdsep_refuses_what_a_dxf_character_code_cannot_hold(separator):
+    """DIMDSEP is the one variable stored as a character code (group 278, a
+    16-bit value); ``len == 1`` alone let these through, and the headless
+    engine then wrote ``ord()`` unguarded — measured: ``'\\n'`` split the
+    dimension text over two lines, NUL read back as a comma, and the emoji
+    reached the file as 128512, which AutoCAD refuses as "not a single
+    character". ezdxf's audit reports none of it."""
+    with pytest.raises(ValueError, match="DIMDSEP"):
+        check_dim_value("DIMDSEP", separator)
+    with pytest.raises(ValueError, match="DIMDSEP"):
+        resolve_dimstyle("iso-25", {"DIMDSEP": separator})
+
+
+@pytest.mark.parametrize(
+    "separator",
+    [",", ".", " ", chr(0xB7), chr(0x66B), chr(0x7FFF)],
+    ids=["comma", "point", "space", "middle-dot", "arabic-decimal", "last-signed-short"],
+)
+def test_dimdsep_takes_any_printable_separator_a_dxf_can_hold(separator):
+    """The comma, the point, the middle dot, the Arabic decimal separator, and
+    the last code a signed short holds all pass; the guard is not an ASCII gate."""
+    assert check_dim_value("DIMDSEP", separator) == separator
+
+
 def test_validate_overrides_alone_is_what_modify_uses():
     assert validate_overrides(None) == {}
     assert validate_overrides({"dimgap": -1}) == {"DIMGAP": -1.0}, "negative gap boxes the text"

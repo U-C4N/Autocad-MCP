@@ -12,9 +12,13 @@ Every value in ``PRESETS`` is pinned by name in
   lettering, .125 in arrowheads) in metric values: 3 mm text and arrowheads,
   text centred in a gap and horizontal, decimal point.
 
-``DIMDSEP`` is a one-character *string* here. DXF stores the character code and
-ezdxf raises on a string in the header, so the translation belongs to the
-backends, not to the data.
+``DIMDSEP`` is a one-character *string* here. DXF stores the character code
+(group 278, a 16-bit value) and ezdxf raises on a string in the header, so the
+translation belongs to the backends, not to the data — but the data is where
+the refusal starts: a control character (``\\n`` splits the dimension text over
+two lines, NUL reads back as a comma) or a code point above ``0x7FFF``
+(``ezdxf`` writes it, AutoCAD refuses it as "not a single character") is
+refused here, before ``ord()`` runs in a backend.
 
 Pure data plus validation: no I/O, no ezdxf, no COM, so the backends, the
 tools and the provenance tests all read one copy.
@@ -270,6 +274,15 @@ def ezdxf_arrowhead(canonical: str) -> str:
     return canonical
 
 
+DIMDSEP_MAX_CODE = 0x7FFF
+"""The largest character code ``DIMDSEP`` accepts.
+
+DXF group 278 is a 16-bit integer and the DWG field a signed short; AutoCAD
+refuses anything above it as "not a single character", while ezdxf would
+write it verbatim (measured: ``'\\U0001F600'`` reached the file as 128512).
+"""
+
+
 def _number(key: str, value: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(f"{key}: expected a number, got {type(value).__name__}")
@@ -324,6 +337,16 @@ def check_dim_value(name: str, value: Any) -> Any:
         raise TypeError(f"{key}: expected a string, got {type(value).__name__}")
     if len(value) != 1:  # "char"
         raise ValueError(f"{key}: {value!r} must be exactly one character")
+    code = ord(value)
+    if code < 32 or code == 127:
+        raise ValueError(
+            f"{key}: {value!r} is a control character, which a DXF cannot hold as a separator"
+        )
+    if code > DIMDSEP_MAX_CODE:
+        raise ValueError(
+            f"{key}: {value!r} (U+{code:04X}) is outside the 16-bit character code DXF group "
+            f"278 stores (at most U+{DIMDSEP_MAX_CODE:04X})"
+        )
     return value
 
 

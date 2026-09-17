@@ -134,6 +134,14 @@ async def test_refusals_happen_before_anything_is_written(backend):
     with pytest.raises(ValueError, match="does not exist"):
         await backend.dimstyle_set_current("NOPE")
     assert backend._doc.dimstyles.get("ISO-25").dxf.dimdec == 2
+    # DIMDSEP is stored as ``ord(value)``: a control character or a code point
+    # above the 16-bit group 278 must stop here, not reach the table.
+    with pytest.raises(ValueError, match="DIMDSEP"):
+        await backend.dimstyle_create("Z", {"DIMDSEP": "\n"})
+    assert not backend._doc.dimstyles.has_entry("Z")
+    with pytest.raises(ValueError, match="DIMDSEP"):
+        await backend.dimstyle_modify("ISO-25", {"DIMDSEP": "\U0001f600"})
+    assert backend._doc.dimstyles.get("ISO-25").dxf.dimdsep == 44
 
 
 async def test_builtin_arrowheads_render_save_and_report_one_spelling(backend, tmp_path):
