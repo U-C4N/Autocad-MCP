@@ -591,7 +591,7 @@ def _header_dimvar(doc, header_var: str, coerce):
 def _style_dimvar(doc, attribute: str, fallback, coerce):
     """What the renderer would use with no header and no override in play."""
     try:
-        style = doc.dimstyles.get(_DIMSTYLE_NAME)
+        style = doc.dimstyles.get(_current_dimstyle_name(doc))
         if style.dxf.hasattr(attribute):
             stored = _coerce_dimvar(style.dxf.get(attribute), coerce)
             if stored is not None:
@@ -660,6 +660,203 @@ def _with_header_dimvars(doc, override: dict | None) -> dict | None:
             merged = dict(override or {})
         merged.setdefault(attribute, from_header)
     return merged
+
+
+# ── styles (track E): module helpers ─────────────────────────────────────────
+#
+# `$DIMSTYLE` names the style new dimensions are created with, exactly as on
+# a live seat. Two measured ezdxf facts shape everything below:
+#
+# * `ezdxf.new()` writes `$DIMSTYLE "ISO-25"` into a fresh header with no such
+#   table entry (only `Standard` exists). `_current_dimstyle_name` therefore
+#   falls back to `Standard` when the header names nothing in the table, and
+#   `dimstyle_create` pins the header so creating a style *called* ISO-25 does
+#   not make it current by accident.
+# * `_with_header_dimvars` folds every `$DIM*` that differs from the current
+#   style's stored value onto the next dimension. Making a style current
+#   without loading its values into the header leaves the previous style's
+#   header winning: measured, ISO-25 (comma) after `drawing_new` (point)
+#   rendered "33.33". `_sync_header_to_dimstyle` is what a live seat's
+#   `-DIMSTYLE Restore` does, and it makes the fold empty.
+
+
+def _current_dimstyle_name(doc) -> str:
+    """The dimension style new dimensions are created with.
+
+    `$DIMSTYLE` when the table holds it (in the table's spelling); otherwise
+    `Standard` — ezdxf's own substitution for a missing style, made explicit.
+    """
+    try:
+        name = doc.header.get("$DIMSTYLE", _DIMSTYLE_NAME)
+    except Exception:
+        return _DIMSTYLE_NAME
+    if isinstance(name, str) and name and doc.dimstyles.has_entry(name):
+        return doc.dimstyles.get(name).dxf.name
+    return _DIMSTYLE_NAME
+
+
+def _current_textstyle_name(doc) -> str:
+    """The text style new TEXT/MTEXT carry: `$TEXTSTYLE`, else `Standard`."""
+    try:
+        name = doc.header.get("$TEXTSTYLE", "Standard")
+    except Exception:
+        return "Standard"
+    if isinstance(name, str) and name and doc.styles.has_entry(name):
+        return doc.styles.get(name).dxf.name
+    return "Standard"
+
+
+def _dimstyle_schema_default(var: str):
+    """What AutoCAD reads for a DIMSTYLE entry that omits the code."""
+    from ezdxf.entities.dimstyle import acdb_dimstyle
+
+    attrib = acdb_dimstyle.attribs.get(var.lower())
+    return None if attrib is None else attrib.default
+
+
+_ARROWHEAD_VARS = ("DIMBLK", "DIMBLK1", "DIMBLK2")
+
+
+def _dimstyle_value(style, var: str):
+    """A style's value for ``var`` in the tool vocabulary (DIMDSEP as the
+    character, arrowheads in the canonical ``_OBLIQUE`` spelling)."""
+    from engineering.standards.dimstyles import reported_arrowhead
+
+    attr = var.lower()
+    raw = style.dxf.get(attr) if style.dxf.hasattr(attr) else None
+    if raw is None:
+        raw = _dimstyle_schema_default(var)
+    if var == "DIMDSEP":
+        code = 44 if raw is None else int(raw)
+        return "," if code == 0 else chr(code)
+    if var == "DIMTXSTY":
+        return str(raw) if raw else "Standard"
+    if var in _ARROWHEAD_VARS:
+        # Measured: ezdxf holds the writer's ``OBLIQUE`` in-session and the
+        # block name ``_OBLIQUE`` after a reload. Raw, one style would be
+        # spelled two ways and re-setting a value to itself would report a
+        # change (spec §8.3); canonicalised, both reads agree.
+        return reported_arrowhead(raw)
+    return raw
+
+
+def _read_dimstyle_values(style, variables=None) -> dict[str, Any]:
+    from engineering.standards.dimstyles import PRESET_VARIABLES
+
+    return {var: _dimstyle_value(style, var) for var in (variables or PRESET_VARIABLES)}
+
+
+def _require_arrowhead_blocks(doc, values: dict[str, Any]) -> None:
+    """Refuse a user arrowhead block the drawing does not define — before any write.
+
+    A built-in (``ARROWHEAD_BLOCKS``) and closed filled (``""``) need no block:
+    ezdxf creates the built-in's block on first use. A user block name passes
+    the data layer (it cannot see the drawing) and, stored, ezdxf raises
+    ``DXFUndefinedBlockError`` at the next dimension render and ``DXFValueError:
+    Block "MYARROW" does not exist`` at ``doc.write`` — after the create tool
+    already said ``ok``. ``doc.blocks`` membership is case-insensitive, and a
+    reload reports the block table's own spelling (measured: ``myarrow`` stored,
+    ``MYARROW`` after reopen), so the name is rewritten in ``values`` to that
+    spelling here — the same "reported in the table's own spelling" rule the
+    style names follow, and what keeps a re-set after reopen a non-change.
+    """
+    from engineering.standards.dimstyles import ARROWHEAD_BLOCKS
+
+    for var in _ARROWHEAD_VARS:
+        name = values.get(var)
+        if not name or name in ARROWHEAD_BLOCKS:
+            continue
+        if name not in doc.blocks:
+            raise ValueError(
+                f"{var}: block {name!r} does not exist in this drawing; define it first "
+                "with block_define, or name one of AutoCAD's built-in arrowheads"
+            )
+        values[var] = doc.blocks.get(name).name
+
+
+def _write_dimstyle_values(style, values: dict[str, Any]) -> None:
+    """Store typed values (from ``validate_overrides``) on a DIMSTYLE entry.
+
+    DIMRND 0 is AutoCAD's "no rounding"; ezdxf applies ``xround(x, 0.0)`` to a
+    *stored* 0.0 and rounds every dimension to a whole unit, so it is
+    discarded rather than stored (the `_normalise_dimstyle_rounding` lesson).
+
+    Arrowheads arrive in the canonical ``_OBLIQUE`` spelling (what ActiveX
+    takes verbatim); ezdxf's writer wants ``OBLIQUE`` and raises at
+    ``doc.write`` on the underscore form, so they go through
+    ``ezdxf_arrowhead``. The caller has run ``_require_arrowhead_blocks``.
+    """
+    from engineering.standards.dimstyles import ezdxf_arrowhead
+
+    for var, value in values.items():
+        attr = var.lower()
+        if var == "DIMRND" and float(value) == 0.0:
+            style.dxf.discard("dimrnd")
+            continue
+        if var == "DIMDSEP":
+            value = ord(value)
+        elif var in _ARROWHEAD_VARS:
+            value = ezdxf_arrowhead(value)
+        style.dxf.set(attr, value)
+
+
+def _sync_header_to_dimstyle(doc, style) -> None:
+    """Load the style's stored variables into ``$DIM*`` — a live seat's Restore."""
+    from engineering.standards.dimstyles import DIM_VARIABLE_WHITELIST
+
+    for var in sorted(DIM_VARIABLE_WHITELIST):
+        attr = var.lower()
+        if not style.dxf.hasattr(attr):
+            continue
+        raw = style.dxf.get(attr)
+        if raw is None:
+            continue
+        doc.header[f"${var}"] = raw
+
+
+def _font_available(font_file: str) -> bool:
+    """Whether ezdxf's font manager can find ``font_file`` on this machine."""
+    try:
+        from ezdxf.fonts import fonts
+
+        return bool(fonts.font_manager.has_font(font_file))
+    except Exception:
+        return False
+
+
+def _ensure_textstyle(doc, name: str, *, refusal_key: str) -> tuple[str, bool]:
+    """``(table spelling, created)`` for a text style that must exist.
+
+    A bundled preset (ISOCP / ISOCPEUR / ARIAL / ROMANS) is created on demand;
+    any other missing name is refused by ``refusal_key`` before a write.
+    """
+    from engineering.standards.textstyles import TEXT_PRESETS
+
+    if doc.styles.has_entry(name):
+        return doc.styles.get(name).dxf.name, False
+    preset = TEXT_PRESETS.get(name.upper())
+    if preset is None:
+        raise ValueError(
+            f"{refusal_key}: text style {name!r} does not exist in this drawing and is not a "
+            f"bundled preset ({sorted(TEXT_PRESETS)}); create it first with textstyle_create"
+        )
+    font_file, width, oblique = preset
+    doc.styles.new(
+        name.upper(),
+        dxfattribs={"font": font_file, "width": width, "oblique": oblique, "height": 0.0},
+    )
+    return name.upper(), True
+
+
+def _dimensions_using(doc, style_name: str) -> list[str]:
+    """Handles of every DIMENSION, in any layout, drawn with ``style_name``."""
+    wanted = style_name.lower()
+    handles: list[str] = []
+    for layout in doc.layouts:
+        for entity in layout.query("DIMENSION"):
+            if str(entity.dxf.get("dimstyle", "")).lower() == wanted:
+                handles.append(entity.dxf.handle)
+    return handles
 
 
 def _round_measure(result: dict) -> dict:
@@ -1058,6 +1255,7 @@ class EzdxfBackend(AutoCADBackend):
                     False, reason="acis_generation_requires_live_autocad"
                 ),
                 "lisp": FeatureCapability(False, reason="live_com_only"),
+                "mleaderstyle": FeatureCapability(True, "native"),
             },
         )
 
@@ -2719,6 +2917,7 @@ class EzdxfBackend(AutoCADBackend):
             ent = msp.add_text(
                 text,
                 dxfattribs={
+                    "style": _current_textstyle_name(self._require_doc()),
                     "height": float(height),
                     "rotation": float(rotation),
                     "insert": (float(x), float(y)),
@@ -2745,7 +2944,11 @@ class EzdxfBackend(AutoCADBackend):
             msp = self._msp()
             ent = msp.add_mtext(
                 text,
-                dxfattribs={"char_height": float(height), "width": float(width)},
+                dxfattribs={
+                    "style": _current_textstyle_name(self._require_doc()),
+                    "char_height": float(height),
+                    "width": float(width),
+                },
             )
             ent.dxf.insert = (float(x), float(y), 0.0)
             if rotation:
@@ -3331,7 +3534,7 @@ class EzdxfBackend(AutoCADBackend):
                 p2=(float(x2), float(y2)),
                 angle=float(rotation),
                 text=text if text is not None else "<>",
-                dimstyle=_DIMSTYLE_NAME,
+                dimstyle=_current_dimstyle_name(self._require_doc()),
                 override=override or None,
             )
             dim.render()
@@ -3361,7 +3564,7 @@ class EzdxfBackend(AutoCADBackend):
                 distance=math.sqrt(
                     (float(dim_x) - float(x1)) ** 2 + (float(dim_y) - float(y1)) ** 2
                 ),
-                dimstyle=_DIMSTYLE_NAME,
+                dimstyle=_current_dimstyle_name(self._require_doc()),
                 override=_with_header_dimvars(self._require_doc(), None),
             )
             dim.render()
@@ -3393,7 +3596,7 @@ class EzdxfBackend(AutoCADBackend):
                 line1=((vxf, vyf), (float(x1), float(y1))),
                 line2=((vxf, vyf), (float(x2), float(y2))),
                 location=(float(tx), float(ty)),
-                dimstyle=_DIMSTYLE_NAME,
+                dimstyle=_current_dimstyle_name(self._require_doc()),
                 override=_with_header_dimvars(self._require_doc(), None),
             )
             dim.render()
@@ -3438,7 +3641,7 @@ class EzdxfBackend(AutoCADBackend):
                     cyf + (radius + leader) * math.sin(angle_rad),
                 ),
                 text=text if text is not None else "<>",
-                dimstyle=_DIMSTYLE_NAME,
+                dimstyle=_current_dimstyle_name(self._require_doc()),
                 override=override or None,
             )
             dim.render()
@@ -3488,7 +3691,7 @@ class EzdxfBackend(AutoCADBackend):
                     cy + (radius + leader) * math.sin(angle_rad),
                 ),
                 text=text if text is not None else "<>",
-                dimstyle=_DIMSTYLE_NAME,
+                dimstyle=_current_dimstyle_name(self._require_doc()),
                 override=override or None,
             )
             dim.render()
@@ -5547,6 +5750,271 @@ class EzdxfBackend(AutoCADBackend):
             "ok": False,
             "error": "system_run_lisp not supported in ezdxf backend (no live AutoCAD)",
         }
+
+    # ── styles (track E) ─────────────────────────────────────────────────────
+
+    async def dimstyle_list(self) -> list[dict]:
+        def _sync():
+            doc = self._require_doc()
+            current = _current_dimstyle_name(doc)
+            rows = [
+                {
+                    "name": style.dxf.name,
+                    "current": style.dxf.name == current,
+                    "values": _read_dimstyle_values(style),
+                    "values_available": True,
+                }
+                for style in doc.dimstyles
+            ]
+            rows.sort(key=lambda row: row["name"].lower())
+            return rows
+
+        return await self._async(_sync)
+
+    async def dimstyle_create(self, name: str, values: dict, set_current: bool = False) -> dict:
+        from engineering.standards.dimstyles import validate_overrides
+        from security import sanitize_symbol_name
+
+        clean = sanitize_symbol_name(name, kind="dimstyle")
+        typed = validate_overrides(values)
+        if not typed:
+            raise ValueError("dimstyle_create: values is empty; resolve a preset first")
+
+        def _sync():
+            doc = self._require_doc()
+            if doc.dimstyles.has_entry(clean):
+                raise ValueError(
+                    f"dimstyle_create: dimension style {clean!r} already exists; "
+                    "use dimstyle_modify to change it"
+                )
+            previous = _current_dimstyle_name(doc)
+            _require_arrowhead_blocks(doc, typed)
+            txsty, textstyle_created = _ensure_textstyle(
+                doc, str(typed.get("DIMTXSTY", "Standard")), refusal_key="DIMTXSTY"
+            )
+            style = doc.dimstyles.new(clean)
+            _write_dimstyle_values(style, {**typed, "DIMTXSTY": txsty})
+            if set_current:
+                doc.header["$DIMSTYLE"] = clean
+                _sync_header_to_dimstyle(doc, style)
+            else:
+                # Measured: ezdxf.new() writes $DIMSTYLE "ISO-25" into a fresh
+                # header with no such table entry, so creating a style of that
+                # name would silently make it current. Pin the header to the
+                # style that was effectively current before this call.
+                doc.header["$DIMSTYLE"] = previous
+            self._mark_dirty()
+            return {
+                "ok": True,
+                "name": clean,
+                "values": _read_dimstyle_values(style),
+                "written": sorted(typed),
+                "current": bool(set_current),
+                "textstyle_created": textstyle_created,
+            }
+
+        return await self._async(_sync)
+
+    async def dimstyle_modify(self, name: str, values: dict) -> dict:
+        from engineering.standards.dimstyles import validate_overrides
+
+        typed = validate_overrides(values)
+        if not typed:
+            raise ValueError("dimstyle_modify: overrides is empty; name at least one DIM* variable")
+
+        def _sync():
+            doc = self._require_doc()
+            if not doc.dimstyles.has_entry(name):
+                raise ValueError(
+                    f"dimstyle_modify: dimension style {name!r} does not exist; "
+                    "dimstyle_list names the styles this drawing holds"
+                )
+            style = doc.dimstyles.get(name)
+            if "DIMTXSTY" in typed and not doc.styles.has_entry(typed["DIMTXSTY"]):
+                raise ValueError(
+                    f"DIMTXSTY: text style {typed['DIMTXSTY']!r} does not exist in this drawing; "
+                    "create it first with textstyle_create"
+                )
+            _require_arrowhead_blocks(doc, typed)
+            before = _read_dimstyle_values(style, tuple(typed))
+            _write_dimstyle_values(style, typed)
+            after = _read_dimstyle_values(style, tuple(typed))
+            changed = {var: [before[var], after[var]] for var in typed if before[var] != after[var]}
+            if changed and style.dxf.name == _current_dimstyle_name(doc):
+                _sync_header_to_dimstyle(doc, style)
+            using = _dimensions_using(doc, style.dxf.name)
+            if changed:
+                self._mark_dirty()
+            return {
+                "ok": True,
+                "name": style.dxf.name,
+                "changed": changed,
+                "dimensions_using_style": using,
+                # A headless DIMENSION carries its rendered block; it shows the
+                # old style until redrawn. Stated, not silent.
+                "rerender_required": bool(changed and using),
+            }
+
+        return await self._async(_sync)
+
+    async def dimstyle_set_current(self, name: str) -> dict:
+        def _sync():
+            doc = self._require_doc()
+            if not doc.dimstyles.has_entry(name):
+                raise ValueError(
+                    f"dimstyle_set_current: dimension style {name!r} does not exist; "
+                    "dimstyle_list names the styles this drawing holds"
+                )
+            style = doc.dimstyles.get(name)
+            previous = _current_dimstyle_name(doc)
+            doc.header["$DIMSTYLE"] = style.dxf.name
+            _sync_header_to_dimstyle(doc, style)
+            changed = style.dxf.name != previous
+            if changed:
+                self._mark_dirty()
+            return {"ok": True, "current": style.dxf.name, "previous": previous, "changed": changed}
+
+        return await self._async(_sync)
+
+    async def textstyle_list(self) -> list[dict]:
+        def _sync():
+            doc = self._require_doc()
+            current = _current_textstyle_name(doc)
+            rows = [
+                {
+                    "name": style.dxf.name,
+                    "font": str(style.dxf.get("font", "") or ""),
+                    "height": float(style.dxf.get("height", 0.0) or 0.0),
+                    "width_factor": float(style.dxf.get("width", 1.0) or 1.0),
+                    "oblique_deg": float(style.dxf.get("oblique", 0.0) or 0.0),
+                    "current": style.dxf.name == current,
+                }
+                for style in doc.styles
+            ]
+            rows.sort(key=lambda row: row["name"].lower())
+            return rows
+
+        return await self._async(_sync)
+
+    async def textstyle_create(
+        self,
+        name: str,
+        font: str,
+        height: float = 0.0,
+        width_factor: float = 1.0,
+        oblique_deg: float = 0.0,
+        set_current: bool = False,
+    ) -> dict:
+        from engineering.standards.textstyles import validate_textstyle
+
+        spec = validate_textstyle(name, font, height, width_factor, oblique_deg)
+
+        def _sync():
+            doc = self._require_doc()
+            if doc.styles.has_entry(spec["name"]):
+                raise ValueError(f"textstyle_create: text style {spec['name']!r} already exists")
+            doc.styles.new(
+                spec["name"],
+                dxfattribs={
+                    "font": spec["font_file"],
+                    "width": spec["width_factor"],
+                    "oblique": spec["oblique_deg"],
+                    "height": spec["height"],
+                },
+            )
+            if set_current:
+                doc.header["$TEXTSTYLE"] = spec["name"]
+            self._mark_dirty()
+            return {
+                "ok": True,
+                "name": spec["name"],
+                "font": spec["font_file"],
+                # A DXF stores the name only; a font nobody can find is written
+                # and *said* to be unresolved, never refused.
+                "font_resolved": spec["known"] or _font_available(spec["font_file"]),
+                "current": bool(set_current),
+            }
+
+        return await self._async(_sync)
+
+    async def textstyle_set_current(self, name: str) -> dict:
+        def _sync():
+            doc = self._require_doc()
+            if not doc.styles.has_entry(name):
+                raise ValueError(
+                    f"textstyle_set_current: text style {name!r} does not exist; "
+                    "textstyle_list names the styles this drawing holds"
+                )
+            style = doc.styles.get(name)
+            previous = _current_textstyle_name(doc)
+            doc.header["$TEXTSTYLE"] = style.dxf.name
+            changed = style.dxf.name != previous
+            if changed:
+                self._mark_dirty()
+            return {"ok": True, "current": style.dxf.name, "previous": previous, "changed": changed}
+
+        return await self._async(_sync)
+
+    async def mleaderstyle_list(self) -> list[dict]:
+        def _sync():
+            doc = self._require_doc()
+            rows = []
+            for name, style in doc.mleader_styles:
+                handle = style.dxf.get("text_style_handle")
+                text_style = doc.entitydb.get(handle) if handle else None
+                rows.append(
+                    {
+                        "name": name,
+                        # schema defaults (measured: 4 / 2.0 / 4) for an unset field
+                        "arrow_size": float(style.dxf.get("arrow_head_size", 4.0)),
+                        "landing_gap": float(style.dxf.get("landing_gap_size", 2.0)),
+                        "text_style": text_style.dxf.name if text_style is not None else "Standard",
+                        "text_height": float(style.dxf.get("char_height", 4.0)),
+                        "values_available": True,
+                    }
+                )
+            rows.sort(key=lambda row: row["name"].lower())
+            return rows
+
+        return await self._async(_sync)
+
+    async def mleaderstyle_create(self, name: str, values: dict) -> dict:
+        from engineering.standards.mleaderstyles import MLEADER_KEYS
+        from security import sanitize_symbol_name
+
+        clean = sanitize_symbol_name(name, kind="mleaderstyle")
+        missing = [key for key in MLEADER_KEYS if key not in values]
+        if missing:
+            raise ValueError(
+                f"mleaderstyle_create: values is missing {missing}; resolve a preset first"
+            )
+
+        def _sync():
+            doc = self._require_doc()
+            if doc.mleader_styles.has_entry(clean):
+                raise ValueError(f"mleaderstyle_create: leader style {clean!r} already exists")
+            text_style_name, textstyle_created = _ensure_textstyle(
+                doc, str(values["text_style"]), refusal_key="text_style"
+            )
+            style = doc.mleader_styles.new(clean)
+            style.dxf.arrow_head_size = float(values["arrow_size"])
+            style.dxf.landing_gap_size = float(values["landing_gap"])
+            style.dxf.char_height = float(values["text_height"])
+            style.dxf.text_style_handle = doc.styles.get(text_style_name).dxf.handle
+            self._mark_dirty()
+            return {
+                "ok": True,
+                "name": clean,
+                "values": {
+                    "arrow_size": float(values["arrow_size"]),
+                    "landing_gap": float(values["landing_gap"]),
+                    "text_style": text_style_name,
+                    "text_height": float(values["text_height"]),
+                },
+                "textstyle_created": textstyle_created,
+            }
+
+        return await self._async(_sync)
 
     # ── corner ops ──────────────────────────────────────────────────────────
 

@@ -254,6 +254,115 @@ def _regen():
         log.debug("Regen failed: %s", exc)
 
 
+# ── styles (track E): module helpers ─────────────────────────────────────────
+#
+# The ActiveX object model has no per-style getters or setters for dimension
+# variables: `AcadDimStyle` exposes `Name` and `CopyFrom` and nothing else. A
+# style's values are therefore written the way AutoCAD's own DIMSTYLE command
+# writes them — set the DIM* system variables on the document (which makes
+# them overrides of the *current* style) and `CopyFrom(document)` to save
+# those settings into the target style. Assigning `ActiveDimStyle` restores
+# that style's saved settings and discards unsaved overrides (AutoCAD's
+# `-DIMSTYLE Restore` rule; the fake in tests/test_styles.py models exactly
+# this, and scripts/smoke_settings_com.py confirms it live). Reading is
+# one-sided: `GetVariable` reads the *current* style only, so `dimstyle_list`
+# reports values for the current style and `values_available: False` for the
+# rest rather than cycling the active style behind the operator's back.
+
+
+def _com_named(collection, name: str):
+    """A collection member by name, case-insensitive (AutoCAD's rule), or None."""
+    wanted = name.strip().lower()
+    for index in range(collection.Count):
+        item = collection.Item(index)
+        if str(item.Name).lower() == wanted:
+            return item
+    return None
+
+
+def _com_dimvar_for_write(var: str, value: Any) -> Any:
+    """ActiveX takes DIMDSEP and the arrowhead/text-style names as strings."""
+    if var in ("DIMDSEP", "DIMBLK", "DIMBLK1", "DIMBLK2", "DIMTXSTY"):
+        return str(value)
+    if isinstance(value, float):
+        return float(value)
+    return int(value)
+
+
+def _com_dimvar_for_report(var: str, raw: Any) -> Any:
+    if var == "DIMDSEP":
+        if isinstance(raw, int):
+            return "," if raw == 0 else chr(raw)
+        text = str(raw)
+        return text[:1] if text else ","
+    if var in ("DIMBLK", "DIMBLK1", "DIMBLK2"):
+        # AutoCAD reports the block name (``_OBLIQUE``, ``""`` for closed
+        # filled) — already canonical; the same read-side rule as ezdxf keeps
+        # the two engines' rows spelled identically.
+        from engineering.standards.dimstyles import reported_arrowhead
+
+        return reported_arrowhead(raw)
+    if var == "DIMTXSTY":
+        return str(raw)
+    return raw
+
+
+def _same_dimvar(old: Any, new: Any) -> bool:
+    if isinstance(old, (int, float)) and isinstance(new, (int, float)):
+        return abs(float(old) - float(new)) < 1e-9
+    return str(old) == str(new)
+
+
+def _com_dimensions_using(doc, style_name: str) -> list[str]:
+    """Handles of every dimension, in every layout, whose StyleName is ``style_name``."""
+    wanted = style_name.lower()
+    handles: list[str] = []
+    for index in range(doc.Layouts.Count):
+        block = doc.Layouts.Item(index).Block
+        for position in range(block.Count):
+            obj = block.Item(position)
+            try:
+                if "Dimension" in str(obj.ObjectName) and str(obj.StyleName).lower() == wanted:
+                    handles.append(str(obj.Handle))
+            except Exception:
+                continue
+    return handles
+
+
+def _com_font_on_support_path(font_file: str) -> bool:
+    """Whether AutoCAD's support path (Preferences.Files.SupportPath) holds the file."""
+    path = Path(font_file)
+    if path.is_absolute():
+        return path.is_file()
+    try:
+        support = str(_acad_app().Preferences.Files.SupportPath)
+    except Exception:
+        return False
+    return any((Path(folder) / font_file).is_file() for folder in support.split(";") if folder)
+
+
+def _ensure_com_textstyle(doc, name: str, *, refusal_key: str) -> tuple[str, bool]:
+    """``(name as AutoCAD spells it, created)``; a preset is created, anything else missing is refused."""
+    from engineering.standards.textstyles import TEXT_PRESETS
+
+    existing = _com_named(doc.TextStyles, name)
+    if existing is not None:
+        return str(existing.Name), False
+    preset = TEXT_PRESETS.get(name.upper())
+    if preset is None:
+        raise ValueError(
+            f"{refusal_key}: text style {name!r} does not exist in this drawing and is not a "
+            f"bundled preset ({sorted(TEXT_PRESETS)}); create it first with textstyle_create"
+        )
+    font_file, width, oblique = preset
+    style = doc.TextStyles.Add(name.upper())
+    style.fontFile = font_file
+    style.Width = float(width)
+    style.ObliqueAngle = deg2rad(oblique)
+    style.Height = 0.0
+    return name.upper(), True
+
+
 def _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode="none", text_override=None):
     """Best-effort ISO 129 tolerance rendering on a live COM dimension.
 
@@ -814,6 +923,13 @@ class ComBackend(AutoCADBackend):
                 "viewport_render": FeatureCapability(True, "native"),
                 "solid_3d": _solid_3d_capability(),
                 "lisp": FeatureCapability(True, "sanitized"),
+                "mleaderstyle": FeatureCapability(
+                    False,
+                    reason=(
+                        "no_activex_mleaderstyle_collection;"
+                        "use_leader_create_mleader_per_leader_parameters"
+                    ),
+                ),
             },
         )
 
@@ -4071,6 +4187,258 @@ class ComBackend(AutoCADBackend):
                 "expression": expression,
                 "result": str(result) if result not in (None, "") else "nil",
             }
+
+        return await self._run(_sync)
+
+    # ── styles (track E) ─────────────────────────────────────────────────────
+    #
+    # Fake-tested in tests/test_styles.py; executed live once by
+    # scripts/smoke_settings_com.py. See the module helper block for the
+    # ActiveX rules every method here relies on.
+
+    async def dimstyle_list(self) -> list[dict]:
+        from engineering.standards.dimstyles import PRESET_VARIABLES
+
+        def _sync():
+            doc = _acad_doc()
+            current = str(doc.ActiveDimStyle.Name)
+            rows = []
+            for index in range(doc.DimStyles.Count):
+                name = str(doc.DimStyles.Item(index).Name)
+                is_current = name.lower() == current.lower()
+                values = (
+                    {
+                        var: _com_dimvar_for_report(var, doc.GetVariable(var))
+                        for var in PRESET_VARIABLES
+                    }
+                    if is_current
+                    else None
+                )
+                rows.append(
+                    {
+                        "name": name,
+                        "current": is_current,
+                        "values": values,
+                        "values_available": is_current,
+                    }
+                )
+            rows.sort(key=lambda row: row["name"].lower())
+            return rows
+
+        return await self._run(_sync)
+
+    async def dimstyle_create(self, name: str, values: dict, set_current: bool = False) -> dict:
+        from engineering.standards.dimstyles import PRESET_VARIABLES, validate_overrides
+
+        clean = sanitize_symbol_name(name, kind="dimstyle")
+        typed = validate_overrides(values)
+        if not typed:
+            raise ValueError("dimstyle_create: values is empty; resolve a preset first")
+
+        def _sync():
+            doc = _acad_doc()
+            if _com_named(doc.DimStyles, clean) is not None:
+                raise ValueError(
+                    f"dimstyle_create: dimension style {clean!r} already exists; "
+                    "use dimstyle_modify to change it"
+                )
+            # The text style must exist before DIMTXSTY can name it.
+            txsty, textstyle_created = _ensure_com_textstyle(
+                doc, str(typed.get("DIMTXSTY", "Standard")), refusal_key="DIMTXSTY"
+            )
+            previous = doc.ActiveDimStyle
+            style = doc.DimStyles.Add(clean)
+            doc.ActiveDimStyle = style
+            for var, value in {**typed, "DIMTXSTY": txsty}.items():
+                doc.SetVariable(var, _com_dimvar_for_write(var, value))
+            style.CopyFrom(doc)
+            written = {
+                var: _com_dimvar_for_report(var, doc.GetVariable(var)) for var in PRESET_VARIABLES
+            }
+            if not set_current:
+                doc.ActiveDimStyle = previous
+            _regen()
+            return {
+                "ok": True,
+                "name": clean,
+                "values": written,
+                "written": sorted(typed),
+                "current": bool(set_current),
+                "textstyle_created": textstyle_created,
+            }
+
+        return await self._run(_sync)
+
+    async def dimstyle_modify(self, name: str, values: dict) -> dict:
+        from engineering.standards.dimstyles import validate_overrides
+
+        typed = validate_overrides(values)
+        if not typed:
+            raise ValueError("dimstyle_modify: overrides is empty; name at least one DIM* variable")
+
+        def _sync():
+            doc = _acad_doc()
+            style = _com_named(doc.DimStyles, name)
+            if style is None:
+                raise ValueError(
+                    f"dimstyle_modify: dimension style {name!r} does not exist; "
+                    "dimstyle_list names the styles this drawing holds"
+                )
+            if "DIMTXSTY" in typed and _com_named(doc.TextStyles, typed["DIMTXSTY"]) is None:
+                raise ValueError(
+                    f"DIMTXSTY: text style {typed['DIMTXSTY']!r} does not exist in this drawing; "
+                    "create it first with textstyle_create"
+                )
+            previous = doc.ActiveDimStyle
+            switched = str(previous.Name).lower() != str(style.Name).lower()
+            if switched:
+                doc.ActiveDimStyle = style
+            before = {var: _com_dimvar_for_report(var, doc.GetVariable(var)) for var in typed}
+            changed: dict[str, list] = {}
+            for var, value in typed.items():
+                if _same_dimvar(before[var], value):
+                    continue
+                doc.SetVariable(var, _com_dimvar_for_write(var, value))
+                changed[var] = [before[var], value]
+            if changed:
+                style.CopyFrom(doc)
+            if switched:
+                doc.ActiveDimStyle = previous
+            using = _com_dimensions_using(doc, str(style.Name))
+            if changed:
+                _regen()
+            return {
+                "ok": True,
+                "name": str(style.Name),
+                "changed": changed,
+                "dimensions_using_style": using,
+                "rerender_required": False,  # AutoCAD re-renders on regen
+            }
+
+        return await self._run(_sync)
+
+    async def dimstyle_set_current(self, name: str) -> dict:
+        def _sync():
+            doc = _acad_doc()
+            style = _com_named(doc.DimStyles, name)
+            if style is None:
+                raise ValueError(
+                    f"dimstyle_set_current: dimension style {name!r} does not exist; "
+                    "dimstyle_list names the styles this drawing holds"
+                )
+            previous = str(doc.ActiveDimStyle.Name)
+            changed = previous.lower() != str(style.Name).lower()
+            if changed:
+                doc.ActiveDimStyle = style
+            return {
+                "ok": True,
+                "current": str(style.Name),
+                "previous": previous,
+                "changed": changed,
+            }
+
+        return await self._run(_sync)
+
+    async def textstyle_list(self) -> list[dict]:
+        def _sync():
+            doc = _acad_doc()
+            current = str(doc.ActiveTextStyle.Name)
+            rows = []
+            for index in range(doc.TextStyles.Count):
+                style = doc.TextStyles.Item(index)
+                rows.append(
+                    {
+                        "name": str(style.Name),
+                        "font": str(style.fontFile),
+                        "height": float(style.Height),
+                        "width_factor": float(style.Width),
+                        "oblique_deg": rad2deg(float(style.ObliqueAngle)),
+                        "current": str(style.Name).lower() == current.lower(),
+                    }
+                )
+            rows.sort(key=lambda row: row["name"].lower())
+            return rows
+
+        return await self._run(_sync)
+
+    async def textstyle_create(
+        self,
+        name: str,
+        font: str,
+        height: float = 0.0,
+        width_factor: float = 1.0,
+        oblique_deg: float = 0.0,
+        set_current: bool = False,
+    ) -> dict:
+        from engineering.standards.textstyles import validate_textstyle
+
+        spec = validate_textstyle(name, font, height, width_factor, oblique_deg)
+
+        def _sync():
+            doc = _acad_doc()
+            if _com_named(doc.TextStyles, spec["name"]) is not None:
+                raise ValueError(f"textstyle_create: text style {spec['name']!r} already exists")
+            style = doc.TextStyles.Add(spec["name"])
+            style.fontFile = spec["font_file"]
+            style.Width = spec["width_factor"]
+            style.ObliqueAngle = deg2rad(spec["oblique_deg"])
+            style.Height = spec["height"]
+            if set_current:
+                doc.ActiveTextStyle = style
+            return {
+                "ok": True,
+                "name": spec["name"],
+                "font": spec["font_file"],
+                "font_resolved": spec["known"] or _com_font_on_support_path(spec["font_file"]),
+                "current": bool(set_current),
+            }
+
+        return await self._run(_sync)
+
+    async def textstyle_set_current(self, name: str) -> dict:
+        def _sync():
+            doc = _acad_doc()
+            style = _com_named(doc.TextStyles, name)
+            if style is None:
+                raise ValueError(
+                    f"textstyle_set_current: text style {name!r} does not exist; "
+                    "textstyle_list names the styles this drawing holds"
+                )
+            previous = str(doc.ActiveTextStyle.Name)
+            changed = previous.lower() != str(style.Name).lower()
+            if changed:
+                doc.ActiveTextStyle = style
+            return {
+                "ok": True,
+                "current": str(style.Name),
+                "previous": previous,
+                "changed": changed,
+            }
+
+        return await self._run(_sync)
+
+    async def mleaderstyle_list(self) -> list[dict]:
+        def _sync():
+            doc = _acad_doc()
+            try:
+                dictionary = doc.Dictionaries.Item("ACAD_MLEADERSTYLE")
+            except Exception:
+                return []
+            rows = []
+            for index in range(dictionary.Count):
+                rows.append(
+                    {
+                        "name": str(dictionary.GetName(dictionary.Item(index))),
+                        # ActiveX exposes no MLeaderStyle object: names only.
+                        "arrow_size": None,
+                        "landing_gap": None,
+                        "text_style": None,
+                        "text_height": None,
+                        "values_available": False,
+                    }
+                )
+            rows.sort(key=lambda row: row["name"].lower())
+            return rows
 
         return await self._run(_sync)
 
