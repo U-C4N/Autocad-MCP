@@ -1027,6 +1027,13 @@ class EzdxfBackend(AutoCADBackend):
                 "measure_area_acis": FeatureCapability(
                     False, reason="acis_evaluation_requires_live_autocad"
                 ),
+                "explode_opaque_members": FeatureCapability(
+                    False,
+                    reason=(
+                        "ezdxf_cannot_transform:OLE2FRAME,VIEWPORT,"
+                        "ACAD_PROXY_ENTITY_without_proxy_graphic;refused_before_writing"
+                    ),
+                ),
                 "ocs_normalized": FeatureCapability(
                     True,
                     "wcs",
@@ -4631,6 +4638,45 @@ class EzdxfBackend(AutoCADBackend):
                 "multi-insert cannot be exploded"
             )
 
+    @staticmethod
+    def _explodable_members(ent, handle: str) -> list:
+        """The reference's members as virtual entities, or a typed refusal
+        before any write when ezdxf would drop one.
+
+        ``virtual_entities()`` skips every member it cannot copy (OLE2FRAME)
+        or transform (VIEWPORT) with a debug-level log only, and an
+        ACAD_PROXY_ENTITY contributes its proxy graphic -- nothing at all when
+        it carries none -- so a title block's OLE logo or a vertical product's
+        proxy geometry used to vanish with ``ok: True`` and a clean audit. The
+        list is materialized here so the skips are known before the layout is
+        touched; AutoCAD explodes all of these natively.
+        """
+        skipped: list[str] = []
+
+        def _collect(entity, reason):
+            entity_handle = entity.dxf.get("handle") or "?"
+            skipped.append(f"{entity.dxftype()} {entity_handle} ({reason})")
+
+        members = list(ent.virtual_entities(skipped_entity_callback=_collect))
+        block = ent.block()
+        for member in block if block is not None else ():
+            if member.dxftype() != "ACAD_PROXY_ENTITY":
+                continue
+            if not any(True for _ in member.virtual_entities()):
+                skipped.append(f"ACAD_PROXY_ENTITY {member.dxf.handle} (no proxy graphic)")
+        if skipped:
+            name = ent.dxf.get("name", "?")
+            raise UnsupportedCapabilityError(
+                "explode_opaque_members",
+                f"block_explode: entity {handle} references block {name!r} whose "
+                f"members {', '.join(skipped)} cannot be exploded by the headless "
+                "ezdxf backend (it cannot transform them; exploding would delete "
+                "them). Nothing was written. Switch to the live COM backend "
+                "(AUTOCAD_MCP_BACKEND=com, needs Windows + AutoCAD), which hands "
+                "the explode to AutoCAD.",
+            )
+        return members
+
     async def block_explode(self, handle) -> dict:
         """Explode an INSERT into its members; ATTRIB values survive as TEXT.
 
@@ -4667,7 +4713,12 @@ class EzdxfBackend(AutoCADBackend):
         it there would redefine the block under every other reference), an
         xref, and a MINSERT -- see ``_refuse_unexplodable_reference`` for the
         last two, which ``virtual_entities()`` cannot represent and which used
-        to be deleted with ``ok: True``.
+        to be deleted with ``ok: True`` -- and a reference whose definition
+        holds a member ezdxf cannot copy or transform (OLE2FRAME, VIEWPORT, a
+        proxy entity without proxy graphics), refused by member with the
+        capability key ``explode_opaque_members`` -- see
+        ``_explodable_members``; those used to be dropped from the result with
+        ``ok: True`` while the reference was deleted.
         """
 
         def _sync():
@@ -4676,8 +4727,9 @@ class EzdxfBackend(AutoCADBackend):
                 raise RuntimeError(f"Entity {handle} is not a block reference (INSERT)")
             self._refuse_unexplodable_reference(ent, handle)
             msp = self._owner_layout_for_explode(ent, handle)
+            members = self._explodable_members(ent, handle)
             inserted = []
-            for sub in ent.virtual_entities():
+            for sub in members:
                 sub_copy = sub.copy()
                 msp.add_entity(sub_copy)
                 inserted.append(sub_copy.dxf.handle)
@@ -4707,6 +4759,39 @@ class EzdxfBackend(AutoCADBackend):
 
         return await self._async(_sync)
 
+    @staticmethod
+    def _attrib_value(attrib) -> str:
+        """The value an ATTRIB carries, as AutoCAD's ``TextString`` reports it.
+
+        A multi-line attribute keeps its content in an embedded MTEXT and its
+        ``dxf.text`` is only the first line when ezdxf authored it (AutoCAD
+        writes ``Line1\\PLine2``), so the embedded content is the value; a
+        single-line attribute's value is ``dxf.text``.
+        """
+        if attrib.has_embedded_mtext_entity:
+            return attrib.virtual_mtext_entity().text
+        return attrib.dxf.text
+
+    @staticmethod
+    def _write_attrib_value(attrib, value: str) -> None:
+        """Write ``value`` into ``attrib`` on every surface it has.
+
+        Setting only ``dxf.text`` on a multi-line ATTRIB left the embedded
+        MTEXT at its old content: ``block_get_attributes`` reported the new
+        value, ``block_explode`` burst the old one, and on an R2010 document
+        (no embedded MTEXT exported) a save/reload carried the new value the
+        exploded drawing never showed. The embedded MTEXT is rebuilt from its
+        own virtual entity with the new content -- the round trip ezdxf's
+        ``BaseAttrib.transform`` itself uses -- so ``dxf.text`` (first line),
+        the MTEXT and the placement stay one attribute.
+        """
+        if attrib.has_embedded_mtext_entity:
+            mtext = attrib.virtual_mtext_entity()
+            mtext.text = value
+            attrib.set_mtext(mtext, graphic_properties=False)
+        else:
+            attrib.dxf.text = value
+
     async def block_get_attributes(self, handle) -> dict:
         def _sync():
             ent = self._get_entity(handle)
@@ -4714,7 +4799,7 @@ class EzdxfBackend(AutoCADBackend):
                 raise RuntimeError(f"Entity {handle} is not a block reference")
             result = {}
             for attrib in ent.attribs:
-                result[attrib.dxf.tag] = attrib.dxf.text
+                result[attrib.dxf.tag] = self._attrib_value(attrib)
             return result
 
         return await self._async(_sync)
@@ -4728,7 +4813,7 @@ class EzdxfBackend(AutoCADBackend):
             for attrib in ent.attribs:
                 tag = attrib.dxf.tag
                 if tag in attributes:
-                    attrib.dxf.text = str(attributes[tag])
+                    self._write_attrib_value(attrib, str(attributes[tag]))
                     updated.append(tag)
             self._mark_dirty()
             return {"ok": True, "updated_tags": updated}

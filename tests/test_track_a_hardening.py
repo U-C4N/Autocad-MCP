@@ -1075,3 +1075,157 @@ async def test_com_explode_refuses_a_minsert_by_name_before_explode(com):
     with pytest.raises(RuntimeError, match=r"MINSERT \(2x3 grid of 'CELL'\)"):
         await backend.block_explode("9B")
     assert dispatched == [] and space.calls == [] and grid.deleted is False
+
+
+# ── Task 2 (review 2): the multi-line writer, and members ezdxf cannot explode ─
+
+
+async def _insert_multi_line(backend):
+    """An INSERT of a LINE + ATTDEF block whose ATTRIB is multi-line (embedded
+    MTEXT ``OLD ONE\\POLD TWO``), built the way the tests above build one."""
+    blk = backend._doc.blocks.new(name="MLW")
+    blk.add_line((0, 0), (10, 0))
+    blk.add_attdef("NOTE", insert=(0, 3), text="x", dxfattribs={"height": 2.5})
+    ref = await backend.block_insert("MLW", 10, 10, rotation=30.0, attributes={"NOTE": "first"})
+    attrib = backend._doc.entitydb[ref.handle].attribs[0]
+    _embed_multi_line(attrib, ["OLD ONE", "OLD TWO"], attrib.dxf.insert)
+    return ref, attrib
+
+
+async def test_get_attributes_reports_every_line_of_a_multi_line_attrib(backend):
+    """``dxf.text`` of an ezdxf-embedded multi-line ATTRIB is only the first
+    line; AutoCAD's ``TextString`` (what the COM engine reports) is the whole
+    ``Line1\\PLine2`` content, and so is the headless reader now."""
+    ref, _ = await _insert_multi_line(backend)
+    assert await backend.block_get_attributes(ref.handle) == {"NOTE": "OLD ONE\\POLD TWO"}
+
+
+async def test_set_attributes_rewrites_the_embedded_mtext_of_a_multi_line_attrib(backend):
+    """The writer used to set only ``dxf.text``, so after an edit the reader
+    said ``NEW VALUE`` while the explode burst the pre-edit MTEXT -- and an
+    R2010 save (no embedded MTEXT exported) carried a value the exploded
+    drawing never showed. One value, on every surface."""
+    ref, attrib = await _insert_multi_line(backend)
+    keys = ("insert", "align_point", "rotation", "height", "halign", "valign", "style")
+    before = {key: attrib.dxf.get(key) for key in keys}
+
+    result = await backend.block_set_attributes(ref.handle, {"NOTE": "NEW VALUE"})
+
+    assert result == {"ok": True, "updated_tags": ["NOTE"]}
+    assert attrib.has_embedded_mtext_entity, "still a multi-line attribute"
+    assert attrib.virtual_mtext_entity().text == "NEW VALUE"
+    assert attrib.dxf.text == "NEW VALUE"
+    after = {key: attrib.dxf.get(key) for key in keys}
+    assert after == before, "rewriting the content does not move the attribute"
+    assert await backend.block_get_attributes(ref.handle) == {"NOTE": "NEW VALUE"}
+    exploded = await backend.block_explode(ref.handle)
+    (handle,) = exploded["attribute_texts"]
+    raw = backend._doc.entitydb[handle]
+    assert raw.dxftype() == "MTEXT" and raw.text == "NEW VALUE"
+    assert backend._doc.audit().errors == []
+
+
+async def test_set_attributes_multi_line_value_keeps_every_line(backend):
+    """A ``\\P`` value on a multi-line attribute is what AutoCAD's
+    ``TextString`` write takes; every line survives, and the empty value
+    empties the attribute rather than leaving the old content behind."""
+    ref, attrib = await _insert_multi_line(backend)
+
+    await backend.block_set_attributes(ref.handle, {"NOTE": "NEW ONE\\PNEW TWO\\PNEW THREE"})
+
+    mtext = attrib.virtual_mtext_entity()
+    assert mtext.plain_text(split=True) == ["NEW ONE", "NEW TWO", "NEW THREE"]
+    assert attrib.dxf.text == "NEW ONE", "ezdxf's single-line mirror is the first line"
+    assert await backend.block_get_attributes(ref.handle) == {
+        "NOTE": "NEW ONE\\PNEW TWO\\PNEW THREE"
+    }
+
+    await backend.block_set_attributes(ref.handle, {"NOTE": ""})
+    assert await backend.block_get_attributes(ref.handle) == {"NOTE": ""}
+    assert attrib.virtual_mtext_entity().text == "" and attrib.dxf.text == ""
+
+    exploded = await backend.block_explode(ref.handle)
+    (handle,) = exploded["attribute_texts"]
+    assert backend._doc.entitydb[handle].text == ""
+    assert backend._doc.audit().errors == []
+
+
+async def test_set_attributes_on_a_multi_line_attrib_survives_an_r2010_round_trip(
+    backend, tmp_path
+):
+    """The default document is R2010, where ezdxf exports no embedded MTEXT:
+    the saved file carries only ``dxf.text``. After the fix that is the
+    edited value, so the reloaded drawing and the exploded one agree."""
+    ref, _ = await _insert_multi_line(backend)
+    assert backend._doc.dxfversion == "AC1024", "the premise"
+    await backend.block_set_attributes(ref.handle, {"NOTE": "NEW VALUE"})
+    path = tmp_path / "ml.dxf"
+    await backend.drawing_save_as(str(path))
+    await backend.drawing_open(str(path))
+
+    reloaded = next(e for e in backend._msp() if e.dxftype() == "INSERT")
+    assert not reloaded.attribs[0].has_embedded_mtext_entity, "R2010 drops the embedded MTEXT"
+    assert await backend.block_get_attributes(reloaded.dxf.handle) == {"NOTE": "NEW VALUE"}
+    exploded = await backend.block_explode(reloaded.dxf.handle)
+    (handle,) = exploded["attribute_texts"]
+    raw = backend._doc.entitydb[handle]
+    assert raw.dxftype() == "TEXT" and raw.dxf.text == "NEW VALUE"
+
+
+async def test_set_attributes_leaves_a_single_line_attrib_single_line(backend):
+    _define_tagged_block(backend, "SL")
+    ref = await backend.block_insert("SL", 0, 0, attributes={"TAG": "P-1"})
+    await backend.block_set_attributes(ref.handle, {"TAG": "P-2"})
+    attrib = backend._doc.entitydb[ref.handle].attribs[0]
+    assert not attrib.has_embedded_mtext_entity and attrib.dxf.text == "P-2"
+    assert await backend.block_get_attributes(ref.handle) == {"TAG": "P-2"}
+
+
+async def test_explode_refuses_members_ezdxf_cannot_explode_before_writing(backend):
+    """``virtual_entities()`` drops every member it cannot copy or transform
+    (OLE2FRAME, VIEWPORT) with a debug log, and a proxy entity without proxy
+    graphics contributes nothing -- so a title block's OLE logo or a vertical
+    product's proxy geometry used to be destroyed with ``ok: True`` and a
+    clean audit. Refused by member before anything is written."""
+    from ezdxf.entities import factory
+
+    from backends.base import UnsupportedCapabilityError
+
+    blk = backend._doc.blocks.new(name="PRX")
+    blk.add_line((0, 0), (10, 0))
+    for dxftype in ("ACAD_PROXY_ENTITY", "OLE2FRAME", "VIEWPORT"):
+        blk.add_entity(factory.create_db_entry(dxftype, {}, backend._doc))
+    ref = await backend.block_insert("PRX", 0, 0)
+    before = [e.dxf.handle for e in backend._msp()]
+
+    with pytest.raises(UnsupportedCapabilityError) as excinfo:
+        await backend.block_explode(ref.handle)
+
+    assert excinfo.value.capability == "explode_opaque_members"
+    message = str(excinfo.value)
+    for name in ("ACAD_PROXY_ENTITY", "OLE2FRAME", "VIEWPORT", "'PRX'", "com"):
+        assert name in message, message
+    assert [e.dxf.handle for e in backend._msp()] == before, "nothing written"
+    assert backend._doc.entitydb[ref.handle].is_alive
+
+
+async def test_explode_still_bursts_a_block_every_member_of_which_it_can_explode(backend):
+    """The refusal is per member, not per block: ordinary geometry keeps
+    exploding, in definition order, under a uniform scale."""
+    blk = backend._doc.blocks.new(name="PLAIN2")
+    blk.add_line((0, 0), (10, 0))
+    blk.add_circle((5, 5), 1)
+    blk.add_hatch().paths.add_polyline_path([(0, 0), (1, 0), (1, 1)])
+    ref = await backend.block_insert("PLAIN2", 0, 0, scale_x=2.0, scale_y=2.0)
+    result = await backend.block_explode(ref.handle)
+    types = [(await backend.entity_get(h)).type for h in result["inserted_handles"]]
+    assert types == ["LINE", "CIRCLE", "HATCH"]
+
+
+async def test_explode_opaque_members_is_declared_on_both_engines():
+    from backends.com_backend import ComBackend
+    from backends.ezdxf_backend import EzdxfBackend
+
+    headless = EzdxfBackend().capabilities().features["explode_opaque_members"]
+    assert headless.supported is False and "OLE2FRAME" in (headless.reason or "")
+    assert ComBackend().capabilities().features["explode_opaque_members"].supported is True

@@ -858,6 +858,9 @@ class ComBackend(AutoCADBackend):
                     False, reason="window_capture_has_no_render_to_label"
                 ),
                 "measure_area_acis": FeatureCapability(True, "native"),
+                "explode_opaque_members": FeatureCapability(
+                    True, "native", reason="autocad_explode;ole_and_proxy_members_unverified_live"
+                ),
                 "ocs_normalized": FeatureCapability(
                     True,
                     "activex_wcs",

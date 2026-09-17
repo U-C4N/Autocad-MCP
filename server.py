@@ -3040,8 +3040,12 @@ async def block_explode(
     (one TEXT or MTEXT handle per attribute), `exploded_handle` and
     `backend`. Refused, with nothing written: a handle that is not a block
     reference, a reference nested inside a block definition (explode the
-    outer reference instead), an external reference (bind it first), and a
-    MINSERT grid. Not undoable except through `drawing_undo` / a transaction.
+    outer reference instead), an external reference (bind it first), a
+    MINSERT grid, and -- headless only, capability `explode_opaque_members`
+    -- a block holding a member ezdxf cannot transform (an OLE2FRAME logo, a
+    VIEWPORT, a proxy entity without proxy graphics), named by member; the
+    live engine hands those to AutoCAD. Not undoable except through
+    `drawing_undo` / a transaction.
     """
     await ctx.warning(f"Exploding block reference {handle}")
     return await _backend(ctx).block_explode(handle)
@@ -3056,7 +3060,11 @@ async def block_get_attributes(
     handle: Annotated[str, "Block reference (INSERT) entity handle"],
     ctx: Context = None,
 ) -> dict:
-    """Get all attribute values from a block reference as {TAG: value} dict."""
+    """Get all attribute values from a block reference as {TAG: value} dict.
+
+    A multi-line attribute reports its whole content with `\\P` between the
+    lines (AutoCAD's `TextString`), on both engines.
+    """
     return await _backend(ctx).block_get_attributes(handle)
 
 
@@ -3073,7 +3081,12 @@ async def block_set_attributes(
     attributes: Annotated[dict, "Attribute values to update: {TAG: new_value}"],
     ctx: Context = None,
 ) -> dict:
-    """Update attribute values in a block reference."""
+    """Update attribute values in a block reference.
+
+    A multi-line attribute takes `Line1\\PLine2` and keeps every line; the
+    value written is the one `block_get_attributes` reads back and
+    `block_explode` bursts, on both engines.
+    """
     return await _backend(ctx).block_set_attributes(handle, attributes)
 
 
