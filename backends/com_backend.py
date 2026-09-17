@@ -1968,12 +1968,34 @@ class ComBackend(AutoCADBackend):
     # over None), an extents plot writes it *after* PlotType, and a stale True
     # is cleared *before* PlotType moves to acLayout. Every write is journaled
     # and unwound in reverse when AutoCAD refuses one, so a failed apply leaves
-    # the layout as it was. Fake-tested in tests/test_page_setup.py (the fake
-    # enforces the CenterPlot rule); executed live by
+    # the layout as it was — and the read-back after the unwind is compared to
+    # the read-back before the first write, so a value that did not go back is
+    # named rather than claimed restored.
+    #
+    # Two behaviours measured live (AutoCAD 2026, 2026-09-17) that the ActiveX
+    # Reference does not document:
+    # * GetPaperSize / GetPaperMargins answer in millimetres whatever
+    #   PaperUnits says (ISO_A3 under PaperUnits=0 -> (420.0, 297.0); ANSI_B
+    #   under 0 and 1 -> (431.8, 279.4) both times). They are never scaled.
+    # * Writing ConfigName replaces CanonicalMediaName with the new device's
+    #   default when the current media does not exist on it, and writing the
+    #   old device back does *not* bring the old media with it (DWG To PDF /
+    #   ISO_A3 -> Microsoft Print to PDF -> 'psk:ISOA4' -> DWG To PDF ->
+    #   'ANSI_A_(11.00_x_8.50_Inches)'). The device write therefore journals
+    #   one combined undo: device back, then the media / units / rotation
+    #   snapshotted before the switch re-applied.
+    #
+    # Fake-tested in tests/test_page_setup.py (the fake enforces the CenterPlot
+    # rule and replays both measurements); executed live by
     # scripts/smoke_settings_com.py (Task 24).
 
     _AC_MILLIMETERS = 1
     _AC_NO_ROTATION = 0
+    #: Layout properties a ConfigName write can move as a side effect (measured
+    #: live for CanonicalMediaName; units / rotation are re-applied on the same
+    #: evidence-before-trust basis) — snapshotted before the device switch and
+    #: put back by its undo.
+    _DEVICE_SIDE_EFFECTS = ("CanonicalMediaName", "PaperUnits", "PlotRotation")
 
     @staticmethod
     def _com_page_setup_row(layout) -> dict:
@@ -1992,18 +2014,18 @@ class ComBackend(AutoCADBackend):
                 log.debug("Layout.%s read failed: %s", attr, exc)
                 return None
 
-        units = _get("PaperUnits")
-        factor = 25.4 if units == 0 else 1.0
+        # GetPaperSize / GetPaperMargins are millimetres regardless of
+        # PaperUnits (measured live; see the block comment above) — no factor.
         size = None
         try:
             width, height = layout.GetPaperSize()
-            size = [round(float(width) * factor, 2), round(float(height) * factor, 2)]
+            size = [round(float(width), 2), round(float(height), 2)]
         except Exception as exc:
             log.debug("Layout.GetPaperSize failed: %s", exc)
         margins = None
         try:
             (left, bottom), (right, top) = layout.GetPaperMargins()
-            margins = [round(float(v) * factor, 3) for v in (top, bottom, left, right)]
+            margins = [round(float(v), 3) for v in (top, bottom, left, right)]
         except Exception as exc:
             log.debug("Layout.GetPaperMargins failed: %s", exc)
         rotation = _get("PlotRotation") or 0
@@ -2094,10 +2116,27 @@ class ComBackend(AutoCADBackend):
                 target.SetCustomScale(numerator, denominator)
                 journal.append((lambda: target.SetCustomScale(*previous), "SetCustomScale"))
 
+            def _set_device(device: str):
+                # A device switch moves the media (and can move units /
+                # rotation) as a side effect, and switching back does not
+                # move them back — so the undo re-applies what was there.
+                snapshot = {attr: getattr(target, attr) for attr in self._DEVICE_SIDE_EFFECTS}
+                previous = target.ConfigName
+                target.ConfigName = device
+
+                def _undo():
+                    target.ConfigName = previous
+                    target.RefreshPlotDeviceInfo()
+                    for attr, value in snapshot.items():
+                        if getattr(target, attr) != value:
+                            setattr(target, attr, value)
+
+                journal.append((_undo, "ConfigName"))
+
             step = "ConfigName"
             try:
                 target.RefreshPlotDeviceInfo()
-                _set("ConfigName", resolved["device"])
+                _set_device(resolved["device"])
                 target.RefreshPlotDeviceInfo()
                 media = resolved["canonical_media_name"]
                 names = [str(n) for n in (target.GetCanonicalMediaNames() or ())]
@@ -2144,14 +2183,23 @@ class ComBackend(AutoCADBackend):
                     _set("CenterPlot", bool(center))
             except Exception as exc:
                 failed = self._com_unwind_page_setup(journal)
+                # The unwind's own word is not evidence: read the layout back
+                # and name every field that is not what it was.
+                failed += [
+                    key
+                    for key, value in self._com_page_setup_row(target).items()
+                    if key != "layout" and value != before.get(key) and key not in failed
+                ]
                 if isinstance(exc, ValueError) and not failed:
-                    raise
+                    raise  # our own refusal (unknown media), nothing left changed
                 restored = (
                     f"layout {target.Name!r} restored to its previous page setup"
                     if not failed
                     else f"layout {target.Name!r} could NOT be fully restored "
                     f"(still changed: {', '.join(failed)})"
                 )
+                if isinstance(exc, ValueError):
+                    raise ValueError(f"{exc}; {restored}") from exc
                 raise ValueError(
                     f"page_setup_apply: AutoCAD refused Layout.{step} ({exc}); {restored}"
                 ) from exc

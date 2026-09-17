@@ -109,7 +109,9 @@ def test_resolve_page_setup_accepts_lowercase_and_short_paper_names():
 def test_resolve_page_setup_scale_codes():
     one_to_five = resolve_page_setup("ISO_A3", scale="1:5")
     assert one_to_five["dxf_standard_scale_type"] is None  # DXF code 75 has no 1:5
-    assert one_to_five["activex_standard_scale"] == 19  # AcPlotScale.ac1_5
+    # The typelib declares ac1_5 = 19, but AutoCAD 2026 refuses
+    # StandardScale = 19 ("Invalid input", measured live): custom route.
+    assert one_to_five["activex_standard_scale"] is None
     assert one_to_five["scale_ratio"] == [1.0, 5.0]
     five_to_one = resolve_page_setup("ISO_A3", scale="5:1")
     assert five_to_one["dxf_standard_scale_type"] is None
@@ -420,13 +422,24 @@ class _FakeLayout:
     be set to True on a layout object whose PlotType property is set to
     acLayout." ``refuse`` names properties whose write raises, the way a live
     AutoCAD refuses a value it cannot take.
+
+    Replays two behaviours measured live on AutoCAD 2026 (2026-09-17):
+
+    * ``GetPaperSize`` / ``GetPaperMargins`` answer in millimetres whatever
+      ``PaperUnits`` says (ANSI_B under PaperUnits 0 and 1 -> (431.8, 279.4)).
+    * Writing ``ConfigName`` replaces ``CanonicalMediaName`` with the new
+      device's default when the current media does not exist on it, and
+      writing the old device back does not bring the old media back.
+      ``media_names`` is therefore either one tuple (every device carries it)
+      or ``{device: tuple}``; a device missing from the dict carries nothing.
     """
 
     AC_LAYOUT = 5
 
     def __init__(self, name, media_names, refuse=()):
         object.__setattr__(self, "log", [])
-        object.__setattr__(self, "_media", tuple(media_names))
+        media = media_names if isinstance(media_names, dict) else {None: tuple(media_names)}
+        object.__setattr__(self, "_media", {k: tuple(v) for k, v in media.items()})
         object.__setattr__(self, "_refuse", tuple(refuse))
         object.__setattr__(
             self,
@@ -459,6 +472,14 @@ class _FakeLayout:
             raise RuntimeError("CenterPlot cannot be True while PlotType is acLayout")
         self._props[attr] = value
         self.log.append(("set", attr, value))
+        if attr == "ConfigName":
+            names = self._device_media()
+            if names and self._props["CanonicalMediaName"] not in names:
+                self._props["CanonicalMediaName"] = names[0]  # the device's default
+
+    def _device_media(self):
+        media = object.__getattribute__(self, "_media")
+        return media.get(self._props["ConfigName"], media.get(None, ()))
 
     def snapshot(self) -> dict:
         return dict(object.__getattribute__(self, "_props"))
@@ -468,13 +489,14 @@ class _FakeLayout:
 
     def GetCanonicalMediaNames(self):
         self.log.append(("call", "GetCanonicalMediaNames"))
-        return self._media
+        return self._device_media()
 
     def GetPaperSize(self):
+        # Millimetres whatever PaperUnits says (measured live, see the class docstring).
         match = _MEDIA_RE.search(self._props["CanonicalMediaName"])
         width, height = float(match.group(1)), float(match.group(2))
         if match.group(3) == "Inches":
-            width, height = width * 25.4, height * 25.4
+            width, height = round(width * 25.4, 2), round(height * 25.4, 2)
         return (width, height)
 
     def GetPaperMargins(self):
@@ -631,11 +653,88 @@ async def test_com_apply_refuses_margins_before_any_write(com_backend):
 async def test_com_apply_restores_the_device_when_the_media_name_is_unknown(com_backend):
     backend, document = com_backend
     layout = document.Layouts.Item("Layout1")
-    object.__setattr__(layout, "_media", ("ISO_A4_(210.00_x_297.00_MM)",))
+    object.__setattr__(layout, "_media", {None: ("ISO_A4_(210.00_x_297.00_MM)",)})
     with pytest.raises(ValueError, match=r"ISO_A3_\(420.00_x_297.00_MM\)"):
         await backend.page_setup_apply("Layout1", resolve_page_setup("ISO_A3"))
     assert layout.ConfigName == "None", "the device write is rolled back"
     assert layout.CanonicalMediaName == "ISO_A4_(210.00_x_297.00_MM)"
+
+
+PDF_DEVICE = "DWG To PDF.pc3"
+MS_DEVICE = "Microsoft Print to PDF"
+ISO_A3_MEDIA = "ISO_A3_(420.00_x_297.00_MM)"
+#: Two devices whose media do not overlap, the way the two PDF drivers on the
+#: machine measured: switching to MS moves an ISO_A3 layout to psk:ISOA4, and
+#: switching back lands on DWG To PDF's default, not on ISO_A3.
+TWO_DEVICES = {
+    PDF_DEVICE: ("ANSI_A_(11.00_x_8.50_Inches)", ISO_A3_MEDIA),
+    MS_DEVICE: ("psk:ISOA4", "ISO_A0_(1189.00_x_841.00_MM)"),
+}
+
+
+def _layout_on_pdf_device(document, **kwargs):
+    layout = _FakeLayout("Layout1", TWO_DEVICES, **kwargs)
+    layout.ConfigName = PDF_DEVICE
+    layout.CanonicalMediaName = ISO_A3_MEDIA
+    del layout.log[:]
+    document.Layouts.layouts[1] = layout
+    return layout
+
+
+async def test_com_apply_puts_the_media_back_when_the_device_switch_replaced_it(com_backend):
+    """Measured live: refusing a media unknown on the new device used to leave
+    the layout on the old device with that device's *default* media (ANSI_A),
+    not the ISO_A3 it had — while the error said it was restored."""
+    backend, document = com_backend
+    layout = _layout_on_pdf_device(document)
+    before = layout.snapshot()
+    with pytest.raises(ValueError, match="has no media") as info:
+        await backend.page_setup_apply("Layout1", resolve_page_setup("ISO_A2", device=MS_DEVICE))
+    assert "could NOT" not in str(info.value)
+    assert layout.snapshot() == before, "device back, then the original media re-applied"
+    assert (await backend.page_setup_list("Layout1"))[0]["paper"] == "ISO_A3"
+
+
+async def test_com_apply_late_refusal_unwinds_through_the_device_switch(com_backend):
+    """The media journaled *after* the device switch is the new device's
+    default; only the pre-switch snapshot can put ISO_A3 back."""
+    backend, document = com_backend
+    layout = _layout_on_pdf_device(document, refuse=("PlotWithPlotStyles",))
+    before = layout.snapshot()
+    with pytest.raises(ValueError, match="PlotWithPlotStyles") as info:
+        await backend.page_setup_apply("Layout1", resolve_page_setup("ISO_A0", device=MS_DEVICE))
+    assert "restored to its previous page setup" in str(info.value)
+    assert layout.snapshot() == before
+    sets = [entry for entry in layout.log if entry[0] == "set"]
+    assert sets[-2:] == [
+        ("set", "ConfigName", PDF_DEVICE),
+        ("set", "CanonicalMediaName", ISO_A3_MEDIA),
+    ]
+
+
+class _StickyMediaLayout(_FakeLayout):
+    """Accepts every write but silently drops CanonicalMediaName once the device
+    has been switched back — what a driver that ignores the write looks like."""
+
+    def __setattr__(self, attr, value):
+        if attr == "CanonicalMediaName" and self._props["ConfigName"] == PDF_DEVICE and self.log:
+            return
+        super().__setattr__(attr, value)
+
+
+async def test_com_apply_reports_what_the_unwind_could_not_put_back(com_backend):
+    backend, document = com_backend
+    layout = _StickyMediaLayout("Layout1", TWO_DEVICES)
+    layout.ConfigName = PDF_DEVICE
+    object.__getattribute__(layout, "_props")["CanonicalMediaName"] = ISO_A3_MEDIA
+    del layout.log[:]
+    document.Layouts.layouts[1] = layout
+    with pytest.raises(ValueError, match="has no media") as info:
+        await backend.page_setup_apply("Layout1", resolve_page_setup("ISO_A2", device=MS_DEVICE))
+    message = str(info.value)
+    assert "could NOT be fully restored" in message
+    assert "canonical_media_name" in message and "paper" in message
+    assert layout.ConfigName == PDF_DEVICE and layout.CanonicalMediaName != ISO_A3_MEDIA
 
 
 async def test_com_apply_refuses_model_and_unknown_layouts(com_backend):
@@ -657,6 +756,22 @@ async def test_com_list_reads_the_properties(com_backend):
     assert row["scale"] == "1:1" and row["plot_area"] == "layout"
     assert row["device"] == "None"
     assert row["center"] is None, "acLayout: CenterPlot is not applicable"
+
+
+async def test_com_list_never_scales_the_paper_by_paper_units(com_backend):
+    """GetPaperSize / GetPaperMargins are millimetres under PaperUnits=0 too
+    (measured live) — the 25.4 factor listed every imperial layout as
+    [10668.0, 7543.8] and lost the paper name."""
+    backend, document = com_backend
+    layout = document.Layouts.Item("Layout1")
+    layout.PaperUnits = 0
+    layout.CanonicalMediaName = "ANSI_B_(17.00_x_11.00_Inches)"
+    row = (await backend.page_setup_list("Layout1"))[0]
+    assert row["size_mm"] == [431.8, 279.4] and row["paper"] == "ANSI_B"
+    assert row["orientation"] == "landscape"
+    assert row["margins_mm"] == [20.0, 20.0, 7.5, 7.5]
+    layout.CanonicalMediaName = "ISO_A3_(420.00_x_297.00_MM)"
+    assert (await backend.page_setup_list("Layout1"))[0]["size_mm"] == [420.0, 297.0]
 
 
 async def test_com_list_reports_center_for_an_extents_plot(com_backend):

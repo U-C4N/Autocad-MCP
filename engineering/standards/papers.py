@@ -8,8 +8,13 @@ tables of two enums that do not agree with each other:
 * DXF group code 75 (``standard_scale_type``, what ezdxf writes): 16=1:1,
   17=1:2, 20=1:10, 22=1:20, 25=1:50, 26=1:100, 27=2:1, 30=10:1 — no 1:5.
 * ActiveX ``AcPlotScale`` (``Layout.StandardScale``, AutoCAD 2026 typelib):
-  ac1_1=16, ac1_2=17, ac1_5=19, ac1_10=21, ac1_20=23, ac1_50=26, ac1_100=27,
-  ac2_1=28, ac10_1=31, acScaleToFit=0.
+  ac1_1=16, ac1_2=17, ac1_10=21, ac1_20=23, ac1_50=26, ac1_100=27, ac2_1=28,
+  ac10_1=31, acScaleToFit=0. The typelib also declares ``ac1_5=19``, but
+  AutoCAD 2026 refuses ``Layout.StandardScale = 19`` with "Invalid input" in
+  every condition tried (PaperUnits mm and inches, UseStandardScale True and
+  False; measured live 2026-09-17) — its standard-scale list has no 1:5, the
+  same gap as DXF code 75 — so 1:5 is *not* in the table and takes the custom
+  route on the live engine too (``SetCustomScale(1, 5)`` reads back ``1:5``).
 
 A scale without a code on an engine goes through the custom numerator /
 denominator on that engine, and the read-back reports the same label either way.
@@ -131,11 +136,11 @@ DXF_STANDARD_SCALE_TYPE: dict[str, int] = {
 _DXF_SCALE_LABEL = {code: label for label, code in DXF_STANDARD_SCALE_TYPE.items()}
 
 #: ActiveX ``AcPlotScale`` (AutoCAD 2026 typelib). Labels missing here use SetCustomScale.
+#: No ``"1:5"``: the typelib's ``ac1_5 = 19`` is refused by AutoCAD 2026 (module docstring).
 ACTIVEX_PLOT_SCALE: dict[str, int] = {
     "fit": 0,
     "1:1": 16,
     "1:2": 17,
-    "1:5": 19,
     "1:10": 21,
     "1:20": 23,
     "1:50": 26,
