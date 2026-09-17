@@ -2405,12 +2405,12 @@ class EzdxfBackend(AutoCADBackend):
 
         Reads the same bits ``_page_setup_row`` reports, so the label here is
         the label ``page_setup_list`` shows: a standard code under
-        ``USE_STANDARD_SCALE`` resolves through ezdxf's ``STD_SCALES`` table,
+        ``USE_STANDARD_SCALE`` resolves through the authored ``DXF_STD_SCALES``
+        (the ObjectARX enum AutoCAD writes — ezdxf's ``STD_SCALES`` is one off
+        above 18 and would render an AutoCAD-authored 1:10 sheet at 1:16),
         anything else through the stored numerator / denominator.
         """
-        from ezdxf.lldxf.const import STD_SCALES
-
-        from engineering.standards.papers import dxf_scale_label, scale_label
+        from engineering.standards.papers import DXF_STD_SCALES, dxf_scale_label, scale_label
 
         dxf = layout.dxf_layout.dxf
         flags = int(dxf.get("plot_layout_flags", dxf.get_default("plot_layout_flags")))
@@ -2419,8 +2419,8 @@ class EzdxfBackend(AutoCADBackend):
             code = int(dxf.standard_scale_type)
             if code == 0:
                 return "fit", None, None
-            if code in STD_SCALES:
-                numerator, denominator = (float(v) for v in STD_SCALES[code])
+            if code in DXF_STD_SCALES:
+                numerator, denominator = (float(v) for v in DXF_STD_SCALES[code])
             return dxf_scale_label(code, numerator, denominator), numerator, denominator
         return scale_label(numerator, denominator), numerator, denominator
 
@@ -2586,8 +2586,6 @@ class EzdxfBackend(AutoCADBackend):
         resolved = require_page_setup(setup)
 
         def _sync():
-            from ezdxf.lldxf.const import STD_SCALES
-
             target = self._paper_layout(layout, "page_setup_apply")
             before = self._page_setup_row(target)
             dxf = target.dxf_layout.dxf
@@ -2619,21 +2617,28 @@ class EzdxfBackend(AutoCADBackend):
             dxf.left_margin, dxf.right_margin = left, right
             dxf.plot_origin_x_offset = 0.0
             dxf.plot_origin_y_offset = 0.0
-            dxf.unit_factor = 1.0
             dxf.current_style_sheet = resolved["plot_style"]
             target.use_plot_styles(True)
             target.set_plot_type(int(resolved["plot_type"]))
+            # The scale is stored three ways and AutoCAD reads a different
+            # one per route (measured, AutoCAD 2026 — papers.py docstring):
+            # under USE_STANDARD_SCALE its plot engine scales by group 147
+            # alone (a sheet with code 21 and 147 = 1.0 plots 1:10 geometry
+            # at 1:1 while page_setup_list says 1:10); under the custom
+            # route it scales by 142/143. All three are written, on every
+            # route, from the one resolved ratio, so no reader can disagree
+            # with the plot. ``fit`` has ratio 1/1 and 147 = 1.0, as AutoCAD
+            # writes it.
             code = resolved["dxf_standard_scale_type"]
+            numerator, denominator = (float(v) for v in resolved["scale_ratio"])
             if code is not None:
                 dxf.standard_scale_type = int(code)
-                numerator, denominator = STD_SCALES.get(int(code), (1.0, 1.0))
-                dxf.scale_numerator, dxf.scale_denominator = float(numerator), float(denominator)
                 target.use_standard_scale(True)
             else:
-                numerator, denominator = (float(v) for v in resolved["scale_ratio"])
                 dxf.standard_scale_type = 16
-                dxf.scale_numerator, dxf.scale_denominator = numerator, denominator
                 target.use_standard_scale(False)
+            dxf.scale_numerator, dxf.scale_denominator = numerator, denominator
+            dxf.unit_factor = numerator / denominator
             # resolve_page_setup hands over None for a layout plot: the bit is
             # cleared, never set — the state AutoCAD itself stores for acLayout,
             # and the mirror of the live engine never writing CenterPlot there.

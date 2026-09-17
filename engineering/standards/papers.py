@@ -3,18 +3,40 @@
 Sources: ISO 216 (A series), ASME/ANSI Y14.1 (A–E, metric millimetre values as
 AutoCAD's ``ANSI_*`` media measure, inch values as the media are *named*),
 the ctb files AutoCAD ships in its Plot Styles folder, and the standard-scale
-tables of two enums that do not agree with each other:
+enum — one numbering, shared by the file and by ActiveX:
 
-* DXF group code 75 (``standard_scale_type``, what ezdxf writes): 16=1:1,
-  17=1:2, 20=1:10, 22=1:20, 25=1:50, 26=1:100, 27=2:1, 30=10:1 — no 1:5.
-* ActiveX ``AcPlotScale`` (``Layout.StandardScale``, AutoCAD 2026 typelib):
-  ac1_1=16, ac1_2=17, ac1_10=21, ac1_20=23, ac1_50=26, ac1_100=27, ac2_1=28,
-  ac10_1=31, acScaleToFit=0. The typelib also declares ``ac1_5=19``, but
-  AutoCAD 2026 refuses ``Layout.StandardScale = 19`` with "Invalid input" in
-  every condition tried (PaperUnits mm and inches, UseStandardScale True and
-  False; measured live 2026-09-17) — its standard-scale list has no 1:5, the
-  same gap as DXF code 75 — so 1:5 is *not* in the table and takes the custom
-  route on the live engine too (``SetCustomScale(1, 5)`` reads back ``1:5``).
+* DXF group code 75 (``standard_scale_type``) is the ObjectARX
+  ``AcDbPlotSettings::StdScaleType`` enum: 0=fit, 1..15 the imperial
+  architectural scales, 16=1:1, 17=1:2, 18=1:4, 19=1:5, 20=1:8, 21=1:10,
+  22=1:16, 23=1:20, 24=1:30, 25=1:40, 26=1:50, 27=1:100, 28=2:1, 29=4:1,
+  30=8:1, 31=10:1, 32=100:1, 33=1000:1 (``DXF_STD_SCALES``). Measured live
+  on AutoCAD 2026 (COM ``SaveAs(..., 61)`` after ``StandardScale = n``):
+  1:10 saves as 21, 1:50 as 26, 2:1 as 28, 10:1 as 31. ezdxf's
+  ``STD_SCALES`` table (and the DXF Reference page it follows) has no 19=1:5
+  and numbers everything above 18 one lower (20=1:10, 25=1:50, 30=10:1) —
+  reading an AutoCAD-authored 1:50 sheet through it reports 1:100, and a
+  1:10 sheet renders at 1:16 — so nothing here goes through that table.
+* DXF group code 147 (``unit_factor`` in ezdxf; "a floating point scale
+  factor that represents the standard scale value specified in code 75" in
+  the DXF Reference — the Reference is right) is the factor AutoCAD's plot
+  engine *uses* under ``USE_STANDARD_SCALE`` (bit 16): AutoCAD writes it as
+  numerator / denominator (0.1 for 1:10, 2.0 for 2:1, 1.0 for fit and 1:1),
+  and a file with code 21 but 147 = 1.0 plots at 1:1 while claiming 1:10
+  (measured: a 100-unit line spans 99.99 mm of paper). Under the custom
+  route (bit 16 cleared) AutoCAD honours 142/143 and leaves 75 and 147
+  stale. The headless writer therefore writes 147 alongside 142/143 on
+  every route.
+* ActiveX ``AcPlotScale`` (``Layout.StandardScale``, AutoCAD 2026 typelib)
+  is the same numbering (ac1_1=16, ac1_2=17, ac1_10=21, ac1_20=23,
+  ac1_50=26, ac1_100=27, ac2_1=28, ac10_1=31, acScaleToFit=0). The typelib
+  declares ``ac1_5=19`` too, but AutoCAD 2026 refuses
+  ``Layout.StandardScale = 19`` with "Invalid input" in every condition tried
+  (PaperUnits mm and inches, UseStandardScale True and False; measured live
+  2026-09-17), so 1:5 is not in ``ACTIVEX_PLOT_SCALE`` and takes the custom
+  route on the live engine (``SetCustomScale(1, 5)`` reads back ``1:5``).
+  The headless writer mirrors that — 1:5 is not in ``DXF_STANDARD_SCALE_TYPE``
+  either, so both engines store the same 1:5 (custom, 142/143 = 1/5) — while
+  the reader knows code 19 for files AutoCAD wrote.
 
 A scale without a code on an engine goes through the custom numerator /
 denominator on that engine, and the read-back reports the same label either way.
@@ -39,6 +61,7 @@ __all__ = [
     "ACTIVEX_PLOT_SCALE",
     "CTB_CATALOG",
     "DXF_STANDARD_SCALE_TYPE",
+    "DXF_STD_SCALES",
     "ORIENTATIONS",
     "PAPER_INCHES",
     "PAPER_SIZES",
@@ -126,19 +149,79 @@ SCALES: dict[str, float | None] = {
     "10:1": 10.0,
 }
 
-#: DXF group code 75. Labels missing here use the custom numerator/denominator.
+#: DXF group code 75 → (numerator, denominator): the ObjectARX
+#: ``AcDbPlotSettings::StdScaleType`` enum, which is what AutoCAD writes and
+#: reads (module docstring — not ezdxf's ``STD_SCALES``, which is one off
+#: above 18). Code 0 is *scaled to fit* and has no ratio.
+DXF_STD_SCALES: dict[int, tuple[float, float]] = {
+    1: (1.0 / 128.0, 12.0),
+    2: (1.0 / 64.0, 12.0),
+    3: (1.0 / 32.0, 12.0),
+    4: (1.0 / 16.0, 12.0),
+    5: (3.0 / 32.0, 12.0),
+    6: (1.0 / 8.0, 12.0),
+    7: (3.0 / 16.0, 12.0),
+    8: (1.0 / 4.0, 12.0),
+    9: (3.0 / 8.0, 12.0),
+    10: (1.0 / 2.0, 12.0),
+    11: (3.0 / 4.0, 12.0),
+    12: (1.0, 12.0),
+    13: (3.0, 12.0),
+    14: (6.0, 12.0),
+    15: (12.0, 12.0),
+    16: (1.0, 1.0),
+    17: (1.0, 2.0),
+    18: (1.0, 4.0),
+    19: (1.0, 5.0),
+    20: (1.0, 8.0),
+    21: (1.0, 10.0),
+    22: (1.0, 16.0),
+    23: (1.0, 20.0),
+    24: (1.0, 30.0),
+    25: (1.0, 40.0),
+    26: (1.0, 50.0),
+    27: (1.0, 100.0),
+    28: (2.0, 1.0),
+    29: (4.0, 1.0),
+    30: (8.0, 1.0),
+    31: (10.0, 1.0),
+    32: (100.0, 1.0),
+    33: (1000.0, 1.0),
+}
+#: AutoCAD's names for the imperial codes (inches of paper = feet of drawing).
+_DXF_IMPERIAL_LABELS: dict[int, str] = {
+    1: "1/128\"=1'",
+    2: "1/64\"=1'",
+    3: "1/32\"=1'",
+    4: "1/16\"=1'",
+    5: "3/32\"=1'",
+    6: "1/8\"=1'",
+    7: "3/16\"=1'",
+    8: "1/4\"=1'",
+    9: "3/8\"=1'",
+    10: "1/2\"=1'",
+    11: "3/4\"=1'",
+    12: "1\"=1'",
+    13: "3\"=1'",
+    14: "6\"=1'",
+    15: "1'=1'",
+}
+
+#: DXF group code 75 the headless *writer* uses per catalogue label. Labels
+#: missing here use the custom numerator/denominator: ``1:5`` (code 19 exists
+#: in the file enum, but the live engine cannot set it, so both engines store
+#: 1:5 the same custom way) and ``5:1`` (no code anywhere).
 DXF_STANDARD_SCALE_TYPE: dict[str, int] = {
     "fit": 0,
     "1:1": 16,
     "1:2": 17,
-    "1:10": 20,
-    "1:20": 22,
-    "1:50": 25,
-    "1:100": 26,
-    "2:1": 27,
-    "10:1": 30,
+    "1:10": 21,
+    "1:20": 23,
+    "1:50": 26,
+    "1:100": 27,
+    "2:1": 28,
+    "10:1": 31,
 }
-_DXF_SCALE_LABEL = {code: label for label, code in DXF_STANDARD_SCALE_TYPE.items()}
 
 #: ActiveX ``AcPlotScale`` (AutoCAD 2026 typelib). Labels missing here use SetCustomScale.
 #: No ``"1:5"``: the typelib's ``ac1_5 = 19`` is refused by AutoCAD 2026 (module docstring).
@@ -253,9 +336,25 @@ def scale_label(numerator, denominator) -> str:
     return f"{num:g}:{den:g}"
 
 
+_DXF_SCALE_LABEL: dict[int, str] = {
+    0: "fit",
+    **_DXF_IMPERIAL_LABELS,
+    **{
+        code: scale_label(num, den)
+        for code, (num, den) in DXF_STD_SCALES.items()
+        if code not in _DXF_IMPERIAL_LABELS
+    },
+}
+
+
 def dxf_scale_label(code, numerator, denominator) -> str:
-    """Read-back for the headless engine: the code-75 label, else the custom ratio."""
-    return _DXF_SCALE_LABEL.get(int(code)) or scale_label(numerator, denominator)
+    """Read-back for the headless engine: the code-75 label (``fit`` for 0,
+    the ratio ``DXF_STD_SCALES`` gives the code, an AutoCAD-style name for an
+    imperial code), else the custom ratio."""
+    label = _DXF_SCALE_LABEL.get(int(code))
+    if label is not None:
+        return label
+    return scale_label(numerator, denominator)
 
 
 def activex_scale_label(code) -> str:

@@ -13,10 +13,14 @@ import zlib
 import pytest
 
 from engineering.standards.papers import (
+    ACTIVEX_PLOT_SCALE,
     CTB_CATALOG,
+    DXF_STANDARD_SCALE_TYPE,
+    DXF_STD_SCALES,
     PAPER_SIZES,
     SCALES,
     canonical_media_name,
+    dxf_scale_label,
     paper_from_size,
     paper_units_name,
     resolve_page_setup,
@@ -110,17 +114,56 @@ def test_resolve_page_setup_accepts_lowercase_and_short_paper_names():
 
 def test_resolve_page_setup_scale_codes():
     one_to_five = resolve_page_setup("ISO_A3", scale="1:5")
-    assert one_to_five["dxf_standard_scale_type"] is None  # DXF code 75 has no 1:5
-    # The typelib declares ac1_5 = 19, but AutoCAD 2026 refuses
-    # StandardScale = 19 ("Invalid input", measured live): custom route.
+    # Code 19 is 1:5 in the file enum, but the typelib's ac1_5 = 19 is refused
+    # by AutoCAD 2026 ("Invalid input", measured live), so both engines store
+    # 1:5 the same way: the custom route, 142/143 = 1/5.
+    assert one_to_five["dxf_standard_scale_type"] is None
     assert one_to_five["activex_standard_scale"] is None
     assert one_to_five["scale_ratio"] == [1.0, 5.0]
     five_to_one = resolve_page_setup("ISO_A3", scale="5:1")
     assert five_to_one["dxf_standard_scale_type"] is None
     assert five_to_one["activex_standard_scale"] is None
     assert five_to_one["scale_ratio"] == [5.0, 1.0]
-    assert resolve_page_setup("ISO_A3", scale="1:50")["dxf_standard_scale_type"] == 25
+    # One numbering: AutoCAD 2026 saves StandardScale = 26 (ac1_50) as
+    # group 75 = 26 (measured, COM SaveAs DXF) — not ezdxf's 25.
+    assert resolve_page_setup("ISO_A3", scale="1:50")["dxf_standard_scale_type"] == 26
     assert resolve_page_setup("ISO_A3", scale="1:50")["activex_standard_scale"] == 26
+
+
+def test_dxf_standard_scale_codes_are_the_enum_autocad_writes():
+    """Group 75 is the ObjectARX ``StdScaleType`` enum, the same numbering as
+    ActiveX ``AcPlotScale`` — measured on AutoCAD 2026 (``StandardScale = n``
+    then ``SaveAs(..., 61)``): 1:2→17, 1:10→21, 1:50→26, 2:1→28, 10:1→31.
+    ezdxf's ``STD_SCALES`` has no 19 = 1:5 and is one lower above 18; read
+    through it, an AutoCAD 1:50 sheet is "1:100" and a 1:10 sheet plots 1:16.
+    """
+    measured = {"fit": 0, "1:1": 16, "1:2": 17, "1:10": 21, "1:50": 26, "2:1": 28, "10:1": 31}
+    for label, code in measured.items():
+        assert DXF_STANDARD_SCALE_TYPE[label] == code, label
+    # Every code the writer uses is the ActiveX code for the same label …
+    for label, code in DXF_STANDARD_SCALE_TYPE.items():
+        assert ACTIVEX_PLOT_SCALE[label] == code, label
+    # … and its authored ratio is the catalogue factor.
+    for label, code in DXF_STANDARD_SCALE_TYPE.items():
+        if code:
+            numerator, denominator = DXF_STD_SCALES[code]
+            assert numerator / denominator == pytest.approx(SCALES[label]), label
+    # The full file enum, including what the writer never emits.
+    assert DXF_STD_SCALES[19] == (1.0, 5.0)
+    assert DXF_STD_SCALES[20] == (1.0, 8.0)
+    assert DXF_STD_SCALES[22] == (1.0, 16.0)
+    assert DXF_STD_SCALES[25] == (1.0, 40.0)
+    assert DXF_STD_SCALES[33] == (1000.0, 1.0)
+    assert set(DXF_STD_SCALES) == set(range(1, 34))
+    # Read-back labels come from the code, never from a stale 142/143.
+    assert dxf_scale_label(0, 3.0, 7.0) == "fit"
+    assert dxf_scale_label(26, 1.0, 100.0) == "1:50"
+    assert dxf_scale_label(21, 1.0, 1.0) == "1:10"
+    assert dxf_scale_label(19, 1.0, 1.0) == "1:5"
+    assert dxf_scale_label(22, 1.0, 1.0) == "1:16"
+    assert dxf_scale_label(28, 1.0, 0.5) == "2:1"
+    assert dxf_scale_label(8, 1.0, 1.0) == "1/4\"=1'"
+    assert dxf_scale_label(99, 1.0, 3.0) == "1:3"  # unknown code: the stored ratio
 
 
 @pytest.mark.parametrize(
@@ -392,7 +435,8 @@ async def test_layout_plot_honours_the_plot_scale(backend, tmp_path):
 
 
 async def test_custom_scale_sizes_the_window_too(backend):
-    """1:5 has no DXF code 75, so it rides on the numerator / denominator."""
+    """1:5 takes the custom route (as on the live engine), so it rides on the
+    numerator / denominator."""
     await _sheet(backend)
     await backend.page_setup_apply(SHEET, resolve_page_setup("ISO_A3", scale="1:5"))
     frame = backend._paper_frame(backend._doc.layouts.get(SHEET))
@@ -526,7 +570,101 @@ async def test_custom_scale_clears_the_standard_scale_bit_and_writes_the_ratio(b
     dxf = backend._doc.layouts.get(SHEET).dxf_layout.dxf
     assert not int(dxf.plot_layout_flags) & 16
     assert (float(dxf.scale_numerator), float(dxf.scale_denominator)) == (1.0, 5.0)
+    assert float(dxf.unit_factor) == pytest.approx(0.2)
     assert (await backend.page_setup_list(SHEET))[0]["scale"] == "1:5"
+
+
+@pytest.mark.parametrize(
+    "label, code, factor",
+    [
+        ("fit", 0, 1.0),
+        ("1:1", 16, 1.0),
+        ("1:2", 17, 0.5),
+        ("1:10", 21, 0.1),
+        ("1:20", 23, 0.05),
+        ("1:50", 26, 0.02),
+        ("1:100", 27, 0.01),
+        ("2:1", 28, 2.0),
+        ("10:1", 31, 10.0),
+    ],
+)
+async def test_standard_scale_writes_the_code_and_the_factor_autocad_plots_by(
+    backend, label, code, factor
+):
+    """Under USE_STANDARD_SCALE AutoCAD's plot engine scales by group 147
+    alone (measured, AutoCAD 2026: a headless 1:10 sheet with code 21 and
+    147 = 1.0 plotted a 100-unit line at 99.99 mm — 1:1 — while the row,
+    ``applied`` and 142/143 all said 1:10; patching 147 to 0.1 alone gave
+    9.99 mm). AutoCAD writes 147 = numerator / denominator, 1.0 for fit; so
+    does the headless writer, on every route, with the code AutoCAD uses.
+    """
+    await _sheet(backend)
+    result = await backend.page_setup_apply(SHEET, resolve_page_setup("ISO_A3", scale=label))
+    assert result["ok"] is True and result["applied"]["scale"] == label
+    dxf = backend._doc.layouts.get(SHEET).dxf_layout.dxf
+    assert int(dxf.plot_layout_flags) & 16
+    assert int(dxf.standard_scale_type) == code
+    assert float(dxf.unit_factor) == pytest.approx(factor)
+    ratio = [1.0, 1.0] if label == "fit" else list(scale_ratio(label))
+    assert [float(dxf.scale_numerator), float(dxf.scale_denominator)] == ratio
+    assert (await backend.page_setup_list(SHEET))[0]["scale"] == label
+    frame = backend._paper_frame(backend._doc.layouts.get(SHEET))
+    assert frame["scale"] == label and frame["scale_applied"] is True
+    if label != "fit":
+        assert frame["xlim"][1] - frame["xlim"][0] == pytest.approx(420.0 / factor)
+
+
+def _autocad_authored_scale(layout, code, numerator, denominator, factor):
+    """Store the plot scale exactly as AutoCAD 2026 saves it (measured via COM
+    ``SaveAs(..., 61)``): group 75 from the ObjectARX enum, 142/143 as the
+    ratio (AutoCAD normalises 2:1 to 1 / 0.5), 147 as the factor, bit 16 set.
+    """
+    dxf = layout.dxf_layout.dxf
+    if not dxf.hasattr("plot_layout_flags"):
+        dxf.plot_layout_flags = dxf.get_default("plot_layout_flags")
+    dxf.paper_size = "ISO_A3_(420.00_x_297.00_MM)"
+    dxf.paper_width, dxf.paper_height = 420.0, 297.0
+    dxf.plot_paper_units = 1
+    dxf.plot_rotation = 0
+    dxf.standard_scale_type = code
+    dxf.scale_numerator, dxf.scale_denominator = numerator, denominator
+    dxf.unit_factor = factor
+    layout.use_standard_scale(True)
+    layout.set_plot_type(5)
+
+
+@pytest.mark.parametrize(
+    "code, numerator, denominator, factor, label, units_across",
+    [
+        (21, 1.0, 10.0, 0.1, "1:10", 4200.0),
+        (23, 1.0, 20.0, 0.05, "1:20", 8400.0),
+        (26, 1.0, 50.0, 0.02, "1:50", 21000.0),
+        (27, 1.0, 100.0, 0.01, "1:100", 42000.0),
+        (28, 1.0, 0.5, 2.0, "2:1", 210.0),
+        (31, 1.0, 0.1, 10.0, "10:1", 42.0),
+        (19, 1.0, 5.0, 0.2, "1:5", 2100.0),
+        (22, 1.0, 16.0, 0.0625, "1:16", 6720.0),
+    ],
+)
+async def test_list_and_render_read_an_autocad_authored_sheet_at_its_own_scale(
+    backend, code, numerator, denominator, factor, label, units_across
+):
+    """A sheet AutoCAD saved at 1:50 (group 75 = 26) reads back as 1:50 and
+    renders 21000 paper-space units across the 420 mm — not "1:100" / 42000
+    (what ezdxf's one-off ``STD_SCALES`` made of it: 1:10 rendered at 1:16,
+    1:20 at 1:30, 1:50 at 1:100, 1:100 at 2:1, 2:1 at 4:1, 10:1 at 100:1,
+    with the row and the plot disagreeing). Codes 19 and 22 are ones this
+    server never writes, so this reads the file enum, not the writer's table.
+    """
+    await _sheet(backend)
+    lay = backend._doc.layouts.get(SHEET)
+    _autocad_authored_scale(lay, code, numerator, denominator, factor)
+    row = (await backend.page_setup_list(SHEET))[0]
+    assert row["scale"] == label
+    frame = backend._paper_frame(lay)
+    assert frame["scale"] == label and frame["effective_scale"] == label
+    assert frame["scale_applied"] is True
+    assert frame["xlim"][1] - frame["xlim"][0] == pytest.approx(units_across)
 
 
 async def test_apply_keeps_the_viewports(backend):
