@@ -219,6 +219,24 @@ def validate_base_point(base_x, base_y) -> tuple[float, float]:
     )
 
 
+def referenced_layers(entities: list[dict]) -> list[str]:
+    """The distinct layers ``block_define``'s primitives reference, other than ``0``.
+
+    DXF and ActiveX layer tables are case-insensitive, so the set is keyed on
+    the folded name and keeps the first spelling seen: a request naming
+    ``Alpha`` and ``ALPHA`` wants *one* layer. Deduping case-sensitively let
+    ezdxf write ``ALPHA`` and then raise ``DXFTableEntryError`` on ``Alpha``
+    mid-call, and let COM report two layers created for one ``Layers.Add``
+    that took effect.
+    """
+    seen: dict[str, str] = {}
+    for spec in entities:
+        layer = spec["layer"]
+        if layer != "0" and layer.lower() not in seen:
+            seen[layer.lower()] = layer
+    return sorted(seen.values())
+
+
 def validate_attribute_values(attributes, where: str = "attributes") -> dict[str, str]:
     """``{TAG: value}`` for ``block_insert`` / ``block_set_attributes`` as the
     strings that will be written, refused before any write.

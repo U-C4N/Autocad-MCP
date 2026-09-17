@@ -3895,6 +3895,7 @@ class ComBackend(AutoCADBackend):
         a fake ActiveX surface; executed live by ``scripts/smoke_pid_com.py``.
         """
         from backends.block_specs import (
+            referenced_layers,
             solid_vertices,
             validate_attdef_specs,
             validate_base_point,
@@ -3910,7 +3911,7 @@ class ComBackend(AutoCADBackend):
         ents = validate_entity_specs(entities)
         atts = validate_attdef_specs(attdefs or [])
         base_xy = validate_base_point(base_x, base_y)
-        wanted_layers = sorted({spec["layer"] for spec in ents if spec["layer"] != "0"})
+        wanted_layers = referenced_layers(ents)
         # acAlignmentLeft / Center / Right / MiddleCenter
         align_map = {"left": 0, "center": 1, "right": 2, "middle_center": 10}
 
@@ -3932,6 +3933,7 @@ class ComBackend(AutoCADBackend):
                 )
             replaced = existing is not None
             missing_layers = []
+            # ``Layers.Item`` matches case-insensitively, like the table itself.
             for layer in wanted_layers:
                 try:
                     doc.Layers.Item(layer)

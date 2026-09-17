@@ -119,19 +119,25 @@ class _FakeBlocks:
 
 
 class _FakeLayers:
+    """The ActiveX layer table: ``Item`` and ``Add`` match names case-insensitively,
+    and ``Add`` of an existing name hands the existing record back instead of
+    creating a second one — so ``added`` records only the layers that really
+    appeared."""
+
     def __init__(self, *names: str):
-        self.names = {"0", *names}
+        self.names: dict[str, str] = {n.lower(): n for n in ("0", *names)}
         self.added: list[str] = []
 
     def Item(self, name):
-        if name not in self.names:
+        if name.lower() not in self.names:
             raise RuntimeError(f"no layer {name}")
-        return types.SimpleNamespace(Name=name)
+        return types.SimpleNamespace(Name=self.names[name.lower()])
 
     def Add(self, name):
-        self.names.add(name)
-        self.added.append(name)
-        return types.SimpleNamespace(Name=name)
+        if name.lower() not in self.names:
+            self.names[name.lower()] = name
+            self.added.append(name)
+        return types.SimpleNamespace(Name=self.names[name.lower()])
 
 
 class _FakeSpace:
@@ -1648,6 +1654,59 @@ async def test_com_define_probes_layers_before_blocks_add(com):
     assert result["layers_created"] == ["NOT_A_LAYER"] and result["backend"] == "com"
     assert document.Layers.added == ["NOT_A_LAYER"]
     assert [name for name, _ in document.Blocks.blocks["PID_LYR"].calls] == ["AddLine"]
+
+
+TWO_SPELLINGS = [{**ON_LAYER[0], "layer": "Alpha"}, {**ON_LAYER[0], "layer": "ALPHA"}]
+
+
+async def test_define_names_a_case_folded_missing_layer_once(backend):
+    """DXF layer names are case-insensitive: 'Alpha' and 'ALPHA' are one missing
+    layer, refused once, under the first spelling, before anything is written."""
+    with pytest.raises(ValueError, match=r"layer\(s\) 'Alpha' do not exist"):
+        await backend.block_define("PID_CASE", TWO_SPELLINGS)
+    assert "PID_CASE" not in backend._doc.blocks
+    assert "Alpha" not in backend._doc.layers
+
+
+async def test_define_creates_a_case_folded_layer_once(backend):
+    """Without the case fold the second ``layers.add`` raised DXFTableEntryError
+    after the first one had written — the layer stayed, the block never came."""
+    result = await backend.block_define("PID_CASE", TWO_SPELLINGS, create_layers=True)
+    assert result["layers_created"] == ["Alpha"] and result["entity_count"] == 2
+    assert "PID_CASE" in backend._doc.blocks
+    spellings = [
+        layer.dxf.name for layer in backend._doc.layers if layer.dxf.name.lower() == "alpha"
+    ]
+    assert spellings == ["Alpha"]
+    members = [member.dxf.layer for member in backend._doc.blocks.get("PID_CASE")]
+    assert members == ["Alpha", "ALPHA"], "each primitive keeps the spelling it was given"
+
+
+async def test_define_treats_an_existing_layer_case_insensitively(backend):
+    await backend.layer_create("PID-EQUIP")
+    spec = [{**ON_LAYER[0], "layer": "pid-equip"}]
+    result = await backend.block_define("PID_OK", spec)
+    assert result["layers_created"] == []
+
+
+async def test_com_define_creates_a_case_folded_layer_once(com):
+    backend, document, space = com
+    with pytest.raises(ValueError, match=r"layer\(s\) 'Alpha' do not exist"):
+        await backend.block_define("PID_CASE", TWO_SPELLINGS)
+    assert "PID_CASE" not in document.Blocks.blocks and document.Layers.added == []
+
+    result = await backend.block_define("PID_CASE", TWO_SPELLINGS, create_layers=True)
+    assert result["layers_created"] == ["Alpha"] and result["entity_count"] == 2
+    assert document.Layers.added == ["Alpha"]
+    assert [name for name, _ in document.Blocks.blocks["PID_CASE"].calls] == ["AddLine", "AddLine"]
+
+
+async def test_com_define_treats_an_existing_layer_case_insensitively(com):
+    backend, document, space = com
+    document.Layers.Add("PID-EQUIP")
+    spec = [{**ON_LAYER[0], "layer": "pid-equip"}]
+    result = await backend.block_define("PID_OK", spec)
+    assert result["layers_created"] == [] and document.Layers.added == ["PID-EQUIP"]
 
 
 async def test_com_define_refuses_a_bad_base_point_before_blocks_add(com):

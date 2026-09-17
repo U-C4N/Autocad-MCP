@@ -4993,6 +4993,7 @@ class EzdxfBackend(AutoCADBackend):
         from ezdxf.enums import TextEntityAlignment
 
         from backends.block_specs import (
+            referenced_layers,
             solid_vertices,
             validate_attdef_specs,
             validate_base_point,
@@ -5009,7 +5010,7 @@ class EzdxfBackend(AutoCADBackend):
         ents = validate_entity_specs(entities)
         atts = validate_attdef_specs(attdefs or [])
         base = (*validate_base_point(base_x, base_y), 0.0)
-        wanted_layers = sorted({spec["layer"] for spec in ents if spec["layer"] != "0"})
+        wanted_layers = referenced_layers(ents)
         align_map = {
             "left": TextEntityAlignment.LEFT,
             "center": TextEntityAlignment.CENTER,
@@ -5026,6 +5027,7 @@ class EzdxfBackend(AutoCADBackend):
                     "pass overwrite=true to replace its contents"
                 )
             replaced = existing is not None
+            # ``in doc.layers`` is case-insensitive, like the table itself.
             missing_layers = [layer for layer in wanted_layers if layer not in doc.layers]
             if missing_layers and not create_layers:
                 raise ValueError(
