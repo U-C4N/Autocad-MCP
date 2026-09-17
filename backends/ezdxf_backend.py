@@ -2340,23 +2340,39 @@ class EzdxfBackend(AutoCADBackend):
         return doc.layouts.get(resolved)
 
     @staticmethod
-    def _page_setup_row(layout) -> dict:
+    def _stored_sheet(dxf) -> tuple[list[float], list[float]]:
+        """``(size_mm, margins_mm)`` of the sheet *as plotted*, from the media
+        as stored: ``papers.turned_sheet`` over PLOTSETTINGS 40-47 and
+        ``plot_rotation``. DXF stores every paper size and margin in
+        millimetres, whatever ``plot_paper_units`` says (ezdxf's
+        acdb_plot_settings, verified). ``margins_mm`` is [top, bottom, left, right].
+        """
+        from engineering.standards.papers import turned_sheet
+
+        return turned_sheet(
+            dxf.paper_width,
+            dxf.paper_height,
+            (dxf.top_margin, dxf.bottom_margin, dxf.left_margin, dxf.right_margin),
+            dxf.plot_rotation,
+        )
+
+    @classmethod
+    def _page_setup_row(cls, layout) -> dict:
         from engineering.standards.papers import (
             PLOT_TYPE_NAMES,
             center_applies,
             dxf_scale_label,
             paper_from_size,
+            paper_units_name,
             scale_label,
         )
 
         dxf = layout.dxf_layout.dxf
         flags = int(dxf.get("plot_layout_flags", dxf.get_default("plot_layout_flags")))
-        # DXF stores every paper size and margin in millimetres, whatever
-        # plot_paper_units says (ezdxf's acdb_plot_settings, verified).
-        width, height = float(dxf.paper_width), float(dxf.paper_height)
-        rotation = int(dxf.plot_rotation)
-        if rotation in (1, 3):
-            width, height = height, width
+        # The sheet as plotted: size *and* margins turned by plot_rotation
+        # (the same mapping _paper_frame plots by). Swapping only the size
+        # reported a 297 x 210 sheet with its portrait margins.
+        (width, height), margins = cls._stored_sheet(dxf)
         media = str(dxf.paper_size)
         numerator, denominator = float(dxf.scale_numerator), float(dxf.scale_denominator)
         if flags & layout.USE_STANDARD_SCALE:
@@ -2374,12 +2390,9 @@ class EzdxfBackend(AutoCADBackend):
             "scale": scale,
             "plot_area": PLOT_TYPE_NAMES.get(plot_type, str(dxf.plot_type)),
             "device": str(dxf.plot_configuration_file),
-            "margins_mm": [
-                round(float(dxf.top_margin), 3),
-                round(float(dxf.bottom_margin), 3),
-                round(float(dxf.left_margin), 3),
-                round(float(dxf.right_margin), 3),
-            ],
+            "margins_mm": [round(v, 3) for v in margins],
+            # What one paper-space unit means at the plot scale (DXF group 72).
+            "paper_units": paper_units_name(dxf.plot_paper_units),
             # A layout plot has no centring (AutoCAD greys it out; ActiveX
             # refuses CenterPlot=True under acLayout): None, not a bit nobody honours.
             "center": bool(flags & layout.PLOT_CENTERED) if center_applies(plot_type) else None,
@@ -2460,30 +2473,18 @@ class EzdxfBackend(AutoCADBackend):
         shrank the axes box to 0.707 and cut everything past x = 210 minus the
         margin (measured: a 277 mm frame lost its right 27%, with ``ok: True``
         and a MediaBox that read as correct). The margins turn with the sheet,
-        mapped the way ezdxf's own ``Page.from_dxf_layout`` maps them. What
-        the headless renderer still does not do is rotate the *content* on the
-        media (reported as ``rotation_applied``, not hidden).
+        mapped the way ezdxf's own ``Page.from_dxf_layout`` maps them —
+        ``papers.turned_sheet``, the one mapping ``page_setup_list`` reports
+        by, so the row and the plot never disagree. What the headless renderer
+        still does not do is rotate the *content* on the media (reported as
+        ``rotation_applied``, not hidden).
         """
         from engineering.standards.papers import PLOT_TYPE_NAMES, scale_label
 
         dxf = layout.dxf_layout.dxf
-        width, height = float(dxf.paper_width), float(dxf.paper_height)
         rotation = int(dxf.plot_rotation)
         unit = 25.4 if int(dxf.plot_paper_units) == 0 else 1.0
-        top, right = float(dxf.top_margin), float(dxf.right_margin)
-        bottom, left = float(dxf.bottom_margin), float(dxf.left_margin)
-        # (top, right, bottom, left) after the turn — ezdxf's Page.from_dxf_layout.
-        if rotation == 1:
-            sheet_w, sheet_h = height, width
-            top, right, bottom, left = right, bottom, left, top
-        elif rotation == 2:
-            sheet_w, sheet_h = width, height
-            top, right, bottom, left = bottom, left, top, right
-        elif rotation == 3:
-            sheet_w, sheet_h = height, width
-            top, right, bottom, left = left, top, right, bottom
-        else:
-            sheet_w, sheet_h = width, height
+        (sheet_w, sheet_h), (top, bottom, left, right) = cls._stored_sheet(dxf)
         offset_x = float(dxf.plot_origin_x_offset)
         offset_y = float(dxf.plot_origin_y_offset)
         printable_w = max(sheet_w - left - right, 1e-9)
@@ -2576,7 +2577,11 @@ class EzdxfBackend(AutoCADBackend):
         return await self._async(_sync)
 
     async def page_setup_apply(self, layout: str, setup: dict) -> dict:
-        from engineering.standards.papers import require_page_setup
+        from engineering.standards.papers import (
+            PAPER_UNITS,
+            page_setup_warnings,
+            require_page_setup,
+        )
 
         resolved = require_page_setup(setup)
 
@@ -2592,17 +2597,26 @@ class EzdxfBackend(AutoCADBackend):
             if not dxf.hasattr("plot_layout_flags"):
                 dxf.plot_layout_flags = dxf.get_default("plot_layout_flags")
             width, height = (float(v) for v in resolved["size_mm"])
+            # Orientation rides on width/height, as AutoCAD names media, so
+            # plot_rotation goes to 0. The stored margins only meant what
+            # they meant *through* the old turn: with none asked for, the
+            # sheet keeps the margins it had (the turned ones are written as
+            # the unturned ones), instead of silently swapping to the media's
+            # portrait margins with nothing in ``changed``.
+            margins = resolved["margins_mm"]
+            if margins is None:
+                margins = self._stored_sheet(dxf)[1]  # turned, un-rounded
             dxf.page_setup_name = ""
             dxf.plot_configuration_file = resolved["device"]
             dxf.paper_size = resolved["canonical_media_name"]
             dxf.paper_width = width
             dxf.paper_height = height
-            dxf.plot_paper_units = 1  # millimetres
-            dxf.plot_rotation = 0  # orientation rides on width/height, as AutoCAD names media
-            if resolved["margins_mm"] is not None:
-                top, bottom, left, right = (float(v) for v in resolved["margins_mm"])
-                dxf.top_margin, dxf.bottom_margin = top, bottom
-                dxf.left_margin, dxf.right_margin = left, right
+            if resolved["paper_units"] is not None:
+                dxf.plot_paper_units = PAPER_UNITS[resolved["paper_units"]]
+            dxf.plot_rotation = 0
+            top, bottom, left, right = (float(v) for v in margins)
+            dxf.top_margin, dxf.bottom_margin = top, bottom
+            dxf.left_margin, dxf.right_margin = left, right
             dxf.plot_origin_x_offset = 0.0
             dxf.plot_origin_y_offset = 0.0
             dxf.unit_factor = 1.0
@@ -2639,6 +2653,7 @@ class EzdxfBackend(AutoCADBackend):
                 "layout": target.name,
                 "applied": dict(resolved),
                 "changed": changed,
+                "warnings": page_setup_warnings(changed),
                 "plot_style_known": bool(resolved["plot_style_known"]),
                 "viewports_kept": True,
                 "backend": "ezdxf",

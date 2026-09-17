@@ -18,9 +18,11 @@ from engineering.standards.papers import (
     SCALES,
     canonical_media_name,
     paper_from_size,
+    paper_units_name,
     resolve_page_setup,
     scale_label,
     scale_ratio,
+    turned_sheet,
 )
 from engineering.standards.pdfinfo import read_mediabox
 
@@ -144,6 +146,59 @@ def test_resolve_page_setup_refuses_naming_the_field(kwargs, field):
 def test_unknown_ctb_is_allowed_but_flagged():
     setup = resolve_page_setup("ISO_A3", plot_style="company.ctb")
     assert setup["plot_style"] == "company.ctb" and setup["plot_style_known"] is False
+
+
+def test_resolve_page_setup_paper_units_default_mm_and_keep():
+    assert resolve_page_setup("ISO_A3")["paper_units"] == "mm"
+    assert resolve_page_setup("ANSI_B", paper_units="inches")["paper_units"] == "inches"
+    assert resolve_page_setup("ANSI_B", paper_units="inch")["paper_units"] == "inches"
+    assert resolve_page_setup("ANSI_B", paper_units=None)["paper_units"] is None, "keep"
+    with pytest.raises(ValueError, match="paper_units"):
+        resolve_page_setup("ISO_A3", paper_units="cm")
+
+
+def test_paper_units_name_covers_the_three_dxf_and_activex_codes():
+    assert paper_units_name(0) == "inches" and paper_units_name(1) == "mm"
+    assert paper_units_name(2) == "pixels"
+    assert paper_units_name(None) is None and paper_units_name(7) == "code:7"
+
+
+@pytest.mark.parametrize(
+    "rotation, size, margins",
+    [
+        # stored media 210 x 297 with (top, bottom, left, right) = (1, 3, 4, 2),
+        # i.e. ezdxf's clockwise (top, right, bottom, left) = (1, 2, 3, 4).
+        (0, [210.0, 297.0], [1.0, 3.0, 4.0, 2.0]),
+        (1, [297.0, 210.0], [2.0, 4.0, 1.0, 3.0]),
+        (2, [210.0, 297.0], [3.0, 1.0, 2.0, 4.0]),
+        (3, [297.0, 210.0], [4.0, 2.0, 3.0, 1.0]),
+    ],
+)
+def test_turned_sheet_maps_size_and_margins_like_ezdxf_page_from_dxf_layout(
+    rotation, size, margins
+):
+    """The one mapping ``page_setup_list``, ``_paper_frame`` and the COM row share.
+
+    Cross-checked against ezdxf's ``Page.from_dxf_layout`` (the renderer's own
+    reading of PLOTSETTINGS 40-43 under ``plot_rotation``), so the row a
+    client reads is the sheet the same engine plots.
+    """
+    assert turned_sheet(210, 297, [1, 3, 4, 2], rotation) == (size, margins)
+
+
+def test_turned_sheet_agrees_with_ezdxf_page_from_dxf_layout():
+    ezdxf = pytest.importorskip("ezdxf")
+    from ezdxf.addons.drawing.layout import Page
+
+    doc = ezdxf.new()
+    lay = doc.layouts.new("Turn")
+    for rotation in (0, 1, 2, 3):
+        lay.page_setup(size=(210, 297), margins=(1, 2, 3, 4), units="mm", rotation=rotation)
+        page = Page.from_dxf_layout(lay.dxf_layout)
+        size, (top, bottom, left, right) = turned_sheet(210, 297, [1, 3, 4, 2], rotation)
+        assert size == [page.width, page.height], rotation
+        assert (page.margins.top, page.margins.bottom) == (top, bottom), rotation
+        assert (page.margins.left, page.margins.right) == (left, right), rotation
 
 
 # ── the PDF reader ──────────────────────────────────────────────────────────
@@ -523,6 +578,170 @@ async def test_list_covers_every_paper_layout_and_skips_model(backend):
     await _sheet(backend, "B")
     names = [row["layout"] for row in await backend.page_setup_list()]
     assert "Model" not in names and {"A", "B"} <= set(names)
+
+
+def _rotated_a4(backend, name: str = "Rot", rotation: int = 1):
+    """AutoCAD's landscape-on-portrait-media convention: media 210 x 297,
+    ezdxf clockwise margins (top, right, bottom, left) = (20, 7.5, 20, 7.5),
+    turned by ``plot_rotation``."""
+    lay = backend._doc.layouts.get(name)
+    lay.page_setup(
+        size=(210, 297),
+        margins=(20, 7.5, 20, 7.5),
+        units="mm",
+        rotation=rotation,
+        scale=16,
+        name="ISO_A4",
+        device="DWG To PDF.pc3",
+    )
+    return lay
+
+
+async def test_list_turns_the_margins_with_the_sheet(backend):
+    """The row used to swap ``size_mm`` for rotation 1/3 but report the
+    margins un-turned: [20, 20, 7.5, 7.5] on a 297 x 210 sheet whose true
+    margins (ezdxf's Page, and the window ``_paper_frame`` plots) are
+    [7.5, 7.5, 20, 20] — a printable area of 282 x 170 from the row against
+    257 x 195 on paper."""
+    await _sheet(backend, "Rot")
+    lay = _rotated_a4(backend)
+    row = (await backend.page_setup_list("Rot"))[0]
+    assert row["size_mm"] == [297.0, 210.0] and row["orientation"] == "landscape"
+    assert row["margins_mm"] == [7.5, 7.5, 20.0, 20.0]
+    top, bottom, left, right = row["margins_mm"]
+    assert (297 - left - right, 210 - top - bottom) == (257.0, 195.0)
+
+    # The same sheet the renderer plots: at 1:1 the axes window starts one
+    # (turned) left margin before x = 0 and one (turned) bottom margin below y = 0.
+    frame = backend._paper_frame(lay)
+    assert frame["size_mm"] == row["size_mm"]
+    assert frame["xlim"][0] == pytest.approx(-left) and frame["ylim"][0] == pytest.approx(-bottom)
+    assert frame["xlim"][1] - frame["xlim"][0] == pytest.approx(297.0)
+    assert frame["ylim"][1] - frame["ylim"][0] == pytest.approx(210.0)
+
+
+@pytest.mark.parametrize("rotation", [1, 2, 3])
+async def test_apply_on_a_turned_sheet_keeps_the_effective_margins(backend, rotation):
+    """``page_setup_apply`` writes ``plot_rotation`` 0 (orientation rides on
+    width/height). With no ``margins_mm`` asked for, the stored margins used
+    to stay as they were while the turn that gave them their meaning went
+    away, so the effective margins moved from [7.5, 7.5, 20, 20] to
+    [20, 20, 7.5, 7.5] (printable 257 x 195 -> 282 x 170) and ``changed``
+    said nothing. The stored margins are now re-mapped so the sheet keeps
+    the margins it had, and the row before equals the row after."""
+    await _sheet(backend, "Rot")
+    lay = _rotated_a4(backend, rotation=rotation)
+    before = (await backend.page_setup_list("Rot"))[0]
+    result = await backend.page_setup_apply(
+        "Rot", resolve_page_setup("ISO_A4", before["orientation"], scale="1:1")
+    )
+    after = (await backend.page_setup_list("Rot"))[0]
+    assert int(lay.dxf_layout.dxf.plot_rotation) == 0
+    assert after["margins_mm"] == before["margins_mm"]
+    assert after["size_mm"] == before["size_mm"]
+    assert "margins_mm" not in result["changed"] and "size_mm" not in result["changed"]
+    dxf = lay.dxf_layout.dxf
+    top, bottom, left, right = after["margins_mm"]
+    assert (dxf.top_margin, dxf.bottom_margin, dxf.left_margin, dxf.right_margin) == (
+        top,
+        bottom,
+        left,
+        right,
+    )
+
+
+async def test_apply_with_margins_on_a_turned_sheet_writes_them_as_asked(backend):
+    await _sheet(backend, "Rot")
+    _rotated_a4(backend)
+    result = await backend.page_setup_apply(
+        "Rot", resolve_page_setup("ISO_A4", "landscape", margins_mm=[5, 6, 7, 8])
+    )
+    row = (await backend.page_setup_list("Rot"))[0]
+    assert row["margins_mm"] == [5.0, 6.0, 7.0, 8.0]
+    assert result["changed"]["margins_mm"] == [[7.5, 7.5, 20.0, 20.0], [5.0, 6.0, 7.0, 8.0]]
+
+
+def _inch_sheet(backend, name: str = "In"):
+    """An inch-authored ANSI B sheet (what ANSI_A-E exist for): paper-space
+    units are inches, so at 1:1 a 16-unit frame spans 16 inches of paper."""
+    lay = backend._doc.layouts.get(name)
+    lay.page_setup(
+        size=(17, 11),
+        margins=(0.5, 0.5, 0.5, 0.5),
+        units="inch",
+        scale=16,
+        name="ANSI_B",
+        device="DWG To PDF.pc3",
+    )
+    lay.add_lwpolyline([(0, 0), (16, 0), (16, 10), (0, 10)], close=True)
+    return lay
+
+
+async def test_row_reports_the_paper_units(backend):
+    await _sheet(backend, "In")
+    lay = _inch_sheet(backend)
+    row = (await backend.page_setup_list("In"))[0]
+    assert row["paper_units"] == "inches"
+    assert row["size_mm"] == [431.8, 279.4] and row["paper"] == "ANSI_B"
+    assert row["margins_mm"] == [12.7, 12.7, 12.7, 12.7]
+    lay.dxf_layout.dxf.plot_paper_units = 1
+    assert (await backend.page_setup_list("In"))[0]["paper_units"] == "mm"
+
+
+async def test_apply_names_a_paper_units_flip_and_its_consequence(backend):
+    """The default setup plots in millimetres. On an inch-authored sheet that
+    is a 25.4x rescale of every paper-space unit: the 16-unit frame used to
+    go from 406.4 mm to 16 mm of paper with ``changed`` naming only the
+    media and the plot style — ``ok: True``, ``scale_applied: True``."""
+    await _sheet(backend, "In")
+    lay = _inch_sheet(backend)
+    result = await backend.page_setup_apply(
+        "In", resolve_page_setup("ANSI_B", "landscape", scale="1:1")
+    )
+    assert result["changed"]["paper_units"] == ["inches", "mm"]
+    assert int(lay.dxf_layout.dxf.plot_paper_units) == 1
+    assert result["warnings"], "a units flip is never silent"
+    assert any("inches" in w and "mm" in w and "25.4" in w for w in result["warnings"])
+    assert result["applied"]["paper_units"] == "mm"
+    # Re-applying the same setup moves nothing and warns of nothing.
+    again = await backend.page_setup_apply(
+        "In", resolve_page_setup("ANSI_B", "landscape", scale="1:1")
+    )
+    assert again["changed"] == {} and again["warnings"] == []
+
+
+async def test_apply_can_keep_or_set_the_paper_units(backend):
+    await _sheet(backend, "In")
+    lay = _inch_sheet(backend)
+    kept = await backend.page_setup_apply(
+        "In", resolve_page_setup("ANSI_B", "landscape", scale="1:1", paper_units=None)
+    )
+    assert int(lay.dxf_layout.dxf.plot_paper_units) == 0
+    assert "paper_units" not in kept["changed"] and kept["warnings"] == []
+    assert kept["applied"]["paper_units"] is None
+    # The catalogue's ANSI_B is 432 x 279 mm (ANSI Y14.1's metric value), so
+    # at 1:1 under inches the sheet holds 432 / 25.4 units across.
+    frame = backend._paper_frame(lay)
+    assert frame["xlim"][1] - frame["xlim"][0] == pytest.approx(432 / 25.4), "inches at 1:1"
+
+    to_mm = await backend.page_setup_apply(
+        "In", resolve_page_setup("ANSI_B", "landscape", scale="1:1", paper_units="mm")
+    )
+    assert to_mm["changed"]["paper_units"] == ["inches", "mm"] and to_mm["warnings"]
+    frame = backend._paper_frame(lay)
+    assert frame["xlim"][1] - frame["xlim"][0] == pytest.approx(432.0), "432 mm at 1:1"
+
+    back = await backend.page_setup_apply(
+        "In", resolve_page_setup("ANSI_B", "landscape", scale="1:1", paper_units="inches")
+    )
+    assert back["changed"]["paper_units"] == ["mm", "inches"] and back["warnings"]
+    assert int(lay.dxf_layout.dxf.plot_paper_units) == 0
+
+
+async def test_apply_on_a_mm_sheet_warns_of_nothing(backend):
+    await _sheet(backend)
+    result = await backend.page_setup_apply(SHEET, resolve_page_setup("ISO_A3"))
+    assert result["warnings"] == [] and "paper_units" not in result["changed"]
 
 
 async def test_plot_style_list_headless_is_the_catalog(backend):
@@ -914,3 +1133,76 @@ async def test_com_declares_dwt_write():
     from backends.com_backend import ComBackend
 
     assert ComBackend().capabilities().to_dict()["features"]["dwt_write"]["supported"] is True
+
+
+async def test_com_list_reports_the_paper_units(com_backend):
+    backend, document = com_backend
+    layout = document.Layouts.Item("Layout1")
+    assert (await backend.page_setup_list("Layout1"))[0]["paper_units"] == "mm"
+    layout.PaperUnits = 0
+    assert (await backend.page_setup_list("Layout1"))[0]["paper_units"] == "inches"
+
+
+async def test_com_list_turns_the_margins_with_a_rotated_sheet(com_backend):
+    """GetPaperMargins reads PLOTSETTINGS 40-43 — the media's own frame, the
+    fields the DXF row reads — so a rotated sheet turns them the same way."""
+    backend, document = com_backend
+    layout = document.Layouts.Item("Layout1")
+    layout.PlotRotation = 1
+    row = (await backend.page_setup_list("Layout1"))[0]
+    assert row["size_mm"] == [297.0, 210.0]
+    # fake margins: left 7.5, bottom 20, right 7.5, top 20 -> rotation 1:
+    # top=right, right=bottom, bottom=left, left=top -> [7.5, 7.5, 20, 20].
+    assert row["margins_mm"] == [7.5, 7.5, 20.0, 20.0]
+    layout.PlotRotation = 0
+    assert (await backend.page_setup_list("Layout1"))[0]["margins_mm"] == [20.0, 20.0, 7.5, 7.5]
+
+
+async def test_com_apply_names_a_paper_units_flip(com_backend):
+    backend, document = com_backend
+    layout = document.Layouts.Item("Layout1")
+    layout.PaperUnits = 0
+    layout.log.clear()
+    result = await backend.page_setup_apply(
+        "Layout1", resolve_page_setup("ANSI_B", "landscape", scale="1:1")
+    )
+    assert ("set", "PaperUnits", 1) in layout.log
+    assert result["changed"]["paper_units"] == ["inches", "mm"]
+    assert any("25.4" in w for w in result["warnings"])
+    again = await backend.page_setup_apply(
+        "Layout1", resolve_page_setup("ANSI_B", "landscape", scale="1:1")
+    )
+    assert again["changed"] == {} and again["warnings"] == []
+
+
+async def test_com_apply_keeps_or_sets_the_paper_units(com_backend):
+    backend, document = com_backend
+    layout = document.Layouts.Item("Layout1")
+    layout.PaperUnits = 0
+    layout.log.clear()
+    kept = await backend.page_setup_apply(
+        "Layout1", resolve_page_setup("ANSI_B", "landscape", paper_units=None)
+    )
+    assert not [entry for entry in layout.log if entry[:2] == ("set", "PaperUnits")]
+    assert layout.PaperUnits == 0 and "paper_units" not in kept["changed"]
+    assert kept["warnings"] == []
+    layout.log.clear()
+    inches = await backend.page_setup_apply(
+        "Layout1", resolve_page_setup("ANSI_B", "landscape", paper_units="inches")
+    )
+    assert ("set", "PaperUnits", 0) in layout.log and inches["changed"] == {}
+    assert inches["warnings"] == []
+
+
+async def test_com_apply_on_a_rotated_sheet_reports_the_margins_that_moved(com_backend):
+    """COM cannot write margins (they come from the .pc3), so resetting
+    PlotRotation on a turned sheet moves the effective margins — and the row
+    now says so instead of listing only the media."""
+    backend, document = com_backend
+    layout = document.Layouts.Item("Layout1")
+    layout.PlotRotation = 1
+    result = await backend.page_setup_apply(
+        "Layout1", resolve_page_setup("ISO_A3", "landscape", scale="1:1")
+    )
+    assert result["changed"]["margins_mm"] == [[7.5, 7.5, 20.0, 20.0], [20.0, 20.0, 7.5, 7.5]]
+    assert result["changed"]["size_mm"] == [[297.0, 210.0], [420.0, 297.0]]

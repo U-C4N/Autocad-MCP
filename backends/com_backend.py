@@ -1977,6 +1977,14 @@ class ComBackend(AutoCADBackend):
     # * GetPaperSize / GetPaperMargins answer in millimetres whatever
     #   PaperUnits says (ISO_A3 under PaperUnits=0 -> (420.0, 297.0); ANSI_B
     #   under 0 and 1 -> (431.8, 279.4) both times). They are never scaled.
+    #   PaperUnits itself still governs what one paper-space unit means at
+    #   the plot scale, so the row reports it (``paper_units``) and an apply
+    #   that moves it says so in ``changed`` and ``warnings``.
+    # * Both answer in the *media's* frame (the PLOTSETTINGS fields the DXF
+    #   row reads); under PlotRotation 1/3 the row turns size and margins
+    #   together through ``papers.turned_sheet``, the one mapping the headless
+    #   row and renderer use. The rotated read-back is not yet measured live
+    #   (scripts/smoke_settings_com.py, Task 24, is where it gets measured).
     # * Writing ConfigName replaces CanonicalMediaName with the new device's
     #   default when the current media does not exist on it, and writing the
     #   old device back does *not* bring the old media with it (DWG To PDF /
@@ -1989,7 +1997,6 @@ class ComBackend(AutoCADBackend):
     # rule and replays both measurements); executed live by
     # scripts/smoke_settings_com.py (Task 24).
 
-    _AC_MILLIMETERS = 1
     _AC_NO_ROTATION = 0
     #: Layout properties a ConfigName write can move as a side effect (measured
     #: live for CanonicalMediaName; units / rotation are re-applied on the same
@@ -2004,7 +2011,9 @@ class ComBackend(AutoCADBackend):
             activex_scale_label,
             center_applies,
             paper_from_size,
+            paper_units_name,
             scale_label,
+            turned_sheet,
         )
 
         def _get(attr):
@@ -2029,7 +2038,11 @@ class ComBackend(AutoCADBackend):
         except Exception as exc:
             log.debug("Layout.GetPaperMargins failed: %s", exc)
         rotation = _get("PlotRotation") or 0
-        if size and int(rotation) in (1, 3):
+        if size and margins:
+            size, margins = turned_sheet(size[0], size[1], margins, rotation)
+            size = [round(v, 2) for v in size]
+            margins = [round(v, 3) for v in margins]
+        elif size and int(rotation) in (1, 3):
             size = [size[1], size[0]]
         if _get("UseStandardScale"):
             scale = activex_scale_label(_get("StandardScale") or 0)
@@ -2055,6 +2068,7 @@ class ComBackend(AutoCADBackend):
             "plot_area": PLOT_TYPE_NAMES.get(plot_type, plot_type),
             "device": _get("ConfigName"),
             "margins_mm": margins,
+            "paper_units": paper_units_name(_get("PaperUnits")),
             "center": bool(_get("CenterPlot")) if center_applies(plot_type) else None,
         }
 
@@ -2088,7 +2102,11 @@ class ComBackend(AutoCADBackend):
         return await self._run(_sync)
 
     async def page_setup_apply(self, layout: str, setup: dict) -> dict:
-        from engineering.standards.papers import require_page_setup
+        from engineering.standards.papers import (
+            PAPER_UNITS,
+            page_setup_warnings,
+            require_page_setup,
+        )
 
         resolved = require_page_setup(setup)
         if resolved["margins_mm"] is not None:
@@ -2149,8 +2167,11 @@ class ComBackend(AutoCADBackend):
                     )
                 step = "CanonicalMediaName"
                 _set("CanonicalMediaName", media)
-                step = "PaperUnits"
-                _set("PaperUnits", self._AC_MILLIMETERS)
+                if resolved["paper_units"] is not None:
+                    # None keeps the layout's units — what AutoCAD's own Page
+                    # Setup does when a media is chosen.
+                    step = "PaperUnits"
+                    _set("PaperUnits", PAPER_UNITS[resolved["paper_units"]])
                 step = "PlotRotation"
                 _set("PlotRotation", self._AC_NO_ROTATION)
                 step = "StyleSheet"
@@ -2214,6 +2235,7 @@ class ComBackend(AutoCADBackend):
                 "layout": target.Name,
                 "applied": dict(resolved),
                 "changed": changed,
+                "warnings": page_setup_warnings(changed),
                 "plot_style_known": bool(resolved["plot_style_known"]),
                 "viewports_kept": True,
                 "backend": "com",

@@ -42,6 +42,8 @@ __all__ = [
     "ORIENTATIONS",
     "PAPER_INCHES",
     "PAPER_SIZES",
+    "PAPER_UNITS",
+    "PAPER_UNITS_NAMES",
     "PLOT_AREAS",
     "PLOT_TYPE_LAYOUT",
     "PLOT_TYPE_NAMES",
@@ -51,13 +53,16 @@ __all__ = [
     "canonical_media_name",
     "center_applies",
     "dxf_scale_label",
+    "page_setup_warnings",
     "paper_from_size",
     "paper_size_mm",
+    "paper_units_name",
     "plot_style_known",
     "require_page_setup",
     "resolve_page_setup",
     "scale_label",
     "scale_ratio",
+    "turned_sheet",
 ]
 
 #: Portrait width × height in millimetres. Landscape swaps.
@@ -262,6 +267,85 @@ def plot_style_known(name) -> bool:
     return str(name or "").strip().lower() in {entry.lower() for entry in CTB_CATALOG}
 
 
+#: Plot paper units — the same codes in DXF group 72 (``plot_paper_units``) and
+#: ActiveX ``AcPlotPaperUnits`` (acInches=0, acMillimeters=1, acPixels=2). The
+#: paper size and margins are stored in millimetres whatever this says (ezdxf's
+#: acdb_plot_settings; GetPaperSize / GetPaperMargins measured live): the units
+#: govern what one paper-space unit *means* at the plot scale — under inches a
+#: 1:1 sheet holds 17 units across ANSI B, under millimetres 431.8.
+PAPER_UNITS: dict[str, int] = {"inches": 0, "mm": 1}
+PAPER_UNITS_NAMES: dict[int, str] = {0: "inches", 1: "mm", 2: "pixels"}
+_PAPER_UNITS_ALIASES = {"in": "inches", "inch": "inches", "inches": "inches", "mm": "mm"}
+
+
+def paper_units_name(code) -> str | None:
+    """Read-back for both engines: ``inches`` / ``mm`` / ``pixels``, ``None``
+    for an unreadable value, ``code:<n>`` for one neither enum names."""
+    if code is None:
+        return None
+    try:
+        value = int(code)
+    except (TypeError, ValueError):
+        return None
+    return PAPER_UNITS_NAMES.get(value, f"code:{value}")
+
+
+def turned_sheet(width_mm, height_mm, margins_mm, rotation) -> tuple[list[float], list[float]]:
+    """The sheet as plotted from the media as stored: ``(size_mm, margins_mm)``.
+
+    ``margins_mm`` in and out is ``[top, bottom, left, right]`` — the row's
+    order. ``plot_rotation`` 1/3 is AutoCAD's landscape-on-portrait-media
+    convention (media 210 x 297, sheet 297 x 210): the size swaps *and* the
+    margins turn with it, mapped the way ezdxf's ``Page.from_dxf_layout``
+    maps them (rotation 1: top<-right, right<-bottom, bottom<-left, left<-top;
+    2: opposite sides; 3: the inverse of 1). Every read-back and the headless
+    renderer go through this one function, so a row's printable area is the
+    area the same engine plots — swapping only the size reported a 297 x 210
+    sheet with [20, 20, 7.5, 7.5] (282 x 170 printable) whose true margins
+    were [7.5, 7.5, 20, 20] (257 x 195).
+    """
+    width, height = float(width_mm), float(height_mm)
+    top, bottom, left, right = (float(v) for v in margins_mm)
+    turn = int(rotation or 0)
+    if turn == 1:
+        width, height = height, width
+        top, right, bottom, left = right, bottom, left, top
+    elif turn == 2:
+        top, right, bottom, left = bottom, left, top, right
+    elif turn == 3:
+        width, height = height, width
+        top, right, bottom, left = left, top, right, bottom
+    return [width, height], [top, bottom, left, right]
+
+
+def page_setup_warnings(changed: dict) -> list[str]:
+    """What a ``page_setup_apply`` moved that ``changed`` alone under-states.
+
+    A paper-units move is a 25.4x rescale of every paper-space unit at the
+    plot scale (a 16-unit frame on an inch sheet spans 406.4 mm of paper;
+    after a move to millimetres, 16 mm) with ``ok: True`` and the scale
+    reported as applied — so it is named here, on both engines, with the
+    way back. Both engines build the same list from the same ``changed``.
+    """
+    warnings: list[str] = []
+    move = changed.get("paper_units")
+    if move and move[0] is not None and move[0] != move[1]:
+        old, new = move
+        if (old, new) == ("inches", "mm"):
+            effect = "plots 25.4x smaller"
+        elif (old, new) == ("mm", "inches"):
+            effect = "plots 25.4x larger"
+        else:
+            effect = "plots at a different size"
+        warnings.append(
+            f"paper units moved from {old} to {new}: one paper-space unit now plots as one "
+            f"{new} at the plot scale, so paper-space geometry authored in {old} {effect} "
+            f"at the same scale; pass paper_units=None to keep a layout's units or "
+            f"paper_units={old!r} to put them back"
+        )
+    return warnings
+
+
 def center_applies(plot_type) -> bool:
     """Whether "centre the plot" means anything under this ``AcPlotType``.
 
@@ -284,6 +368,7 @@ def resolve_page_setup(
     device: str = "DWG To PDF.pc3",
     margins_mm=None,
     center: bool = True,
+    paper_units: str | None = "mm",
 ) -> dict:
     """Validate a page setup request and resolve it to what both engines write.
 
@@ -292,6 +377,13 @@ def resolve_page_setup(
     validated as a bool and resolved to ``None`` for ``plot_area="layout"``,
     where centring is not applicable (see the module docstring) — the default
     call (layout, centre) is therefore a layout plot with no centring write.
+
+    ``paper_units`` is what one paper-space unit means at the plot scale:
+    ``"mm"`` (the default — this server draws in millimetres), ``"inches"``,
+    or ``None`` to keep the layout's current units, which is what AutoCAD's
+    own Page Setup does when a media is chosen. A write that moves the units
+    rescales every paper-space unit by 25.4; both engines report it in
+    ``changed`` and ``warnings``.
     """
     name = _paper_key(paper)
     width, height = paper_size_mm(name, _orientation(orientation))
@@ -337,6 +429,15 @@ def resolve_page_setup(
         raise ValueError(f"center: must be true or false, got {center!r}")
     plot_type = PLOT_AREAS[plot_area]
 
+    units = None
+    if paper_units is not None:
+        units = _PAPER_UNITS_ALIASES.get(str(paper_units).strip().lower())
+        if units is None:
+            raise ValueError(
+                f"paper_units: must be 'mm', 'inches' or None (keep the layout's units), "
+                f"got {paper_units!r}"
+            )
+
     return {
         "paper": name,
         "orientation": orientation,
@@ -354,6 +455,7 @@ def resolve_page_setup(
         "device": device_name,
         "margins_mm": margins,
         "center": center if center_applies(plot_type) else None,
+        "paper_units": units,
     }
 
 
@@ -375,6 +477,7 @@ REQUIRED_SETUP_KEYS: tuple[str, ...] = (
     "device",
     "margins_mm",
     "center",
+    "paper_units",
 )
 
 
