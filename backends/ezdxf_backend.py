@@ -4764,8 +4764,9 @@ class EzdxfBackend(AutoCADBackend):
         """The value an ATTRIB carries, as AutoCAD's ``TextString`` reports it.
 
         A multi-line attribute keeps its content in an embedded MTEXT and its
-        ``dxf.text`` is only the first line when ezdxf authored it (AutoCAD
-        writes ``Line1\\PLine2``), so the embedded content is the value; a
+        ``dxf.text`` is only the first line when ezdxf's ``embed_mtext`` /
+        ``set_mtext`` authored it (AutoCAD, and ``_write_attrib_value``, write
+        ``Line1\\PLine2``), so the embedded content is the value; a
         single-line attribute's value is ``dxf.text``.
         """
         if attrib.has_embedded_mtext_entity:
@@ -4782,15 +4783,23 @@ class EzdxfBackend(AutoCADBackend):
         (no embedded MTEXT exported) a save/reload carried the new value the
         exploded drawing never showed. The embedded MTEXT is rebuilt from its
         own virtual entity with the new content -- the round trip ezdxf's
-        ``BaseAttrib.transform`` itself uses -- so ``dxf.text`` (first line),
-        the MTEXT and the placement stay one attribute.
+        ``BaseAttrib.transform`` itself uses -- so the MTEXT and the placement
+        stay one attribute.
+
+        ``set_mtext`` then mirrors only the *first line* into ``dxf.text``
+        (ezdxf's own choice), and below R2018 ezdxf exports no embedded MTEXT,
+        so the default (R2010) document saved ``NEW ONE`` where the reader had
+        promised ``NEW ONE\\PNEW TWO``. ``dxf.text`` is therefore written last
+        with the whole value: that is AutoCAD's own convention (``TextString``
+        of a live multi-line attribute reads ``'LINE ONE\\PLINE TWO'``), the
+        reader prefers the embedded MTEXT when there is one, and the file
+        carries every line on every DXF version.
         """
         if attrib.has_embedded_mtext_entity:
             mtext = attrib.virtual_mtext_entity()
             mtext.text = value
             attrib.set_mtext(mtext, graphic_properties=False)
-        else:
-            attrib.dxf.text = value
+        attrib.dxf.text = value
 
     async def block_get_attributes(self, handle) -> dict:
         def _sync():

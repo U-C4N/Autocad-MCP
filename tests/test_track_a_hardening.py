@@ -61,6 +61,25 @@ class _FakeObject:
         object.__setattr__(self, "deleted", True)
 
 
+class _FakeMText(_FakeObject):
+    """``AddMText``'s MTEXT. ActiveX ``AttachmentPoint`` (and ``Normal``) keep
+    the text *body* where it is and relocate ``InsertionPoint`` to the new
+    corner (verified live on AutoCAD 2026: attachment 7 on a two-line note
+    anchored at (10,10) moved the anchor to (10,-3.33)), so a writer that sets
+    the anchor first and the attachment second leaves the body TopLeft-at-
+    anchor. The fake displaces the anchor on those writes -- without recording
+    a write -- so a test asserts where the anchor *ended up*, not only what
+    was sent.
+    """
+
+    def __setattr__(self, name, value):
+        super().__setattr__(name, value)
+        if name in ("AttachmentPoint", "Normal") and hasattr(self, "InsertionPoint"):
+            x, y, z = self.InsertionPoint.value
+            moved = types.SimpleNamespace(varianttype="VT_ARRAY|VT_R8", value=[x + 1.0, y - 2.0, z])
+            object.__setattr__(self, "InsertionPoint", moved)
+
+
 class _FakeBlock:
     def __init__(self, name: str, is_layout: bool = False, is_xref: bool = False):
         self.Name = name
@@ -146,7 +165,7 @@ class _FakeSpace:
 
     def AddMText(self, point, width, text):
         self.calls.append(("AddMText", (tuple(point.value), width, text)))
-        obj = _FakeObject("AcDbMText", f"T{len(self.calls)}")
+        obj = _FakeMText("AcDbMText", f"T{len(self.calls)}", InsertionPoint=point)
         self.texts.append(obj)
         return obj
 
@@ -911,7 +930,11 @@ async def test_com_explode_turns_a_multi_line_attrib_into_mtext(com):
     content is ``MTextAttributeContent`` and the box ``MTextBoundaryWidth``.
     The TEXT path would render ``\\P`` literally, so BURST adds an MTEXT:
     height, style and frame first, then the angle, then the attachment the
-    ATTRIB's alignment names, anchored at its alignment point."""
+    ATTRIB's alignment names, and the alignment point *last* -- ActiveX's
+    ``AttachmentPoint`` relocates the anchor (see ``_FakeMText``), and a
+    BottomRight note anchored before it landed two lines low and a box width
+    right (live, AutoCAD 2026). A TopLeft attribute is the ``AddMText``
+    default and could never show that, so this one is BottomRight."""
     backend, document, space = com
     note = _FakeObject(
         "AcDbAttribute",
@@ -922,7 +945,7 @@ async def test_com_explode_turns_a_multi_line_attrib_into_mtext(com):
         MTextAttributeContent="LINE ONE\\PLINE TWO",
         MTextBoundaryWidth=40.0,
         InsertionPoint=(7.0, 12.7, 0.0),
-        Alignment=6,  # acAlignmentTopLeft: the MTEXT attachment is the alignment point
+        Alignment=14,  # acAlignmentBottomRight: the MTEXT attachment is the alignment point
         TextAlignmentPoint=(7.0, 15.2, 0.0),
         Height=5.0,
         Rotation=0.5236,
@@ -971,10 +994,14 @@ async def test_com_explode_turns_a_multi_line_attrib_into_mtext(com):
         ("Height", 5.0),
         ("StyleName", "ISO"),
         ("Rotation", 0.5236),
-        ("AttachmentPoint", 1),  # acAttachmentPointTopLeft
+        ("AttachmentPoint", 9),  # acAttachmentPointBottomRight
+        ("InsertionPoint", (7.0, 15.2, 0.0)),  # re-asserted after the attachment moved it
         ("Layer", "PID-TAG"),
         ("Color", 3),
     ]
+    assert tuple(space.texts[0].InsertionPoint.value) == (7.0, 15.2, 0.0), (
+        "the MTEXT ends up anchored at the ATTRIB's alignment point"
+    )
     assert ref.deleted is True
 
 
@@ -1019,11 +1046,12 @@ async def test_com_explode_multi_line_attrib_takes_the_frame_before_the_angle(co
         ("Height", 2.5),
         ("Normal", (0.0, 0.0, -1.0)),
         ("Rotation", 3.1416),
-        ("InsertionPoint", (-25.0, 13.0, 0.0)),
         ("AttachmentPoint", 7),  # acAttachmentPointBottomLeft for a baseline-left ATTRIB
+        ("InsertionPoint", (-25.0, 13.0, 0.0)),  # last: the frame AND the attachment moved it
         ("Layer", "0"),
         ("Visible", False),
     ]
+    assert tuple(space.texts[0].InsertionPoint.value) == (-25.0, 13.0, 0.0)
 
 
 async def test_com_explode_refuses_an_xref_before_explode(com):
@@ -1135,7 +1163,10 @@ async def test_set_attributes_multi_line_value_keeps_every_line(backend):
 
     mtext = attrib.virtual_mtext_entity()
     assert mtext.plain_text(split=True) == ["NEW ONE", "NEW TWO", "NEW THREE"]
-    assert attrib.dxf.text == "NEW ONE", "ezdxf's single-line mirror is the first line"
+    assert attrib.dxf.text == "NEW ONE\\PNEW TWO\\PNEW THREE", (
+        "group 1 carries the whole value, AutoCAD's own convention -- ezdxf's "
+        "first-line mirror is what an R2010 save would keep"
+    )
     assert await backend.block_get_attributes(ref.handle) == {
         "NOTE": "NEW ONE\\PNEW TWO\\PNEW THREE"
     }
@@ -1154,22 +1185,48 @@ async def test_set_attributes_on_a_multi_line_attrib_survives_an_r2010_round_tri
     backend, tmp_path
 ):
     """The default document is R2010, where ezdxf exports no embedded MTEXT:
-    the saved file carries only ``dxf.text``. After the fix that is the
-    edited value, so the reloaded drawing and the exploded one agree."""
+    the saved file carries only ``dxf.text``. ``set_mtext`` mirrors just the
+    first line there, so a ``\\P`` value once reloaded as ``NEW ONE`` while the
+    reader had promised three lines. The whole value goes into ``dxf.text``
+    (AutoCAD's own convention), so the reloaded drawing keeps every line."""
     ref, _ = await _insert_multi_line(backend)
     assert backend._doc.dxfversion == "AC1024", "the premise"
-    await backend.block_set_attributes(ref.handle, {"NOTE": "NEW VALUE"})
+    value = "NEW ONE\\PNEW TWO\\PNEW THREE"
+    await backend.block_set_attributes(ref.handle, {"NOTE": value})
+    assert await backend.block_get_attributes(ref.handle) == {"NOTE": value}
     path = tmp_path / "ml.dxf"
     await backend.drawing_save_as(str(path))
     await backend.drawing_open(str(path))
 
     reloaded = next(e for e in backend._msp() if e.dxftype() == "INSERT")
     assert not reloaded.attribs[0].has_embedded_mtext_entity, "R2010 drops the embedded MTEXT"
-    assert await backend.block_get_attributes(reloaded.dxf.handle) == {"NOTE": "NEW VALUE"}
+    assert await backend.block_get_attributes(reloaded.dxf.handle) == {"NOTE": value}, (
+        "the file carries what the reader promised before the save"
+    )
     exploded = await backend.block_explode(reloaded.dxf.handle)
     (handle,) = exploded["attribute_texts"]
     raw = backend._doc.entitydb[handle]
-    assert raw.dxftype() == "TEXT" and raw.dxf.text == "NEW VALUE"
+    assert raw.dxftype() == "TEXT" and raw.dxf.text == value
+
+
+async def test_set_attributes_multi_line_value_survives_an_r2018_round_trip(backend, tmp_path):
+    """On R2018 the embedded MTEXT is exported too: both surfaces reload with
+    every line and the reader still prefers the MTEXT."""
+    ref, _ = await _insert_multi_line(backend)
+    backend._doc.dxfversion = "AC1032"
+    value = "NEW ONE\\PNEW TWO"
+    await backend.block_set_attributes(ref.handle, {"NOTE": value})
+    path = tmp_path / "ml2018.dxf"
+    await backend.drawing_save_as(str(path))
+    await backend.drawing_open(str(path))
+
+    reloaded = next(e for e in backend._msp() if e.dxftype() == "INSERT")
+    attrib = reloaded.attribs[0]
+    assert attrib.has_embedded_mtext_entity, "R2018 keeps the embedded MTEXT"
+    assert attrib.virtual_mtext_entity().plain_text(split=True) == ["NEW ONE", "NEW TWO"]
+    assert attrib.dxf.text == value
+    assert await backend.block_get_attributes(reloaded.dxf.handle) == {"NOTE": value}
+    assert backend._doc.audit().errors == []
 
 
 async def test_set_attributes_leaves_a_single_line_attrib_single_line(backend):

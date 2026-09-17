@@ -3471,11 +3471,17 @@ class ComBackend(AutoCADBackend):
         ATTRIB's ``TextAlignmentPoint`` when the attribute is box-aligned and
         the ``InsertionPoint`` otherwise (ezdxf writes both from the embedded
         MTEXT's insert, so they agree). Height, style and frame go on before
-        ``Rotation``, the WCS anchor is re-asserted after a frame change, and
-        the attachment is the ATTRIB's ``Alignment`` mapped through
-        ``_TEXT_ALIGNMENT_TO_MTEXT_ATTACHMENT``. ``Thickness``, oblique, width
-        factor and the generation flags are TEXT-only members and stay behind.
-        Unit-tested against the fake; not yet executed live.
+        ``Rotation``, then the attachment (the ATTRIB's ``Alignment`` mapped
+        through ``_TEXT_ALIGNMENT_TO_MTEXT_ATTACHMENT``), and the WCS anchor
+        is written *last*: ActiveX ``AttachmentPoint`` keeps the text body
+        where it is and relocates ``InsertionPoint`` to the new corner, so an
+        anchor written before it left every non-TopLeft attribute laid out
+        TopLeft-at-anchor with only the label moved (verified live on AutoCAD
+        2026: a BottomLeft two-line note landed two lines low; re-asserting
+        the anchor after the attachment moves the body). A frame change
+        (``Normal``) moves the OCS origin the same way, so the one late write
+        covers both. ``Thickness``, oblique, width factor and the generation
+        flags are TEXT-only members and stay behind.
         """
         members = item["members"]
         anchor = item["insertion"]
@@ -3490,11 +3496,10 @@ class ComBackend(AutoCADBackend):
             value = members["Normal"]
             mtext.Normal = _apoint(value[0], value[1], value[2] if len(value) > 2 else 0.0)
         mtext.Rotation = item["rotation"]
-        if "Normal" in members:
-            mtext.InsertionPoint = point  # the frame moved the OCS origin; the anchor was WCS
         mtext.AttachmentPoint = cls._TEXT_ALIGNMENT_TO_MTEXT_ATTACHMENT.get(
             members.get("Alignment", 0), 1
         )
+        mtext.InsertionPoint = point  # after the attachment and the frame: both relocate it
         mtext.Layer = item["layer"]
         if "Color" in members:
             mtext.Color = members["Color"]
