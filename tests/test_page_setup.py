@@ -294,6 +294,132 @@ async def test_rotated_layout_renders_the_whole_sheet(backend, tmp_path):
     assert abs(mm_w - 297.0) <= 0.5 and abs(mm_h - 210.0) <= 0.5
 
 
+async def _export_png(backend, tmp_path, layout: str, stem: str):
+    pytest.importorskip("matplotlib", reason="rendering needs the [pdf] extra")
+    pytest.importorskip("PIL", reason="pixel check needs Pillow")
+    png = tmp_path / f"{stem}.png"
+    result = await backend.drawing_export_pdf(str(png), layout=layout)
+    assert result["ok"] is True, result
+    return result, _ink_columns(str(png))
+
+
+async def test_layout_plot_honours_the_plot_scale(backend, tmp_path):
+    """A 1:2 sheet holds twice the paper-space units a 1:1 sheet holds.
+
+    The MediaBox is the same 420 x 297 either way, so it cannot see this;
+    the ink can. An 800-unit-wide frame at 1:2 spans 400 mm and ends inside
+    the sheet; at 1:1 it runs off the right edge. Before the fix the two
+    exports were pixel-identical (both clipped at the edge) with ``ok: True``.
+    """
+    await _sheet(backend)
+    await backend.page_setup_apply(SHEET, resolve_page_setup("ISO_A3", scale="1:2"))
+    lay = backend._doc.layouts.get(SHEET)
+    lay.add_lwpolyline([(0, 0), (800, 0), (800, 500), (0, 500)], close=True)
+    _, _, left_mm, _ = (await backend.page_setup_list(SHEET))[0]["margins_mm"]
+
+    frame = backend._paper_frame(lay)
+    assert frame["scale"] == "1:2" and frame["scale_applied"] is True
+    assert frame["xlim"][1] - frame["xlim"][0] == pytest.approx(840.0)
+    assert frame["ylim"][1] - frame["ylim"][0] == pytest.approx(594.0)
+
+    result, (first, last, width) = await _export_png(backend, tmp_path, SHEET, "half")
+    assert result["scale"] == "1:2" and result["effective_scale"] == "1:2"
+    assert result["scale_applied"] is True
+    assert result["plot_area"] == "layout" and result["plot_area_applied"] is True
+    expected_last = int(width * (left_mm + 400.0) / 420.0)
+    assert abs(last - expected_last) <= 3, (first, last, width, expected_last)
+
+    await backend.page_setup_apply(SHEET, resolve_page_setup("ISO_A3", scale="1:1"))
+    result, (_, last_full, _) = await _export_png(backend, tmp_path, SHEET, "full")
+    assert result["scale"] == "1:1"
+    assert last_full >= width - 2, "at 1:1 the 800-unit frame runs off the 420 mm sheet"
+    assert last < last_full - 20, "1:2 and 1:1 must not render the same"
+
+
+async def test_custom_scale_sizes_the_window_too(backend):
+    """1:5 has no DXF code 75, so it rides on the numerator / denominator."""
+    await _sheet(backend)
+    await backend.page_setup_apply(SHEET, resolve_page_setup("ISO_A3", scale="1:5"))
+    frame = backend._paper_frame(backend._doc.layouts.get(SHEET))
+    assert frame["scale"] == "1:5" and frame["scale_applied"] is True
+    assert frame["xlim"][1] - frame["xlim"][0] == pytest.approx(2100.0)
+
+
+async def test_fit_on_a_layout_plot_is_one_to_one(backend):
+    """AutoCAD greys "Fit to paper" out under the layout plot area."""
+    await _sheet(backend)
+    await backend.page_setup_apply(SHEET, resolve_page_setup("ISO_A3", scale="fit"))
+    frame = backend._paper_frame(backend._doc.layouts.get(SHEET))
+    assert frame["scale"] == "fit" and frame["effective_scale"] == "1:1"
+    assert frame["scale_applied"] is True
+    assert frame["xlim"][1] - frame["xlim"][0] == pytest.approx(420.0)
+
+
+async def test_extents_plot_fits_the_printable_area_and_centres(backend, tmp_path):
+    """extents + fit: the paper-space extents (not the main viewport, which
+    ezdxf's bbox would count) scale to the printable area and sit centred."""
+    await _sheet(backend)
+    await backend.page_setup_apply(
+        SHEET, resolve_page_setup("ISO_A3", scale="fit", plot_area="extents", center=True)
+    )
+    lay = backend._doc.layouts.get(SHEET)
+    lay.add_lwpolyline([(0, 0), (800, 0), (800, 500), (0, 500)], close=True)
+    top, bottom, left_mm, right_mm = (await backend.page_setup_list(SHEET))[0]["margins_mm"]
+    printable_w, printable_h = 420.0 - left_mm - right_mm, 297.0 - top - bottom
+    mm_per_unit = min(printable_w / 800.0, printable_h / 500.0)
+
+    frame = backend._paper_frame(lay)
+    assert frame["plot_area"] == "extents" and frame["plot_area_applied"] is True
+    assert frame["scale"] == "fit"
+    assert frame["xlim"][1] - frame["xlim"][0] == pytest.approx(420.0 / mm_per_unit)
+
+    result, (first, last, width) = await _export_png(backend, tmp_path, SHEET, "extents")
+    assert result["effective_scale"] == scale_label(1.0, 1.0 / mm_per_unit)
+    # The frame is the wider of the two: it spans the printable width exactly.
+    assert abs(first - int(width * left_mm / 420.0)) <= 3, (first, last, width)
+    assert abs(last - int(width * (420.0 - right_mm) / 420.0)) <= 3, (first, last, width)
+
+
+async def test_extents_plot_at_a_fixed_scale_starts_at_the_plot_origin(backend):
+    await _sheet(backend)
+    await backend.page_setup_apply(
+        SHEET, resolve_page_setup("ISO_A3", scale="1:2", plot_area="extents", center=False)
+    )
+    lay = backend._doc.layouts.get(SHEET)
+    lay.add_lwpolyline([(100, 50), (900, 50), (900, 550), (100, 550)], close=True)
+    _, _, left_mm, _ = (await backend.page_setup_list(SHEET))[0]["margins_mm"]
+    frame = backend._paper_frame(lay)
+    assert frame["effective_scale"] == "1:2" and frame["plot_area_applied"] is True
+    # The extents' lower-left corner lands on the printable corner: sheet x0
+    # is that corner less the left margin, in paper-space units at 1:2.
+    assert frame["xlim"][0] == pytest.approx(100.0 - left_mm * 2.0)
+    assert frame["xlim"][1] - frame["xlim"][0] == pytest.approx(840.0)
+
+
+async def test_extents_plot_of_an_empty_layout_falls_back_to_the_sheet(backend):
+    await _sheet(backend)
+    await backend.page_setup_apply(SHEET, resolve_page_setup("ISO_A3", plot_area="extents"))
+    frame = backend._paper_frame(backend._doc.layouts.get(SHEET))
+    assert frame["plot_area_applied"] is False
+    assert "no entities" in frame["plot_area_note"]
+    assert frame["xlim"][1] - frame["xlim"][0] == pytest.approx(420.0)
+
+
+async def test_unrenderable_plot_area_is_reported_not_hidden(backend, tmp_path):
+    """display / view need a screen; the headless engine plots the sheet and says so."""
+    pytest.importorskip("matplotlib", reason="rendering needs the [pdf] extra")
+    await _sheet(backend)
+    await backend.page_setup_apply(SHEET, resolve_page_setup("ISO_A3", scale="1:1"))
+    lay = backend._doc.layouts.get(SHEET)
+    lay.dxf_layout.dxf.plot_type = 0  # display
+    lay.add_line((0, 0), (100, 100))
+    result = await backend.drawing_export_pdf(str(tmp_path / "display.pdf"), layout=SHEET)
+    assert result["ok"] is True
+    assert result["plot_area"] == "display" and result["plot_area_applied"] is False
+    assert "display" in result["plot_area_note"]
+    assert result["scale_applied"] is True
+
+
 async def test_apply_materialises_the_default_flags_before_setting_centre(backend):
     """Measured: set_flag_state starts from 0 on a fresh layout, so a naive
     plot_centered(True) writes 4 and drops lineweights/plot-styles/viewports-first."""

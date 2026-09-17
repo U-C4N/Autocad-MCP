@@ -1549,6 +1549,13 @@ class EzdxfBackend(AutoCADBackend):
                 result = {"ok": True, "path": path}
                 if paper is not None:
                     result["paper_mm"] = paper["size_mm"]
+                    result["scale"] = paper["scale"]
+                    result["effective_scale"] = paper["effective_scale"]
+                    result["scale_applied"] = paper["scale_applied"]
+                    result["plot_area"] = paper["plot_area"]
+                    result["plot_area_applied"] = paper["plot_area_applied"]
+                    if "plot_area_note" in paper:
+                        result["plot_area_note"] = paper["plot_area_note"]
                     if not paper["rotation_applied"]:
                         result["rotation_applied"] = False
                 if resolved is not None and resolved != "Model":
@@ -2379,10 +2386,71 @@ class EzdxfBackend(AutoCADBackend):
         }
 
     @staticmethod
-    def _paper_frame(layout) -> dict:
+    def _plot_scale(layout) -> tuple[str, float | None, float | None]:
+        """``(label, numerator, denominator)`` of the layout's plot scale; the
+        terms are ``None`` for *scaled to fit* (code 75 = 0).
+
+        Reads the same bits ``_page_setup_row`` reports, so the label here is
+        the label ``page_setup_list`` shows: a standard code under
+        ``USE_STANDARD_SCALE`` resolves through ezdxf's ``STD_SCALES`` table,
+        anything else through the stored numerator / denominator.
+        """
+        from ezdxf.lldxf.const import STD_SCALES
+
+        from engineering.standards.papers import dxf_scale_label, scale_label
+
+        dxf = layout.dxf_layout.dxf
+        flags = int(dxf.get("plot_layout_flags", dxf.get_default("plot_layout_flags")))
+        numerator, denominator = float(dxf.scale_numerator), float(dxf.scale_denominator)
+        if flags & layout.USE_STANDARD_SCALE:
+            code = int(dxf.standard_scale_type)
+            if code == 0:
+                return "fit", None, None
+            if code in STD_SCALES:
+                numerator, denominator = (float(v) for v in STD_SCALES[code])
+            return dxf_scale_label(code, numerator, denominator), numerator, denominator
+        return scale_label(numerator, denominator), numerator, denominator
+
+    @staticmethod
+    def _plot_extents(layout):
+        """Paper-space extents AutoCAD's *extents* plot area means, or ``None``.
+
+        ``ezdxf.bbox`` counts the main paper-space viewport (id 1, the whole
+        sheet) as an entity; AutoCAD does not, so it is left out here.
+        """
+        from ezdxf import bbox
+
+        entities = [
+            e for e in layout if not (e.dxftype() == "VIEWPORT" and int(e.dxf.get("id", 0)) == 1)
+        ]
+        if not entities:
+            return None
+        box = bbox.extents(entities, fast=True)
+        return box if box.has_data else None
+
+    @classmethod
+    def _paper_frame(cls, layout) -> dict:
         """The sheet as a matplotlib figure: size in inches plus the axes window.
 
-        Used by ``drawing_export_pdf`` so the PDF's /MediaBox *is* the paper.
+        Used by ``drawing_export_pdf`` so the PDF's /MediaBox *is* the paper
+        and the content lands on it at the layout's plot scale.
+
+        **Scale.** The axes window spans the sheet in paper-space units, and
+        that is ``sheet_mm / unit x denominator / numerator`` — at 1:2 an A3
+        sheet holds 840 x 594 units, not 420 x 297. It used to be the sheet at
+        1:1 whatever ``page_setup_apply`` had written (measured: a 1:2 sheet
+        exported pixel-identical to the same sheet at 1:1, ``ok: True``, and
+        the MediaBox read as correct, so nothing downstream could see it).
+        ``fit`` on a *layout* plot is 1:1: AutoCAD greys "Fit to paper" out
+        under that plot area (reported as ``effective_scale``).
+
+        **Plot area.** ``layout`` (5) is the sheet from the plot origin.
+        ``extents`` (1) is the paper-space extents (the main viewport excluded,
+        as AutoCAD excludes it) placed at the plot origin, or centred on the
+        printable area under ``PLOT_CENTERED``; with ``fit`` the extents are
+        scaled to the printable area. The plot areas the headless engine cannot
+        know (display, view) and the ones it does not read (limits, window)
+        fall back to the sheet window and say so in ``plot_area_applied``.
 
         ``plot_rotation`` 1/3 is AutoCAD's landscape-on-portrait-media
         convention: the media stays 210 x 297 and the sheet is turned, so
@@ -2396,29 +2464,103 @@ class EzdxfBackend(AutoCADBackend):
         the headless renderer still does not do is rotate the *content* on the
         media (reported as ``rotation_applied``, not hidden).
         """
+        from engineering.standards.papers import PLOT_TYPE_NAMES, scale_label
+
         dxf = layout.dxf_layout.dxf
         width, height = float(dxf.paper_width), float(dxf.paper_height)
         rotation = int(dxf.plot_rotation)
         unit = 25.4 if int(dxf.plot_paper_units) == 0 else 1.0
         top, right = float(dxf.top_margin), float(dxf.right_margin)
         bottom, left = float(dxf.bottom_margin), float(dxf.left_margin)
+        # (top, right, bottom, left) after the turn — ezdxf's Page.from_dxf_layout.
         if rotation == 1:
-            sheet_w, sheet_h, left, bottom = height, width, top, left
+            sheet_w, sheet_h = height, width
+            top, right, bottom, left = right, bottom, left, top
         elif rotation == 2:
-            sheet_w, sheet_h, left, bottom = width, height, right, top
+            sheet_w, sheet_h = width, height
+            top, right, bottom, left = bottom, left, top, right
         elif rotation == 3:
-            sheet_w, sheet_h, left, bottom = height, width, bottom, right
+            sheet_w, sheet_h = height, width
+            top, right, bottom, left = left, top, right, bottom
         else:
             sheet_w, sheet_h = width, height
-        x0 = -(left + float(dxf.plot_origin_x_offset))
-        y0 = -(bottom + float(dxf.plot_origin_y_offset))
-        return {
+        offset_x = float(dxf.plot_origin_x_offset)
+        offset_y = float(dxf.plot_origin_y_offset)
+        printable_w = max(sheet_w - left - right, 1e-9)
+        printable_h = max(sheet_h - top - bottom, 1e-9)
+
+        label, numerator, denominator = cls._plot_scale(layout)
+        plot_type = int(dxf.plot_type)
+        plot_area = PLOT_TYPE_NAMES.get(plot_type, str(plot_type))
+        flags = int(dxf.get("plot_layout_flags", dxf.get_default("plot_layout_flags")))
+        centered = bool(flags & layout.PLOT_CENTERED)
+
+        box = cls._plot_extents(layout) if plot_type == 1 else None
+        plot_area_applied = plot_type == 5 or box is not None
+        note = None
+        if plot_type == 1 and box is None:
+            note = "extents: the layout holds no entities, so the sheet window was plotted"
+        elif plot_type not in (1, 5):
+            note = (
+                f"plot area {plot_area!r} is not rendered headlessly; the sheet window was plotted"
+            )
+
+        # Paper-space units per millimetre of sheet.
+        scale_applied = True
+        effective = label
+        if (
+            numerator is not None
+            and denominator is not None
+            and (numerator <= 0 or denominator <= 0)
+        ):
+            scale_applied, effective, units_per_mm = False, "1:1", 1.0 / unit
+        elif numerator is None:  # scaled to fit
+            if box is not None:
+                ratios = [
+                    printable_w / box.size.x if box.size.x > 1e-12 else None,
+                    printable_h / box.size.y if box.size.y > 1e-12 else None,
+                ]
+                usable = [r for r in ratios if r is not None]
+                mm_per_unit = min(usable) if usable else 1.0
+                units_per_mm = 1.0 / mm_per_unit
+                paper_per_unit = mm_per_unit * unit
+                effective = (
+                    scale_label(paper_per_unit, 1.0)
+                    if paper_per_unit >= 1.0
+                    else scale_label(1.0, 1.0 / paper_per_unit)
+                )
+            else:
+                # Fit under a layout plot is not a choice AutoCAD offers: the
+                # Page Setup dialog greys it out and the sheet plots at 1:1.
+                units_per_mm, effective = 1.0 / unit, "1:1"
+        else:
+            units_per_mm = denominator / numerator / unit
+
+        # Lower-left corner of the *sheet* in paper-space units.
+        if box is None:
+            x0 = -(left + offset_x) * units_per_mm
+            y0 = -(bottom + offset_y) * units_per_mm
+        elif centered:
+            x0 = box.center.x - (left + printable_w / 2.0) * units_per_mm
+            y0 = box.center.y - (bottom + printable_h / 2.0) * units_per_mm
+        else:
+            x0 = box.extmin.x - (left + offset_x) * units_per_mm
+            y0 = box.extmin.y - (bottom + offset_y) * units_per_mm
+        frame = {
             "size_mm": [round(sheet_w, 2), round(sheet_h, 2)],
             "figsize": (sheet_w / 25.4, sheet_h / 25.4),
-            "xlim": (x0 / unit, (x0 + sheet_w) / unit),
-            "ylim": (y0 / unit, (y0 + sheet_h) / unit),
+            "xlim": (x0, x0 + sheet_w * units_per_mm),
+            "ylim": (y0, y0 + sheet_h * units_per_mm),
             "rotation_applied": rotation == 0,
+            "scale": label,
+            "effective_scale": effective,
+            "scale_applied": scale_applied,
+            "plot_area": plot_area,
+            "plot_area_applied": plot_area_applied,
         }
+        if note:
+            frame["plot_area_note"] = note
+        return frame
 
     async def page_setup_list(self, layout: str | None = None) -> list[dict]:
         def _sync():
