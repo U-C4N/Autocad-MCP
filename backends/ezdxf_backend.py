@@ -6045,6 +6045,18 @@ class EzdxfBackend(AutoCADBackend):
 
     def _set_annotation_scale(self, doc, value: Any) -> str:
         name, paper, drawing = parse_scale(value)  # refused before any write
+        if self._is_r12():
+            # Measured: an R12 (AC1009) file has no OBJECTS section, so ezdxf
+            # exports neither AcDbVariableDictionary/DICTIONARYVAR nor the
+            # SCALE objects. The in-memory write "succeeded" and reloaded as
+            # 1:1 -- the header-only-write-that-vanishes class again. Refused
+            # here, before either dictionary is created, so a refused call
+            # leaves the root dictionary as it found it.
+            raise ValueError(
+                "CANNOSCALE: R12 has no OBJECTS section, so the annotation scale "
+                "(AcDbVariableDictionary and ACAD_SCALELIST) would be lost on save. "
+                "Save as R2000 or newer first."
+            )
         self._ensure_scale_entry(doc, name, paper, drawing)
         vardict = self._variable_dictionary(doc, create=True)
         entry = vardict.get("CANNOSCALE")

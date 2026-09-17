@@ -5084,7 +5084,9 @@ async def drawing_settings(
     styles contract. On the live engine `annotation_scale` must name a scale in
     the drawing's scale list (SCALELISTEDIT) and AutoCAD refuses the write on a
     paper-space layout with no active viewport; the headless engine adds the
-    scale, seeding AutoCAD's default list first when the drawing has none.
+    scale, seeding AutoCAD's default list first when the drawing has none,
+    and refuses it on an R12 file (no OBJECTS section, so the value would
+    vanish at save — save as R2000 or newer first; limits/grid/ortho survive).
     Headlessly, grid/snap are stored on the active VPORT and the annotation
     scale in the variable dictionary — the places AutoCAD reads them from.
     """

@@ -42,7 +42,9 @@ class SettingsContract:
 
         Refusals (per key, in ``errors``; the other keys still apply): an
         unknown key; a value outside ``_SETTING_RANGES``; a malformed
-        ``limits`` / ``annotation_scale``; ``polar`` / ``polar_angle`` on the
+        ``limits`` / ``annotation_scale``; ``annotation_scale`` on an R12 file
+        headlessly (no OBJECTS section, so the value would vanish at save —
+        save as R2000 or newer first); ``polar`` / ``polar_angle`` on the
         headless engine (registry-saved — ``capability: registry_sysvar``);
         ``dimstyle`` / ``textstyle`` when the backend has no styles contract.
 

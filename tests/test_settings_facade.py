@@ -387,6 +387,66 @@ async def test_cannoscalevalue_is_read_only(backend):
         await backend.system_set_variable("CANNOSCALEVALUE", 0.5)
 
 
+async def _r12_backend(tmp_path):
+    import ezdxf
+
+    from backends.ezdxf_backend import EzdxfBackend
+
+    path = tmp_path / "r12.dxf"
+    ezdxf.new("R12").saveas(str(path))
+    backend = EzdxfBackend()
+    await backend.connect()
+    await backend.drawing_open(str(path))
+    return backend
+
+
+async def test_annotation_scale_on_r12_is_refused_rather_than_lost(tmp_path):
+    """Measured: an R12 (AC1009) file has no OBJECTS section, so ezdxf exports
+    neither AcDbVariableDictionary nor ACAD_SCALELIST — a CANNOSCALE written to
+    the in-memory document reported `changed 1:1 -> 1:50` and reloaded as 1:1.
+    The write is refused up front, before any dictionary is created, and the
+    other settings on the same call still apply (limits survive R12)."""
+    backend = await _r12_backend(tmp_path)
+    try:
+        # ezdxf seeds an *empty* ACAD_SCALELIST at new(); the refusal must not
+        # populate it (the default-list seeding) nor create the variable dict.
+        assert len(backend._doc.rootdict.get("ACAD_SCALELIST")) == 0
+        with pytest.raises(ValueError, match="R12") as excinfo:
+            await backend.system_set_variable("CANNOSCALE", "1:50")
+        assert "R2000 or newer" in str(excinfo.value)
+        assert backend._doc.rootdict.get("AcDbVariableDictionary") is None
+        assert len(backend._doc.rootdict.get("ACAD_SCALELIST")) == 0
+
+        res = await backend.drawing_settings(
+            {"annotation_scale": "1:50", "limits": [[0, 0], [420, 297]]}
+        )
+        assert res["ok"] is False
+        assert "R12" in res["errors"]["annotation_scale"]
+        assert "annotation_scale" not in res["applied"]
+        assert res["applied"]["limits"] == [[0, 0], [420, 297]]
+
+        out = tmp_path / "r12_out.dxf"
+        await backend.drawing_save_as(str(out))
+        await backend.drawing_open(str(out))
+        assert backend._doc.dxfversion == "AC1009"
+        read = (await backend.drawing_settings())["settings"]
+        assert read["annotation_scale"] == {"name": "1:1", "value": 1.0}
+        assert read["limits"] == [[0.0, 0.0], [420.0, 297.0]]
+    finally:
+        await backend.disconnect()
+
+
+async def test_annotation_scale_on_r12_refuses_a_malformed_value_by_the_value(tmp_path):
+    """A malformed scale is the caller's mistake whatever the file version, so
+    it is named as such — the R12 refusal is not allowed to mask it."""
+    backend = await _r12_backend(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="paper:drawing"):
+            await backend.system_set_variable("CANNOSCALE", "fifty")
+    finally:
+        await backend.disconnect()
+
+
 def test_both_capability_maps_declare_registry_sysvar():
     from backends.com_backend import ComBackend
     from backends.ezdxf_backend import EzdxfBackend
