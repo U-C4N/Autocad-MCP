@@ -3958,13 +3958,27 @@ class EzdxfBackend(AutoCADBackend):
                 seen.add(key)
                 if layer and entity.dxf.get("layer", "0") != layer:
                     continue
-                current = entity.text if dxftype == "MTEXT" else entity.dxf.get("text", "")
+                # An ATTRIB/ATTDEF is read and written through the attribute
+                # helpers: a multi-line one keeps its content in an embedded
+                # MTEXT and ``dxf.text`` is only the first line, so matching
+                # and writing ``dxf.text`` alone reported ``replaced: 1`` while
+                # ``block_get_attributes`` and ``block_explode`` still carried
+                # the old value. One value, every surface -- the same rule
+                # ``block_set_attributes`` follows.
+                if dxftype == "MTEXT":
+                    current = entity.text
+                elif dxftype in ("ATTRIB", "ATTDEF"):
+                    current = self._attrib_value(entity)
+                else:
+                    current = entity.dxf.get("text", "")
                 if not current or not pattern.search(current):
                     continue
                 updated = pattern.sub(replace, current)
                 if not dry_run:
                     if dxftype == "MTEXT":
                         entity.text = updated
+                    elif dxftype in ("ATTRIB", "ATTDEF"):
+                        self._write_attrib_value(entity, updated)
                     else:
                         entity.dxf.text = updated
                 changed.append(

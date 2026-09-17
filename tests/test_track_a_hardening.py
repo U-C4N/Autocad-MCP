@@ -328,7 +328,7 @@ async def test_explode_refuses_a_non_insert_without_writing(backend):
 
 async def test_com_explode_deletes_attdefs_adds_text_per_attrib_and_deletes_the_reference(com):
     backend, document, space = com
-    attdef = _FakeObject("AcDbAttributeDefinition", "D1")
+    attdef = _FakeObject("AcDbAttributeDefinition", "D1", Constant=False)
     line = _FakeObject("AcDbLine", "L1")
     visible = _FakeObject(
         "AcDbAttribute",
@@ -358,6 +358,7 @@ async def test_com_explode_deletes_attdefs_adds_text_per_attrib_and_deletes_the_
         Name="TB",
         OwnerID=1,
         GetAttributes=lambda: (visible, hidden),
+        GetConstantAttributes=lambda: (),
         Explode=lambda: (line, attdef),
     )
     document.objects["2F"] = ref
@@ -412,6 +413,7 @@ async def test_com_explode_adds_the_text_to_the_owner_block_not_the_active_layou
         Name="TB",
         OwnerID=2,
         GetAttributes=lambda: (title,),
+        GetConstantAttributes=lambda: (),
         Explode=lambda: (line,),
     )
     document.objects["4B"] = ref
@@ -439,6 +441,7 @@ async def test_com_explode_refuses_a_nested_reference_before_explode(com):
         Name="TB",
         OwnerID=3,
         GetAttributes=lambda: (),
+        GetConstantAttributes=lambda: (),
         Explode=_explode,
     )
     document.objects["5C"] = ref
@@ -482,6 +485,7 @@ async def test_com_explode_carries_the_attrib_frame_and_style_onto_the_text(com)
         Name="TB",
         OwnerID=1,
         GetAttributes=lambda: (attrib,),
+        GetConstantAttributes=lambda: (),
         Explode=lambda: (),
     )
     document.objects["6D"] = ref
@@ -555,6 +559,7 @@ async def test_com_explode_skips_frame_members_the_attrib_does_not_expose(com):
         Name="TB",
         OwnerID=1,
         GetAttributes=lambda: (attrib,),
+        GetConstantAttributes=lambda: (),
         Explode=lambda: (),
     )
     document.objects["7E"] = ref
@@ -647,6 +652,7 @@ async def test_com_explode_falls_back_to_the_constant_tag_list_when_constant_is_
         Height=2.0,
         Rotation=0.0,
         Layer="0",
+        Invisible=False,
     )
     placeholder = _FakeObject("AcDbAttributeDefinition", "D1", TagString="TAG")
     ref = _FakeObject(
@@ -973,6 +979,7 @@ async def test_com_explode_turns_a_multi_line_attrib_into_mtext(com):
         Name="TB",
         OwnerID=1,
         GetAttributes=lambda: (note, plain),
+        GetConstantAttributes=lambda: (),
         Explode=lambda: (line,),
     )
     document.objects["6D"] = ref
@@ -1028,6 +1035,7 @@ async def test_com_explode_multi_line_attrib_takes_the_frame_before_the_angle(co
         Name="TB",
         OwnerID=1,
         GetAttributes=lambda: (note,),
+        GetConstantAttributes=lambda: (),
         Explode=lambda: (),
     )
     document.objects["7E"] = ref
@@ -1071,6 +1079,7 @@ async def test_com_explode_refuses_an_xref_before_explode(com):
         Name="XREF_DETAIL",
         OwnerID=1,
         GetAttributes=lambda: (),
+        GetConstantAttributes=lambda: (),
         Explode=_explode,
     )
     document.objects["8A"] = ref
@@ -1097,6 +1106,7 @@ async def test_com_explode_refuses_a_minsert_by_name_before_explode(com):
         Rows=2,
         Columns=3,
         GetAttributes=lambda: (),
+        GetConstantAttributes=lambda: (),
         Explode=_explode,
     )
     document.objects["9B"] = grid
@@ -1286,3 +1296,211 @@ async def test_explode_opaque_members_is_declared_on_both_engines():
     headless = EzdxfBackend().capabilities().features["explode_opaque_members"]
     assert headless.supported is False and "OLE2FRAME" in (headless.reason or "")
     assert ComBackend().capabilities().features["explode_opaque_members"].supported is True
+
+
+# ── Task 2 (review 3): find_replace on a multi-line attribute; COM reads propagate ─
+
+
+async def test_find_replace_rewrites_every_surface_of_a_multi_line_attrib(backend):
+    """``text_find_replace`` matched and wrote only ``dxf.text`` of an ATTRIB,
+    so on a multi-line attribute it reported ``replaced: 1, 'OLD ONE' ->
+    'NEW ONE'`` while ``block_get_attributes`` still read ``OLD ONE\\POLD TWO``
+    and ``block_explode`` burst it. The ATTRIB branch goes through the same
+    reader and writer the attribute tools use: one value, every surface."""
+    ref, attrib = await _insert_multi_line(backend)
+
+    result = await backend.text_find_replace("OLD", "NEW")
+
+    assert result["replaced"] == 1
+    (entry,) = result["entities"]
+    assert entry["type"] == "ATTRIB"
+    assert entry["before"] == "OLD ONE\\POLD TWO", "the whole value is what was matched"
+    assert entry["after"] == "NEW ONE\\PNEW TWO", "every line is replaced, not the first"
+    assert attrib.has_embedded_mtext_entity, "still a multi-line attribute"
+    assert attrib.virtual_mtext_entity().text == "NEW ONE\\PNEW TWO"
+    assert attrib.dxf.text == "NEW ONE\\PNEW TWO"
+    assert await backend.block_get_attributes(ref.handle) == {"NOTE": "NEW ONE\\PNEW TWO"}
+    exploded = await backend.block_explode(ref.handle)
+    (handle,) = exploded["attribute_texts"]
+    raw = backend._doc.entitydb[handle]
+    assert raw.dxftype() == "MTEXT" and raw.text == "NEW ONE\\PNEW TWO"
+    assert backend._doc.audit().errors == []
+
+
+async def test_find_replace_matches_a_line_below_the_first_of_a_multi_line_attrib(backend):
+    """A needle that only occurs on the second line was invisible to a search
+    of ``dxf.text`` (the first line alone): ``replaced: 0`` on a value the
+    reader plainly reports."""
+    ref, attrib = await _insert_multi_line(backend)
+
+    result = await backend.text_find_replace("TWO", "2")
+
+    assert result["replaced"] == 1
+    assert await backend.block_get_attributes(ref.handle) == {"NOTE": "OLD ONE\\POLD 2"}
+    assert attrib.virtual_mtext_entity().text == "OLD ONE\\POLD 2"
+
+
+async def test_find_replace_dry_run_reports_the_whole_multi_line_value_and_writes_nothing(
+    backend,
+):
+    ref, attrib = await _insert_multi_line(backend)
+
+    result = await backend.text_find_replace("OLD", "NEW", dry_run=True)
+
+    assert result["dry_run"] is True and result["replaced"] == 1
+    assert result["entities"][0]["before"] == "OLD ONE\\POLD TWO"
+    assert result["entities"][0]["after"] == "NEW ONE\\PNEW TWO"
+    assert attrib.virtual_mtext_entity().text == "OLD ONE\\POLD TWO"
+    assert attrib.dxf.text == "OLD ONE"
+    assert await backend.block_get_attributes(ref.handle) == {"NOTE": "OLD ONE\\POLD TWO"}
+
+
+async def test_find_replace_rewrites_a_multi_line_attdef_inside_a_block_definition(backend):
+    """The ATTDEF twin: the default a new INSERT is prompted with lives in the
+    block definition, and a multi-line one keeps it in an embedded MTEXT."""
+    blk = backend._doc.blocks.new(name="MLD")
+    blk.add_line((0, 0), (10, 0))
+    attdef = blk.add_attdef("NOTE", insert=(0, 3), text="x", dxfattribs={"height": 2.5})
+    _embed_multi_line(attdef, ["OLD ONE", "OLD TWO"], (0, 3))
+
+    result = await backend.text_find_replace("OLD", "NEW")
+
+    assert result["replaced"] == 1 and result["entities"][0]["type"] == "ATTDEF"
+    assert result["entities"][0]["after"] == "NEW ONE\\PNEW TWO"
+    assert attdef.has_embedded_mtext_entity
+    assert attdef.virtual_mtext_entity().text == "NEW ONE\\PNEW TWO"
+    assert attdef.dxf.text == "NEW ONE\\PNEW TWO"
+    assert backend._doc.audit().errors == []
+
+
+async def test_find_replace_leaves_a_single_line_attrib_single_line(backend):
+    _define_tagged_block(backend, "TB3")
+    ref = await backend.block_insert("TB3", 0, 0, attributes={"TAG": "OLD-1"})
+    attrib = backend._doc.entitydb[ref.handle].attribs[0]
+
+    result = await backend.text_find_replace("OLD", "NEW")
+
+    assert result["replaced"] == 1 and result["entities"][0]["after"] == "NEW-1"
+    assert attrib.dxf.text == "NEW-1" and not attrib.has_embedded_mtext_entity
+    assert await backend.block_get_attributes(ref.handle) == {"TAG": "NEW-1"}
+
+
+def _boom(*_args):
+    raise RuntimeError("RPC_E_CALL_REJECTED: the application is busy")
+
+
+@pytest.mark.parametrize(
+    "broken",
+    ["GetAttributes", "GetConstantAttributes", "Invisible"],
+    ids=["get_attributes", "get_constant_attributes", "invisible"],
+)
+async def test_com_explode_propagates_a_failing_read_before_explode(com, broken):
+    """A failing ``GetAttributes()`` used to be swallowed (``attrs = ()``), and
+    the burst went on to explode, delete every ATTDEF placeholder and the
+    reference, and return ``ok: True, attribute_texts: []`` -- every value
+    destroyed silently, the defect the BURST rule exists to remove. A
+    transient ``RPC_E_CALL_REJECTED`` while AutoCAD is busy is enough to
+    trigger it. The same for ``GetConstantAttributes()`` (a constant ATTDEF
+    would then be deleted as a placeholder) and for ``Invisible`` (a hidden
+    value would appear as visible text). Nothing has been written at that
+    point, so the failure propagates and the drawing is untouched."""
+    backend, document, space = com
+    dispatched = []
+    attdef = _FakeObject("AcDbAttributeDefinition", "D1", Constant=False)
+    line = _FakeObject("AcDbLine", "L1")
+
+    def _explode():
+        dispatched.append("Explode")
+        return (line, attdef)
+
+    attrib_members = dict(
+        TagString="TAG",
+        TextString="P-101",
+        InsertionPoint=(7.0, 15.2, 0.0),
+        Height=5.0,
+        Rotation=0.0,
+        Layer="PID-TAG",
+        Invisible=True,
+    )
+    if broken == "Invisible":
+        attrib_members.pop("Invisible")  # the read raises AttributeError on the fake
+    attrib = _FakeObject("AcDbAttribute", "A1", **attrib_members)
+    ref_members = dict(
+        Name="TB",
+        OwnerID=1,
+        GetAttributes=lambda: (attrib,),
+        GetConstantAttributes=lambda: (),
+        Explode=_explode,
+    )
+    if broken in ref_members:
+        ref_members[broken] = _boom
+    ref = _FakeObject("AcDbBlockReference", "2F", **ref_members)
+    document.objects["2F"] = ref
+
+    with pytest.raises((RuntimeError, AttributeError)):
+        await backend.block_explode("2F")
+
+    assert dispatched == [], "the read failed before Explode() was dispatched"
+    assert space.calls == [] and ref.deleted is False and attdef.deleted is False
+
+
+class _SpaceFailingSecondAddText(_FakeSpace):
+    def AddText(self, text, point, height):
+        if self.texts:
+            raise RuntimeError("E_FAIL: AddText")
+        return super().AddText(text, point, height)
+
+
+async def test_com_explode_undoes_a_burst_that_fails_after_explode(com):
+    """ActiveX ``Explode()`` leaves the reference in place, so a failure after
+    it (here ``AddText`` on the second attribute; a constant ATTDEF whose
+    members cannot be read is the other way in) is put back to that: the
+    members the explode added and the TEXTs written so far are deleted, the
+    reference stays, and the failure propagates rather than a half-burst
+    symbol with ``ok: True``."""
+    backend, document, space = com
+    sheet = _SpaceFailingSecondAddText(name="Sheet")
+    document.owners[2] = sheet
+    first = _FakeObject(
+        "AcDbAttribute",
+        "A1",
+        TagString="TAG",
+        TextString="P-101",
+        InsertionPoint=(7.0, 15.2, 0.0),
+        Height=5.0,
+        Rotation=0.0,
+        Layer="0",
+        Invisible=False,
+    )
+    second = _FakeObject(
+        "AcDbAttribute",
+        "A2",
+        TagString="LINK",
+        TextString="L-1",
+        InsertionPoint=(1.0, 1.0, 0.0),
+        Height=2.0,
+        Rotation=0.0,
+        Layer="0",
+        Invisible=False,
+    )
+    placeholder = _FakeObject("AcDbAttributeDefinition", "D1", Constant=False)
+    line = _FakeObject("AcDbLine", "L1")
+    ref = _FakeObject(
+        "AcDbBlockReference",
+        "4C",
+        Name="TB",
+        OwnerID=2,
+        GetAttributes=lambda: (first, second),
+        GetConstantAttributes=lambda: (),
+        Explode=lambda: (line, placeholder),
+    )
+    document.objects["4C"] = ref
+
+    with pytest.raises(RuntimeError, match="E_FAIL: AddText"):
+        await backend.block_explode("4C")
+
+    assert ref.deleted is False, "the reference Explode() left in place is kept"
+    assert line.deleted is True, "the member Explode() added is removed"
+    assert placeholder.deleted is True
+    assert [t.deleted for t in sheet.texts] == [True], "the TEXT written before the failure"
+    assert space.calls == []

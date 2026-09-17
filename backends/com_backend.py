@@ -3431,13 +3431,16 @@ class ComBackend(AutoCADBackend):
         A multi-line attribute (``MTextAttribute`` true) keeps its content in
         ``MTextAttributeContent`` -- ``TextString`` is one flattened string --
         and its box width in ``MTextBoundaryWidth``; ``mtext`` marks it so the
-        writer builds an MTEXT. An object that does not expose the member is
-        single-line.
+        writer builds an MTEXT. An object that does not expose *that* member
+        is single-line (the member is younger than the ActiveX surface, and a
+        ``TextString`` fallback loses nothing).
+
+        ``Invisible`` is *not* guessed: a read failure used to default to
+        visible, so a hidden attribute's value (a link, a cost code) became
+        visible text with ``ok: True``. The failure propagates, and the
+        caller of this helper reads it before anything is written.
         """
-        try:
-            invisible = bool(attr.Invisible)
-        except Exception:
-            invisible = False
+        invisible = bool(attr.Invisible)
         try:
             is_mtext = bool(attr.MTextAttribute)
         except Exception:
@@ -3548,6 +3551,21 @@ class ComBackend(AutoCADBackend):
         return text
 
     @staticmethod
+    def _undo_explode(exploded, texts) -> None:
+        """Delete what a failed burst has already written (best effort).
+
+        An object the burst deleted itself (an ATTDEF placeholder) raises on a
+        second ``Delete``; that is skipped, every other failure is logged and
+        the next object is tried, so the original exception -- the one the
+        caller is about to re-raise -- stays the one the caller sees.
+        """
+        for obj in tuple(texts) + tuple(exploded):
+            try:
+                obj.Delete()
+            except Exception as exc:
+                log.debug("explode rollback: %r not deleted: %s", obj, exc)
+
+    @staticmethod
     def _is_constant_attdef(obj, constant_tags: set) -> bool:
         """Whether an exploded ``AcDbAttributeDefinition`` is a constant attribute.
 
@@ -3560,10 +3578,7 @@ class ComBackend(AutoCADBackend):
             return bool(obj.Constant)
         except Exception:
             pass
-        try:
-            return str(obj.TagString) in constant_tags
-        except Exception:
-            return False
+        return str(obj.TagString) in constant_tags
 
     async def block_explode(self, handle) -> dict:
         """Explode an INSERT through ActiveX; ATTRIB values survive as TEXT.
@@ -3618,6 +3633,16 @@ class ComBackend(AutoCADBackend):
         and an xref (``Blocks.Item(Name).IsXRef``; ActiveX ``Explode()`` raises
         on one, the headless engine used to delete it) -- the same three
         refusals the headless engine names.
+
+        No read that decides what gets written is guessed: ``GetAttributes()``,
+        ``GetConstantAttributes()`` and each attribute's ``Invisible`` are read
+        before ``Explode()`` and a failure propagates with nothing written
+        (a swallowed ``GetAttributes()`` used to burst *no* value and report
+        ``ok: True``). A failure after the explode -- a constant ATTDEF whose
+        members cannot be read, an ``AddText`` that is refused -- undoes what
+        the explode added and the TEXTs written so far and leaves the
+        reference in place (``_undo_explode``), so the drawing is never left
+        half-burst under an exception.
         """
 
         def _sync():
@@ -3645,32 +3670,41 @@ class ComBackend(AutoCADBackend):
                     "be exploded (bind it into the drawing first)"
                 )
             owner = _owner_layout_block(doc, ent, handle)
-            try:
-                attrs = ent.GetAttributes()
-            except Exception as exc:
-                log.debug("GetAttributes failed before explode: %s", exc)
-                attrs = ()
+            # Every read that decides what the burst writes happens *before*
+            # ``Explode()`` and propagates: swallowing a failing
+            # ``GetAttributes()`` (a transient ``RPC_E_CALL_REJECTED`` while
+            # AutoCAD is busy is enough) went on to explode, delete every
+            # ATTDEF placeholder and the reference, and report ``ok: True``
+            # with ``attribute_texts: []`` -- every value destroyed silently,
+            # the defect this method exists to remove. Nothing has been
+            # written yet, so raising here costs nothing.
+            attrs = ent.GetAttributes()
             captured = [self._capture_attrib(attr) for attr in attrs]
-            constant_tags: set = set()
-            try:
-                for attr in ent.GetConstantAttributes() or ():
-                    constant_tags.add(str(attr.TagString))
-            except Exception as exc:
-                log.debug("GetConstantAttributes failed before explode: %s", exc)
-            exploded = ent.Explode()
+            constant_tags: set = {str(attr.TagString) for attr in ent.GetConstantAttributes() or ()}
+            exploded = tuple(ent.Explode() or ())
             inserted = []
-            for obj in exploded or ():
-                if obj.ObjectName == "AcDbAttributeDefinition":
-                    if self._is_constant_attdef(obj, constant_tags):
-                        # A constant attribute's only text; already WCS here.
-                        captured.append(self._capture_attrib(obj))
-                    obj.Delete()  # the tag placeholder EXPLODE leaves; the value is below
-                    continue
-                inserted.append(str(obj.Handle))
             attribute_texts = []
-            for item in captured:
-                text = self._add_text_from_capture(owner, item)
-                attribute_texts.append(str(text.Handle))
+            texts = []
+            try:
+                for obj in exploded:
+                    if obj.ObjectName == "AcDbAttributeDefinition":
+                        if self._is_constant_attdef(obj, constant_tags):
+                            # A constant attribute's only text; already WCS here.
+                            captured.append(self._capture_attrib(obj))
+                        obj.Delete()  # the tag placeholder EXPLODE leaves; the value is below
+                        continue
+                    inserted.append(str(obj.Handle))
+                for item in captured:
+                    text = self._add_text_from_capture(owner, item)
+                    texts.append(text)
+                    attribute_texts.append(str(text.Handle))
+            except Exception:
+                # ActiveX ``Explode()`` leaves the reference in place, so the
+                # drawing is put back to exactly that: the members it added and
+                # the TEXTs written so far are removed, the reference stays,
+                # and the failure propagates instead of a half-burst symbol.
+                self._undo_explode(exploded, texts)
+                raise
             ent.Delete()
             _regen()
             return {

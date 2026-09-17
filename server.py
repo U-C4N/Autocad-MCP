@@ -2417,7 +2417,9 @@ async def text_find_replace(
     never searched" are different answers. Block *definitions* are included, so
     the next insert does not reintroduce the old text. DIMENSION text is out of
     scope: its text field holds the `<>` override placeholder rather than the
-    measurement, so editing it would break the association.
+    measurement, so editing it would break the association. A multi-line
+    attribute is matched and rewritten as the whole value (`Line1\\PLine2`),
+    the same value `block_get_attributes` reports and `block_explode` bursts.
     """
     await ctx.info(f"Replacing {find!r} with {replace!r}{' (dry run)' if dry_run else ''}")
     return await _backend(ctx).text_find_replace(find, replace, layer or None, match_case, dry_run)
