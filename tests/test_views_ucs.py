@@ -12,8 +12,10 @@ from __future__ import annotations
 import types
 
 import pytest
+from fastmcp import Client
 
-from engineering.environment.ucs import resolve_ucs_axes
+import server
+from engineering.environment.ucs import is_world_axes, resolve_ucs_axes
 from engineering.environment.views import resolve_view_args
 
 pytestmark = pytest.mark.asyncio
@@ -51,6 +53,14 @@ def test_ucs_axes_are_normalised_and_orthogonality_is_measured():
         resolve_ucs_axes([0, 0, 0], [0, 0, 0], [0, 1, 0])
     with pytest.raises(ValueError, match="origin"):
         resolve_ucs_axes([0, 0], [1, 0, 0], [0, 1, 0])
+
+
+def test_world_is_decided_by_the_frame_not_the_name():
+    assert is_world_axes((0, 0, 0), (1, 0, 0), (0, 1, 0))
+    assert is_world_axes([0.0, 0.0, 1e-12], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
+    assert not is_world_axes((0, 20, 0), (1, 0, 0), (0, 1, 0))  # UCS Origin
+    assert not is_world_axes((0, 0, 0), (0, 1, 0), (-1, 0, 0))  # rotated 90°
+    assert not is_world_axes((0, 0), (1, 0, 0), (0, 1, 0))
 
 
 # ── headless: named views ───────────────────────────────────────────────────
@@ -213,6 +223,74 @@ async def test_ucs_replace_keeps_one_entry(backend):
     assert len(list(backend._doc.ucs)) == 1
 
 
+async def test_ucs_list_does_not_call_an_unnamed_ucs_world(backend):
+    """``UCS Origin`` / ``UCS 3P`` without saving — the common kind — leaves
+    ``$UCSNAME`` empty exactly like WCS does (AutoCAD 2026 writes
+    ``$UCSNAME=''``, ``$UCSORG=(0,20,0)`` after ``_.UCS _O``). The frame, not
+    the name, says whether the drawing is in WCS."""
+    await backend.ucs_set("FRONT", [10, 10, 0], [0, 1, 0], [-1, 0, 0])
+    header = backend._doc.header
+    header["$UCSNAME"] = ""
+    header["$UCSORG"] = (50.0, 20.0, 0.0)
+    header["$UCSXDIR"] = (0.0, 1.0, 0.0)
+    header["$UCSYDIR"] = (-1.0, 0.0, 0.0)
+    rows = await backend.ucs_list()
+    assert [r["name"] for r in rows] == ["world", "FRONT", None]
+    assert [r["current"] for r in rows] == [False, False, True]
+    assert rows[2] == {
+        "name": None,
+        "origin": [50.0, 20.0, 0.0],
+        "x_axis": [0.0, 1.0, 0.0],
+        "y_axis": [-1.0, 0.0, 0.0],
+        "current": True,
+    }
+    # ...and the same empty name with the WCS frame really is world.
+    await backend.ucs_restore("world")
+    rows = await backend.ucs_list()
+    assert [r["name"] for r in rows] == ["world", "FRONT"]
+    assert rows[0]["current"] is True and rows[1]["current"] is False
+
+
+async def test_ucs_list_a_stale_name_falls_back_to_the_frame(backend):
+    """``$UCSNAME`` naming an entry the table no longer holds is not a
+    current row; the frame decides between world and unnamed."""
+    header = backend._doc.header
+    header["$UCSNAME"] = "GONE"
+    rows = await backend.ucs_list()
+    assert [(r["name"], r["current"]) for r in rows] == [("world", True)]
+    header["$UCSORG"] = (0.0, 20.0, 0.0)
+    rows = await backend.ucs_list()
+    assert [(r["name"], r["current"]) for r in rows] == [("world", False), (None, True)]
+    assert rows[1]["origin"] == [0.0, 20.0, 0.0]
+
+
+async def test_ucs_list_tool_reports_an_unnamed_ucs_over_the_wire(monkeypatch, tmp_path):
+    """The exact file AutoCAD writes after ``_.UCS _O 0,20,0`` without saving:
+    ``$UCSNAME=''`` and ``$UCSORG=(0,20,0)``. The tool used to answer
+    ``current: "world"``."""
+    import ezdxf
+
+    doc = ezdxf.new("R2018")
+    doc.ucs.add(
+        "FRONT", dxfattribs={"origin": (10, 10, 0), "xaxis": (0, 1, 0), "yaxis": (-1, 0, 0)}
+    )
+    doc.header["$UCSNAME"] = ""
+    doc.header["$UCSORG"] = (0.0, 20.0, 0.0)
+    path = tmp_path / "unnamed_ucs.dxf"
+    doc.saveas(str(path))
+
+    monkeypatch.setenv("AUTOCAD_MCP_BACKEND", "ezdxf")
+    async with Client(server.mcp) as client:
+        await client.call_tool("drawing_open", {"path": str(path)})
+        payload = (await client.call_tool("ucs_list", {})).structured_content
+    assert payload["current"] is None and payload["current_unnamed"] is True
+    assert payload["count"] == 3
+    assert [r["name"] for r in payload["ucs"]] == ["world", "FRONT", None]
+    assert payload["ucs"][0]["current"] is False
+    assert payload["ucs"][2]["current"] is True
+    assert payload["ucs"][2]["origin"] == [0.0, 20.0, 0.0]
+
+
 # ── live engine, against a fake ActiveX surface ──────────────────────────────
 
 
@@ -311,7 +389,14 @@ def com_backend(monkeypatch):
     from backends import com_backend as module
 
     document = _FakeDocument()
-    variables = {"CMDACTIVE": 0, "UCSNAME": ""}
+    variables = {
+        "CMDACTIVE": 0,
+        "UCSNAME": "",
+        "WORLDUCS": 1,
+        "UCSORG": (0.0, 0.0, 0.0),
+        "UCSXDIR": (1.0, 0.0, 0.0),
+        "UCSYDIR": (0.0, 1.0, 0.0),
+    }
     app = types.SimpleNamespace(GetVariable=lambda name: variables[name])
     monkeypatch.setattr(module, "_acad_doc", lambda: document)
     monkeypatch.setattr(module, "_acad_app", lambda: app)
@@ -370,6 +455,33 @@ async def test_com_ucs_add_uses_points_on_the_axes_not_vectors(com_backend):
         "y_axis": [-1.0, 0.0, 0.0],
         "current": True,
     }
+
+
+async def test_com_ucs_list_reads_worlducs_not_the_empty_name(com_backend):
+    """Verified live on AutoCAD 2026: after ``_.UCS _O 10,10,0`` (unnamed),
+    ``UCSNAME=""`` and ``WORLDUCS=0`` — the same empty name WCS has."""
+    backend, document, variables = com_backend
+    await backend.ucs_set("FRONT", [10, 10, 0], [0, 1, 0], [-1, 0, 0])
+    variables.update(
+        {
+            "UCSNAME": "",
+            "WORLDUCS": 0,
+            "UCSORG": (0.0, 20.0, 0.0),
+            "UCSXDIR": (1.0, 0.0, 0.0),
+            "UCSYDIR": (0.0, 1.0, 0.0),
+        }
+    )
+    rows = await backend.ucs_list()
+    assert [(r["name"], r["current"]) for r in rows] == [
+        ("world", False),
+        ("FRONT", False),
+        (None, True),
+    ]
+    assert rows[2]["origin"] == [0.0, 20.0, 0.0] and rows[2]["x_axis"] == [1.0, 0.0, 0.0]
+    # WORLDUCS=1 with the same empty name is world, and no unnamed row appears.
+    variables.update({"WORLDUCS": 1, "UCSORG": (0.0, 0.0, 0.0)})
+    rows = await backend.ucs_list()
+    assert [(r["name"], r["current"]) for r in rows] == [("world", True), ("FRONT", False)]
 
 
 async def test_com_ucs_restore_world_sends_the_ucs_command_when_idle(com_backend):

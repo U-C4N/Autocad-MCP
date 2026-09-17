@@ -2692,22 +2692,41 @@ class EzdxfBackend(AutoCADBackend):
         }
 
     async def ucs_list(self) -> list[dict]:
-        from engineering.environment.ucs import WORLD
+        from engineering.environment.ucs import (
+            WORLD,
+            WORLD_ORIGIN,
+            WORLD_X_AXIS,
+            WORLD_Y_AXIS,
+            is_world_axes,
+        )
 
         def _sync():
             doc = self._require_doc()
-            current = str(doc.header.get("$UCSNAME", "") or "")
-            rows = [self._ucs_row(WORLD, (0, 0, 0), (1, 0, 0), (0, 1, 0), current == "")]
+            header = doc.header
+            current = str(header.get("$UCSNAME", "") or "")
+            origin = tuple(header.get("$UCSORG", WORLD_ORIGIN))
+            x_axis = tuple(header.get("$UCSXDIR", WORLD_X_AXIS))
+            y_axis = tuple(header.get("$UCSYDIR", WORLD_Y_AXIS))
+            rows = [self._ucs_row(WORLD, WORLD_ORIGIN, WORLD_X_AXIS, WORLD_Y_AXIS, False)]
+            named_current = False
             for ucs in doc.ucs:
+                is_current = current != "" and ucs.dxf.name.lower() == current.lower()
+                named_current = named_current or is_current
                 rows.append(
                     self._ucs_row(
-                        ucs.dxf.name,
-                        ucs.dxf.origin,
-                        ucs.dxf.xaxis,
-                        ucs.dxf.yaxis,
-                        current != "" and ucs.dxf.name.lower() == current.lower(),
+                        ucs.dxf.name, ucs.dxf.origin, ucs.dxf.xaxis, ucs.dxf.yaxis, is_current
                     )
                 )
+            if named_current:
+                return rows
+            # No saved entry is current. An empty $UCSNAME is NOT "world": an
+            # unnamed UCS (UCS Origin / 3P without saving) has an empty name
+            # too, and AutoCAD writes exactly that. The frame decides, the way
+            # WORLDUCS does live.
+            if is_world_axes(origin, x_axis, y_axis):
+                rows[0]["current"] = True
+            else:
+                rows.append(self._ucs_row(None, origin, x_axis, y_axis, True))
             return rows
 
         return await self._async(_sync)

@@ -7050,13 +7050,19 @@ async def view_named_list(ctx: Context = None) -> dict:
 )
 async def ucs_list(ctx: Context = None) -> dict:
     """The `world` row first, then every UCS table entry with origin and unit
-    axes, `current` on the active one. Tool coordinates stay WCS on both
-    engines whatever is current. No refusals. Pack: settings · lean: no."""
+    axes, `current` on the active one. `world` is current only when the frame
+    IS the WCS (WORLDUCS live, the `$UCS*` header headless) — an unnamed UCS
+    (`UCS Origin` / `3P` without saving) has an empty name too and is
+    reported as a trailing row with `name: null` and its origin/axes, so
+    `current` is `null` then and never `world`. Tool coordinates stay WCS on
+    both engines whatever is current. No refusals. Pack: settings · lean: no."""
     rows = await _backend(ctx).ucs_list()
+    active = next((r for r in rows if r["current"]), None)
     return {
         "ucs": rows,
         "count": len(rows),
-        "current": next((r["name"] for r in rows if r["current"]), None),
+        "current": active["name"] if active else None,
+        "current_unnamed": bool(active and active["name"] is None),
     }
 
 

@@ -1733,7 +1733,7 @@ class ComBackend(AutoCADBackend):
         }
 
     async def ucs_list(self) -> list[dict]:
-        from engineering.environment.ucs import WORLD
+        from engineering.environment.ucs import WORLD, WORLD_ORIGIN, WORLD_X_AXIS, WORLD_Y_AXIS
 
         def _sync():
             app = _acad_app()
@@ -1742,15 +1742,33 @@ class ComBackend(AutoCADBackend):
             rows = [
                 {
                     "name": WORLD,
-                    "origin": [0.0, 0.0, 0.0],
-                    "x_axis": [1.0, 0.0, 0.0],
-                    "y_axis": [0.0, 1.0, 0.0],
-                    "current": current == "",
+                    "origin": list(WORLD_ORIGIN),
+                    "x_axis": list(WORLD_X_AXIS),
+                    "y_axis": list(WORLD_Y_AXIS),
+                    "current": False,
                 }
             ]
             collection = doc.UserCoordinateSystems
             for index in range(int(collection.Count)):
                 rows.append(self._com_ucs_row(collection.Item(index), current))
+            if any(row["current"] for row in rows[1:]):
+                return rows
+            # No saved entry is current. UCSNAME is empty for an unnamed UCS
+            # (UCS Origin / 3P without saving) as well as for WCS — verified
+            # live (AutoCAD 2026: after `_.UCS _O 10,10,0`, UCSNAME="" and
+            # WORLDUCS=0). WORLDUCS is AutoCAD's own answer to "is this WCS".
+            if int(app.GetVariable("WORLDUCS")) == 1:
+                rows[0]["current"] = True
+            else:
+                rows.append(
+                    {
+                        "name": None,
+                        "origin": [float(c) for c in app.GetVariable("UCSORG")],
+                        "x_axis": [float(c) for c in app.GetVariable("UCSXDIR")],
+                        "y_axis": [float(c) for c in app.GetVariable("UCSYDIR")],
+                        "current": True,
+                    }
+                )
             return rows
 
         return await self._run(_sync)

@@ -12,6 +12,34 @@ import math
 WORLD = "world"
 ORTHO_TOLERANCE_DEG = 1e-3
 
+#: The WCS frame — what ``$UCSORG`` / ``$UCSXDIR`` / ``$UCSYDIR`` (and the
+#: UCSORG / UCSXDIR / UCSYDIR system variables) hold while no UCS is active.
+WORLD_ORIGIN = (0.0, 0.0, 0.0)
+WORLD_X_AXIS = (1.0, 0.0, 0.0)
+WORLD_Y_AXIS = (0.0, 1.0, 0.0)
+WORLD_TOLERANCE = 1e-9
+
+
+def is_world_axes(origin, x_axis, y_axis, *, tol: float = WORLD_TOLERANCE) -> bool:
+    """True when the frame *is* the WCS — the test ``$UCSNAME == ""`` cannot make.
+
+    An unnamed UCS (``UCS Origin`` / ``UCS 3P`` without saving — the common
+    kind) also has an empty name, so "is the drawing in WCS" has to be
+    answered from the frame itself: AutoCAD's own answer is WORLDUCS, and
+    this is the same comparison for a header that has no such variable.
+    """
+    for got, want in (
+        (origin, WORLD_ORIGIN),
+        (x_axis, WORLD_X_AXIS),
+        (y_axis, WORLD_Y_AXIS),
+    ):
+        coords = tuple(float(c) for c in got)
+        if len(coords) != 3:
+            return False
+        if any(abs(a - b) > tol for a, b in zip(coords, want, strict=True)):
+            return False
+    return True
+
 
 def _vec3(value, where: str) -> tuple[float, float, float]:
     if not isinstance(value, (list, tuple)) or len(value) != 3:

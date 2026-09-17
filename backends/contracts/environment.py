@@ -86,7 +86,14 @@ class EnvironmentContract(ABC):
 
     @abstractmethod
     async def ucs_list(self) -> list[dict]:
-        """→ ``[{"name", "origin", "x_axis", "y_axis", "current": bool}]`` + the implicit "world"."""
+        """→ ``[{"name", "origin", "x_axis", "y_axis", "current": bool}]`` + the implicit "world".
+
+        Exactly one row is current. An *unnamed* current UCS (``UCS Origin`` /
+        ``3P`` without saving) is a trailing row with ``name: None`` carrying
+        its frame — "world" is current only when the frame is the WCS
+        (WORLDUCS live, the ``$UCS*`` header headless), never because the
+        name is empty.
+        """
         ...
 
     @abstractmethod
