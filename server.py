@@ -5082,7 +5082,9 @@ async def drawing_settings(
     headless engine (`capability: registry_sysvar` — AutoCAD keeps them in the
     registry, a file cannot); `dimstyle` / `textstyle` when the backend has no
     styles contract. On the live engine `annotation_scale` must name a scale in
-    the drawing's scale list (SCALELISTEDIT); the headless engine adds it.
+    the drawing's scale list (SCALELISTEDIT) and AutoCAD refuses the write on a
+    paper-space layout with no active viewport; the headless engine adds the
+    scale, seeding AutoCAD's default list first when the drawing has none.
     Headlessly, grid/snap are stored on the active VPORT and the annotation
     scale in the variable dictionary — the places AutoCAD reads them from.
     """

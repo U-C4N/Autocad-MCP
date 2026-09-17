@@ -5954,39 +5954,52 @@ class EzdxfBackend(AutoCADBackend):
                         return str(tag.value)
         return None
 
-    @classmethod
-    def _ensure_scale_entry(cls, doc, name: str, paper: float, drawing: float) -> bool:
-        """Add `name` to ACAD_SCALELIST unless present; True when added.
+    # AutoCAD's default metric ACAD_SCALELIST, in its own order (measured:
+    # AutoCAD 2026, MEASUREMENT 1, `Documents.Add()` saved as DXF — 17 SCALE
+    # objects keyed A0 … A9, B0 … B6). An imperial seat (MEASUREMENT 0) adds the
+    # architectural fractions on top; those are not seeded — every ratio here
+    # is valid in either unit system, and AutoCAD's SCALELISTEDIT can add more.
+    _DEFAULT_SCALE_LIST: tuple[str, ...] = (
+        "1:1",
+        "1:2",
+        "1:4",
+        "1:5",
+        "1:8",
+        "1:10",
+        "1:16",
+        "1:20",
+        "1:30",
+        "1:40",
+        "1:50",
+        "1:100",
+        "2:1",
+        "4:1",
+        "8:1",
+        "10:1",
+        "100:1",
+    )
 
-        Presence is decided by the SCALE objects' group-300 names, never by
-        the dictionary key — an AutoCAD-authored drawing keys the list `A0`,
-        `A1`, … (its default metric list already carries 1:1 … 1:100, 2:1),
-        and matching on the key appended a duplicate `1:50` to every one of
-        them. A new entry is keyed by its name unless that key is taken, in
-        which case it takes the next free `A<n>` slot like AutoCAD does.
+    @staticmethod
+    def _scale_list_key(index: int) -> str:
+        """The dictionary key AutoCAD gives the ``index``-th SCALE: A0 … A9, B0 …"""
+        return f"{chr(ord('A') + index // 10)}{index % 10}"
+
+    @classmethod
+    def _add_scale_object(cls, doc, scales, name: str, paper: float, drawing: float) -> None:
+        """Author one SCALE object and file it under the next free AutoCAD-style key.
 
         ezdxf has no SCALE entity class, so the object is authored as raw tags
         and loaded through the factory (a `DXFTagStorage` that exports
         verbatim). Measured: it round-trips, ezdxf registers the CLASS, and
-        `doc.audit()` is clean after reopen. AutoCAD only honours a CANNOSCALE
-        that names an entry of this list.
+        `doc.audit()` is clean after reopen.
         """
         from ezdxf.entities import factory
         from ezdxf.lldxf.extendedtags import ExtendedTags
 
-        scales = doc.rootdict.get("ACAD_SCALELIST")
-        if scales is None:
-            scales = doc.rootdict.add_new_dict("ACAD_SCALELIST")
         existing_keys = set(scales.keys())
-        for _key, entry in scales.items():
-            if cls._scale_entry_name(entry) == name:
-                return False
-        key = name
-        if key in existing_keys:
-            index = 0
-            while f"A{index}" in existing_keys:
-                index += 1
-            key = f"A{index}"
+        index = 0
+        while cls._scale_list_key(index) in existing_keys:
+            index += 1
         handle = doc.entitydb.next_handle()
         unit = 1 if paper == drawing else 0
         text = (
@@ -5996,7 +6009,38 @@ class EzdxfBackend(AutoCADBackend):
         entry = factory.load(ExtendedTags.from_text(text), doc)
         doc.entitydb.add(entry)
         doc.objects.add_object(entry)
-        scales.add(key, entry)
+        scales.add(cls._scale_list_key(index), entry)
+
+    @classmethod
+    def _ensure_scale_entry(cls, doc, name: str, paper: float, drawing: float) -> bool:
+        """Add `name` to ACAD_SCALELIST unless present; True when added.
+
+        Presence is decided by the SCALE objects' group-300 names, never by
+        the dictionary key — an AutoCAD-authored drawing keys the list `A0`,
+        `A1`, … and only group 300 says `1:50`; matching on the key appended a
+        duplicate `1:50` to every one of them.
+
+        An ezdxf-authored drawing has **no** ACAD_SCALELIST entries at all.
+        AutoCAD repopulates its default list only when the dictionary is
+        empty, so appending the one requested scale to an empty list shipped a
+        file whose scale list *was* that one entry — measured (AutoCAD 2026):
+        `SetVariable("CANNOSCALE", "1:1")` then fails with `Error setting
+        system variable` and the annotation scale cannot be changed in the
+        UI. An empty list is therefore seeded with AutoCAD's own default list
+        first, so the saved file offers what a fresh AutoCAD drawing offers.
+        AutoCAD only honours a CANNOSCALE that names an entry of this list.
+        """
+        scales = doc.rootdict.get("ACAD_SCALELIST")
+        if scales is None:
+            scales = doc.rootdict.add_new_dict("ACAD_SCALELIST")
+        if len(scales) == 0:
+            for default in cls._DEFAULT_SCALE_LIST:
+                _, default_paper, default_drawing = parse_scale(default)
+                cls._add_scale_object(doc, scales, default, default_paper, default_drawing)
+        for _key, entry in scales.items():
+            if cls._scale_entry_name(entry) == name:
+                return False
+        cls._add_scale_object(doc, scales, name, paper, drawing)
         return True
 
     def _set_annotation_scale(self, doc, value: Any) -> str:

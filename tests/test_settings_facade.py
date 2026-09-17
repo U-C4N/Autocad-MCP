@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import math
+from types import SimpleNamespace
 
 import pytest
 
@@ -156,13 +157,30 @@ async def test_annotation_scale_writes_the_variable_dictionary_and_scale_list(ba
     vardict = backend._doc.rootdict.get("AcDbVariableDictionary")
     assert vardict["CANNOSCALE"].dxf.value == "1:50"
     scales = backend._doc.rootdict.get("ACAD_SCALELIST")
-    assert scales.get("1:50") is not None, "AutoCAD only honours a scale that is in the list"
+    assert "1:50" in _scale_names(scales), "AutoCAD only honours a scale that is in the list"
     assert await backend.system_get_variable("CANNOSCALEVALUE") == pytest.approx(0.02)
+
+    # Regression: the list used to be *only* the requested scale. AutoCAD
+    # repopulates its default list only when the dictionary is empty, so the
+    # saved file opened with a one-entry scale list and `CANNOSCALE` could no
+    # longer be changed there (measured, AutoCAD 2026). An empty list is seeded
+    # with AutoCAD's default metric list, keyed and ordered the way AutoCAD
+    # writes it, so 1:50 was already there and nothing was appended.
+    assert _scale_names(scales) == list(_AUTOCAD_DEFAULT_SCALES)
+    assert list(scales.keys()) == _AUTOCAD_DEFAULT_KEYS
 
     # re-setting the same scale is not a change and adds no second list entry
     again = await backend.drawing_settings({"annotation_scale": "1:50"})
     assert again["changed"] == {}
-    assert len(list(scales.keys())) == 1
+    assert len(list(scales.keys())) == 17
+
+    # a scale outside the default list is appended once, under the next key
+    # AutoCAD itself would use, and the defaults are not seeded twice
+    res = await backend.drawing_settings({"annotation_scale": "1:25"})
+    assert res["ok"] is True, res.get("errors")
+    assert _scale_names(scales) == [*_AUTOCAD_DEFAULT_SCALES, "1:25"]
+    assert list(scales.keys()) == [*_AUTOCAD_DEFAULT_KEYS, "B7"]
+    await backend.drawing_settings({"annotation_scale": "1:50"})
 
     path = str(tmp_path / "scale.dxf")
     await backend.drawing_save_as(path)
@@ -171,7 +189,30 @@ async def test_annotation_scale_writes_the_variable_dictionary_and_scale_list(ba
         "name": "1:50",
         "value": 0.02,
     }
+    reopened = backend._doc.rootdict.get("ACAD_SCALELIST")
+    assert _scale_names(reopened) == [*_AUTOCAD_DEFAULT_SCALES, "1:25"]
+    assert "1:1" in _scale_names(reopened), "AutoCAD refuses a list without its unit scale"
     assert backend._doc.audit().has_errors is False
+
+
+async def test_reading_the_annotation_scale_never_creates_the_scale_list(backend):
+    """The read side stays pure: a fresh headless drawing keeps its empty
+    ACAD_SCALELIST (AutoCAD fills it on open) until a scale is written."""
+    assert (await backend.drawing_settings())["settings"]["annotation_scale"] == {
+        "name": "1:1",
+        "value": 1.0,
+    }
+    scales = backend._doc.rootdict.get("ACAD_SCALELIST")
+    assert scales is None or len(list(scales.keys())) == 0
+
+
+# AutoCAD 2026's default metric list, in its own order and under its own keys
+# (`Documents.Add()` saved as DXF, MEASUREMENT 1): 17 SCALE objects, A0 … B6.
+_AUTOCAD_DEFAULT_SCALES = (
+    "1:1", "1:2", "1:4", "1:5", "1:8", "1:10", "1:16", "1:20", "1:30", "1:40",
+    "1:50", "1:100", "2:1", "4:1", "8:1", "10:1", "100:1",
+)  # fmt: skip
+_AUTOCAD_DEFAULT_KEYS = [f"A{i}" for i in range(10)] + [f"B{i}" for i in range(7)]
 
 
 def _seed_autocad_style_scale_list(doc, names):
@@ -222,11 +263,13 @@ async def test_annotation_scale_matches_an_autocad_keyed_scale_list_by_name(back
     assert _scale_names(scales).count("1:50") == 1
     assert backend._doc.rootdict.get("AcDbVariableDictionary")["CANNOSCALE"].dxf.value == "1:50"
 
-    # a scale the list does not carry is still appended, exactly once, under a
-    # key that does not collide with AutoCAD's A<n> keys
+    # a scale the list does not carry is still appended, exactly once, under
+    # the next key in AutoCAD's own A0 … A9, B0 … sequence; a non-empty list
+    # is never re-seeded with the defaults
     res = await backend.drawing_settings({"annotation_scale": "1:25"})
     assert res["ok"] is True, res.get("errors")
     assert _scale_names(scales).count("1:25") == 1
+    assert list(scales.keys()) == ["A0", "A1", "A2", "A3"]
     assert len(list(scales.keys())) == 4
     await backend.drawing_settings({"annotation_scale": "1:25"})
     assert len(list(scales.keys())) == 4
@@ -383,6 +426,24 @@ async def test_server_tool_carries_the_new_keys(backend):
 
 
 class _FakeApp:
+    """The ActiveX *Application*: it has an ActiveDocument and no sysvar
+    members at all. `GetVariable` / `SetVariable` live on `AcadDocument`;
+    a backend that calls them on the Application raises `AttributeError:
+    AutoCAD.Application.GetVariable` on a live seat before anything reaches
+    AutoCAD (measured, AutoCAD 2026) -- so this fake refuses them the same way
+    instead of quietly answering."""
+
+    def __init__(self):
+        self.ActiveDocument = _FakeDoc()
+        self.Documents = SimpleNamespace(Count=1)
+
+    def __getattr__(self, name):
+        if name in ("GetVariable", "SetVariable"):
+            raise AttributeError(f"AutoCAD.Application.{name}")
+        raise AttributeError(name)
+
+
+class _FakeDoc:
     """Records GetVariable / SetVariable; stores what AutoCAD would store."""
 
     def __init__(self):
@@ -425,6 +486,8 @@ def com_backend(monkeypatch):
     from backends import com_backend as module
 
     app = _FakeApp()
+    # Only the Application is faked: the real `_acad_doc()` runs and resolves
+    # `ActiveDocument`, so the test exercises the true call path.
     monkeypatch.setattr(module, "_acad_app", lambda: app)
     backend = module.ComBackend()
 
@@ -432,11 +495,11 @@ def com_backend(monkeypatch):
         return func(*args, **kwargs)
 
     monkeypatch.setattr(backend, "_run", _run_inline)
-    return backend, app
+    return backend, app.ActiveDocument
 
 
 async def test_com_facade_sends_autocad_shaped_values(com_backend):
-    backend, app = com_backend
+    backend, doc = com_backend
     res = await backend.drawing_settings(
         {
             "limits": [[0, 0], [500, 350]],
@@ -450,7 +513,7 @@ async def test_com_facade_sends_autocad_shaped_values(com_backend):
         }
     )
     assert res["ok"] is True, res.get("errors")
-    sets = [call[1:] for call in app.calls if call[0] == "SetVariable"]
+    sets = [call[1:] for call in doc.calls if call[0] == "SetVariable"]
     assert sets == [
         ("LIMMIN", (0.0, 0.0)),
         ("LIMMAX", (500.0, 350.0)),
@@ -469,15 +532,15 @@ async def test_com_facade_sends_autocad_shaped_values(com_backend):
 async def test_com_point_variables_travel_as_variant_double_arrays(com_backend):
     import pythoncom
 
-    backend, app = com_backend
+    backend, doc = com_backend
     seen: dict = {}
-    real_set = app.SetVariable
+    real_set = doc.SetVariable
 
     def _capture(name, value):
         seen[name] = value
         real_set(name, value)
 
-    app.SetVariable = _capture
+    doc.SetVariable = _capture
     res = await backend.system_set_variable("LIMMAX", (300, 200))
     variant = seen["LIMMAX"]
     assert variant.varianttype == pythoncom.VT_ARRAY | pythoncom.VT_R8
@@ -498,7 +561,7 @@ async def test_com_point_variable_reply_survives_the_mcp_output_schema(com_backe
 
     import server
 
-    backend, app = com_backend
+    backend, doc = com_backend
 
     async def _fake_make_backend():
         return backend
@@ -507,11 +570,49 @@ async def test_com_point_variable_reply_survives_the_mcp_output_schema(com_backe
     async with Client(server.mcp) as client:
         res = await client.call_tool("system_set_variable", {"name": "LIMMAX", "value": [300, 200]})
     assert res.data == {"ok": True, "variable": "LIMMAX", "value": [300.0, 200.0]}
-    assert app.store["LIMMAX"] == (300.0, 200.0)
+    assert doc.store["LIMMAX"] == (300.0, 200.0)
 
 
 async def test_com_refuses_before_touching_activex(com_backend):
-    backend, app = com_backend
+    backend, doc = com_backend
     res = await backend.drawing_settings({"limits": [[0, 0], [0, 0]], "annotation_scale": "x"})
     assert res["ok"] is False
-    assert not [call for call in app.calls if call[0] == "SetVariable"]
+    assert not [call for call in doc.calls if call[0] == "SetVariable"]
+
+
+async def test_com_sysvars_are_read_and_written_on_the_document(com_backend):
+    """Regression: both methods called `GetVariable` / `SetVariable` on the
+    object `_acad_app()` returns, which has neither, so every
+    `drawing_settings` read and write on the live engine died with
+    `AttributeError: AutoCAD.Application.GetVariable`."""
+    backend, doc = com_backend
+    assert await backend.system_get_variable("LIMMAX") == (420.0, 297.0)
+    res = await backend.system_set_variable("GRIDMODE", "1")
+    assert res == {"ok": True, "variable": "GRIDMODE", "value": 1}
+    assert doc.store["GRIDMODE"] == 1
+    assert doc.calls == [
+        ("GetVariable", "LIMMAX"),
+        ("GetVariable", "GRIDMODE"),  # the type probe
+        ("SetVariable", "GRIDMODE", 1),
+    ]
+
+
+async def test_com_sysvars_need_an_open_drawing(monkeypatch):
+    """With no document open there is nothing to read the variable from:
+    `_acad_doc()`'s clear refusal is what surfaces, not an ActiveX error."""
+    pytest.importorskip("win32com.client", reason="pywin32 not installed")
+    from backends import com_backend as module
+
+    app = _FakeApp()
+    app.Documents = SimpleNamespace(Count=0)
+    monkeypatch.setattr(module, "_acad_app", lambda: app)
+    backend = module.ComBackend()
+
+    async def _run_inline(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(backend, "_run", _run_inline)
+    with pytest.raises(RuntimeError, match="No drawing is open"):
+        await backend.system_get_variable("LIMMAX")
+    with pytest.raises(RuntimeError, match="No drawing is open"):
+        await backend.system_set_variable("GRIDMODE", 1)
