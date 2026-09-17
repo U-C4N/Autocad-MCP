@@ -3388,6 +3388,77 @@ class ComBackend(AutoCADBackend):
             out.pop("TextAlignmentPoint", None)
         return out
 
+    @classmethod
+    def _capture_attrib(cls, attr) -> dict:
+        """Everything a TEXT needs to stand in for ``attr`` (an ATTRIB or ATTDEF)."""
+        try:
+            invisible = bool(attr.Invisible)
+        except Exception:
+            invisible = False
+        return {
+            "text": str(attr.TextString),
+            "insertion": tuple(attr.InsertionPoint),
+            "height": float(attr.Height),
+            "rotation": float(attr.Rotation),
+            "layer": str(attr.Layer),
+            "invisible": invisible,
+            "members": cls._capture_attrib_text_members(attr),
+        }
+
+    @classmethod
+    def _add_text_from_capture(cls, owner, item: dict):
+        """``owner.AddText`` carrying a captured ATTRIB/ATTDEF; returns the TEXT.
+
+        Every point or vector goes through ``_apoint`` (``VT_ARRAY|VT_R8``):
+        ActiveX refuses a plain Python tuple (marshalled ``VT_ARRAY|VT_VARIANT``)
+        with ``E_INVALIDARG``, and ``Normal`` is written after the explode and
+        the ATTDEF deletes, so a tuple there tore the drawing.
+        """
+        ins = item["insertion"]
+        point = _apoint(ins[0], ins[1], ins[2] if len(ins) > 2 else 0.0)
+        text = owner.AddText(item["text"], point, item["height"])
+        members = item["members"]
+        for name in cls._ATTRIB_FRAME_MEMBERS:
+            if name not in members:
+                continue
+            value = members[name]
+            if name == "Normal":
+                value = _apoint(value[0], value[1], value[2] if len(value) > 2 else 0.0)
+            setattr(text, name, value)
+        text.Rotation = item["rotation"]
+        if "Normal" in members:
+            # The frame moved the OCS origin; the anchor was WCS.
+            text.InsertionPoint = point
+        if "Alignment" in members:
+            text.Alignment = members["Alignment"]
+            if "TextAlignmentPoint" in members:
+                tap = members["TextAlignmentPoint"]
+                text.TextAlignmentPoint = _apoint(tap[0], tap[1], tap[2] if len(tap) > 2 else 0.0)
+        text.Layer = item["layer"]
+        if "Color" in members:
+            text.Color = members["Color"]
+        if item["invisible"]:
+            text.Visible = False
+        return text
+
+    @staticmethod
+    def _is_constant_attdef(obj, constant_tags: set) -> bool:
+        """Whether an exploded ``AcDbAttributeDefinition`` is a constant attribute.
+
+        ``Constant`` is the documented member; when the object does not expose
+        it the tag is matched against ``GetConstantAttributes()`` read before
+        the explode, so a constant attribute is never mistaken for a value-less
+        placeholder and deleted.
+        """
+        try:
+            return bool(obj.Constant)
+        except Exception:
+            pass
+        try:
+            return str(obj.TagString) in constant_tags
+        except Exception:
+            return False
+
     async def block_explode(self, handle) -> dict:
         """Explode an INSERT through ActiveX; ATTRIB values survive as TEXT.
 
@@ -3403,17 +3474,27 @@ class ComBackend(AutoCADBackend):
         one (an array of the new objects) and is exercised live by the
         settings smoke.
 
+        A *constant* attribute has no ATTRIB: ``GetAttributes()`` excludes it
+        (``GetConstantAttributes()`` lists it) and ``Explode()`` hands it back
+        as an ``AcDbAttributeDefinition`` already at its WCS placement showing
+        its value. Deleting every ATTDEF therefore destroyed the constant text
+        with ``ok: True``; BURST converts it to TEXT, so a constant ATTDEF from
+        the explode is captured the same way an ATTRIB is, then replaced by a
+        TEXT, and only the value-less placeholders are just deleted.
+
         An ATTRIB is an OCS entity and ``AddText`` builds a +Z TEXT, so the
         frame is carried the way the headless engine carries ``extrusion`` /
         ``thickness``: ``Normal`` is written *before* ``Rotation`` (the
         group-50 angle only means the same thing inside the same frame -- a
-        mirrored reference's ATTRIB sits on ``(0, 0, -1)`` and used to read
-        theta instead of 180deg-theta, with un-mirrored glyphs) and the WCS
+        headless-authored mirrored reference's ATTRIB sits on ``(0, 0, -1)``;
+        AutoCAD's own MIRROR keeps +Z with ``XScaleFactor -1``) and the WCS
         ``InsertionPoint`` is re-asserted *after* it, because a frame change
         moves the OCS origin under a point that was handed over in WCS. The
         members ezdxf's ``_ATTRIB_TO_TEXT`` names have their ActiveX twins in
         ``_ATTRIB_TEXT_MEMBERS``; each is optional and skipped when the object
-        does not expose it, never written as a guess.
+        does not expose it, never written as a guess. ``Normal`` is written as
+        a ``VT_ARRAY|VT_R8`` VARIANT like every other point in this file; a
+        plain tuple is ``E_INVALIDARG`` live (verified on AutoCAD 2026).
 
         The TEXTs go into the reference's *owner* block
         (``ObjectIdToObject(OwnerID)``), which is where ``Explode()`` puts the
@@ -3430,60 +3511,31 @@ class ComBackend(AutoCADBackend):
             if ent.ObjectName != "AcDbBlockReference":
                 raise RuntimeError(f"Entity {handle} is not a block reference (INSERT)")
             owner = _owner_layout_block(doc, ent, handle)
-            captured = []
             try:
                 attrs = ent.GetAttributes()
             except Exception as exc:
                 log.debug("GetAttributes failed before explode: %s", exc)
                 attrs = ()
-            for attr in attrs:
-                try:
-                    invisible = bool(attr.Invisible)
-                except Exception:
-                    invisible = False
-                captured.append(
-                    {
-                        "text": str(attr.TextString),
-                        "insertion": tuple(attr.InsertionPoint),
-                        "height": float(attr.Height),
-                        "rotation": float(attr.Rotation),
-                        "layer": str(attr.Layer),
-                        "invisible": invisible,
-                        "members": self._capture_attrib_text_members(attr),
-                    }
-                )
+            captured = [self._capture_attrib(attr) for attr in attrs]
+            constant_tags: set = set()
+            try:
+                for attr in ent.GetConstantAttributes() or ():
+                    constant_tags.add(str(attr.TagString))
+            except Exception as exc:
+                log.debug("GetConstantAttributes failed before explode: %s", exc)
             exploded = ent.Explode()
             inserted = []
             for obj in exploded or ():
                 if obj.ObjectName == "AcDbAttributeDefinition":
+                    if self._is_constant_attdef(obj, constant_tags):
+                        # A constant attribute's only text; already WCS here.
+                        captured.append(self._capture_attrib(obj))
                     obj.Delete()  # the tag placeholder EXPLODE leaves; the value is below
                     continue
                 inserted.append(str(obj.Handle))
             attribute_texts = []
             for item in captured:
-                ins = item["insertion"]
-                point = _apoint(ins[0], ins[1], ins[2] if len(ins) > 2 else 0.0)
-                text = owner.AddText(item["text"], point, item["height"])
-                members = item["members"]
-                for name in self._ATTRIB_FRAME_MEMBERS:
-                    if name in members:
-                        setattr(text, name, members[name])
-                text.Rotation = item["rotation"]
-                if "Normal" in members:
-                    # The frame moved the OCS origin; the anchor was WCS.
-                    text.InsertionPoint = point
-                if "Alignment" in members:
-                    text.Alignment = members["Alignment"]
-                    if "TextAlignmentPoint" in members:
-                        tap = members["TextAlignmentPoint"]
-                        text.TextAlignmentPoint = _apoint(
-                            tap[0], tap[1], tap[2] if len(tap) > 2 else 0.0
-                        )
-                text.Layer = item["layer"]
-                if "Color" in members:
-                    text.Color = members["Color"]
-                if item["invisible"]:
-                    text.Visible = False
+                text = self._add_text_from_capture(owner, item)
                 attribute_texts.append(str(text.Handle))
             ent.Delete()
             _regen()

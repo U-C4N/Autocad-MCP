@@ -4570,6 +4570,11 @@ class EzdxfBackend(AutoCADBackend):
         "thickness",
     )
 
+    @classmethod
+    def _text_attribs_of(cls, attrib) -> dict:
+        """The ``_ATTRIB_TO_TEXT`` members ``attrib`` (ATTRIB or ATTDEF) carries."""
+        return {key: attrib.dxf.get(key) for key in cls._ATTRIB_TO_TEXT if attrib.dxf.hasattr(key)}
+
     async def block_explode(self, handle) -> dict:
         """Explode an INSERT into its members; ATTRIB values survive as TEXT.
 
@@ -4580,6 +4585,16 @@ class EzdxfBackend(AutoCADBackend):
         style and layer, carrying the *value*; an invisible ATTRIB becomes an
         invisible TEXT rather than appearing. The new handles are reported as
         ``attribute_texts``, separate from the geometry's ``inserted_handles``.
+
+        A *constant* attribute (ATTDEF flag 2) carries its value in the
+        definition and, in an AutoCAD-authored file, has no ATTRIB on the
+        reference — ``virtual_entities()`` skips ATTDEF, so its visible text
+        used to vanish with a clean audit. BURST converts it to TEXT, so every
+        constant ATTDEF whose tag has no attached ATTRIB is copied as a TEXT
+        and transformed by the reference's matrix — the same path
+        ``add_auto_attribs`` takes, so it lands where the ATTRIB the headless
+        ``block_insert`` attaches would have (that ATTRIB, when present, is
+        converted above and the definition is not converted twice).
 
         The members and the TEXTs go into the INSERT's *owner* layout, not the
         current one: ``_get_entity`` resolves a handle in any layout, so a title
@@ -4601,14 +4616,23 @@ class EzdxfBackend(AutoCADBackend):
                 msp.add_entity(sub_copy)
                 inserted.append(sub_copy.dxf.handle)
             attribute_texts = []
+            attached_tags = set()
             for attrib in ent.attribs:
-                dxfattribs = {
-                    key: attrib.dxf.get(key)
-                    for key in self._ATTRIB_TO_TEXT
-                    if attrib.dxf.hasattr(key)
-                }
-                text = msp.add_text(attrib.dxf.text, dxfattribs=dxfattribs)
+                attached_tags.add(attrib.dxf.tag)
+                text = msp.add_text(attrib.dxf.text, dxfattribs=self._text_attribs_of(attrib))
                 if attrib.is_invisible:
+                    text.dxf.invisible = 1
+                attribute_texts.append(text.dxf.handle)
+            block = ent.block()
+            attdefs = block.attdefs() if block is not None else ()
+            for attdef in attdefs:
+                if not attdef.is_const or attdef.dxf.get("tag") in attached_tags:
+                    continue
+                if not attdef.dxf.hasattr("insert"):
+                    continue  # a structure error; nowhere to place it
+                text = msp.add_text(attdef.dxf.text, dxfattribs=self._text_attribs_of(attdef))
+                text.transform(ent.matrix44())
+                if attdef.is_invisible:
                     text.dxf.invisible = 1
                 attribute_texts.append(text.dxf.handle)
             msp.delete_entity(ent)

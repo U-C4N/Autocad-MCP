@@ -3031,8 +3031,9 @@ async def block_explode(
 
     Every attached ATTRIB becomes a TEXT with the same value, placement,
     height, rotation and layer (an invisible attribute becomes an invisible
-    TEXT); AutoCAD's plain EXPLODE would keep only the tag-name placeholders
-    and drop the values. Everything lands in the layout that owns the
+    TEXT), and a constant attribute (which has no ATTRIB) becomes a TEXT of
+    its value too; AutoCAD's plain EXPLODE would keep only the tag-name
+    placeholders and drop the values. Everything lands in the layout that owns the
     reference (model space or its paper-space sheet), whichever tab is
     current. Returns `inserted_handles` (the geometry), `attribute_texts`
     (one TEXT handle per attribute), `exploded_handle` and `backend`.

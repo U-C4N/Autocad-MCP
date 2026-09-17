@@ -27,6 +27,14 @@ def _define_tagged_block(backend, name: str = "TB") -> None:
 # ── fake ActiveX surface ──────────────────────────────────────────────────────
 
 
+#: Members AutoCAD's ActiveX takes as a ``VT_ARRAY|VT_R8`` VARIANT. A plain
+#: Python tuple marshals as ``VT_ARRAY|VT_VARIANT`` and is refused with
+#: ``E_INVALIDARG`` (verified live on AutoCAD 2026: ``text.Normal = (0, 0, -1)``
+#: raises, ``text.Normal = _apoint(0, 0, -1)`` succeeds); the fake refuses it
+#: the same way so a test cannot pin the wrong call shape.
+_POINT_MEMBERS = frozenset({"Normal", "InsertionPoint", "TextAlignmentPoint"})
+
+
 class _FakeObject:
     """An ActiveX object with only the members it is given; property writes are recorded."""
 
@@ -39,6 +47,10 @@ class _FakeObject:
             object.__setattr__(self, name, value)
 
     def __setattr__(self, name, value):
+        if name in _POINT_MEMBERS and not hasattr(value, "varianttype"):
+            raise RuntimeError(
+                f"E_INVALIDARG: {name} takes a VT_ARRAY|VT_R8 VARIANT, not {type(value).__name__}"
+            )
         self.writes.append((name, value))
         object.__setattr__(self, name, value)
 
@@ -454,6 +466,13 @@ async def test_com_explode_carries_the_attrib_frame_and_style_onto_the_text(com)
     assert space.calls == [("AddText", ("P-101", (-25.0, 13.0, 0.0), 2.5))]
     text = space.texts[0]
     # Point writes go through ``_apoint`` (a VARIANT); compare their payload.
+    import pythoncom
+
+    for name, value in text.writes:
+        if name in _POINT_MEMBERS:
+            assert value.varianttype == pythoncom.VT_ARRAY | pythoncom.VT_R8, (
+                f"{name} must be a double-array VARIANT, not a tuple (E_INVALIDARG live)"
+            )
     writes = [
         (name, tuple(value.value) if hasattr(value, "value") else value)
         for name, value in text.writes
@@ -522,6 +541,164 @@ async def test_com_explode_skips_frame_members_the_attrib_does_not_expose(com):
     assert "InsertionPoint" not in names, "a +Z text keeps the anchor AddText was given"
     assert "TextAlignmentPoint" not in names, "left alignment has no alignment point"
     assert names == ["Rotation", "Alignment", "Layer"]
+
+
+async def test_com_explode_turns_a_constant_attdef_into_text_instead_of_deleting_it(com):
+    """``GetAttributes()`` excludes constant attributes (``GetConstantAttributes()``
+    lists them) and ``Explode()`` returns each as an ``AcDbAttributeDefinition``
+    already at its WCS placement showing its value. Deleting every ATTDEF
+    destroyed that text with ``ok: True``; BURST converts it to TEXT."""
+    backend, document, space = com
+    tag = _FakeObject(
+        "AcDbAttribute",
+        "A1",
+        TagString="TAG",
+        TextString="P-101",
+        InsertionPoint=(7.0, 15.2, 0.0),
+        Height=5.0,
+        Rotation=0.0,
+        Layer="PID-TAG",
+        Invisible=False,
+    )
+    placeholder = _FakeObject("AcDbAttributeDefinition", "D1", TagString="TAG", Constant=False)
+    constant = _FakeObject(
+        "AcDbAttributeDefinition",
+        "D2",
+        TagString="CONST",
+        TextString="ACME",
+        Constant=True,
+        InsertionPoint=(25.0, 7.0, 0.0),
+        Height=2.0,
+        Rotation=0.5236,
+        Layer="TITLEBLOCK",
+        Invisible=False,
+        Alignment=4,
+        TextAlignmentPoint=(25.0, 7.0, 0.0),
+    )
+    line = _FakeObject("AcDbLine", "L1")
+    ref = _FakeObject(
+        "AcDbBlockReference",
+        "8F",
+        Name="TB",
+        OwnerID=1,
+        GetAttributes=lambda: (tag,),
+        GetConstantAttributes=lambda: (constant,),
+        Explode=lambda: (line, placeholder, constant),
+    )
+    document.objects["8F"] = ref
+
+    result = await backend.block_explode("8F")
+
+    assert result["inserted_handles"] == ["L1"]
+    assert result["attribute_texts"] == ["T1", "T2"], "the constant value is a TEXT too"
+    assert placeholder.deleted is True and constant.deleted is True and ref.deleted is True
+    assert space.calls == [
+        ("AddText", ("P-101", (7.0, 15.2, 0.0), 5.0)),
+        ("AddText", ("ACME", (25.0, 7.0, 0.0), 2.0)),
+    ]
+    writes = [
+        (name, tuple(value.value) if hasattr(value, "value") else value)
+        for name, value in space.texts[1].writes
+    ]
+    assert writes == [
+        ("Rotation", 0.5236),
+        ("Alignment", 4),
+        ("TextAlignmentPoint", (25.0, 7.0, 0.0)),
+        ("Layer", "TITLEBLOCK"),
+    ], "the constant ATTDEF's placement, angle and alignment ride onto its TEXT"
+
+
+async def test_com_explode_falls_back_to_the_constant_tag_list_when_constant_is_absent(com):
+    """An object that does not expose ``Constant`` is still recognised through
+    ``GetConstantAttributes()``; a value-less placeholder is still just deleted."""
+    backend, document, space = com
+    constant = _FakeObject(
+        "AcDbAttributeDefinition",
+        "D2",
+        TagString="CONST",
+        TextString="ACME",
+        InsertionPoint=(1.0, 2.0, 0.0),
+        Height=2.0,
+        Rotation=0.0,
+        Layer="0",
+    )
+    placeholder = _FakeObject("AcDbAttributeDefinition", "D1", TagString="TAG")
+    ref = _FakeObject(
+        "AcDbBlockReference",
+        "9A",
+        Name="TB",
+        OwnerID=1,
+        GetAttributes=lambda: (),
+        GetConstantAttributes=lambda: (constant,),
+        Explode=lambda: (placeholder, constant),
+    )
+    document.objects["9A"] = ref
+
+    result = await backend.block_explode("9A")
+
+    assert result["attribute_texts"] == ["T1"]
+    assert space.calls == [("AddText", ("ACME", (1.0, 2.0, 0.0), 2.0))]
+    assert placeholder.deleted is True and constant.deleted is True
+
+
+def _define_block_with_constant_attdef(backend, name: str = "TBC") -> None:
+    from ezdxf.enums import TextEntityAlignment
+
+    blk = backend._doc.blocks.new(name=name)
+    blk.add_line((0, 0), (10, 0))
+    blk.add_attdef("TAG", insert=(0, 3), text="", dxfattribs={"height": 2.5})
+    const = blk.add_attdef("CONST", insert=(5, -3), text="ACME", dxfattribs={"height": 2.0})
+    const.set_placement((5, -3), align=TextEntityAlignment.MIDDLE_CENTER)
+    const.dxf.flags |= 2  # ATTRIB_CONST
+    assert const.is_const
+
+
+async def test_explode_keeps_a_constant_attdef_that_has_no_attrib_as_text(backend):
+    """The AutoCAD-authored shape: a constant attribute has no ATTRIB on the
+    reference, and ``virtual_entities()`` skips ATTDEF, so its text used to
+    vanish with a clean audit. The TEXT lands where ``add_auto_attribs``
+    would have put the ATTRIB (mirrored + rotated reference)."""
+    _define_block_with_constant_attdef(backend)
+    ref = backend._msp().add_blockref(
+        "TBC", (20, 10), dxfattribs={"xscale": -1.0, "yscale": 1.0, "rotation": 30.0}
+    )
+    ref.add_auto_attribs({"TAG": "P-101"})
+    expected = {a.dxf.tag: a.dxfattribs() for a in ref.attribs}["CONST"]
+    ref.delete_attrib("CONST")  # AutoCAD writes no ATTRIB for a constant attribute
+    assert [a.dxf.tag for a in ref.attribs] == ["TAG"], "the premise"
+
+    result = await backend.block_explode(ref.dxf.handle)
+
+    assert [(await backend.entity_get(h)).type for h in result["inserted_handles"]] == ["LINE"]
+    texts = {}
+    for handle in result["attribute_texts"]:
+        raw = backend._doc.entitydb[handle]
+        assert raw.dxftype() == "TEXT"
+        texts[raw.dxf.text] = raw
+    assert set(texts) == {"P-101", "ACME"}
+    acme = texts["ACME"]
+    for key in ("insert", "align_point", "extrusion"):
+        assert tuple(acme.dxf.get(key)) == pytest.approx(tuple(expected[key])), key
+    assert acme.dxf.rotation == pytest.approx(expected["rotation"])
+    assert acme.dxf.height == expected["height"] == 2.0
+    assert acme.get_align_enum().name == "MIDDLE_CENTER"
+    assert acme.dxf.invisible == 0
+    assert backend._doc.audit().errors == []
+
+
+async def test_explode_does_not_duplicate_a_constant_attdef_that_already_has_an_attrib(backend):
+    """The MCP-authored shape: ``block_insert`` attaches an ATTRIB for the
+    constant ATTDEF too, so it is converted once, not once per source."""
+    _define_block_with_constant_attdef(backend)
+    ref = await backend.block_insert("TBC", 20, 10, attributes={"TAG": "P-101"})
+    raw_ref = backend._doc.entitydb[ref.handle]
+    assert sorted(a.dxf.tag for a in raw_ref.attribs) == ["CONST", "TAG"], "the premise"
+
+    result = await backend.block_explode(ref.handle)
+
+    values = sorted(backend._doc.entitydb[h].dxf.text for h in result["attribute_texts"])
+    assert values == ["ACME", "P-101"]
+    assert backend._doc.audit().errors == []
 
 
 async def test_explode_of_a_mirrored_reference_keeps_the_tag_where_the_attrib_was(backend):
