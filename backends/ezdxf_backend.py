@@ -4520,6 +4520,10 @@ class EzdxfBackend(AutoCADBackend):
         attributes=None,
         layer=None,
     ) -> EntityInfo:
+        from backends.block_specs import validate_attribute_values
+
+        values = validate_attribute_values(attributes)
+
         def _sync():
             msp = self._msp()
             attribs: dict = {
@@ -4531,12 +4535,12 @@ class EzdxfBackend(AutoCADBackend):
                 attribs["layer"] = layer
             self._require_block(name)
             ref = msp.add_blockref(name, (float(x), float(y)), dxfattribs=attribs)
-            if attributes:
+            if values:
                 # `add_auto_blockref` wraps the INSERT in an anonymous *U block,
                 # so the returned handle names `*U1` and carries no ATTRIBs.
                 # `add_auto_attribs` attaches ATTRIBs to this INSERT for every
                 # ATTDEF the definition has; values for tags it lacks are ignored.
-                ref.add_auto_attribs({str(k): str(v) for k, v in attributes.items()})
+                ref.add_auto_attribs(values)
             self._mark_dirty()
             return _entity_info_dxf(ref)
 
@@ -4828,6 +4832,10 @@ class EzdxfBackend(AutoCADBackend):
         return await self._async(_sync)
 
     async def block_set_attributes(self, handle, attributes) -> dict:
+        from backends.block_specs import validate_attribute_values
+
+        values = validate_attribute_values(attributes)
+
         def _sync():
             ent = self._get_entity(handle)
             if ent.dxftype() != "INSERT":
@@ -4835,8 +4843,8 @@ class EzdxfBackend(AutoCADBackend):
             updated = []
             for attrib in ent.attribs:
                 tag = attrib.dxf.tag
-                if tag in attributes:
-                    self._write_attrib_value(attrib, str(attributes[tag]))
+                if tag in values:
+                    self._write_attrib_value(attrib, values[tag])
                     updated.append(tag)
             self._mark_dirty()
             return {"ok": True, "updated_tags": updated}

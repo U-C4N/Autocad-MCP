@@ -1504,3 +1504,88 @@ async def test_com_explode_undoes_a_burst_that_fails_after_explode(com):
     assert placeholder.deleted is True
     assert [t.deleted for t in sheet.texts] == [True], "the TEXT written before the failure"
     assert space.calls == []
+
+
+# ── Task 3: attribute values are validated before any write ──────────────────
+
+
+@pytest.mark.parametrize(
+    "value, fragment",
+    [
+        (None, "NoneType"),
+        (True, "bool"),
+        ({"a": 1}, "dict"),
+        ([1, 2], "list"),
+        (float("nan"), "finite"),
+        ("two\nlines", "single line"),
+    ],
+)
+async def test_insert_refuses_a_non_text_attribute_value_by_tag(backend, value, fragment):
+    _define_tagged_block(backend)
+    before = len(list(backend._msp()))
+    with pytest.raises(TypeError, match=r"attributes\['TAG'\]") as exc:
+        await backend.block_insert("TB", 0, 0, attributes={"TAG": value})
+    assert fragment in str(exc.value)
+    assert len(list(backend._msp())) == before, "a refused insert must not write"
+
+
+async def test_insert_refuses_a_non_mapping_before_writing(backend):
+    _define_tagged_block(backend)
+    before = len(list(backend._msp()))
+    with pytest.raises(TypeError, match="attributes must be an object"):
+        await backend.block_insert("TB", 0, 0, attributes=[("TAG", "x")])
+    assert len(list(backend._msp())) == before
+
+
+async def test_insert_writes_numbers_as_plain_text(backend):
+    _define_tagged_block(backend)
+    ref = await backend.block_insert("TB", 0, 0, attributes={"TAG": 101})
+    assert await backend.block_get_attributes(ref.handle) == {"TAG": "101"}
+    ref = await backend.block_insert("TB", 0, 0, attributes={"TAG": 2.5})
+    assert await backend.block_get_attributes(ref.handle) == {"TAG": "2.5"}
+
+
+async def test_set_attributes_refuses_by_tag_and_leaves_the_value_alone(backend):
+    _define_tagged_block(backend)
+    ref = await backend.block_insert("TB", 0, 0, attributes={"TAG": "P-101"})
+    with pytest.raises(TypeError, match=r"attributes\['TAG'\] must be a string or a number"):
+        await backend.block_set_attributes(ref.handle, {"TAG": None})
+    assert await backend.block_get_attributes(ref.handle) == {"TAG": "P-101"}
+    result = await backend.block_set_attributes(ref.handle, {"TAG": 7})
+    assert result == {"ok": True, "updated_tags": ["TAG"]}
+    assert await backend.block_get_attributes(ref.handle) == {"TAG": "7"}
+
+
+async def test_com_insert_refuses_before_insert_block_and_writes_numbers_as_text(com):
+    backend, document, space = com
+    space.attributes = {"TAG": ""}
+    with pytest.raises(TypeError, match=r"attributes\['TAG'\]"):
+        await backend.block_insert("TB", 0, 0, attributes={"TAG": None})
+    assert space.calls == [], "the refusal fires before InsertBlock"
+
+    await backend.block_insert("TB", 0, 0, attributes={"TAG": 101})
+    assert [name for name, _ in space.calls] == ["InsertBlock"]
+    attr = space.inserted[0].GetAttributes()[0]
+    assert attr.TextString == "101" and ("TextString", "101") in attr.writes
+
+
+async def test_com_set_attributes_refuses_before_touching_the_reference(com):
+    backend, document, space = com
+    attr = _FakeObject("AcDbAttribute", "A1", TagString="TAG", TextString="P-101")
+    calls = []
+
+    def get_attributes():
+        calls.append("GetAttributes")
+        return (attr,)
+
+    document.objects["2F"] = _FakeObject(
+        "AcDbBlockReference", "2F", Name="TB", GetAttributes=get_attributes
+    )
+    with pytest.raises(TypeError, match=r"attributes\['TAG'\]"):
+        await backend.block_set_attributes("2F", {"TAG": True})
+    assert calls == [] and attr.TextString == "P-101"
+    assert await backend.block_set_attributes("2F", {"TAG": 2.5}) == {
+        "ok": True,
+        "updated_tags": ["TAG"],
+    }
+    assert attr.TextString == "2.5"

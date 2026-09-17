@@ -204,6 +204,38 @@ def validate_attdef_specs(attdefs) -> list[dict]:
     return out
 
 
+def validate_attribute_values(attributes, where: str = "attributes") -> dict[str, str]:
+    """``{TAG: value}`` for ``block_insert`` / ``block_set_attributes`` as the
+    strings that will be written, refused before any write.
+
+    ``str(value)`` used to be applied to whatever arrived, so a JSON ``null``
+    became the text ``None``, ``true`` became ``True`` and an object became its
+    Python repr — silently, on both engines. A string is taken as is (one line,
+    the DXF rule ``_one_line`` enforces); an int or a finite float is written
+    with ``str`` (``101`` → ``"101"``, ``2.5`` → ``"2.5"``); ``bool``, ``None``,
+    lists and objects are refused by tag. ``None`` for the whole mapping means
+    "no attributes".
+    """
+    if attributes is None:
+        return {}
+    if not isinstance(attributes, dict):
+        raise TypeError(f"{where} must be an object of {{TAG: value}} pairs")
+    out: dict[str, str] = {}
+    for tag, value in attributes.items():
+        if not isinstance(tag, str) or not tag.strip():
+            raise TypeError(f"{where}: every tag must be a non-empty string")
+        label = f"{where}[{tag!r}]"
+        if isinstance(value, str):
+            out[tag] = _one_line(value, label)
+        elif isinstance(value, bool) or value is None or not isinstance(value, (int, float)):
+            raise TypeError(f"{label} must be a string or a number, got {type(value).__name__}")
+        else:
+            if isinstance(value, float) and not math.isfinite(value):
+                raise TypeError(f"{label} must be finite")
+            out[tag] = str(value)
+    return out
+
+
 def solid_vertices(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
     """DXF SOLID draws vtx0→vtx1→vtx3→vtx2, so a quad given in polygon order
     (a, b, c, d) is stored as (a, b, d, c). Triangles are stored as given."""

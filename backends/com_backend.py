@@ -3315,6 +3315,10 @@ class ComBackend(AutoCADBackend):
         attributes=None,
         layer=None,
     ) -> EntityInfo:
+        from backends.block_specs import validate_attribute_values
+
+        values = validate_attribute_values(attributes)
+
         def _sync():
             _require_block_defined(_acad_doc(), name)
             mspace = _msp()
@@ -3328,13 +3332,13 @@ class ComBackend(AutoCADBackend):
             )
             if layer:
                 ref.Layer = layer
-            if attributes:
+            if values:
                 try:
                     attrs = ref.GetAttributes()
                     for attr in attrs:
                         tag = attr.TagString
-                        if tag in attributes:
-                            attr.TextString = str(attributes[tag])
+                        if tag in values:
+                            attr.TextString = values[tag]
                 except Exception as exc:
                     log.debug("Block insert: GetAttributes or attribute setting failed: %s", exc)
             return _entity_info(ref)
@@ -3730,6 +3734,10 @@ class ComBackend(AutoCADBackend):
         return await self._run(_sync)
 
     async def block_set_attributes(self, handle, attributes) -> dict:
+        from backends.block_specs import validate_attribute_values
+
+        values = validate_attribute_values(attributes)
+
         def _sync():
             doc = _acad_doc()
             ref = doc.HandleToObject(handle)
@@ -3737,8 +3745,8 @@ class ComBackend(AutoCADBackend):
             updated = []
             for attr in attrs:
                 tag = attr.TagString
-                if tag in attributes:
-                    attr.TextString = str(attributes[tag])
+                if tag in values:
+                    attr.TextString = values[tag]
                     updated.append(tag)
             return {"ok": True, "updated_tags": updated}
 

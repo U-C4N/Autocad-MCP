@@ -3011,7 +3011,15 @@ async def block_insert(
     layer: Annotated[str | None, "Layer name"] = None,
     ctx: Context = None,
 ) -> dict:
-    """Insert a block and optionally set attribute values."""
+    """Insert a block and optionally set attribute values.
+
+    Refused before any write, on both engines: an undefined or layout block
+    name, and an attribute value that is not text — a string is written as
+    is (one line), an int or finite float as its plain digits (`101` →
+    `"101"`), while `null`, booleans, lists and objects are refused naming
+    the tag (they used to be written as their Python repr). Values for tags
+    the block does not define are ignored.
+    """
     await ctx.info(f"Inserting block '{name}' at ({x},{y})")
     result = await _backend(ctx).block_insert(
         name, x, y, scale_x, scale_y, rotation, attributes, layer
@@ -3084,6 +3092,11 @@ async def block_set_attributes(
     ctx: Context = None,
 ) -> dict:
     """Update attribute values in a block reference.
+
+    Same value rule as `block_insert`: strings and numbers are written,
+    `null` / booleans / lists / objects are refused naming the tag before
+    anything changes. `updated_tags` lists the tags that exist on the
+    reference and were written; unknown tags are ignored.
 
     A multi-line attribute takes `Line1\\PLine2` and keeps every line; the
     value written is the one `block_get_attributes` reads back and
