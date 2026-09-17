@@ -74,6 +74,8 @@ class ToolAliases:
 #       class, a number and markers; a drafter typing it could mean either.
 #   CLOSE -- the active document (drawing_close) or one named document
 #       (document_close); a drafter typing it could mean either.
+#   LAYERSTATE, VIEW, UCS -- umbrella dialog/option commands (save, restore,
+#       list, delete in one) that this server splits into discrete tools.
 #
 # Every other AutoCAD command must map to exactly one tool.
 SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
@@ -84,11 +86,14 @@ SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
         "ERASE",
         "INSERT",
         "LAYER",
+        "LAYERSTATE",
         "LAYOUT",
         "MEASUREGEOM",
         "PLINE",
         "QSELECT",
         "SETVAR",
+        "UCS",
+        "VIEW",
         "ZOOM",
     }
 )
@@ -1464,6 +1469,85 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "what files are open",
             "the active drawing",
             "currently open files",
+        ),
+    ),
+    "layer_state_delete": ToolAliases(
+        acad=("LAYERSTATE",),
+        synonyms=("delete a layer state", "remove a saved layer setup", "drop the layer snapshot"),
+    ),
+    # Same rule as `document_list` above: no "which ... are" phrasings on the
+    # three list tools here — "which layer setups are saved" alone pushed
+    # `block_list` to #4 for the holdout "which blocks are defined" (measured
+    # 2026-09-17); the nouns carry the questions without the interrogative.
+    "layer_state_list": ToolAliases(
+        acad=("LAYERSTATE",),
+        synonyms=("saved layer states", "saved layer setups", "list layer snapshots"),
+    ),
+    "layer_state_restore": ToolAliases(
+        acad=("LAYERSTATE",),
+        synonyms=(
+            "restore the layer state",
+            "put the layers back",
+            "go back to the plot layer setup",
+            "reapply saved layer settings",
+            "layer snapshot restore",
+        ),
+    ),
+    "layer_state_save": ToolAliases(
+        acad=("LAYERSTATE",),
+        synonyms=(
+            "save the layer state",
+            "remember the layer setup",
+            "snapshot the layers",
+            "layer configuration for plotting",
+            "save which layers are frozen",
+        ),
+    ),
+    "ucs_list": ToolAliases(
+        acad=("UCS", "UCSMAN"),
+        synonyms=("the current ucs", "list coordinate systems", "named ucs", "ucs manager"),
+    ),
+    "ucs_restore": ToolAliases(
+        acad=("UCS",),
+        synonyms=(
+            "back to world coordinates",
+            "reset the ucs",
+            "ucs world",
+            "switch to a saved ucs",
+            "make that coordinate system current",
+        ),
+    ),
+    "ucs_set": ToolAliases(
+        acad=("UCS",),
+        synonyms=(
+            "user coordinate system",
+            "define a ucs",
+            "new coordinate system at this origin",
+            "rotate the ucs",
+            "ucs origin",
+        ),
+    ),
+    "view_named_list": ToolAliases(
+        acad=("VIEW",),
+        synonyms=("saved views", "existing named views", "list the views"),
+    ),
+    "view_named_restore": ToolAliases(
+        acad=("VIEW",),
+        synonyms=(
+            "go to the saved view",
+            "restore a named view",
+            "jump to the detail view",
+            "recall the view",
+        ),
+    ),
+    "view_named_save": ToolAliases(
+        acad=("VIEW",),
+        synonyms=(
+            "save this view",
+            "named view",
+            "remember where i am looking",
+            "bookmark the view",
+            "save a detail view",
         ),
     ),
 }

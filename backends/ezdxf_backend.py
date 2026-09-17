@@ -1246,6 +1246,21 @@ class EzdxfBackend(AutoCADBackend):
                 ),
                 "lisp": FeatureCapability(False, reason="live_com_only"),
                 "documents": FeatureCapability(True, "registry"),
+                # Spelling pinned by F Task 24's test_layer_states_are_declared_as_ours_not_autocads
+                # and quoted by the README and CLAUDE.md: mode "xrecord", this reason verbatim.
+                "layer_states": FeatureCapability(
+                    True,
+                    "xrecord",
+                    reason="portable_acadmcp_xrecord;not_listed_in_autocad_layer_states_manager",
+                ),
+                "named_views": FeatureCapability(
+                    True,
+                    "vport_active",
+                    reason="restore_sets_the_view_the_file_opens_on;no_live_display",
+                ),
+                "ucs": FeatureCapability(
+                    True, "stored_not_interpreted", reason="tool_coordinates_stay_wcs"
+                ),
                 # Track E keys. `@capability` registers its key at import, and
                 # tests/test_capability_contract.py checks both maps from that
                 # moment on — so every key the contract module uses is declared
@@ -2311,6 +2326,431 @@ class EzdxfBackend(AutoCADBackend):
             return self._close_document_sync(key, save=save, discard=discard)
 
         return await self._async(_sync, quarantine_exit=closing_active)
+
+    # ── layer states ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _layer_state_entry(states, name: str):
+        """Case-insensitive lookup → ``(stored_key, xrecord)`` or ``(None, None)``."""
+        if states is None:
+            return None, None
+        if name in states:
+            return name, states.get(name)
+        for key in states.keys():
+            if key.lower() == name.lower():
+                return key, states.get(key)
+        return None, None
+
+    @staticmethod
+    def _layer_state_chunks(xrecord) -> list[str]:
+        return [str(tag.value) for tag in xrecord.tags if tag.code == 1000]
+
+    @staticmethod
+    def _layer_states(doc):
+        from engineering.environment.layer_states import DICT_NAME
+
+        return doc.rootdict.get(DICT_NAME) if DICT_NAME in doc.rootdict else None
+
+    @staticmethod
+    def _layer_state_names(states) -> list[str]:
+        return list(states.keys()) if states is not None else []
+
+    def _layer_state_snapshot(self, doc, description):
+        from engineering.environment.layer_states import snapshot_from_layers
+
+        layers = [_layer_info_dxf(lyr, self._current_layer) for lyr in doc.layers]
+        plot = {lyr.dxf.name: bool(lyr.dxf.get("plot", 1)) for lyr in doc.layers}
+        return snapshot_from_layers(layers, self._current_layer, plot=plot, description=description)
+
+    async def layer_state_save(self, name, description=None) -> dict:
+        """Snapshot the layer table into ``ACADMCP_LAYERSTATES/<name>``.
+
+        Portable and file-resident; not an AutoCAD Layer States Manager entry.
+        """
+        from engineering.environment.layer_states import (
+            DICT_NAME,
+            encode_state,
+            validate_state_name,
+        )
+
+        clean = validate_state_name(name)
+        if description is not None and not isinstance(description, str):
+            raise TypeError("layer_state_save: description must be a string")
+
+        def _sync():
+            doc = self._require_doc()
+            state = self._layer_state_snapshot(doc, description)
+            chunks = encode_state(state)
+            states = doc.rootdict.get_required_dict(DICT_NAME)
+            existing_key, _ = self._layer_state_entry(states, clean)
+            replaced = existing_key is not None
+            if replaced:
+                states.remove(existing_key)
+            xrecord = states.add_xrecord(clean)
+            xrecord.extend([(1000, chunk) for chunk in chunks])
+            self._mark_dirty()
+            return {
+                "ok": True,
+                "name": clean,
+                "layer_count": len(state["layers"]),
+                "replaced": replaced,
+                "chunks": len(chunks),
+                "backend": "ezdxf",
+            }
+
+        return await self._async(_sync)
+
+    async def layer_state_restore(self, name, properties=None) -> dict:
+        from engineering.environment.layer_states import (
+            decode_state,
+            diff_snapshot,
+            validate_properties,
+            validate_state_name,
+        )
+
+        clean = validate_state_name(name)
+        props = validate_properties(properties)
+
+        def _sync():
+            doc = self._require_doc()
+            states = self._layer_states(doc)
+            key, xrecord = self._layer_state_entry(states, clean)
+            if xrecord is None:
+                raise ValueError(
+                    f"layer_state_restore: no layer state named {clean!r}; "
+                    f"saved states: {self._layer_state_names(states)}"
+                )
+            state = decode_state(self._layer_state_chunks(xrecord))
+            layers = [_layer_info_dxf(lyr, self._current_layer) for lyr in doc.layers]
+            missing, new = diff_snapshot(state, layers)
+            applied = 0
+            for layer_name, snap in state["layers"].items():
+                if layer_name not in doc.layers:
+                    continue  # missing: reported, never created
+                lyr = doc.layers.get(layer_name)
+                # Colour first: `Layer.color` keeps the on/off sign, and the
+                # on/off call below must see the final colour.
+                if "color" in props:
+                    lyr.color = int(snap["color"])
+                if "linetype" in props:
+                    _ensure_linetype_loaded(doc, snap["linetype"])
+                    lyr.dxf.linetype = snap["linetype"]
+                if "lineweight" in props:
+                    lyr.dxf.lineweight = int(snap["lineweight"])
+                if "plot" in props:
+                    lyr.dxf.plot = 1 if snap["plot"] else 0
+                if "on" in props:
+                    if snap["on"]:
+                        lyr.on()
+                    else:
+                        lyr.off()
+                if "frozen" in props:
+                    if snap["frozen"]:
+                        lyr.freeze()
+                    else:
+                        lyr.thaw()
+                if "locked" in props:
+                    if snap["locked"]:
+                        lyr.lock()
+                    else:
+                        lyr.unlock()
+                applied += 1
+            current = None
+            if "current" in props and state["current_layer"] in doc.layers:
+                current = state["current_layer"]
+                self._current_layer = current
+                doc.header["$CLAYER"] = current
+            self._mark_dirty()
+            return {
+                "ok": True,
+                "name": key,
+                "applied": {
+                    "layers": applied,
+                    "properties": list(props),
+                    "current_layer": current,
+                },
+                "missing_layers": missing,
+                "new_layers": new,
+                "backend": "ezdxf",
+            }
+
+        return await self._async(_sync)
+
+    async def layer_state_list(self) -> list[dict]:
+        from engineering.environment.layer_states import decode_state
+
+        def _sync():
+            doc = self._require_doc()
+            states = self._layer_states(doc)
+            rows = []
+            for key in self._layer_state_names(states):
+                state = decode_state(self._layer_state_chunks(states.get(key)))
+                rows.append(
+                    {
+                        "name": key,
+                        "description": state.get("description"),
+                        "layer_count": len(state["layers"]),
+                    }
+                )
+            return rows
+
+        return await self._async(_sync)
+
+    async def layer_state_delete(self, name) -> dict:
+        from engineering.environment.layer_states import validate_state_name
+
+        clean = validate_state_name(name)
+
+        def _sync():
+            doc = self._require_doc()
+            states = self._layer_states(doc)
+            key, xrecord = self._layer_state_entry(states, clean)
+            if xrecord is None:
+                raise ValueError(
+                    f"layer_state_delete: no layer state named {clean!r}; "
+                    f"saved states: {self._layer_state_names(states)}"
+                )
+            states.remove(key)
+            self._mark_dirty()
+            return {"ok": True, "deleted": key, "backend": "ezdxf"}
+
+        return await self._async(_sync)
+
+    # ── named views ───────────────────────────────────────────────────────────
+
+    # TEMPORARY (track-e/environment worktree only): group C's Task 14 defines
+    # the same `_active_vport` in its `# ── settings (track E, group C) ──`
+    # block, and C's is the one that ships. This copy exists so this worktree
+    # runs without C's code; the merge agent deletes THIS definition (two in
+    # one class are ruff F811, and the later one would silently win).
+    @staticmethod
+    def _active_vport(doc):
+        """The ``*Active`` VPORT entry — the view the file opens on. Created if absent."""
+        entries = doc.viewports.get("*Active")
+        if entries:
+            return entries[0]
+        return doc.viewports.new("*Active")
+
+    @staticmethod
+    def _view_entry(doc, name: str):
+        if name in doc.views:  # case-insensitive in ezdxf's table
+            return doc.views.get(name)
+        return None
+
+    async def view_named_save(self, name, center=None, height=None, width=None) -> dict:
+        from engineering.environment.names import validate_name
+        from engineering.environment.views import resolve_view_args
+
+        clean = validate_name(name, what="view name")
+        args = resolve_view_args(center, height, width)
+
+        def _sync():
+            doc = self._require_doc()
+            vport = self._active_vport(doc)
+            aspect = float(vport.dxf.get("aspect_ratio", 1.34)) or 1.34
+            if args["center"] is None or args["height"] is None:
+                # Headless there is no display to read a "current view" from;
+                # the drawing's extents are the honest default.
+                bb = ezdxf_bbox.extents(doc.modelspace()) if _BBOX_OK else None
+                if bb is None or not bb.has_data:
+                    raise ValueError(
+                        f"view_named_save: {clean!r} — an empty drawing has no extents; "
+                        "pass center and height"
+                    )
+                ext_center = (
+                    (bb.extmin.x + bb.extmax.x) / 2.0,
+                    (bb.extmin.y + bb.extmax.y) / 2.0,
+                )
+                # The window must hold the extents at the viewport's aspect:
+                # whichever side binds decides the height.
+                ext_height = max(bb.extmax.y - bb.extmin.y, (bb.extmax.x - bb.extmin.x) / aspect)
+                if ext_height <= 0:
+                    ext_height = 1.0
+            else:
+                ext_center, ext_height = args["center"], args["height"]
+            cx, cy = args["center"] or ext_center
+            h = args["height"] or ext_height
+            w = args["width"] or h * aspect
+            existing = self._view_entry(doc, clean)
+            replaced = existing is not None
+            stored = existing.dxf.name if replaced else clean
+            if replaced:
+                doc.views.remove(stored)
+            doc.views.add(stored, dxfattribs={"center": (cx, cy, 0.0), "height": h, "width": w})
+            self._mark_dirty()
+            return {
+                "ok": True,
+                "name": stored,
+                "center": [float(cx), float(cy)],
+                "height": float(h),
+                "width": float(w),
+                "replaced": replaced,
+                "backend": "ezdxf",
+            }
+
+        return await self._async(_sync)
+
+    async def view_named_restore(self, name) -> dict:
+        from engineering.environment.names import validate_name
+
+        clean = validate_name(name, what="view name")
+
+        def _sync():
+            doc = self._require_doc()
+            view = self._view_entry(doc, clean)
+            if view is None:
+                raise ValueError(
+                    f"view_named_restore: no named view {clean!r}; "
+                    f"saved views: {[v.dxf.name for v in doc.views]}"
+                )
+            cx, cy = float(view.dxf.center.x), float(view.dxf.center.y)
+            h, w = float(view.dxf.height), float(view.dxf.width)
+            vport = self._active_vport(doc)
+            vport.dxf.center = (cx, cy)
+            vport.dxf.height = h
+            if h > 0:
+                vport.dxf.aspect_ratio = w / h
+            self._mark_dirty()
+            return {
+                "ok": True,
+                "name": view.dxf.name,
+                "center": [cx, cy],
+                "height": h,
+                "width": w,
+                # The plan's literal. Measured: ezdxf's header refuses $VIEWCTR,
+                # so the store is the *Active VPORT — what AutoCAD reads as the
+                # initial view when it opens the file. No live display moves.
+                "applied": "header_only",
+                "store": "vport_active",
+                "backend": "ezdxf",
+            }
+
+        return await self._async(_sync)
+
+    async def view_named_list(self) -> list[dict]:
+        def _sync():
+            doc = self._require_doc()
+            return [
+                {
+                    "name": view.dxf.name,
+                    "center": [float(view.dxf.center.x), float(view.dxf.center.y)],
+                    "height": float(view.dxf.height),
+                    "width": float(view.dxf.width),
+                }
+                for view in doc.views
+            ]
+
+        return await self._async(_sync)
+
+    # ── UCS ───────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _ucs_entry(doc, name: str):
+        for ucs in doc.ucs:
+            if ucs.dxf.name.lower() == name.lower():
+                return ucs
+        return None
+
+    @staticmethod
+    def _set_ucs_header(doc, name: str, origin, x_axis, y_axis) -> None:
+        doc.header["$UCSNAME"] = name
+        doc.header["$UCSORG"] = tuple(origin)
+        doc.header["$UCSXDIR"] = tuple(x_axis)
+        doc.header["$UCSYDIR"] = tuple(y_axis)
+
+    @staticmethod
+    def _ucs_row(name, origin, x_axis, y_axis, current: bool) -> dict:
+        return {
+            "name": name,
+            "origin": [float(c) for c in origin],
+            "x_axis": [float(c) for c in x_axis],
+            "y_axis": [float(c) for c in y_axis],
+            "current": current,
+        }
+
+    async def ucs_list(self) -> list[dict]:
+        from engineering.environment.ucs import WORLD
+
+        def _sync():
+            doc = self._require_doc()
+            current = str(doc.header.get("$UCSNAME", "") or "")
+            rows = [self._ucs_row(WORLD, (0, 0, 0), (1, 0, 0), (0, 1, 0), current == "")]
+            for ucs in doc.ucs:
+                rows.append(
+                    self._ucs_row(
+                        ucs.dxf.name,
+                        ucs.dxf.origin,
+                        ucs.dxf.xaxis,
+                        ucs.dxf.yaxis,
+                        current != "" and ucs.dxf.name.lower() == current.lower(),
+                    )
+                )
+            return rows
+
+        return await self._async(_sync)
+
+    async def ucs_set(self, name, origin, x_axis, y_axis) -> dict:
+        from engineering.environment.names import validate_name
+        from engineering.environment.ucs import WORLD, resolve_ucs_axes
+
+        clean = validate_name(name, what="UCS name")
+        if clean.lower() == WORLD:
+            raise ValueError("ucs_set: 'world' is reserved; ucs_restore('world') resets to WCS")
+        axes = resolve_ucs_axes(origin, x_axis, y_axis)  # refuses before any write
+
+        def _sync():
+            doc = self._require_doc()
+            existing = self._ucs_entry(doc, clean)
+            replaced = existing is not None
+            stored = existing.dxf.name if replaced else clean
+            if replaced:
+                doc.ucs.remove(stored)
+            doc.ucs.add(
+                stored,
+                dxfattribs={
+                    "origin": axes["origin"],
+                    "xaxis": axes["x_axis"],
+                    "yaxis": axes["y_axis"],
+                },
+            )
+            self._set_ucs_header(doc, stored, axes["origin"], axes["x_axis"], axes["y_axis"])
+            self._mark_dirty()
+            return {
+                "ok": True,
+                "name": stored,
+                "origin": list(axes["origin"]),
+                "x_axis": list(axes["x_axis"]),
+                "y_axis": list(axes["y_axis"]),
+                "replaced": replaced,
+                "current": True,
+                "backend": "ezdxf",
+            }
+
+        return await self._async(_sync)
+
+    async def ucs_restore(self, name) -> dict:
+        from engineering.environment.names import validate_name
+        from engineering.environment.ucs import WORLD
+
+        clean = validate_name(name, what="UCS name")
+
+        def _sync():
+            doc = self._require_doc()
+            if clean.lower() == WORLD:
+                self._set_ucs_header(doc, "", (0, 0, 0), (1, 0, 0), (0, 1, 0))
+                self._mark_dirty()
+                return {"ok": True, "name": WORLD, "current": True, "backend": "ezdxf"}
+            ucs = self._ucs_entry(doc, clean)
+            if ucs is None:
+                raise ValueError(
+                    f"ucs_restore: no UCS named {clean!r}; "
+                    f"saved: {[u.dxf.name for u in doc.ucs]} (or 'world')"
+                )
+            self._set_ucs_header(doc, ucs.dxf.name, ucs.dxf.origin, ucs.dxf.xaxis, ucs.dxf.yaxis)
+            self._mark_dirty()
+            return {"ok": True, "name": ucs.dxf.name, "current": True, "backend": "ezdxf"}
+
+        return await self._async(_sync)
 
     # ── viewports ────────────────────────────────────────────────────────────
 

@@ -44,7 +44,60 @@ class EnvironmentContract(ABC):
         """
         ...
 
-    # ── layer states, named views, UCS: appended by Task 22 ──────────────────
+    # ── layer states (portable ACADMCP_LAYERSTATES XRECORDs, both engines) ──
+
+    @abstractmethod
+    async def layer_state_save(self, name: str, description: str | None = None) -> dict:
+        """→ ``{"ok", "name", "layer_count", "replaced"}``."""
+        ...
+
+    @abstractmethod
+    async def layer_state_restore(self, name: str, properties: list[str] | None = None) -> dict:
+        """``properties`` ⊆ {"on","frozen","locked","color","linetype","lineweight","plot","current"};
+        → ``{"ok", "name", "applied", "missing_layers", "new_layers"}``."""
+        ...
+
+    @abstractmethod
+    async def layer_state_list(self) -> list[dict]:
+        """→ ``[{"name", "description", "layer_count"}]``."""
+        ...
+
+    @abstractmethod
+    async def layer_state_delete(self, name: str) -> dict: ...
+
+    # ── named views ─────────────────────────────────────────────────────────
+
+    @abstractmethod
+    async def view_named_save(
+        self, name: str, center=None, height: float | None = None, width: float | None = None
+    ) -> dict:
+        """→ ``{"ok", "name", "center": [x, y], "height", "width", "replaced"}``."""
+        ...
+
+    @abstractmethod
+    async def view_named_restore(self, name: str) -> dict:
+        """ezdxf: sets the ``*Active`` VPORT, ``"applied": "header_only"``."""
+        ...
+
+    @abstractmethod
+    async def view_named_list(self) -> list[dict]: ...
+
+    # ── UCS (stored and made current; tool coordinates stay WCS) ────────────
+
+    @abstractmethod
+    async def ucs_list(self) -> list[dict]:
+        """→ ``[{"name", "origin", "x_axis", "y_axis", "current": bool}]`` + the implicit "world"."""
+        ...
+
+    @abstractmethod
+    async def ucs_set(self, name: str, origin, x_axis, y_axis) -> dict:
+        """non-orthogonal → ``ValueError`` with the measured angle."""
+        ...
+
+    @abstractmethod
+    async def ucs_restore(self, name: str) -> dict:
+        """``"world"`` resets."""
+        ...
 
     # ── application, preferences, operator prompts (COM only) ───────────────
 

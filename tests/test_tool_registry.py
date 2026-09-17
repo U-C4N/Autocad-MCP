@@ -519,7 +519,10 @@ async def test_tool_group_sizes_are_unchanged():
     tag is ranked first in `_GROUP_TAG_PRIORITY` so those tools file under
     `pid` rather than under their secondary `query` / `create` tags. `drawing`
     moved 11 -> 14 when v1.6's `document_list` / `document_activate` /
-    `document_close` (multi-document on both engines) opened SECTION 20. Every
+    `document_close` (multi-document on both engines) opened SECTION 20;
+    `layers` moved 14 -> 18 with the four `layer_state_*` tools and `view`
+    4 -> 10 with `view_named_*` and `ucs_*` (UCS files under `view`, where
+    AutoCAD's own ribbon keeps it) when v1.6's SECTION 20 grew. Every
     other number here has been unchanged since the snapshot was taken.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
@@ -534,7 +537,7 @@ async def test_tool_group_sizes_are_unchanged():
         "entity_creation": 18,
         "entity_modification": 16,
         "entity_query": 9,
-        "layers": 14,
+        "layers": 18,
         "layouts": 12,
         "pid": 9,
         "premium": 12,
@@ -543,6 +546,6 @@ async def test_tool_group_sizes_are_unchanged():
         "templates": 2,
         "transactions": 3,
         "validation": 1,
-        "view": 4,
+        "view": 10,
     }
-    assert sum(sizes.values()) == 169
+    assert sum(sizes.values()) == 179

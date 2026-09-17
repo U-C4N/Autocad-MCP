@@ -132,6 +132,14 @@ def _ai(values: list[int]):
     )
 
 
+def _avar(values):
+    """Create a VARIANT array of VARIANTs (what SetXRecordData takes for its values)."""
+    return win32com.client.VARIANT(
+        pythoncom.VT_ARRAY | pythoncom.VT_VARIANT,
+        list(values),
+    )
+
+
 def _solid_3d_capability() -> FeatureCapability:
     """3D solids are opt-in (ENABLE_3D=true) even on the live COM backend."""
     if config.settings.enable_3d:
@@ -815,6 +823,17 @@ class ComBackend(AutoCADBackend):
                 "solid_3d": _solid_3d_capability(),
                 "lisp": FeatureCapability(True, "sanitized"),
                 "documents": FeatureCapability(True, "native"),
+                # Spelling pinned by F Task 24's test_layer_states_are_declared_as_ours_not_autocads
+                # and quoted by the README and CLAUDE.md: mode "xrecord", this reason verbatim.
+                "layer_states": FeatureCapability(
+                    True,
+                    "xrecord",
+                    reason="portable_acadmcp_xrecord;not_listed_in_autocad_layer_states_manager",
+                ),
+                "named_views": FeatureCapability(True, "native"),
+                "ucs": FeatureCapability(
+                    True, "native", reason="world_restore_via_ucs_command;tool_coordinates_stay_wcs"
+                ),
                 "live_application": FeatureCapability(True, "native"),
                 "preferences": FeatureCapability(True, "native", reason="whitelisted_keys_only"),
                 "interactive_prompt": FeatureCapability(
@@ -1402,6 +1421,414 @@ class ComBackend(AutoCADBackend):
         result = await self._run(_sync)
         await self._ensure_document_state()
         return result
+
+    # ── layer states ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _com_layer_states(doc, *, create: bool):
+        from engineering.environment.layer_states import DICT_NAME
+
+        try:
+            return doc.Dictionaries.Item(DICT_NAME)
+        except Exception as exc:  # absent
+            log.debug("Dictionaries.Item(%s): %s", DICT_NAME, exc)
+        if not create:
+            return None
+        return doc.Dictionaries.Add(DICT_NAME)
+
+    @staticmethod
+    def _com_dict_entries(states) -> list[tuple[str, Any]]:
+        if states is None:
+            return []
+        out = []
+        for index in range(int(states.Count)):
+            obj = states.Item(index)
+            out.append((str(states.GetName(obj)), obj))
+        return out
+
+    def _com_layer_state_entry(self, states, name: str):
+        for key, obj in self._com_dict_entries(states):
+            if key.lower() == name.lower():
+                return key, obj
+        return None, None
+
+    @staticmethod
+    def _com_xrecord_chunks(xrecord) -> list[str]:
+        # pywin32 returns the two [out] parameters as a tuple, exactly as
+        # GetBoundingBox() / GetXData() do elsewhere in this file.
+        codes, values = xrecord.GetXRecordData()
+        return [
+            str(value)
+            for code, value in zip(list(codes or []), list(values or []), strict=False)
+            if int(code) == 1000
+        ]
+
+    @staticmethod
+    def _com_layer_snapshot(doc, description):
+        from engineering.environment.layer_states import snapshot_from_layers
+
+        current = str(doc.ActiveLayer.Name)
+        layers, plot = [], {}
+        for index in range(int(doc.Layers.Count)):
+            lyr = doc.Layers.Item(index)
+            layers.append(_layer_info(lyr, current))
+            plot[str(lyr.Name)] = bool(lyr.Plottable)
+        return snapshot_from_layers(layers, current, plot=plot, description=description)
+
+    async def layer_state_save(self, name, description=None) -> dict:
+        from engineering.environment.layer_states import encode_state, validate_state_name
+
+        clean = validate_state_name(name)
+        if description is not None and not isinstance(description, str):
+            raise TypeError("layer_state_save: description must be a string")
+
+        def _sync():
+            doc = _acad_doc()
+            state = self._com_layer_snapshot(doc, description)
+            chunks = encode_state(state)
+            states = self._com_layer_states(doc, create=True)
+            key, xrecord = self._com_layer_state_entry(states, clean)
+            replaced = xrecord is not None
+            if xrecord is None:
+                xrecord = states.AddXRecord(clean)
+                key = clean
+            xrecord.SetXRecordData(_ai([1000] * len(chunks)), _avar(chunks))
+            return {
+                "ok": True,
+                "name": key,
+                "layer_count": len(state["layers"]),
+                "replaced": replaced,
+                "chunks": len(chunks),
+                "backend": "com",
+            }
+
+        return await self._run(_sync)
+
+    async def layer_state_restore(self, name, properties=None) -> dict:
+        from engineering.environment.layer_states import (
+            decode_state,
+            diff_snapshot,
+            validate_properties,
+            validate_state_name,
+        )
+
+        clean = validate_state_name(name)
+        props = validate_properties(properties)
+
+        def _sync():
+            doc = _acad_doc()
+            states = self._com_layer_states(doc, create=False)
+            key, xrecord = self._com_layer_state_entry(states, clean)
+            if xrecord is None:
+                raise ValueError(
+                    f"layer_state_restore: no layer state named {clean!r}; "
+                    f"saved states: {[k for k, _ in self._com_dict_entries(states)]}"
+                )
+            state = decode_state(self._com_xrecord_chunks(xrecord))
+            current_name = str(doc.ActiveLayer.Name)
+            layers = [
+                _layer_info(doc.Layers.Item(i), current_name) for i in range(int(doc.Layers.Count))
+            ]
+            missing, new = diff_snapshot(state, layers)
+            current = None
+            warnings: list[str] = []
+            # Current first: AutoCAD refuses to freeze the active layer, so the
+            # active one must already be the state's before the loop freezes.
+            if "current" in props and state["current_layer"] not in missing:
+                doc.ActiveLayer = doc.Layers.Item(state["current_layer"])
+                current = state["current_layer"]
+            applied = 0
+            for layer_name, snap in state["layers"].items():
+                if layer_name in missing:
+                    continue
+                lyr = doc.Layers.Item(layer_name)
+                try:
+                    if "color" in props:
+                        lyr.Color = int(snap["color"])
+                    if "linetype" in props:
+                        _ensure_linetype_loaded(snap["linetype"])
+                        lyr.Linetype = snap["linetype"]
+                    if "lineweight" in props:
+                        lyr.LineWeight = int(snap["lineweight"])
+                    if "plot" in props:
+                        lyr.Plottable = bool(snap["plot"])
+                    if "on" in props:
+                        lyr.LayerOn = bool(snap["on"])
+                    if "frozen" in props:
+                        lyr.Freeze = bool(snap["frozen"])
+                    if "locked" in props:
+                        lyr.Lock = bool(snap["locked"])
+                except Exception as exc:  # e.g. freezing the active layer
+                    warnings.append(f"{layer_name}: {exc}")
+                    continue
+                applied += 1
+            _regen()
+            result = {
+                "ok": True,
+                "name": key,
+                "applied": {
+                    "layers": applied,
+                    "properties": list(props),
+                    "current_layer": current,
+                },
+                "missing_layers": missing,
+                "new_layers": new,
+                "backend": "com",
+            }
+            if warnings:
+                result["warnings"] = warnings
+            return result
+
+        return await self._run(_sync)
+
+    async def layer_state_list(self) -> list[dict]:
+        from engineering.environment.layer_states import decode_state
+
+        def _sync():
+            doc = _acad_doc()
+            states = self._com_layer_states(doc, create=False)
+            rows = []
+            for key, xrecord in self._com_dict_entries(states):
+                state = decode_state(self._com_xrecord_chunks(xrecord))
+                rows.append(
+                    {
+                        "name": key,
+                        "description": state.get("description"),
+                        "layer_count": len(state["layers"]),
+                    }
+                )
+            return rows
+
+        return await self._run(_sync)
+
+    async def layer_state_delete(self, name) -> dict:
+        from engineering.environment.layer_states import validate_state_name
+
+        clean = validate_state_name(name)
+
+        def _sync():
+            doc = _acad_doc()
+            states = self._com_layer_states(doc, create=False)
+            key, xrecord = self._com_layer_state_entry(states, clean)
+            if xrecord is None:
+                raise ValueError(
+                    f"layer_state_delete: no layer state named {clean!r}; "
+                    f"saved states: {[k for k, _ in self._com_dict_entries(states)]}"
+                )
+            removed = states.Remove(key)
+            try:
+                removed.Delete()
+            except Exception as exc:  # Remove already detached it
+                log.debug("XRecord.Delete after Remove: %s", exc)
+            return {"ok": True, "deleted": key, "backend": "com"}
+
+        return await self._run(_sync)
+
+    # ── named views ───────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _com_view(doc, name: str):
+        try:
+            return doc.Views.Item(name)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _com_view_row(view) -> dict:
+        center = view.Center
+        return {
+            "name": str(view.Name),
+            "center": [float(center[0]), float(center[1])],
+            "height": float(view.Height),
+            "width": float(view.Width),
+        }
+
+    async def view_named_save(self, name, center=None, height=None, width=None) -> dict:
+        from engineering.environment.names import validate_name
+        from engineering.environment.views import resolve_view_args
+
+        clean = validate_name(name, what="view name")
+        args = resolve_view_args(center, height, width)
+
+        def _sync():
+            doc = _acad_doc()
+            vport = doc.ActiveViewport
+            vp_center = vport.Center
+            vp_height = float(vport.Height) or 1.0
+            aspect = float(vport.Width) / vp_height if vp_height else 1.5
+            cx, cy = args["center"] or (float(vp_center[0]), float(vp_center[1]))
+            h = args["height"] or vp_height
+            w = args["width"] or h * aspect
+            view = self._com_view(doc, clean)
+            replaced = view is not None
+            if view is None:
+                view = doc.Views.Add(clean)
+            view.Center = _av([cx, cy])
+            view.Height = float(h)
+            view.Width = float(w)
+            return {
+                "ok": True,
+                "name": str(view.Name),
+                "center": [float(cx), float(cy)],
+                "height": float(h),
+                "width": float(w),
+                "replaced": replaced,
+                "backend": "com",
+            }
+
+        return await self._run(_sync)
+
+    async def view_named_restore(self, name) -> dict:
+        from engineering.environment.names import validate_name
+
+        clean = validate_name(name, what="view name")
+
+        def _sync():
+            doc = _acad_doc()
+            view = self._com_view(doc, clean)
+            if view is None:
+                names = [str(doc.Views.Item(i).Name) for i in range(int(doc.Views.Count))]
+                raise ValueError(
+                    f"view_named_restore: no named view {clean!r}; saved views: {names}"
+                )
+            row = self._com_view_row(view)
+            vport = doc.ActiveViewport
+            vport.Center = _av(row["center"])
+            vport.Height = row["height"]
+            vport.Width = row["width"]
+            # ActiveX applies viewport changes only when the object is assigned back.
+            doc.ActiveViewport = vport
+            _regen()
+            return {"ok": True, **row, "applied": "active_viewport", "backend": "com"}
+
+        return await self._run(_sync)
+
+    async def view_named_list(self) -> list[dict]:
+        def _sync():
+            doc = _acad_doc()
+            return [self._com_view_row(doc.Views.Item(i)) for i in range(int(doc.Views.Count))]
+
+        return await self._run(_sync)
+
+    # ── UCS ───────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _com_ucs(doc, name: str):
+        try:
+            return doc.UserCoordinateSystems.Item(name)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _com_ucs_row(ucs, current: str) -> dict:
+        return {
+            "name": str(ucs.Name),
+            "origin": [float(c) for c in ucs.Origin],
+            "x_axis": [float(c) for c in ucs.XVector],
+            "y_axis": [float(c) for c in ucs.YVector],
+            "current": current != "" and str(ucs.Name).lower() == current.lower(),
+        }
+
+    async def ucs_list(self) -> list[dict]:
+        from engineering.environment.ucs import WORLD
+
+        def _sync():
+            app = _acad_app()
+            doc = _acad_doc()
+            current = str(app.GetVariable("UCSNAME") or "")
+            rows = [
+                {
+                    "name": WORLD,
+                    "origin": [0.0, 0.0, 0.0],
+                    "x_axis": [1.0, 0.0, 0.0],
+                    "y_axis": [0.0, 1.0, 0.0],
+                    "current": current == "",
+                }
+            ]
+            collection = doc.UserCoordinateSystems
+            for index in range(int(collection.Count)):
+                rows.append(self._com_ucs_row(collection.Item(index), current))
+            return rows
+
+        return await self._run(_sync)
+
+    async def ucs_set(self, name, origin, x_axis, y_axis) -> dict:
+        from engineering.environment.names import validate_name
+        from engineering.environment.ucs import WORLD, resolve_ucs_axes
+
+        clean = validate_name(name, what="UCS name")
+        if clean.lower() == WORLD:
+            raise ValueError("ucs_set: 'world' is reserved; ucs_restore('world') resets to WCS")
+        axes = resolve_ucs_axes(origin, x_axis, y_axis)  # refuses before any ActiveX call
+
+        def _sync():
+            doc = _acad_doc()
+            o, x, y = axes["origin"], axes["x_axis"], axes["y_axis"]
+            ucs = self._com_ucs(doc, clean)
+            replaced = ucs is not None
+            if ucs is None:
+                # ActiveX takes POINTS on the axes, not direction vectors.
+                ucs = doc.UserCoordinateSystems.Add(
+                    _apoint(*o),
+                    _apoint(o[0] + x[0], o[1] + x[1], o[2] + x[2]),
+                    _apoint(o[0] + y[0], o[1] + y[1], o[2] + y[2]),
+                    clean,
+                )
+            else:
+                ucs.Origin = _apoint(*o)
+                ucs.XVector = _apoint(*x)
+                ucs.YVector = _apoint(*y)
+            doc.ActiveUCS = ucs
+            return {
+                "ok": True,
+                "name": str(ucs.Name),
+                "origin": list(o),
+                "x_axis": list(x),
+                "y_axis": list(y),
+                "replaced": replaced,
+                "current": True,
+                "backend": "com",
+            }
+
+        return await self._run(_sync)
+
+    async def ucs_restore(self, name) -> dict:
+        from engineering.environment.names import validate_name
+        from engineering.environment.ucs import WORLD
+
+        clean = validate_name(name, what="UCS name")
+
+        def _sync():
+            app = _acad_app()
+            doc = _acad_doc()
+            if clean.lower() == WORLD:
+                # No ActiveX member selects WCS; the command does. Same guard as
+                # system_run_command: never send into an active prompt.
+                try:
+                    cmd_active = int(app.GetVariable("CMDACTIVE"))
+                except Exception as exc:
+                    log.debug("CMDACTIVE read failed, proceeding: %s", exc)
+                    cmd_active = 0
+                if cmd_active:
+                    raise RuntimeError(
+                        "AutoCAD has an active command or prompt (CMDACTIVE="
+                        f"{cmd_active}). Press ESC in AutoCAD to cancel, then retry."
+                    )
+                doc.SendCommand("_.UCS _W\n")
+                return {"ok": True, "name": WORLD, "current": True, "backend": "com"}
+            ucs = self._com_ucs(doc, clean)
+            if ucs is None:
+                names = [
+                    str(doc.UserCoordinateSystems.Item(i).Name)
+                    for i in range(int(doc.UserCoordinateSystems.Count))
+                ]
+                raise ValueError(
+                    f"ucs_restore: no UCS named {clean!r}; saved: {names} (or 'world')"
+                )
+            doc.ActiveUCS = ucs
+            return {"ok": True, "name": str(ucs.Name), "current": True, "backend": "com"}
+
+        return await self._run(_sync)
 
     # ── selection filters (M8 / F1) ──────────────────────────────────────────
     #

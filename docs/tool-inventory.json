@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 169,
+    "tools": 179,
     "resources": 8,
     "prompts": 5,
     "groups": 20
@@ -19,7 +19,7 @@
     "entity_creation": 18,
     "entity_modification": 16,
     "entity_query": 9,
-    "layers": 14,
+    "layers": 18,
     "layouts": 12,
     "pid": 9,
     "premium": 12,
@@ -28,7 +28,7 @@
     "templates": 2,
     "transactions": 3,
     "validation": 1,
-    "view": 4
+    "view": 10
   },
   "tools": [
     {
@@ -1612,6 +1612,60 @@
       }
     },
     {
+      "name": "layer_state_delete",
+      "group": "layers",
+      "cost": "destructive",
+      "summary": "Delete one saved layer state from the drawing.",
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "Delete Layer State",
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "layer_state_list",
+      "group": "layers",
+      "cost": "read",
+      "summary": "List the layer states saved in this drawing.",
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "List Layer States",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "layer_state_restore",
+      "group": "layers",
+      "cost": "safe",
+      "summary": "Restore a saved layer state, all properties or a chosen subset.",
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "Restore Layer State",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "layer_state_save",
+      "group": "layers",
+      "cost": "safe",
+      "summary": "Save the layer table (on/frozen/locked/colour/linetype/lineweight/plot + current) under a name, in the file.",
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "Save Layer State",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
       "name": "layer_thaw",
       "group": "layers",
       "cost": "safe",
@@ -2252,6 +2306,47 @@
       }
     },
     {
+      "name": "ucs_list",
+      "group": "view",
+      "cost": "read",
+      "summary": "List the user coordinate systems, with the implicit world one.",
+      "tags": [
+        "view"
+      ],
+      "annotations": {
+        "title": "List UCS",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "ucs_restore",
+      "group": "view",
+      "cost": "safe",
+      "summary": "Make a saved UCS current, or `world` to reset to WCS.",
+      "tags": [
+        "view"
+      ],
+      "annotations": {
+        "title": "Restore UCS",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "ucs_set",
+      "group": "view",
+      "cost": "safe",
+      "summary": "Define (or replace) a named UCS from an origin and two perpendicular axes, and make it current.",
+      "tags": [
+        "view"
+      ],
+      "annotations": {
+        "title": "Set UCS",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
       "name": "validation_check",
       "group": "validation",
       "cost": "read",
@@ -2263,6 +2358,47 @@
       "annotations": {
         "title": "Validate Drawing",
         "readOnlyHint": true
+      }
+    },
+    {
+      "name": "view_named_list",
+      "group": "view",
+      "cost": "read",
+      "summary": "List the named views saved in this drawing.",
+      "tags": [
+        "view"
+      ],
+      "annotations": {
+        "title": "List Named Views",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "view_named_restore",
+      "group": "view",
+      "cost": "safe",
+      "summary": "Restore a named view.",
+      "tags": [
+        "view"
+      ],
+      "annotations": {
+        "title": "Restore Named View",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "view_named_save",
+      "group": "view",
+      "cost": "safe",
+      "summary": "Save a named view: a centre and height (and width) to come back to.",
+      "tags": [
+        "view"
+      ],
+      "annotations": {
+        "title": "Save Named View",
+        "readOnlyHint": false,
+        "destructiveHint": false
       }
     },
     {

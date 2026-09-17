@@ -27,8 +27,8 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 
 </div>
 
-> **v1.5 release snapshot:** 169 tools · 8 resources · 5 prompt templates · 2423 collected tests.
-> 169 is the **registered** count; a default install advertises 164 over `tools/list`,
+> **v1.5 release snapshot:** 179 tools · 8 resources · 5 prompt templates · 2423 collected tests.
+> 179 is the **registered** count; a default install advertises 174 over `tools/list`,
 > because `ENABLE_3D` is unset. `system_about` is the runtime authority.
 
 ## Why this exists
@@ -104,7 +104,7 @@ Claude Desktop, Cursor, or any stdio MCP host. For HTTP: `autocad-mcp --transpor
 | Discovery | `search_tools` ranked over an AutoCAD command and synonym corpus — `FILLET`, `BPOLY`, `QSELECT`, `WBLOCK`, `OVERKILL`, `CHSPACE` each rank **#1** of the 161-tool advertised catalog |
 | Batching | `cad_batch` runs a step list in one round trip; `fields=` projects 11 result-heavy tools |
 | Paper space | tab lifecycle, viewports, `entity_change_space` (CHSPACE), `drawing_export_pdf(layout=…)` |
-| Environment | `document_list/activate/close` — several drawings open at once on both engines, the active one is what every tool targets |
+| Environment | `document_list/activate/close` — several drawings open at once on both engines; portable layer states (`ACADMCP_LAYERSTATES` XRECORDs — in the file, not in AutoCAD's Layer States Manager); named views; UCS stored and made current *(tool coordinates stay WCS)* |
 | Selection | window vs crossing stated back to the caller; a polygon tested against its own shape, not its bounding box |
 | Boundaries | `boundary_trace` (BOUNDARY/BPOLY) chains loose edges into one closed polyline, arcs kept as bulges *(headless)* |
 | Measurement | `analysis_measure_entity` measures what is *in* the drawing, by handle |

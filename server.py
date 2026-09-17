@@ -6819,7 +6819,7 @@ async def pid_tag_parse(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 20: Environment (3 tools) ───────────────────────────────────────
+# ── SECTION 20: Environment (13 tools) ──────────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -6902,6 +6902,207 @@ async def document_close(
         f"Closing document {name_or_path or '(active)'} (save={save}, discard={discard})"
     )
     return await _backend(ctx).document_close(name_or_path, save, discard)
+
+
+@cad_tool(
+    summary="Save the layer table (on/frozen/locked/colour/linetype/lineweight/plot + current) under a name, in the file.",
+    cost="safe",
+)
+@mcp.tool(
+    annotations={"title": "Save Layer State", "readOnlyHint": False, "destructiveHint": False},
+    tags={"layer"},
+)
+async def layer_state_save(
+    name: Annotated[str, "State name, e.g. PLOT-SET or DESIGN"],
+    description: Annotated[str | None, "Free text stored with the state"] = None,
+    ctx: Context = None,
+) -> dict:
+    """Snapshot every layer's on/frozen/locked/color/linetype/lineweight/plot
+    flags plus the current layer as a named state stored in the drawing.
+
+    These are the server's own portable layer states: JSON chunks in an XRECORD
+    under the `ACADMCP_LAYERSTATES` dictionary. They live in the file and
+    travel with it, work on both engines, and do **not** appear in AutoCAD's
+    Layer States Manager (LAYERSTATE). Same name replaces (`replaced: true`).
+    Refusals: an empty or control-character name, a non-string description.
+    Pack: settings · lean: no.
+    """
+    await ctx.info(f"Saving layer state {name!r}")
+    return await _backend(ctx).layer_state_save(name, description)
+
+
+@cad_tool(summary="Restore a saved layer state, all properties or a chosen subset.", cost="safe")
+@mcp.tool(
+    annotations={"title": "Restore Layer State", "readOnlyHint": False, "destructiveHint": False},
+    tags={"layer"},
+)
+async def layer_state_restore(
+    name: Annotated[str, "A name from layer_state_list"],
+    properties: Annotated[
+        list[str] | None,
+        "Subset of on, frozen, locked, color, linetype, lineweight, plot, current; omit for all",
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """Apply a saved state to the layers that still exist.
+
+    `missing_layers` (in the state, not in the drawing) are skipped, never
+    created; `new_layers` (in the drawing, not in the state) are untouched;
+    `applied` says how many layers and which properties moved. Refusals: an
+    unknown state name (lists the saved ones), a property outside the eight
+    (names the index). Live, a layer AutoCAD refuses to change (freezing the
+    active layer) lands in `warnings` instead of failing the call. Portable
+    server states, not Layer States Manager entries. Pack: settings · lean: no.
+    """
+    await ctx.info(f"Restoring layer state {name!r}")
+    return await _backend(ctx).layer_state_restore(name, properties)
+
+
+@cad_tool(summary="List the layer states saved in this drawing.", cost="read")
+@mcp.tool(
+    annotations={"title": "List Layer States", "readOnlyHint": True},
+    tags={"layer"},
+)
+async def layer_state_list(ctx: Context = None) -> dict:
+    """Every state under `ACADMCP_LAYERSTATES` with its description and layer
+    count. These are the server's portable states, not AutoCAD Layer States
+    Manager entries. No refusals. Pack: settings · lean: no."""
+    rows = await _backend(ctx).layer_state_list()
+    return {"states": rows, "count": len(rows)}
+
+
+@cad_tool(summary="Delete one saved layer state from the drawing.", cost="destructive")
+@mcp.tool(
+    annotations={"title": "Delete Layer State", "destructiveHint": True},
+    tags={"layer"},
+)
+async def layer_state_delete(
+    name: Annotated[str, "A name from layer_state_list"],
+    ctx: Context = None,
+) -> dict:
+    """Remove the named state's XRECORD. Layers themselves are untouched.
+    Refusal: an unknown name (lists the saved ones). Pack: settings · lean: no."""
+    await ctx.info(f"Deleting layer state {name!r}")
+    return await _backend(ctx).layer_state_delete(name)
+
+
+@cad_tool(
+    summary="Save a named view: a centre and height (and width) to come back to.", cost="safe"
+)
+@mcp.tool(
+    annotations={"title": "Save Named View", "readOnlyHint": False, "destructiveHint": False},
+    tags={"view"},
+)
+async def view_named_save(
+    name: Annotated[str, "View name, e.g. DETAIL-A"],
+    center: Annotated[
+        list[float] | None,
+        "[x, y] in WCS; default: the current view (live) or the drawing extents (headless)",
+    ] = None,
+    height: Annotated[float | None, "View height in drawing units; default as for center"] = None,
+    width: Annotated[
+        float | None, "View width; default: height × the current viewport aspect"
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """Store a VIEW table entry (AutoCAD's VIEW command). Same name replaces
+    (`replaced: true`). Refusals: `height`/`width` ≤ 0 or non-finite, a
+    malformed `center`, and headless an empty drawing with no `center`/`height`
+    (there are no extents to default to). Pack: settings · lean: no."""
+    await ctx.info(f"Saving named view {name!r}")
+    return await _backend(ctx).view_named_save(name, center, height, width)
+
+
+@cad_tool(summary="Restore a named view.", cost="safe")
+@mcp.tool(
+    annotations={"title": "Restore Named View", "readOnlyHint": False, "destructiveHint": False},
+    tags={"view"},
+)
+async def view_named_restore(
+    name: Annotated[str, "A name from view_named_list"],
+    ctx: Context = None,
+) -> dict:
+    """Live: sets the active viewport to the saved centre/height/width
+    (`applied: "active_viewport"`). Headless there is no display: the saved
+    window is written to the `*Active` VPORT — the view AutoCAD opens the file
+    on — and the result says `applied: "header_only"`, the same reported-no-op
+    rule as `view_zoom_extents`. Refusal: an unknown name (lists the saved
+    views). Pack: settings · lean: no."""
+    return await _backend(ctx).view_named_restore(name)
+
+
+@cad_tool(summary="List the named views saved in this drawing.", cost="read")
+@mcp.tool(
+    annotations={"title": "List Named Views", "readOnlyHint": True},
+    tags={"view"},
+)
+async def view_named_list(ctx: Context = None) -> dict:
+    """Every VIEW table entry with centre, height and width. No refusals.
+    Pack: settings · lean: no."""
+    rows = await _backend(ctx).view_named_list()
+    return {"views": rows, "count": len(rows)}
+
+
+@cad_tool(summary="List the user coordinate systems, with the implicit world one.", cost="read")
+@mcp.tool(
+    annotations={"title": "List UCS", "readOnlyHint": True},
+    tags={"view"},
+)
+async def ucs_list(ctx: Context = None) -> dict:
+    """The `world` row first, then every UCS table entry with origin and unit
+    axes, `current` on the active one. Tool coordinates stay WCS on both
+    engines whatever is current. No refusals. Pack: settings · lean: no."""
+    rows = await _backend(ctx).ucs_list()
+    return {
+        "ucs": rows,
+        "count": len(rows),
+        "current": next((r["name"] for r in rows if r["current"]), None),
+    }
+
+
+@cad_tool(
+    summary="Define (or replace) a named UCS from an origin and two perpendicular axes, and make it current.",
+    cost="safe",
+)
+@mcp.tool(
+    annotations={"title": "Set UCS", "readOnlyHint": False, "destructiveHint": False},
+    tags={"view"},
+)
+async def ucs_set(
+    name: Annotated[str, "UCS name"],
+    origin: Annotated[list[float], "[x, y, z] in WCS"],
+    x_axis: Annotated[list[float], "Direction of the new X axis (any length)"],
+    y_axis: Annotated[list[float], "Direction of the new Y axis; must be perpendicular to x_axis"],
+    ctx: Context = None,
+) -> dict:
+    """Store a UCS table entry and make it current (AutoCAD's UCS command).
+
+    Axes are normalised to unit vectors. **Every tool keeps taking and
+    returning WCS coordinates** — the repository rule; a UCS is for the
+    operator's own drafting, and no tool starts interpreting inputs in it.
+    Refusals, before any write: a name of `world` (reserved), a zero-length
+    axis, and non-perpendicular axes — the message carries the measured angle
+    (tolerance 0.001°). Pack: settings · lean: no.
+    """
+    await ctx.info(f"Setting UCS {name!r}")
+    return await _backend(ctx).ucs_set(name, origin, x_axis, y_axis)
+
+
+@cad_tool(summary="Make a saved UCS current, or `world` to reset to WCS.", cost="safe")
+@mcp.tool(
+    annotations={"title": "Restore UCS", "readOnlyHint": False, "destructiveHint": False},
+    tags={"view"},
+)
+async def ucs_restore(
+    name: Annotated[str, "A name from ucs_list, or `world`"],
+    ctx: Context = None,
+) -> dict:
+    """Live: `ActiveUCS` for a named entry; `world` runs `UCS World`, which is
+    refused while AutoCAD has an active command (CMDACTIVE — press ESC).
+    Headless: the `$UCSNAME/$UCSORG/$UCSXDIR/$UCSYDIR` header variables.
+    Refusal: an unknown name (lists the saved ones). Tool coordinates stay
+    WCS. Pack: settings · lean: no."""
+    return await _backend(ctx).ucs_restore(name)
 
 
 # ---------------------------------------------------------------------------
