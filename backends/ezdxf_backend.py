@@ -2035,6 +2035,7 @@ class EzdxfBackend(AutoCADBackend):
             if existing is not None:
                 return {"ok": False, "error": f"Layout already exists: {existing}"}
             doc.layouts.new(wanted)
+            self._mark_dirty()
             return {"ok": True, "layout": wanted}
 
         return await self._async(_sync)
@@ -2056,6 +2057,10 @@ class EzdxfBackend(AutoCADBackend):
             # Stored in the canonical spelling so _msp and _resync_space
             # compare against one form.
             self._current_space = resolved
+            # $TILEMODE and the active-layout binding are persisted state:
+            # the file on disk differs from the document after this, so the
+            # close refusal and the ``saved`` row must know about it.
+            self._mark_dirty()
             return {"ok": True, "current": resolved}
 
         return await self._async(_sync)
@@ -2273,6 +2278,7 @@ class EzdxfBackend(AutoCADBackend):
                 view_center_point=(view_center_x, view_center_y),
                 view_height=view_height,
             )
+            self._mark_dirty()
             return {
                 "ok": True,
                 "handle": viewport.dxf.handle,

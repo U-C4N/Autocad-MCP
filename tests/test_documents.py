@@ -25,6 +25,7 @@ import types
 import pytest
 from fastmcp import Client
 
+import config
 import server
 from backends.ezdxf_backend import EzdxfBackend
 
@@ -332,6 +333,92 @@ async def test_close_unsaved_refuses_unless_discard(backend):
         "active": None,
         "open_documents": 0,
     }
+
+
+async def _create_layout(backend):
+    assert (await backend.layout_create("A3-Sheet"))["ok"] is True
+
+
+async def _set_current_layout(backend):
+    assert (await backend.layout_set_current("Layout1"))["ok"] is True
+
+
+async def _create_viewport(backend):
+    result = await backend.viewport_create("Layout1", 150, 100, 200, 150, 0, 0, 1.0)
+    assert result["ok"] is True
+
+
+def _layout_names(path):
+    import ezdxf
+
+    return set(ezdxf.readfile(str(path)).layouts.names())
+
+
+def _layout1_has_viewport(path):
+    import ezdxf
+
+    return any(
+        e.dxftype() == "VIEWPORT" and e.dxf.id != 1
+        for e in ezdxf.readfile(str(path)).layouts.get("Layout1")
+    )
+
+
+def _tilemode(path):
+    import ezdxf
+
+    return int(ezdxf.readfile(str(path)).header.get("$TILEMODE", 1))
+
+
+@pytest.mark.parametrize(
+    ("mutate", "changed_on_disk"),
+    [
+        (_create_layout, lambda p: "A3-Sheet" in _layout_names(p)),
+        (_set_current_layout, lambda p: _tilemode(p) == 0),
+        (_create_viewport, _layout1_has_viewport),
+    ],
+    ids=["layout_create", "layout_set_current", "viewport_create"],
+)
+async def test_layout_and_viewport_mutators_mark_the_document_unsaved(
+    monkeypatch, tmp_path, mutate, changed_on_disk
+):
+    """The close refusal is only as good as the dirty flag behind it.
+
+    ``layout_create``, ``layout_set_current`` and ``viewport_create`` change
+    the file (a new layout tab, ``$TILEMODE`` plus the active layout, a
+    VIEWPORT) but used to leave ``_DocState.dirty`` untouched, so
+    ``document_list`` reported ``saved: True``, ``document_close`` closed
+    without refusing and reported ``discarded_changes: False`` while the work
+    was gone — and the live engine, whose ``Saved`` is AutoCAD's DBMOD,
+    refused the same sequence. Marking dirty also gives each an undo step,
+    which is why undo is switched on here before the document exists (the
+    S0 snapshot is seeded by ``drawing_new`` only when history is enabled).
+    """
+    monkeypatch.setattr(config.settings, "ezdxf_undo_depth", 4)
+    backend = EzdxfBackend()
+    await backend.connect()
+    try:
+        await backend.drawing_new()
+        path = tmp_path / "sheet.dxf"
+        await backend.drawing_save(str(path))
+        assert (await backend.document_list())[0]["saved"] is True
+        assert not changed_on_disk(path)
+
+        await mutate(backend)
+
+        assert (await backend.document_list())[0]["saved"] is False
+        with pytest.raises(ValueError, match="unsaved changes"):
+            await backend.document_close(None)
+        assert len(await backend.document_list()) == 1, "a refusal closes nothing"
+
+        # Every mutator pushes an undo snapshot; these must too.
+        assert (await backend.drawing_undo())["undo_depth"] == 0
+        assert (await backend.drawing_redo())["ok"] is True
+
+        result = await backend.document_close(None, save=True)
+        assert result["saved"] is True and result["discarded_changes"] is False
+        assert changed_on_disk(path)
+    finally:
+        await backend.disconnect()
 
 
 async def test_close_with_save_writes_the_file(backend, tmp_path):
