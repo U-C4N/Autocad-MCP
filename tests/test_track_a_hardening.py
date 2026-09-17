@@ -1589,3 +1589,72 @@ async def test_com_set_attributes_refuses_before_touching_the_reference(com):
         "updated_tags": ["TAG"],
     }
     assert attr.TextString == "2.5"
+
+
+# ── Task 4: block_define validates the base point and the layer table ────────
+
+CIRC = [{"type": "circle", "cx": 0, "cy": 0, "r": 1}]
+ON_LAYER = [{"type": "line", "x1": 0, "y1": 0, "x2": 1, "y2": 1, "layer": "NOT_A_LAYER"}]
+
+
+@pytest.mark.parametrize(
+    "kwargs, key",
+    [
+        ({"base_x": float("nan")}, "base_x"),
+        ({"base_y": float("inf")}, "base_y"),
+        ({"base_x": "3"}, "base_x"),
+        ({"base_y": True}, "base_y"),
+        ({"base_x": 10**400}, "base_x"),
+    ],
+)
+async def test_define_refuses_a_bad_base_point_before_writing(backend, kwargs, key):
+    with pytest.raises(TypeError, match=f"'{key}'"):
+        await backend.block_define("PID_BASE", CIRC, **kwargs)
+    assert "PID_BASE" not in backend._doc.blocks
+
+
+async def test_define_refuses_a_missing_layer_and_names_it(backend):
+    with pytest.raises(ValueError, match="'NOT_A_LAYER' do not exist") as exc:
+        await backend.block_define("PID_LYR", ON_LAYER)
+    assert "create_layers=true" in str(exc.value)
+    assert "PID_LYR" not in backend._doc.blocks
+    assert "NOT_A_LAYER" not in backend._doc.layers
+
+
+async def test_define_creates_the_layer_on_request_and_reports_it(backend):
+    result = await backend.block_define("PID_LYR", ON_LAYER, create_layers=True)
+    assert result["layers_created"] == ["NOT_A_LAYER"] and result["ok"] is True
+    assert "NOT_A_LAYER" in backend._doc.layers
+    member = next(iter(backend._doc.blocks.get("PID_LYR")))
+    assert member.dxf.layer == "NOT_A_LAYER"
+
+
+async def test_define_on_an_existing_layer_reports_nothing_created(backend):
+    await backend.layer_create("PID-EQUIP")
+    spec = [{**ON_LAYER[0], "layer": "PID-EQUIP"}]
+    result = await backend.block_define("PID_OK", spec)
+    assert result["layers_created"] == []
+    result = await backend.block_define("PID_ZERO", CIRC)
+    assert result["layers_created"] == [], "layer 0 always exists"
+
+
+async def test_com_define_probes_layers_before_blocks_add(com):
+    backend, document, space = com
+    with pytest.raises(ValueError, match="'NOT_A_LAYER' do not exist"):
+        await backend.block_define("PID_LYR", ON_LAYER)
+    assert "PID_LYR" not in document.Blocks.blocks and document.Layers.added == []
+
+    result = await backend.block_define("PID_LYR", ON_LAYER, create_layers=True)
+    assert result["layers_created"] == ["NOT_A_LAYER"] and result["backend"] == "com"
+    assert document.Layers.added == ["NOT_A_LAYER"]
+    assert [name for name, _ in document.Blocks.blocks["PID_LYR"].calls] == ["AddLine"]
+
+
+async def test_com_define_refuses_a_bad_base_point_before_blocks_add(com):
+    backend, document, space = com
+    with pytest.raises(TypeError, match="'base_y'"):
+        await backend.block_define("PID_BASE", CIRC, base_y=float("nan"))
+    assert "PID_BASE" not in document.Blocks.blocks
+    result = await backend.block_define("PID_BASE", CIRC, base_x=1.5, base_y=2.5)
+    assert document.Blocks.blocks["PID_BASE"].base_point == (1.5, 2.5, 0.0)
+    assert result["layers_created"] == []

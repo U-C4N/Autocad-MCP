@@ -4976,20 +4976,26 @@ class EzdxfBackend(AutoCADBackend):
         base_x=0.0,
         base_y=0.0,
         overwrite=False,
+        create_layers=False,
     ) -> dict:
         """A block definition with ATTDEFs from typed specs.
 
         Validation runs before any write, so a malformed entry leaves no
-        definition behind. ``overwrite`` replaces the *contents* of an existing
-        definition rather than deleting it: existing INSERTs keep pointing at
-        the name and show the new geometry (deleting a referenced block is
-        refused by both engines; replacing contents works on both).
+        definition behind: specs, the base point (``base_x``/``base_y`` must be
+        finite numbers — ``float("nan")`` used to be written into the BLOCK
+        record) and the layer table (a primitive's ``layer`` must exist, or
+        ``create_layers`` must be true — a dangling layer reference passes
+        ``doc.audit()`` silently). ``overwrite`` replaces the *contents* of an
+        existing definition rather than deleting it: existing INSERTs keep
+        pointing at the name and show the new geometry (deleting a referenced
+        block is refused by both engines; replacing contents works on both).
         """
         from ezdxf.enums import TextEntityAlignment
 
         from backends.block_specs import (
             solid_vertices,
             validate_attdef_specs,
+            validate_base_point,
             validate_entity_specs,
         )
         from security import sanitize_symbol_name
@@ -5002,6 +5008,8 @@ class EzdxfBackend(AutoCADBackend):
         clean_name = sanitize_symbol_name(name, kind="block")
         ents = validate_entity_specs(entities)
         atts = validate_attdef_specs(attdefs or [])
+        base = (*validate_base_point(base_x, base_y), 0.0)
+        wanted_layers = sorted({spec["layer"] for spec in ents if spec["layer"] != "0"})
         align_map = {
             "left": TextEntityAlignment.LEFT,
             "center": TextEntityAlignment.CENTER,
@@ -5018,7 +5026,16 @@ class EzdxfBackend(AutoCADBackend):
                     "pass overwrite=true to replace its contents"
                 )
             replaced = existing is not None
-            base = (float(base_x), float(base_y), 0.0)
+            missing_layers = [layer for layer in wanted_layers if layer not in doc.layers]
+            if missing_layers and not create_layers:
+                raise ValueError(
+                    "block_define: layer(s) "
+                    + ", ".join(repr(layer) for layer in missing_layers)
+                    + " do not exist in the drawing; create them with layer_create "
+                    "or pass create_layers=true"
+                )
+            for layer in missing_layers:
+                doc.layers.add(layer)
             if existing is None:
                 blk = doc.blocks.new(name=clean_name, base_point=base)
             else:
@@ -5085,6 +5102,7 @@ class EzdxfBackend(AutoCADBackend):
                 "entity_count": len(ents),
                 "attdef_count": len(atts),
                 "replaced": replaced,
+                "layers_created": missing_layers,
                 "backend": "ezdxf",
             }
 

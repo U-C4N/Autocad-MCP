@@ -3160,19 +3160,30 @@ async def block_define(
     overwrite: Annotated[
         bool, "Replace the contents of an existing definition of this name"
     ] = False,
+    create_layers: Annotated[
+        bool, "Create primitive layers that do not exist yet (default: refuse and name them)"
+    ] = False,
     ctx: Context = None,
 ) -> dict:
     """Create a block definition with attribute definitions from typed specs.
 
     The whole request is validated before anything is written: one malformed
-    entry refuses the call and leaves no definition behind. `overwrite=true`
-    replaces the *contents* of an existing block so its INSERTs keep pointing
-    at the name and show the new geometry; `replaced` reports it. Geometry
-    inside the block is ByBlock so the INSERT's layer supplies colour and
-    lineweight. Insert with `block_insert(attributes={TAG: value})`.
+    entry refuses the call and leaves no definition behind. Refusals: a
+    malformed primitive or ATTDEF (names `entities[i]`/`attdefs[i]` and the
+    key), a non-finite base point (names `base_x`/`base_y`), a name clash
+    without `overwrite`, an anonymous `*` name, and a primitive `layer` that
+    is not in the drawing's layer table (names the missing layers) unless
+    `create_layers=true`, which creates them and lists them in
+    `layers_created`. `overwrite=true` replaces the *contents* of an existing
+    block so its INSERTs keep pointing at the name and show the new geometry;
+    `replaced` reports it. Geometry inside the block is ByBlock so the
+    INSERT's layer supplies colour and lineweight. Insert with
+    `block_insert(attributes={TAG: value})`.
     """
     await ctx.info(f"Defining block '{name}' from {len(entities)} primitives")
-    return await _backend(ctx).block_define(name, entities, attdefs, base_x, base_y, overwrite)
+    return await _backend(ctx).block_define(
+        name, entities, attdefs, base_x, base_y, overwrite, create_layers
+    )
 
 
 @cad_tool(summary="Find every place a given block is inserted.", cost="read")

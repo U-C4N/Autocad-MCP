@@ -3880,18 +3880,24 @@ class ComBackend(AutoCADBackend):
         base_x=0.0,
         base_y=0.0,
         overwrite=False,
+        create_layers=False,
     ) -> dict:
         """A block definition with ATTDEFs from typed specs, through ActiveX.
 
         ``Blocks.Add`` creates the definition; each primitive is one ``Add*``
         call on the Block object, each ATTDEF one ``AddAttribute``. Overwrite
         deletes the existing definition's members and re-adds — the name and
-        its INSERTs survive. Unit-tested against a fake ActiveX surface;
-        executed live by ``scripts/smoke_pid_com.py``.
+        its INSERTs survive. The base point must be finite (a NaN would reach
+        AutoCAD as a VARIANT) and every primitive layer must exist
+        (``Layers.Item`` probe before ``Blocks.Add`` — ``obj.Layer = name`` for
+        an unknown layer would otherwise fail mid-loop with the definition half
+        written) unless ``create_layers`` adds them first. Unit-tested against
+        a fake ActiveX surface; executed live by ``scripts/smoke_pid_com.py``.
         """
         from backends.block_specs import (
             solid_vertices,
             validate_attdef_specs,
+            validate_base_point,
             validate_entity_specs,
         )
 
@@ -3903,6 +3909,8 @@ class ComBackend(AutoCADBackend):
         clean_name = sanitize_symbol_name(name, kind="block")
         ents = validate_entity_specs(entities)
         atts = validate_attdef_specs(attdefs or [])
+        base_xy = validate_base_point(base_x, base_y)
+        wanted_layers = sorted({spec["layer"] for spec in ents if spec["layer"] != "0"})
         # acAlignmentLeft / Center / Right / MiddleCenter
         align_map = {"left": 0, "center": 1, "right": 2, "middle_center": 10}
 
@@ -3923,7 +3931,22 @@ class ComBackend(AutoCADBackend):
                     "pass overwrite=true to replace its contents"
                 )
             replaced = existing is not None
-            base = _apoint(float(base_x), float(base_y), 0.0)
+            missing_layers = []
+            for layer in wanted_layers:
+                try:
+                    doc.Layers.Item(layer)
+                except Exception:
+                    missing_layers.append(layer)
+            if missing_layers and not create_layers:
+                raise ValueError(
+                    "block_define: layer(s) "
+                    + ", ".join(repr(layer) for layer in missing_layers)
+                    + " do not exist in the drawing; create them with layer_create "
+                    "or pass create_layers=true"
+                )
+            for layer in missing_layers:
+                doc.Layers.Add(layer)
+            base = _apoint(base_xy[0], base_xy[1], 0.0)
             if existing is None:
                 block = doc.Blocks.Add(base, clean_name)
             else:
@@ -3989,6 +4012,7 @@ class ComBackend(AutoCADBackend):
                 "entity_count": len(ents),
                 "attdef_count": len(atts),
                 "replaced": replaced,
+                "layers_created": missing_layers,
                 "backend": "com",
             }
 

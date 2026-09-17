@@ -33,7 +33,10 @@ _POSITIVE = {"r", "height"}
 def _scalar(value, where: str, *, positive: bool = False) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(f"{where} must be a number, got {value!r}")
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError as exc:  # a 400-digit JSON integer is an int, not a float
+        raise TypeError(f"{where} must be finite") from exc
     if not math.isfinite(number):
         raise TypeError(f"{where} must be finite")
     if positive and number <= 0:
@@ -202,6 +205,18 @@ def validate_attdef_specs(attdefs) -> list[dict]:
             }
         )
     return out
+
+
+def validate_base_point(base_x, base_y) -> tuple[float, float]:
+    """``block_define``'s base point as finite floats; ``TypeError`` names the key.
+
+    Only ``float()`` was applied before, so ``float("nan")`` was written into
+    the BLOCK record headlessly and would reach AutoCAD as a NaN VARIANT.
+    """
+    return (
+        _scalar(base_x, "block_define: 'base_x'"),
+        _scalar(base_y, "block_define: 'base_y'"),
+    )
 
 
 def validate_attribute_values(attributes, where: str = "attributes") -> dict[str, str]:
