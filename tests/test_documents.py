@@ -88,6 +88,39 @@ async def test_per_document_state_follows_the_active_entry(backend):
     assert backend._dirty is False
 
 
+async def test_active_layer_set_is_per_document(backend):
+    """The standard ``drawing_apply_iso_layers`` bootstrapped is per drawing.
+
+    It drives ``_role_layer`` — where ``dimension_auto`` and
+    ``construction_xline`` file their output — and the critique that checks
+    them. Held on the backend it bled across documents: an iso13567 sheet
+    next to a mech one pushed the mech drawing's dimensions onto
+    ``M-DIMEN-T-N`` (created on demand), silently, and ``drawing_critique``
+    could not see it because the same stale set drove the critique.
+    """
+    await backend.drawing_apply_iso_layers("iso13567")
+    assert backend._role_layer("dim") == "M-DIMEN-T-N"
+
+    second = (await backend.drawing_new())["document"]
+    assert backend._active_layer_set is None, "a fresh drawing has no explicit set"
+    assert backend._role_layer("dim") == "DIM"
+    line = await backend.entity_create_line(0, 0, 50, 0)
+    dims = await backend.dimension_auto([line.handle], style="chain")
+    assert dims[0].layer == "DIM"
+    assert "M-DIMEN-T-N" not in [lyr.name for lyr in await backend.layer_list()]
+
+    # Bidirectional: switching back restores the first document's set …
+    await backend.document_activate("untitled-1")
+    assert backend._active_layer_set == "iso13567"
+    assert backend._role_layer("construction") == "M-CONST-E-N"
+    # … and a set applied on B while A is open does not reach A.
+    await backend.document_activate(second)
+    await backend.drawing_apply_iso_layers("pid")
+    assert backend._role_layer("dim") == "DIM"
+    await backend.document_activate("untitled-1")
+    assert backend._active_layer_set == "iso13567"
+
+
 async def test_opening_a_file_twice_reloads_it_instead_of_registering_twice(backend, tmp_path):
     path = tmp_path / "part.dxf"
     await backend.drawing_save(str(path))
@@ -495,6 +528,7 @@ async def test_com_activate_calls_activate_and_resets_document_scope(com_backend
     backend, app = com_backend
     await backend._ensure_document_state()
     backend._plan_spec = object()
+    backend._active_layer_set = "iso13567"
     result = await backend.document_activate("Second.dwg")
     assert result == {
         "ok": True,
@@ -505,6 +539,8 @@ async def test_com_activate_calls_activate_and_resets_document_scope(com_backend
     }
     assert app.Documents._docs[1].calls == [("Activate", ())]
     assert backend._plan_spec is None, "a document switch clears drawing-scoped state"
+    assert backend._active_layer_set is None, "the layer set is drawing-scoped too"
+    assert backend._role_layer("dim") == "DIM"
     with pytest.raises(ValueError, match="no open document named 'Third.dwg'"):
         await backend.document_activate("Third.dwg")
 

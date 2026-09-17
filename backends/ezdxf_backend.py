@@ -977,6 +977,11 @@ class _DocState:
     transaction_stack: list[Path] = field(default_factory=list)
     plan_spec: Any = None
     preflight_result: Any = None
+    # `drawing_apply_iso_layers` records the standard here so `_role_layer`
+    # files dims / scaffolding on that standard's layer; it is per drawing,
+    # not per backend (an iso13567 sheet next to a mech one must not push
+    # the mech drawing's dimensions onto M-DIMEN-T-N).
+    active_layer_set: str | None = None
     gdt_datums_defined: set = field(default_factory=set)
     gdt_datums_referenced: set = field(default_factory=set)
     activated_seq: int = 0
@@ -1033,6 +1038,7 @@ class EzdxfBackend(AutoCADBackend):
     _transaction_stack = _ActiveField("transaction_stack")
     _plan_spec = _ActiveField("plan_spec")
     _preflight_result = _ActiveField("preflight_result")
+    _active_layer_set = _ActiveField("active_layer_set")
     _gdt_datums_defined = _ActiveField("gdt_datums_defined")
     _gdt_datums_referenced = _ActiveField("gdt_datums_referenced")
 
