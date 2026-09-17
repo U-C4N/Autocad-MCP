@@ -5024,7 +5024,22 @@ async def system_set_variable(
     value: Annotated[Any, "New variable value"],
     ctx: Context = None,
 ) -> dict:
-    """Set an AutoCAD system variable (e.g. DIMSCALE, LTSCALE, MEASUREMENT)."""
+    """Set an AutoCAD system variable (e.g. DIMSCALE, LTSCALE, MEASUREMENT).
+
+    Refusals, before anything is written: a value outside the catalogued
+    range or enum of a known variable, or a write to a read-only variable
+    (DIMSTYLE, CANNOSCALEVALUE, DWGNAME, …), is refused with the catalogue's
+    message — `system_variable_describe(name)` shows the range. A variable the
+    catalogue does not know is passed through unchanged. The headless engine
+    additionally refuses registry-saved variables (`capability:
+    registry_sysvar`) because a file has nowhere to keep them, and names that
+    ezdxf has no header slot for (a `ValueError` naming the variable).
+    """
+    from engineering.standards.sysvars import check_sysvar_value
+
+    message = check_sysvar_value(name, value)
+    if message:
+        raise ToolError(f"system_set_variable refused: {message}")
     return await _backend(ctx).system_set_variable(name, value)
 
 
@@ -6834,6 +6849,66 @@ async def pid_tag_parse(
     from engineering.pid.tags import parse_tag
 
     return parse_tag(tag, kind, equipment_prefixes)
+
+
+# ---------------------------------------------------------------------------
+# ── SECTION 20: Environment (1 tool) ────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Group C (settings) opens this section with `system_variable_describe` and,
+# in Task 16, the two `drawing_properties_*` tools; group V's merge extends the
+# header count to the full environment surface (documents, layer states,
+# named views, UCS, launch, preferences, interactive prompts).
+
+
+@cad_tool(
+    summary="Explain a system variable: type, range, default, where it is saved, which engine honours it.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Describe System Variable", "readOnlyHint": True},
+    tags={"system", "settings"},
+)
+async def system_variable_describe(
+    name: Annotated[
+        str | None, "System variable name, e.g. LTSCALE (case-insensitive, '$' optional)"
+    ] = None,
+    search: Annotated[
+        str | None, "Free text matched against names and meanings, e.g. 'decimal separator'"
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """What an AutoCAD system variable means, from an authored catalogue of 90.
+
+    With `name`: `{known, name, type, range|enum, default, meaning, saved_in
+    (drawing|registry|not_saved), engines: {ezdxf, com}, friendly_key,
+    read_only}` plus `current` when the active backend can read it (omitted,
+    with `current_unavailable`, when it cannot — no document open, or a
+    registry variable headlessly). An unknown name is never an error: `known:
+    false` and the nearest catalogue names come back. With `search`: every row
+    whose name or meaning contains all the words. With neither: the index of
+    names. `friendly_key` names the `drawing_settings` key that wraps the
+    variable, which is the preferred way to set it; `engines.ezdxf: false`
+    means the headless engine refuses a write (registry-saved, or no header
+    slot in ezdxf).
+    """
+    from engineering.standards.sysvars import SYSVAR_CATALOG, describe_sysvar, search_sysvars
+
+    if name:
+        row = describe_sysvar(name)
+        backend = ctx.lifespan_context.get("backend") if ctx is not None else None
+        if row["known"] and backend is not None:
+            try:
+                row["current"] = await backend.system_get_variable(row["name"])
+            except Exception as exc:  # no document, or the engine cannot hold it
+                row["current_unavailable"] = str(exc)
+        return row
+    if search:
+        return {"query": search, "matches": search_sysvars(search)}
+    return {
+        "count": len(SYSVAR_CATALOG),
+        "names": sorted(SYSVAR_CATALOG),
+        "hint": "pass name=<VARIABLE> for one row or search=<words> to filter",
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -1313,6 +1313,18 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "health check",
         ),
     ),
+    "system_variable_describe": ToolAliases(
+        acad=("SETVAR", "SYSVARMONITOR", "SYSVDLG"),
+        synonyms=(
+            "sysvar",
+            "what does ltscale do",
+            "explain a system variable",
+            "system variable reference",
+            "which variables are saved in the drawing",
+            "valid range of a system variable",
+            "list system variables",
+        ),
+    ),
     # ── Transactions ────────────────────────────────────────────────────────
     "transaction_begin": ToolAliases(
         synonyms=(

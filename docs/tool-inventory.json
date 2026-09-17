@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 166,
+    "tools": 167,
     "resources": 8,
     "prompts": 5,
     "groups": 20
@@ -24,7 +24,7 @@
     "pid": 9,
     "premium": 12,
     "solids": 5,
-    "system": 7,
+    "system": 8,
     "templates": 2,
     "transactions": 3,
     "validation": 1,
@@ -2096,6 +2096,20 @@
       ],
       "annotations": {
         "title": "Server Status",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "system_variable_describe",
+      "group": "system",
+      "cost": "read",
+      "summary": "Explain a system variable: type, range, default, where it is saved, which engine honours it.",
+      "tags": [
+        "settings",
+        "system"
+      ],
+      "annotations": {
+        "title": "Describe System Variable",
         "readOnlyHint": true
       }
     },
