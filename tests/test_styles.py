@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import types
 
+import ezdxf
 import pytest
 
+import config
 from backends.base import UnsupportedCapabilityError
 from backends.capability import is_capability_default
 from backends.ezdxf_backend import _current_dimstyle_name, _current_textstyle_name
@@ -187,6 +189,139 @@ async def test_dimstyle_set_current_reports_previous_and_survives_save_reopen(ba
     rows = await backend.dimstyle_list()
     assert [r["name"] for r in rows if r["current"]] == ["ISO-25"]
     assert rows[0]["name"] == "ISO-25" and rows[0]["values"]["DIMDSEP"] == ","
+    # The table's report was never the thing that could lie; the render is.
+    dim = await backend.dimension_linear(0, 0, 33.333, 0, 16, -30)
+    assert _rendered(backend, dim.handle) == ("33,33", 2.5, [2.5])
+
+
+async def test_a_user_dimstyle_survives_every_dxf_round_trip_without_rounding(
+    backend, tmp_path, monkeypatch
+):
+    """ezdxf's exporter writes DIMRND 0.0 for *every* DIMSTYLE, and a stored 0.0
+    makes the renderer round every dimension to a whole unit. Measured before
+    `_normalise_dimstyle_rounding` walked the whole table: ISO-25 came back from
+    a save/open, a `transaction_rollback` and a `drawing_undo` rendering 33.333
+    as "33" and R6.35 as "R6" while `dimstyle_list` still reported DIMDEC 2."""
+    monkeypatch.setattr(config.settings, "ezdxf_undo_depth", 4)
+    await backend.drawing_new()  # a history baseline with undo switched on
+    await backend.dimstyle_create("ISO-25", resolve_dimstyle("iso-25", None), set_current=True)
+    await backend.dimstyle_create("ANSI", resolve_dimstyle("ansi", None))
+    dim = await backend.dimension_linear(0, 0, 33.333, 0, 16, -30)
+    assert _rendered(backend, dim.handle) == ("33,33", 2.5, [2.5])
+
+    def _rounding_stored() -> dict[str, bool]:
+        return {s.dxf.name: s.dxf.hasattr("dimrnd") for s in backend._doc.dimstyles}
+
+    path = str(tmp_path / "roundtrip.dxf")
+    await backend.drawing_save_as(path)
+    assert ezdxf.readfile(path).dimstyles.get("ISO-25").dxf.get("dimrnd") == 0.0, (
+        "the premise: the file on disk carries the 0.0 sentinel for a user style"
+    )
+    await backend.drawing_open(path)
+    assert _rounding_stored() == {"Standard": False, "ISO-25": False, "ANSI": False}
+    reopened = await backend.dimension_linear(0, 0, 33.333, 0, 16, -60)
+    assert _rendered(backend, reopened.handle) == ("33,33", 2.5, [2.5])
+    radius = await backend.dimension_radius(50, 50, 56.35, 50)
+    assert _rendered(backend, radius.handle)[0] == "R6,35"
+    await backend.dimstyle_set_current("ANSI")
+    ansi = await backend.dimension_linear(0, 0, 12.75, 0, 6, -90)
+    assert _rendered(backend, ansi.handle)[0] == "12.75"
+
+    await backend.dimstyle_set_current("ISO-25")
+    await backend.transaction_begin()
+    await backend.entity_create_line(0, 0, 10, 10)
+    await backend.transaction_rollback()
+    assert _rounding_stored() == {"Standard": False, "ISO-25": False, "ANSI": False}
+    rolled_back = await backend.dimension_linear(0, 0, 33.333, 0, 16, -120)
+    assert _rendered(backend, rolled_back.handle) == ("33,33", 2.5, [2.5])
+
+    await backend.entity_create_line(0, 0, 20, 20)
+    assert (await backend.drawing_undo())["ok"] is True
+    assert _rounding_stored() == {"Standard": False, "ISO-25": False, "ANSI": False}
+    undone = await backend.dimension_linear(0, 0, 33.333, 0, 16, -150)
+    assert _rendered(backend, undone.handle) == ("33,33", 2.5, [2.5])
+
+    await backend.dimstyle_modify("ISO-25", {"DIMRND": 0.5})
+    await backend.drawing_save_as(path)
+    await backend.drawing_open(path)
+    assert backend._doc.dimstyles.get("ISO-25").dxf.dimrnd == 0.5, (
+        "only the 0.0 sentinel is discarded; a rounding the drafter asked for survives"
+    )
+
+
+async def test_drawing_purge_keeps_what_the_style_tables_and_header_reference(backend, tmp_path):
+    """`drawing_purge` followed only entity `.dxf.style`; a text style that only
+    a DIMSTYLE, an MLEADERSTYLE or the header referenced was deleted, the next
+    dimension silently rendered in Standard, and `drawing_save_as` raised
+    `DXFTableEntryError` after leaving a truncated file on disk."""
+    await backend.dimstyle_create("ISO-25", resolve_dimstyle("iso-25", None), set_current=True)
+    await backend.mleaderstyle_create("ANSI", resolve_mleaderstyle("ansi", None))
+    await backend.textstyle_create("Notes", "arial.ttf", set_current=True)
+    await backend.textstyle_create("Junk", "isocpeur.ttf")
+    await backend.block_define("MYARROW", [{"type": "line", "x1": 0, "y1": 0, "x2": -1, "y2": 0.2}])
+    await backend.dimstyle_create("ARROWED", resolve_dimstyle("ansi", {"DIMBLK": "MYARROW"}))
+
+    result = await backend.drawing_purge()
+    assert result["purged"]["text_styles"] == 1, "only the style nothing references goes"
+    assert result["purged"]["blocks"] == 0
+    names = {row["name"] for row in await backend.textstyle_list()}
+    assert {"Standard", "ISOCP", "ROMANS", "Notes"} <= names and "Junk" not in names
+    assert [r["name"] for r in await backend.textstyle_list() if r["current"]] == ["Notes"]
+    assert "MYARROW" in backend._doc.blocks
+    leader_styles = {r["name"]: r["text_style"] for r in await backend.mleaderstyle_list()}
+    assert leader_styles["ANSI"] == "ROMANS"
+
+    dim = await backend.dimension_linear(0, 0, 33.333, 0, 16, -30)
+    assert _rendered(backend, dim.handle) == ("33,33", 2.5, [2.5])
+    path = str(tmp_path / "purged.dxf")
+    await backend.drawing_save_as(path)
+    reopened = ezdxf.readfile(path)
+    assert reopened.dimstyles.get("ISO-25").dxf.dimtxsty == "ISOCP"
+    assert reopened.header["$TEXTSTYLE"] == "Notes"
+
+
+async def test_set_current_restores_every_dim_variable_not_just_the_stored_ones(backend, tmp_path):
+    """A live seat's `-DIMSTYLE Restore` replaces *all* DIM* variables. Writing
+    only what the target style stores left the previous style's values in the
+    header: measured, ISO-25 with DIMZIN 0 / DIMSCALE 2.0 then
+    `dimstyle_set_current("Standard")` rendered the next dimension at 5.0 mm as
+    "33.30" and the saved file carried those next to `$DIMSTYLE Standard`."""
+    from engineering.standards.dimstyles import DIM_VARIABLE_WHITELIST
+
+    header = backend._doc.header
+    fresh = {f"${var}": header.get(f"${var}", None) for var in DIM_VARIABLE_WHITELIST}
+    baseline = await backend.dimension_linear(0, 0, 33.3, 0, 16, -30)
+
+    values = resolve_dimstyle("iso-25", {"DIMZIN": 0, "DIMSCALE": 2.0})
+    await backend.dimstyle_create("ISO-25", values, set_current=True)
+    assert header["$DIMZIN"] == 0 and header["$DIMSCALE"] == 2.0
+    assert header["$DIMTXSTY"] == "ISOCP"
+    result = await backend.dimstyle_set_current("Standard")
+    assert result["current"] == "Standard"
+    assert {key: header.get(key, None) for key in fresh} == fresh, (
+        "restoring Standard must reproduce the header drawing_new made"
+    )
+    dim = await backend.dimension_linear(0, 0, 33.3, 0, 16, -60)
+    expected = ("33.3", 2.5, [2.5])
+    assert _rendered(backend, dim.handle) == _rendered(backend, baseline.handle) == expected
+    assert backend._doc.entitydb.get(dim.handle).override().dimstyle_attribs == {}, (
+        "nothing stale is folded onto the dimension"
+    )
+
+    # DIMRND 0 discards the style attribute; the header twin must follow.
+    await backend.dimstyle_set_current("ISO-25")
+    assert header["$DIMZIN"] == 0 and header["$DIMSCALE"] == 2.0
+    await backend.dimstyle_modify("ISO-25", {"DIMRND": 0.5})
+    assert header["$DIMRND"] == 0.5
+    cleared = await backend.dimstyle_modify("ISO-25", {"DIMRND": 0})
+    assert cleared["changed"] == {"DIMRND": [0.5, 0]}
+    assert header["$DIMRND"] == 0.0
+    await backend.dimstyle_set_current("Standard")
+    path = str(tmp_path / "restored.dxf")
+    await backend.drawing_save_as(path)
+    saved = ezdxf.readfile(path).header
+    assert saved["$DIMSTYLE"] == "Standard"
+    assert {key: saved.get(key, None) for key in fresh} == fresh
 
 
 async def test_textstyle_create_list_set_current_and_new_text_uses_it(backend):

@@ -387,15 +387,26 @@ def _normalise_dimstyle_rounding(doc) -> None:
     itself — silently rounded every dimension to a whole unit *before* DIMDEC
     got to format it: a 12.75 mm feature dimensioned as 13, R6.35 as R6.
 
+    Every style in the table, not `Standard` alone: ezdxf's exporter writes
+    group 45 = 0.0 for *each* DIMSTYLE entry, so a user style (the ISO-25 /
+    ANSI presets `dimstyle_create` makes) came back poisoned from every DXF
+    round trip — save/open, `transaction_rollback`, `drawing_undo` — and a
+    33.333 mm feature dimensioned with it rendered "33" while `dimstyle_list`
+    still reported DIMDEC 2. Measured before this ran on the whole table.
+
     Only the 0.0 sentinel is removed. A drafter who genuinely asked for 0.5 mm
     rounding keeps it.
     """
     try:
-        style = doc.dimstyles.get("Standard")
+        styles = list(doc.dimstyles)
     except Exception:
         return
-    if style.dxf.hasattr("dimrnd") and float(style.dxf.dimrnd) == 0.0:
-        style.dxf.discard("dimrnd")
+    for style in styles:
+        try:
+            if style.dxf.hasattr("dimrnd") and float(style.dxf.dimrnd) == 0.0:
+                style.dxf.discard("dimrnd")
+        except (TypeError, ValueError):
+            continue
 
 
 def _apply_iso_dimstyle(doc) -> None:
@@ -801,17 +812,42 @@ def _write_dimstyle_values(style, values: dict[str, Any]) -> None:
 
 
 def _sync_header_to_dimstyle(doc, style) -> None:
-    """Load the style's stored variables into ``$DIM*`` — a live seat's Restore."""
+    """Load the style into ``$DIM*`` — every whitelist variable, a live seat's Restore.
+
+    ``-DIMSTYLE Restore`` replaces *all* the DIM* system variables with the
+    style's settings; a DIMSTYLE entry that omits a code means its schema
+    default. Writing only the attributes the style *stores* left every other
+    ``$DIM*`` at the previous style's value — measured, ISO-25 with DIMZIN 0 /
+    DIMSCALE 2.0 made current and then ``dimstyle_set_current("Standard")``
+    rendered the next dimension at 5.0 mm as "33.30": `_with_header_dimvars`
+    folded the stale header onto it, and the saved file carried the same
+    values next to ``$DIMSTYLE Standard``, which AutoCAD reads as overrides.
+    The same gap kept ``$DIMRND 0.5`` in the header after `dimstyle_modify`
+    discarded the style's own attribute.
+
+    Measured on ezdxf 1.4.4: a fresh header equals the schema default for
+    every whitelist variable a fresh `Standard` does not store, so restoring
+    `Standard` reproduces the header `drawing_new` made. `DIMTXSTY` has no
+    schema default; AutoCAD reads ``Standard`` for it, as `_dimstyle_value`
+    reports.
+    """
     from engineering.standards.dimstyles import DIM_VARIABLE_WHITELIST
 
     for var in sorted(DIM_VARIABLE_WHITELIST):
         attr = var.lower()
-        if not style.dxf.hasattr(attr):
+        value = style.dxf.get(attr) if style.dxf.hasattr(attr) else None
+        if value is None:
+            value = _dimstyle_schema_default(var)
+        if value is None and var == "DIMTXSTY":
+            value = "Standard"
+        key = f"${var}"
+        if value is None:
+            try:
+                del doc.header[key]
+            except KeyError:
+                pass
             continue
-        raw = style.dxf.get(attr)
-        if raw is None:
-            continue
-        doc.header[f"${var}"] = raw
+        doc.header[key] = value
 
 
 def _font_available(font_file: str) -> bool:
@@ -857,6 +893,57 @@ def _dimensions_using(doc, style_name: str) -> list[str]:
             if str(entity.dxf.get("dimstyle", "")).lower() == wanted:
                 handles.append(entity.dxf.handle)
     return handles
+
+
+def _style_table_references(doc) -> tuple[set[str], set[str]]:
+    """``(block names, text-style names)`` the style tables and header reference.
+
+    Lower-cased, for `drawing_purge`. A DIMSTYLE names its text style and up
+    to four arrowhead blocks (stored in ezdxf's spelling, ``OBLIQUE``, while
+    the block is ``_OBLIQUE`` — both spellings are counted); an MLEADERSTYLE
+    references its text style and arrowhead by handle; the header names the
+    current text style and dimension text style. ``Standard`` is never purged.
+    """
+    blocks: set[str] = set()
+    styles: set[str] = {"standard"}
+
+    def _add_block(name) -> None:
+        if isinstance(name, str) and name:
+            lowered = name.lower()
+            blocks.add(lowered)
+            blocks.add(lowered if lowered.startswith("_") else f"_{lowered}")
+
+    def _add_style(name) -> None:
+        if isinstance(name, str) and name:
+            styles.add(name.lower())
+
+    def _add_by_handle(handle, into) -> None:
+        entity = doc.entitydb.get(handle) if handle else None
+        if entity is not None:
+            into(entity.dxf.get("name"))
+
+    try:
+        for var in ("$TEXTSTYLE", "$DIMTXSTY"):
+            _add_style(doc.header.get(var, None))
+        for var in ("$DIMBLK", "$DIMBLK1", "$DIMBLK2", "$DIMLDRBLK"):
+            _add_block(doc.header.get(var, None))
+    except Exception:  # an opened document may not have a readable header
+        pass
+    for style in doc.dimstyles:
+        _add_style(style.dxf.get("dimtxsty"))
+        for attr in ("dimblk", "dimblk1", "dimblk2", "dimldrblk"):
+            _add_block(style.dxf.get(attr))
+    for _name, style in doc.mleader_styles:
+        _add_by_handle(style.dxf.get("text_style_handle"), _add_style)
+        _add_by_handle(style.dxf.get("arrow_head_handle"), _add_block)
+    for entity in doc.entitydb.values():
+        if entity.dxftype() != "MULTILEADER":
+            continue
+        context = getattr(entity, "context", None)
+        _add_by_handle(getattr(context, "text_style_handle", None), _add_style)
+        for arrow in getattr(entity, "arrow_heads", None) or ():
+            _add_by_handle(getattr(arrow, "handle", None), _add_block)
+    return blocks, styles
 
 
 def _round_measure(result: dict) -> dict:
@@ -2538,17 +2625,31 @@ class EzdxfBackend(AutoCADBackend):
         raise self._solid_unsupported("solid_boolean")
 
     async def drawing_purge(self) -> dict:
+        """Delete every unreferenced block, layer, linetype and text style.
+
+        A reference is not only an entity's own attribute. The style tables
+        reference each other — a DIMSTYLE names its text style (DIMTXSTY) and
+        its arrowhead blocks, an MLEADERSTYLE holds a text-style handle — and
+        the header names the current text style (``$TEXTSTYLE``, ``$DIMTXSTY``).
+        Measured before those were counted: ``dimstyle_create("ISO-25", …,
+        set_current=True)`` then ``drawing_purge()`` removed ISOCP, the next
+        dimension silently rendered in ``Standard`` while `dimstyle_list` still
+        said ISOCP, and ``drawing_save_as`` raised ``DXFTableEntryError`` after
+        leaving a truncated file on disk. Names are compared case-insensitively,
+        AutoCAD's rule for every symbol table.
+        """
+
         def _sync():
             doc = self._require_doc()
             purged = {"blocks": 0, "layers": 0, "linetypes": 0, "text_styles": 0}
+            used_blocks, used_styles = _style_table_references(doc)
 
-            used_blocks: set[str] = set()
             for ent in doc.entitydb.values():
                 if ent.dxftype() == "INSERT":
-                    used_blocks.add(ent.dxf.name)
+                    used_blocks.add(str(ent.dxf.name).lower())
             for blk in list(doc.blocks):
                 name = blk.name
-                if name.startswith("*") or name in used_blocks:
+                if name.startswith("*") or name.lower() in used_blocks:
                     continue
                 try:
                     doc.blocks.delete_block(name, safe=True)
@@ -2586,13 +2687,12 @@ class EzdxfBackend(AutoCADBackend):
                 except Exception:
                     pass
 
-            used_styles: set[str] = {"Standard"}
             for ent in doc.entitydb.values():
                 if hasattr(ent.dxf, "style"):
-                    used_styles.add(ent.dxf.style)
+                    used_styles.add(str(ent.dxf.style).lower())
             for st in list(doc.styles):
                 name = st.dxf.name
-                if name in used_styles:
+                if name.lower() in used_styles:
                     continue
                 try:
                     doc.styles.remove(name)
