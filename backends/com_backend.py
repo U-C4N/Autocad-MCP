@@ -193,6 +193,14 @@ def _msp():
         return doc.ModelSpace
 
 
+def _int_member(obj, name: str) -> int | None:
+    """``int(obj.<name>)`` or ``None`` when the member is absent or not a number."""
+    try:
+        return int(getattr(obj, name))
+    except Exception:
+        return None
+
+
 def _owner_layout_block(doc, ent, handle):
     """The block table record that owns ``ent``, refused unless it is a layout.
 
@@ -3388,15 +3396,52 @@ class ComBackend(AutoCADBackend):
             out.pop("TextAlignmentPoint", None)
         return out
 
+    #: ``AcadText.Alignment`` -> ``AcadMText.AttachmentPoint``, the inverse of
+    #: the map ezdxf applies when it embeds an MTEXT into an ATTRIB (the
+    #: attachment becomes ``halign``/``valign`` and both ``insert`` and
+    #: ``align_point`` become the MTEXT insert). Rows: Top 1-3, Middle 4-6,
+    #: Bottom 7-9; the baseline alignments (Left/Center/Right/Aligned/Middle/
+    #: Fit), which an embedded MTEXT never produces, fall to the nearest row.
+    _TEXT_ALIGNMENT_TO_MTEXT_ATTACHMENT = {
+        0: 7,  # acAlignmentLeft -> BottomLeft
+        1: 8,  # acAlignmentCenter -> BottomCenter
+        2: 9,  # acAlignmentRight -> BottomRight
+        3: 7,  # acAlignmentAligned -> BottomLeft
+        4: 5,  # acAlignmentMiddle -> MiddleCenter
+        5: 7,  # acAlignmentFit -> BottomLeft
+        6: 1,  # acAlignmentTopLeft
+        7: 2,  # acAlignmentTopCenter
+        8: 3,  # acAlignmentTopRight
+        9: 4,  # acAlignmentMiddleLeft
+        10: 5,  # acAlignmentMiddleCenter
+        11: 6,  # acAlignmentMiddleRight
+        12: 7,  # acAlignmentBottomLeft
+        13: 8,  # acAlignmentBottomCenter
+        14: 9,  # acAlignmentBottomRight
+    }
+
     @classmethod
     def _capture_attrib(cls, attr) -> dict:
-        """Everything a TEXT needs to stand in for ``attr`` (an ATTRIB or ATTDEF)."""
+        """Everything a TEXT (or MTEXT) needs to stand in for ``attr`` (an
+        ATTRIB or ATTDEF).
+
+        A multi-line attribute (``MTextAttribute`` true) keeps its content in
+        ``MTextAttributeContent`` -- ``TextString`` is one flattened string --
+        and its box width in ``MTextBoundaryWidth``; ``mtext`` marks it so the
+        writer builds an MTEXT. An object that does not expose the member is
+        single-line.
+        """
         try:
             invisible = bool(attr.Invisible)
         except Exception:
             invisible = False
-        return {
+        try:
+            is_mtext = bool(attr.MTextAttribute)
+        except Exception:
+            is_mtext = False
+        item = {
             "text": str(attr.TextString),
+            "mtext": is_mtext,
             "insertion": tuple(attr.InsertionPoint),
             "height": float(attr.Height),
             "rotation": float(attr.Rotation),
@@ -3404,16 +3449,69 @@ class ComBackend(AutoCADBackend):
             "invisible": invisible,
             "members": cls._capture_attrib_text_members(attr),
         }
+        if is_mtext:
+            try:
+                item["text"] = str(attr.MTextAttributeContent)
+            except Exception as exc:
+                log.debug("MTextAttributeContent unreadable, keeping TextString: %s", exc)
+            try:
+                item["width"] = float(attr.MTextBoundaryWidth)
+            except Exception:
+                item["width"] = 0.0  # unbounded box, as AddMText takes it
+        return item
+
+    @classmethod
+    def _add_mtext_from_capture(cls, owner, item: dict):
+        """``owner.AddMText`` carrying a captured multi-line ATTRIB/ATTDEF.
+
+        The MTEXT's insertion point *is* its attachment anchor, so it is the
+        ATTRIB's ``TextAlignmentPoint`` when the attribute is box-aligned and
+        the ``InsertionPoint`` otherwise (ezdxf writes both from the embedded
+        MTEXT's insert, so they agree). Height, style and frame go on before
+        ``Rotation``, the WCS anchor is re-asserted after a frame change, and
+        the attachment is the ATTRIB's ``Alignment`` mapped through
+        ``_TEXT_ALIGNMENT_TO_MTEXT_ATTACHMENT``. ``Thickness``, oblique, width
+        factor and the generation flags are TEXT-only members and stay behind.
+        Unit-tested against the fake; not yet executed live.
+        """
+        members = item["members"]
+        anchor = item["insertion"]
+        if members.get("Alignment", 0) != 0 and "TextAlignmentPoint" in members:
+            anchor = members["TextAlignmentPoint"]
+        point = _apoint(anchor[0], anchor[1], anchor[2] if len(anchor) > 2 else 0.0)
+        mtext = owner.AddMText(point, float(item.get("width", 0.0)), item["text"])
+        mtext.Height = item["height"]
+        if "StyleName" in members:
+            mtext.StyleName = members["StyleName"]
+        if "Normal" in members:
+            value = members["Normal"]
+            mtext.Normal = _apoint(value[0], value[1], value[2] if len(value) > 2 else 0.0)
+        mtext.Rotation = item["rotation"]
+        if "Normal" in members:
+            mtext.InsertionPoint = point  # the frame moved the OCS origin; the anchor was WCS
+        mtext.AttachmentPoint = cls._TEXT_ALIGNMENT_TO_MTEXT_ATTACHMENT.get(
+            members.get("Alignment", 0), 1
+        )
+        mtext.Layer = item["layer"]
+        if "Color" in members:
+            mtext.Color = members["Color"]
+        if item["invisible"]:
+            mtext.Visible = False
+        return mtext
 
     @classmethod
     def _add_text_from_capture(cls, owner, item: dict):
-        """``owner.AddText`` carrying a captured ATTRIB/ATTDEF; returns the TEXT.
+        """``owner.AddText`` carrying a captured ATTRIB/ATTDEF; returns the TEXT
+        (or, for a multi-line capture, the MTEXT ``_add_mtext_from_capture``
+        builds -- a TEXT of ``TextString`` would show ``\\P`` literally).
 
         Every point or vector goes through ``_apoint`` (``VT_ARRAY|VT_R8``):
         ActiveX refuses a plain Python tuple (marshalled ``VT_ARRAY|VT_VARIANT``)
         with ``E_INVALIDARG``, and ``Normal`` is written after the explode and
         the ATTDEF deletes, so a tuple there tore the drawing.
         """
+        if item.get("mtext"):
+            return cls._add_mtext_from_capture(owner, item)
         ins = item["insertion"]
         point = _apoint(ins[0], ins[1], ins[2] if len(ins) > 2 else 0.0)
         text = owner.AddText(item["text"], point, item["height"])
@@ -3496,20 +3594,48 @@ class ComBackend(AutoCADBackend):
         a ``VT_ARRAY|VT_R8`` VARIANT like every other point in this file; a
         plain tuple is ``E_INVALIDARG`` live (verified on AutoCAD 2026).
 
+        A *multi-line* attribute (``MTextAttribute`` true) is captured from
+        ``MTextAttributeContent`` and written back with ``AddMText`` -- its
+        ``TextString`` is one flattened line and a TEXT of it would show the
+        ``\\P`` breaks literally -- see ``_add_mtext_from_capture``.
+
         The TEXTs go into the reference's *owner* block
         (``ObjectIdToObject(OwnerID)``), which is where ``Explode()`` puts the
         members; ``HandleToObject`` resolves a handle in any layout, so a title
         block on a sheet exploded while Model was active used to get its tag
-        text in model space with ``ok: True``. A reference nested inside a
-        block definition (owner ``IsLayout`` false) is refused before the
-        explode is dispatched.
+        text in model space with ``ok: True``. Refused before the explode is
+        dispatched: a reference nested inside a block definition (owner
+        ``IsLayout`` false), a MINSERT (``AcDbMInsertBlock``, which used to
+        fail the INSERT check with the misleading "not a block reference"),
+        and an xref (``Blocks.Item(Name).IsXRef``; ActiveX ``Explode()`` raises
+        on one, the headless engine used to delete it) -- the same three
+        refusals the headless engine names.
         """
 
         def _sync():
             doc = _acad_doc()
             ent = doc.HandleToObject(handle)
+            if ent.ObjectName == "AcDbMInsertBlock":
+                rows = _int_member(ent, "Rows")
+                cols = _int_member(ent, "Columns")
+                grid = f"{rows}x{cols} grid" if rows and cols else "grid"
+                raise RuntimeError(
+                    f"Entity {handle} is a MINSERT ({grid} of {str(ent.Name)!r}); a "
+                    "multi-insert cannot be exploded"
+                )
             if ent.ObjectName != "AcDbBlockReference":
                 raise RuntimeError(f"Entity {handle} is not a block reference (INSERT)")
+            name = str(ent.Name)
+            try:
+                is_xref = bool(doc.Blocks.Item(name).IsXRef)
+            except Exception as exc:
+                log.debug("IsXRef probe failed for %r, treating as a local block: %s", name, exc)
+                is_xref = False
+            if is_xref:
+                raise RuntimeError(
+                    f"Entity {handle} is an external reference {name!r}; an xref cannot "
+                    "be exploded (bind it into the drawing first)"
+                )
             owner = _owner_layout_block(doc, ent, handle)
             try:
                 attrs = ent.GetAttributes()

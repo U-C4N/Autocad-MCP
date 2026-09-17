@@ -62,9 +62,10 @@ class _FakeObject:
 
 
 class _FakeBlock:
-    def __init__(self, name: str, is_layout: bool = False):
+    def __init__(self, name: str, is_layout: bool = False, is_xref: bool = False):
         self.Name = name
         self.IsLayout = is_layout
+        self.IsXRef = is_xref
         self.Count = 0
         self.calls: list[tuple[str, tuple]] = []
 
@@ -140,6 +141,12 @@ class _FakeSpace:
     def AddText(self, text, point, height):
         self.calls.append(("AddText", (text, tuple(point.value), height)))
         obj = _FakeObject("AcDbText", f"T{len(self.calls)}")
+        self.texts.append(obj)
+        return obj
+
+    def AddMText(self, point, width, text):
+        self.calls.append(("AddMText", (tuple(point.value), width, text)))
+        obj = _FakeObject("AcDbMText", f"T{len(self.calls)}")
         self.texts.append(obj)
         return obj
 
@@ -762,3 +769,309 @@ async def test_explode_refuses_a_nested_reference_before_writing(backend):
         await backend.block_explode(nested.dxf.handle)
     assert (len(list(backend._doc.modelspace())), len(list(outer))) == before
     assert backend._doc.entitydb[nested.dxf.handle].is_alive
+
+
+# ── Task 2 (review): multi-line attributes, xrefs and MINSERTs ───────────────
+
+
+def _embed_multi_line(attrib, lines: list[str], insert, char_height: float = 2.5):
+    """Give ``attrib`` (ATTRIB or ATTDEF) an embedded MTEXT the way ezdxf's
+    ``embed_mtext`` does; ``dxf.text`` then holds only the first line."""
+    from ezdxf.entities import MText
+
+    mtext = MText.new(dxfattribs={"char_height": char_height, "insert": insert})
+    mtext.text = "\\P".join(lines)
+    attrib.embed_mtext(mtext)
+    assert attrib.has_embedded_mtext_entity and attrib.dxf.text == lines[0], "the premise"
+
+
+async def test_explode_keeps_a_multi_line_attrib_as_mtext_with_every_line(backend):
+    """A multi-line ATTRIB carries its content in an embedded MTEXT; ``dxf.text``
+    is only the first line (ezdxf) or ``Line1\\PLine2`` (AutoCAD), so a TEXT
+    either drops the other lines or renders literal ``\\P``. BURST emits an
+    MTEXT for a multi-line attribute."""
+    blk = backend._doc.blocks.new(name="MLB")
+    blk.add_line((0, 0), (10, 0))
+    blk.add_attdef("NOTE", insert=(0, 3), text="x", dxfattribs={"height": 2.5})
+    blk.add_attdef("HIDDEN", insert=(0, -3), text="x", dxfattribs={"height": 2.0})
+    ref = await backend.block_insert(
+        "MLB",
+        10,
+        10,
+        scale_x=2.0,
+        scale_y=2.0,
+        rotation=30.0,
+        attributes={"NOTE": "line one", "HIDDEN": "h"},
+    )
+    raw_ref = backend._doc.entitydb[ref.handle]
+    attribs = {a.dxf.tag: a for a in raw_ref.attribs}
+    lines = ["LINE ONE", "LINE TWO", "LINE THREE"]
+    _embed_multi_line(attribs["NOTE"], lines, attribs["NOTE"].dxf.insert, char_height=5.0)
+    attribs["NOTE"].dxf.layer = "PID-TAG"
+    _embed_multi_line(attribs["HIDDEN"], ["H1", "H2"], attribs["HIDDEN"].dxf.insert)
+    attribs["HIDDEN"].is_invisible = True
+    expected = attribs["NOTE"].virtual_mtext_entity()
+
+    result = await backend.block_explode(ref.handle)
+
+    assert [(await backend.entity_get(h)).type for h in result["inserted_handles"]] == ["LINE"]
+    assert len(result["attribute_texts"]) == 2
+    by_text = {}
+    for handle in result["attribute_texts"]:
+        raw = backend._doc.entitydb[handle]
+        assert raw.dxftype() == "MTEXT", "a multi-line attribute bursts into an MTEXT"
+        by_text[raw.text] = raw
+    note = by_text["\\P".join(lines)]
+    assert note.plain_text(split=True) == lines
+    assert tuple(note.dxf.insert) == pytest.approx(tuple(expected.dxf.insert))
+    assert note.dxf.char_height == expected.dxf.char_height == 5.0
+    assert note.dxf.attachment_point == expected.dxf.attachment_point
+    assert note.dxf.layer == "PID-TAG", "the ATTRIB's graphic properties ride along"
+    assert note.dxf.invisible == 0
+    assert note.get_layout() is backend._doc.modelspace()
+    assert by_text["H1\\PH2"].dxf.invisible == 1, "an invisible attribute stays invisible"
+    with pytest.raises(RuntimeError, match="not found"):
+        await backend.entity_get(ref.handle)
+    assert backend._doc.audit().errors == []
+
+
+async def test_explode_keeps_a_multi_line_constant_attdef_as_mtext(backend):
+    """The constant twin: no ATTRIB on the reference, the value lives in the
+    definition's ATTDEF, and that ATTDEF is multi-line."""
+    blk = backend._doc.blocks.new(name="MLC")
+    blk.add_line((0, 0), (10, 0))
+    const = blk.add_attdef("CONST", insert=(5, -3), text="x", dxfattribs={"height": 2.0})
+    _embed_multi_line(const, ["ACME", "LTD"], (5, -3, 0), char_height=2.0)
+    const.dxf.flags |= 2  # ATTRIB_CONST
+    ref = backend._msp().add_blockref("MLC", (20, 10), dxfattribs={"rotation": 90.0})
+    assert list(ref.attribs) == [], "the premise: AutoCAD writes no ATTRIB for a constant"
+    expected = const.virtual_mtext_entity().transform(ref.matrix44())
+
+    result = await backend.block_explode(ref.dxf.handle)
+
+    (handle,) = result["attribute_texts"]
+    raw = backend._doc.entitydb[handle]
+    assert raw.dxftype() == "MTEXT"
+    assert raw.plain_text(split=True) == ["ACME", "LTD"]
+    assert tuple(raw.dxf.insert) == pytest.approx(tuple(expected.dxf.insert))
+    assert raw.get_rotation() == pytest.approx(90.0)
+    assert backend._doc.audit().errors == []
+
+
+async def test_explode_refuses_an_xref_before_writing(backend):
+    """``virtual_entities()`` of an xref INSERT yields nothing (the geometry is
+    in the other file), so exploding it deleted the reference with ``ok: True``
+    and an empty ``inserted_handles``. AutoCAD refuses to explode an xref."""
+    backend._doc.add_xref_def("C:/x/detail.dwg", "XREF_DETAIL")
+    xref = backend._msp().add_blockref("XREF_DETAIL", (5, 5))
+    before = len(list(backend._msp()))
+    with pytest.raises(RuntimeError, match="external reference 'XREF_DETAIL'"):
+        await backend.block_explode(xref.dxf.handle)
+    assert len(list(backend._msp())) == before
+    assert backend._doc.entitydb[xref.dxf.handle].is_alive
+
+
+async def test_explode_refuses_a_minsert_before_writing(backend):
+    """``virtual_entities()`` resolves only the first cell of a MINSERT grid
+    (``multi_insert()`` yields all of them), so a 2x3 grid exploded into one
+    cell and five vanished with a clean audit. AutoCAD refuses to explode a
+    MINSERT; so does this."""
+    cell = backend._doc.blocks.new(name="CELL")
+    cell.add_circle((0, 0), 1)
+    grid = backend._msp().add_blockref(
+        "CELL",
+        (0, 0),
+        dxfattribs={"row_count": 2, "column_count": 3, "row_spacing": 5, "column_spacing": 5},
+    )
+    assert grid.mcount == 6, "the premise"
+    before = len(list(backend._msp()))
+    with pytest.raises(RuntimeError, match=r"MINSERT \(2x3 grid of 'CELL'\)"):
+        await backend.block_explode(grid.dxf.handle)
+    assert len(list(backend._msp())) == before
+    assert backend._doc.entitydb[grid.dxf.handle].is_alive
+
+
+async def test_explode_of_a_single_cell_grid_is_still_an_ordinary_insert(backend):
+    """A ``row_count``/``column_count`` of 1 is ``mcount`` 1 -- a plain INSERT
+    wearing MINSERT fields -- and must still explode."""
+    cell = backend._doc.blocks.new(name="CELL1")
+    cell.add_circle((0, 0), 1)
+    single = backend._msp().add_blockref(
+        "CELL1",
+        (0, 0),
+        dxfattribs={"row_count": 1, "column_count": 1, "row_spacing": 5, "column_spacing": 5},
+    )
+    assert single.mcount == 1
+    result = await backend.block_explode(single.dxf.handle)
+    assert [(await backend.entity_get(h)).type for h in result["inserted_handles"]] == ["CIRCLE"]
+
+
+async def test_com_explode_turns_a_multi_line_attrib_into_mtext(com):
+    """``TextString`` of a multi-line attribute is one flattened string; the
+    content is ``MTextAttributeContent`` and the box ``MTextBoundaryWidth``.
+    The TEXT path would render ``\\P`` literally, so BURST adds an MTEXT:
+    height, style and frame first, then the angle, then the attachment the
+    ATTRIB's alignment names, anchored at its alignment point."""
+    backend, document, space = com
+    note = _FakeObject(
+        "AcDbAttribute",
+        "A1",
+        TagString="NOTE",
+        TextString="LINE ONE LINE TWO",
+        MTextAttribute=True,
+        MTextAttributeContent="LINE ONE\\PLINE TWO",
+        MTextBoundaryWidth=40.0,
+        InsertionPoint=(7.0, 12.7, 0.0),
+        Alignment=6,  # acAlignmentTopLeft: the MTEXT attachment is the alignment point
+        TextAlignmentPoint=(7.0, 15.2, 0.0),
+        Height=5.0,
+        Rotation=0.5236,
+        StyleName="ISO",
+        Layer="PID-TAG",
+        Color=3,
+        Invisible=False,
+    )
+    plain = _FakeObject(
+        "AcDbAttribute",
+        "A2",
+        TagString="TAG",
+        TextString="P-101",
+        MTextAttribute=False,
+        InsertionPoint=(1.0, 2.0, 0.0),
+        Height=2.5,
+        Rotation=0.0,
+        Layer="0",
+        Invisible=False,
+    )
+    line = _FakeObject("AcDbLine", "L1")
+    ref = _FakeObject(
+        "AcDbBlockReference",
+        "6D",
+        Name="TB",
+        OwnerID=1,
+        GetAttributes=lambda: (note, plain),
+        Explode=lambda: (line,),
+    )
+    document.objects["6D"] = ref
+
+    result = await backend.block_explode("6D")
+
+    assert result["inserted_handles"] == ["L1"]
+    assert result["attribute_texts"] == ["T1", "T2"]
+    assert space.calls == [
+        ("AddMText", ((7.0, 15.2, 0.0), 40.0, "LINE ONE\\PLINE TWO")),
+        ("AddText", ("P-101", (1.0, 2.0, 0.0), 2.5)),
+    ]
+    assert space.texts[0].ObjectName == "AcDbMText"
+    writes = [
+        (name, tuple(value.value) if hasattr(value, "value") else value)
+        for name, value in space.texts[0].writes
+    ]
+    assert writes == [
+        ("Height", 5.0),
+        ("StyleName", "ISO"),
+        ("Rotation", 0.5236),
+        ("AttachmentPoint", 1),  # acAttachmentPointTopLeft
+        ("Layer", "PID-TAG"),
+        ("Color", 3),
+    ]
+    assert ref.deleted is True
+
+
+async def test_com_explode_multi_line_attrib_takes_the_frame_before_the_angle(com):
+    backend, document, space = com
+    note = _FakeObject(
+        "AcDbAttribute",
+        "A1",
+        TagString="NOTE",
+        TextString="A B",
+        MTextAttribute=True,
+        MTextAttributeContent="A\\PB",
+        InsertionPoint=(-25.0, 13.0, 0.0),
+        Alignment=0,
+        Normal=(0.0, 0.0, -1.0),
+        Height=2.5,
+        Rotation=3.1416,
+        Layer="0",
+        Invisible=True,
+    )
+    ref = _FakeObject(
+        "AcDbBlockReference",
+        "7E",
+        Name="TB",
+        OwnerID=1,
+        GetAttributes=lambda: (note,),
+        Explode=lambda: (),
+    )
+    document.objects["7E"] = ref
+
+    result = await backend.block_explode("7E")
+
+    assert result["attribute_texts"] == ["T1"]
+    assert space.calls == [("AddMText", ((-25.0, 13.0, 0.0), 0.0, "A\\PB"))], (
+        "no MTextBoundaryWidth exposed: a zero (unbounded) box"
+    )
+    writes = [
+        (name, tuple(value.value) if hasattr(value, "value") else value)
+        for name, value in space.texts[0].writes
+    ]
+    assert writes == [
+        ("Height", 2.5),
+        ("Normal", (0.0, 0.0, -1.0)),
+        ("Rotation", 3.1416),
+        ("InsertionPoint", (-25.0, 13.0, 0.0)),
+        ("AttachmentPoint", 7),  # acAttachmentPointBottomLeft for a baseline-left ATTRIB
+        ("Layer", "0"),
+        ("Visible", False),
+    ]
+
+
+async def test_com_explode_refuses_an_xref_before_explode(com):
+    """ActiveX ``Explode()`` raises on an xref; the headless engine used to
+    delete it. Both name the refusal before anything is dispatched."""
+    backend, document, space = com
+    document.Blocks.blocks["XREF_DETAIL"] = _FakeBlock("XREF_DETAIL", is_xref=True)
+    dispatched = []
+
+    def _explode():
+        dispatched.append("Explode")
+        return ()
+
+    ref = _FakeObject(
+        "AcDbBlockReference",
+        "8A",
+        Name="XREF_DETAIL",
+        OwnerID=1,
+        GetAttributes=lambda: (),
+        Explode=_explode,
+    )
+    document.objects["8A"] = ref
+    with pytest.raises(RuntimeError, match="external reference 'XREF_DETAIL'"):
+        await backend.block_explode("8A")
+    assert dispatched == [] and space.calls == [] and ref.deleted is False
+
+
+async def test_com_explode_refuses_a_minsert_by_name_before_explode(com):
+    """A MINSERT is ``AcDbMInsertBlock``; it used to fail the INSERT check with
+    the misleading 'not a block reference'."""
+    backend, document, space = com
+    dispatched = []
+
+    def _explode():
+        dispatched.append("Explode")
+        return ()
+
+    grid = _FakeObject(
+        "AcDbMInsertBlock",
+        "9B",
+        Name="CELL",
+        OwnerID=1,
+        Rows=2,
+        Columns=3,
+        GetAttributes=lambda: (),
+        Explode=_explode,
+    )
+    document.objects["9B"] = grid
+    with pytest.raises(RuntimeError, match=r"MINSERT \(2x3 grid of 'CELL'\)"):
+        await backend.block_explode("9B")
+    assert dispatched == [] and space.calls == [] and grid.deleted is False

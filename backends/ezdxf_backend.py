@@ -4575,6 +4575,62 @@ class EzdxfBackend(AutoCADBackend):
         """The ``_ATTRIB_TO_TEXT`` members ``attrib`` (ATTRIB or ATTDEF) carries."""
         return {key: attrib.dxf.get(key) for key in cls._ATTRIB_TO_TEXT if attrib.dxf.hasattr(key)}
 
+    @classmethod
+    def _burst_attrib(cls, layout, attrib, matrix=None):
+        """Add the entity that stands in for ``attrib`` (ATTRIB or ATTDEF) to
+        ``layout`` and return it: a TEXT carrying the value, or -- for a
+        multi-line attribute -- an MTEXT carrying every line.
+
+        A multi-line ATTRIB keeps its content in an embedded MTEXT; its
+        ``dxf.text`` is only the first line (ezdxf) or ``Line1\\PLine2...``
+        (AutoCAD), so a TEXT built from it drops the other lines or renders
+        literal ``\\P`` -- with a clean audit. BURST emits an MTEXT there.
+        ``virtual_mtext_entity()`` already carries the ATTRIB's graphic
+        properties and its WCS placement (ezdxf transforms the embedded MTEXT
+        with the ATTRIB). ``matrix``, when given, is the reference's matrix,
+        for an ATTDEF still in block coordinates.
+        """
+        if attrib.has_embedded_mtext_entity:
+            entity = attrib.virtual_mtext_entity()
+            if matrix is not None:
+                entity.transform(matrix)
+            layout.add_entity(entity)
+        else:
+            entity = layout.add_text(attrib.dxf.text, dxfattribs=cls._text_attribs_of(attrib))
+            if matrix is not None:
+                entity.transform(matrix)
+        if attrib.is_invisible:
+            entity.dxf.invisible = 1
+        return entity
+
+    @staticmethod
+    def _refuse_unexplodable_reference(ent, handle: str) -> None:
+        """Raise before any write for the two INSERT kinds ``virtual_entities()``
+        cannot explode -- both used to be destroyed with ``ok: True``.
+
+        An *xref* INSERT yields no virtual entities (the geometry is in the
+        other file), so the reference was deleted and nothing put in its
+        place; AutoCAD refuses to explode an xref (bind it first). A
+        *MINSERT* (``mcount`` > 1) yields only its first cell -- ``multi_insert()``
+        resolves the grid -- so a 2x3 grid exploded into one cell and five
+        vanished; AutoCAD refuses to explode a MINSERT.
+        """
+        name = ent.dxf.get("name", "?")
+        block = ent.block()
+        record = getattr(block, "block_record", None)
+        if record is not None and record.is_xref:  # covers XREF_OVERLAY too
+            raise RuntimeError(
+                f"Entity {handle} is an external reference {name!r}; an xref cannot "
+                "be exploded (bind it into the drawing first)"
+            )
+        if ent.mcount > 1:
+            rows = ent.dxf.get("row_count", 1)
+            cols = ent.dxf.get("column_count", 1)
+            raise RuntimeError(
+                f"Entity {handle} is a MINSERT ({rows}x{cols} grid of {name!r}); a "
+                "multi-insert cannot be exploded"
+            )
+
     async def block_explode(self, handle) -> dict:
         """Explode an INSERT into its members; ATTRIB values survive as TEXT.
 
@@ -4596,19 +4652,29 @@ class EzdxfBackend(AutoCADBackend):
         ``block_insert`` attaches would have (that ATTRIB, when present, is
         converted above and the definition is not converted twice).
 
+        A *multi-line* attribute (ATTRIB or constant ATTDEF with an embedded
+        MTEXT) becomes an MTEXT carrying every line, as BURST does -- its
+        ``dxf.text`` holds only the first line (ezdxf) or the lines joined
+        with literal ``\\P`` (AutoCAD), so a TEXT silently lost content. See
+        ``_burst_attrib``.
+
         The members and the TEXTs go into the INSERT's *owner* layout, not the
         current one: ``_get_entity`` resolves a handle in any layout, so a title
         block on a sheet exploded while Model was current used to have its
         geometry copied into model space and then die on ``delete_entity``
-        with the reference still alive on the sheet. A reference nested inside
-        a block definition is refused before anything is written — exploding
-        it there would redefine the block under every other reference.
+        with the reference still alive on the sheet. Refused before anything
+        is written: a reference nested inside a block definition (exploding
+        it there would redefine the block under every other reference), an
+        xref, and a MINSERT -- see ``_refuse_unexplodable_reference`` for the
+        last two, which ``virtual_entities()`` cannot represent and which used
+        to be deleted with ``ok: True``.
         """
 
         def _sync():
             ent = self._get_entity(handle)
             if ent.dxftype() != "INSERT":
                 raise RuntimeError(f"Entity {handle} is not a block reference (INSERT)")
+            self._refuse_unexplodable_reference(ent, handle)
             msp = self._owner_layout_for_explode(ent, handle)
             inserted = []
             for sub in ent.virtual_entities():
@@ -4619,22 +4685,16 @@ class EzdxfBackend(AutoCADBackend):
             attached_tags = set()
             for attrib in ent.attribs:
                 attached_tags.add(attrib.dxf.tag)
-                text = msp.add_text(attrib.dxf.text, dxfattribs=self._text_attribs_of(attrib))
-                if attrib.is_invisible:
-                    text.dxf.invisible = 1
-                attribute_texts.append(text.dxf.handle)
+                attribute_texts.append(self._burst_attrib(msp, attrib).dxf.handle)
             block = ent.block()
             attdefs = block.attdefs() if block is not None else ()
+            matrix = ent.matrix44()
             for attdef in attdefs:
                 if not attdef.is_const or attdef.dxf.get("tag") in attached_tags:
                     continue
                 if not attdef.dxf.hasattr("insert"):
                     continue  # a structure error; nowhere to place it
-                text = msp.add_text(attdef.dxf.text, dxfattribs=self._text_attribs_of(attdef))
-                text.transform(ent.matrix44())
-                if attdef.is_invisible:
-                    text.dxf.invisible = 1
-                attribute_texts.append(text.dxf.handle)
+                attribute_texts.append(self._burst_attrib(msp, attdef, matrix).dxf.handle)
             msp.delete_entity(ent)
             self._mark_dirty()
             return {
