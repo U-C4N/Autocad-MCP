@@ -317,6 +317,19 @@ async def test_com_backend_connects():
 # number it already has?
 
 
+@pytest.fixture(autouse=True)
+def _restore_acad_doc():
+    """`_measure_backend` swaps the module-level `_acad_doc`; put it back after
+    every test here. Left in place, the MagicMock document leaked into every
+    later test of the session that resolves the document itself (the settings
+    facade's COM tests read sysvars through `_acad_doc()`)."""
+    import backends.com_backend as cb
+
+    original = cb._acad_doc
+    yield
+    cb._acad_doc = original
+
+
 def _measure_backend(entity):
     """A ComBackend whose HandleToObject returns exactly this entity."""
     import backends.com_backend as cb
@@ -329,7 +342,7 @@ def _measure_backend(entity):
     backend._run = _run
     doc = MagicMock()
     doc.HandleToObject.return_value = entity
-    cb._acad_doc = lambda: doc
+    cb._acad_doc = lambda: doc  # restored by `_restore_acad_doc`
     return backend
 
 

@@ -3990,15 +3990,18 @@ class ComBackend(AutoCADBackend):
         return await self._run(_sync)
 
     async def system_get_variable(self, name) -> Any:
+        # GetVariable / SetVariable are members of AcadDocument, not of
+        # AcadApplication: `AutoCAD.Application.GetVariable` raises
+        # AttributeError on a live seat before anything reaches AutoCAD.
         def _sync():
-            app = _acad_app()
-            return app.GetVariable(name)
+            doc = _acad_doc()
+            return doc.GetVariable(name)
 
         return await self._run(_sync)
 
     async def system_set_variable(self, name, value) -> dict:
         def _sync():
-            app = _acad_app()
+            doc = _acad_doc()  # the sysvar host is the document (see system_get_variable)
             # Coerce to the sysvar's actual type (NEW-com-set-variable-coercion):
             # AutoCAD rejects e.g. a string "0" for the integer OSMODE. Probe the
             # current value's type and convert to match; pass through on failure.
@@ -4010,7 +4013,7 @@ class ComBackend(AutoCADBackend):
             # AutoCAD had already applied the write.
             payload = value
             try:
-                current = app.GetVariable(name)
+                current = doc.GetVariable(name)
                 if isinstance(current, bool):
                     coerced = bool(int(value)) if isinstance(value, str) else bool(value)
                 elif isinstance(current, int):
@@ -4027,7 +4030,7 @@ class ComBackend(AutoCADBackend):
                 payload = _av(coerced) if isinstance(current, (tuple, list)) else coerced
             except Exception as exc:
                 log.debug("set_variable type probe for %s failed: %s", name, exc)
-            app.SetVariable(name, payload)
+            doc.SetVariable(name, payload)
             return {"ok": True, "variable": name, "value": coerced}
 
         return await self._run(_sync)

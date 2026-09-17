@@ -55,14 +55,16 @@ class _Doc:
 
 
 async def test_set_variable_coerces_string_to_sysvar_int_type(monkeypatch):
-    app = MagicMock()
-    app.GetVariable.return_value = 4159  # OSMODE current value is an int
-    monkeypatch.setattr(cb, "_acad_app", lambda: app)
+    # GetVariable / SetVariable are AcadDocument members (the Application has
+    # neither), so the fake is the document that `_acad_doc()` returns.
+    doc = MagicMock()
+    doc.GetVariable.return_value = 4159  # OSMODE current value is an int
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
 
     b = _backend_no_executor()
     out = await b.system_set_variable("OSMODE", "0")
 
-    name, val = app.SetVariable.call_args[0]
+    name, val = doc.SetVariable.call_args[0]
     assert name == "OSMODE"
     assert val == 0 and isinstance(val, int)  # coerced from "0" to int 0
     assert out["value"] == 0
