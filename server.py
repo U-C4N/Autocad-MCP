@@ -6837,11 +6837,13 @@ async def pid_from_spec(
 ) -> dict:
     """Equipment, valves, instruments and connectors placed, then every line
     drawn port-to-port, inside one transaction: any bad item rolls the whole
-    sheet back and the error names it (`lines[2].to`). The response carries the
-    graph read back from the drawing and the P&ID critique issues, so the
-    caller sees dangling ends or duplicate tags in the same round trip.
-    `dry_run` returns the planned vertices and crossings without touching the
-    drawing.
+    sheet back and the error names it (`lines[2].to`); so does an interruption
+    (a client cancellation mid-run leaves no half-drawn sheet and no open
+    transaction). A non-finite coordinate, rotation, scale or stub is refused
+    by path before anything is placed. The response carries the graph read
+    back from the drawing and the P&ID critique issues, so the caller sees
+    dangling ends or duplicate tags in the same round trip. `dry_run` returns
+    the planned vertices and crossings without touching the drawing.
     """
     from engineering.pid.spec import run_spec
 

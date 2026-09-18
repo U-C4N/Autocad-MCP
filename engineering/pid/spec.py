@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import math
 from typing import TYPE_CHECKING
 
 from .critique import PID_FOCUSES, issues_for
@@ -135,9 +136,24 @@ _LINE_KEYS = {
 
 
 def _num(value, where: str) -> float:
+    """A finite number, or a ``ValueError`` naming the path.
+
+    ``float("nan")`` used to pass and be placed as an INSERT at ``[nan, 0]``;
+    the transaction committed and ``build_graph`` then crashed on the drawing
+    with no path in its message. Only in-process callers can deliver a
+    non-finite (the MCP pipeline coerces them first), but ``run_spec`` is a
+    public interface and its docstring promises nothing malformed reaches
+    the drawing.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{where} must be a number")
-    return float(value)
+    try:
+        number = float(value)
+    except OverflowError as exc:  # a 400-digit int is a number but not a float
+        raise ValueError(f"{where} must be a finite number") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"{where} must be a finite number")
+    return number
 
 
 def _ref(value, where: str, ids: set[str]) -> tuple[str, str | None]:
@@ -422,7 +438,11 @@ async def run_spec(backend: AutoCADBackend, spec: dict, dry_run: bool = False) -
             except ValueError as exc:
                 raise ValueError(f"{where}: {exc}") from exc
             crossings_total += drawn["crossings"]
-    except Exception:
+    except BaseException:
+        # ``Exception`` alone let a client cancellation (``CancelledError`` is
+        # a ``BaseException``) leave the placed symbols in the drawing inside
+        # an open transaction — on COM with the undo mark still open, so every
+        # later ``pid_from_spec`` was refused until a manual rollback.
         await backend.transaction_rollback()
         raise
     await backend.transaction_commit()

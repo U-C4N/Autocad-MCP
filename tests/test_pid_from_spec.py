@@ -85,3 +85,45 @@ async def test_finalize_scores_the_example_at_ninety_or_better(client, tmp_path)
     ).structured_content
     assert final["score"]["score"] >= 90, final["score"]
     assert not [i for i in final.get("critique", []) if str(i.get("focus", "")).startswith("pid_")]
+
+
+# ── Track A hardening (track E wave 0, Task 5) ───────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "mutate, fragment",
+    [
+        (lambda s: s["equipment"][0].update({"x": float("nan")}), "equipment[0].x"),
+        (lambda s: s["valves"][0].update({"y": float("inf")}), "valves[0].y"),
+        (lambda s: s["instruments"][0].update({"rotation": 10**400}), "instruments[0].rotation"),
+        (lambda s: s["lines"][0].update({"stub": float("-inf")}), "lines[0].stub"),
+    ],
+)
+async def test_non_finite_numbers_are_refused_by_path_before_any_write(backend, mutate, fragment):
+    before = await backend.entity_count()
+    spec = copy.deepcopy(EXAMPLE_SPEC)
+    mutate(spec)
+    with pytest.raises(ValueError, match="finite") as exc:
+        await run_spec(backend, spec)
+    assert fragment in str(exc.value)
+    assert await backend.entity_count() == before
+    assert (await backend.system_status())["transaction_depth"] == 0
+
+
+async def test_a_cancellation_mid_run_rolls_the_sheet_back(backend, monkeypatch):
+    """``CancelledError`` is a ``BaseException``; ``except Exception`` let the
+    placed symbols stay inside an open transaction."""
+    import asyncio
+
+    from engineering.pid import spec as spec_module
+
+    before = await backend.entity_count()
+
+    async def cancelled(*args, **kwargs):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(spec_module, "draw_line", cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        await run_spec(backend, EXAMPLE_SPEC)
+    assert await backend.entity_count() == before, "the placed symbols were rolled back"
+    assert (await backend.system_status())["transaction_depth"] == 0, "no open transaction"
