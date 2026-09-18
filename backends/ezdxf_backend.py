@@ -1109,9 +1109,9 @@ class EzdxfBackend(AutoCADBackend):
             )
         state = self._state
         state.path = value
-        # Re-key only when the *file* changes: another spelling of the file
-        # the entry already holds (a case variant on Windows) keeps the key a
-        # caller may be holding.
+        # Re-key only when the *file* changes: another name for the file the
+        # entry already holds (a case variant, a hard link, a junction) keeps
+        # the key a caller may be holding.
         if not self._same_file(new_key, self._active_key):
             del self._docs[self._active_key]
             state.key = new_key
@@ -1119,19 +1119,35 @@ class EzdxfBackend(AutoCADBackend):
             self._active_key = new_key
 
     @staticmethod
-    def _file_identity(path: str) -> str:
-        """The string two spellings of one file share: ``normcase(abspath(path))``.
+    def _file_identity(path: str) -> tuple:
+        """What two names of one file share - the *file*, not its spelling.
 
-        Every registry comparison goes through this. On Windows it folds case
-        and separators, so ``C:\\Work\\Gear.dxf`` and ``c:/work/gear.dxf`` are one
-        file; on POSIX ``normcase`` is the identity and only ``..`` / ``.`` /
-        duplicate separators are folded. Keys themselves stay spelled as the
-        caller spelled them - the identity is for comparing, not for showing.
+        Every registry comparison goes through this. A path that exists is
+        identified by ``os.stat`` ``(st_dev, st_ino)`` - the same identity
+        ``os.path.samefile`` uses - so a case variant on a case-insensitive
+        volume (NTFS, default APFS), a hard link, an NTFS junction or a
+        symlink all name the one file, and the registry keeps one entry for
+        it. ``normcase(abspath(path))`` was the earlier rule and folded only
+        case and separators, and only on Windows: two names for one file
+        registered twice, both rows said ``saved``, and a save from either
+        overwrote the other's bytes. It stays as the fallback for a path that
+        is not on disk yet (a save target) or that the OS cannot stat, and for
+        a filesystem that reports no inode. Keys themselves stay spelled as
+        the caller spelled them - the identity is for comparing, not showing.
         """
         try:
-            return os.path.normcase(os.path.abspath(path))
+            absolute = os.path.abspath(path)
         except (OSError, ValueError):  # a path this OS cannot normalise
-            return os.path.normcase(path)
+            return ("spelling", os.path.normcase(path))
+        try:
+            st = os.stat(absolute)
+        except (OSError, ValueError):
+            return ("spelling", os.path.normcase(absolute))
+        if st.st_ino == 0 and st.st_dev == 0:
+            # A filesystem without stable file identity (some network shares):
+            # fall back to the spelling rather than call every file one file.
+            return ("spelling", os.path.normcase(absolute))
+        return ("file", st.st_dev, st.st_ino)
 
     @classmethod
     def _same_file(cls, a: str, b: str) -> bool:
@@ -1140,17 +1156,16 @@ class EzdxfBackend(AutoCADBackend):
     def _path_holder(self, path: str, *, exclude: str | None = None) -> str | None:
         """Key of the entry (other than ``exclude``) that holds ``path``, or None.
 
-        Compared by ``_file_identity`` so that on Windows two spellings of one
-        file count as the same file; on POSIX that is plain equality.
+        Compared by ``_file_identity``: the entry's path and its key are both
+        names of the file it holds, so either matching ``path`` - by inode
+        when both are on disk, by ``normcase`` spelling otherwise - means the
+        file is held. An untitled entry holds no file and never matches.
         """
         wanted = self._file_identity(path)
         for key, state in self._docs.items():
-            if key == exclude:
+            if key == exclude or not state.path:
                 continue
-            candidates = [key]
-            if state.path:
-                candidates.append(state.path)
-            if any(self._file_identity(c) == wanted for c in candidates):
+            if any(self._file_identity(c) == wanted for c in (key, state.path)):
                 return key
         return None
 
@@ -1318,8 +1333,9 @@ class EzdxfBackend(AutoCADBackend):
         its place — the pre-registry behaviour of ``drawing_open``, kept so a
         save-then-reopen verification still reads the disk. "Already open" is
         decided by ``_path_holder`` (file identity), not by the key string:
-        the same file spelled with another case used to register a second
-        entry, after which every lookup of either was refused as ambiguous.
+        the same file under another name (a case variant, a hard link, a
+        junction) used to register a second entry, after which a save from
+        either silently overwrote the other's bytes.
         """
         if path is None:
             self._untitled_counter += 1
@@ -1365,9 +1381,10 @@ class EzdxfBackend(AutoCADBackend):
             # say so rather than hand back whichever entry the key names.
             self._refuse_shared_path(wanted, self._docs[wanted])
             return wanted
-        # Paths compare by file identity (``normcase`` on Windows), as the
-        # live engine's ``_com_find_document`` lowercases before comparing: a
-        # lowercase drive letter or a case variant names the same document.
+        # Paths compare by file identity (the inode when the file is on disk),
+        # as the live engine's ``_com_find_document`` resolves before comparing:
+        # a lowercase drive letter, a case variant, a hard link or a junction
+        # names the same document.
         as_path = self._file_identity(wanted)
         by_path = [
             key

@@ -20,6 +20,7 @@ it; the strict path is the new tool.
 from __future__ import annotations
 
 import os
+import tempfile
 import types
 
 import pytest
@@ -213,11 +214,54 @@ async def test_resolver_refuses_a_shared_path_even_on_an_exact_key_hit(backend, 
     assert len(await backend.document_list()) == 2, "a refusal closes nothing"
 
 
-# Two spellings of one file only exist where the filesystem folds case;
-# ``os.path.normcase`` is the identity on POSIX, so these tests skip there.
+def _filesystem_folds_case() -> bool:
+    """Whether the temp filesystem answers to a case variant of a file's name.
+
+    Probed on disk rather than read off ``os.path.normcase``: the platform's
+    ``normcase`` is the identity on macOS while the default APFS volume folds
+    case, so a ``normcase`` guard skipped every case-variant test exactly
+    where the old spelling-based registry identity was wrong.
+    """
+    with tempfile.TemporaryDirectory() as folder:
+        probe = os.path.join(folder, "Probe.dxf")
+        with open(probe, "w", encoding="utf-8"):
+            pass
+        return os.path.exists(os.path.join(folder, "probe.dxf"))
+
+
+# Two spellings of one file only exist where the filesystem folds case.
 _case_folding_fs = pytest.mark.skipif(
-    os.path.normcase("A") == "A", reason="filesystem is case-sensitive"
+    not _filesystem_folds_case(), reason="filesystem is case-sensitive"
 )
+
+
+def _hard_link(target: str, link: str) -> None:
+    try:
+        os.link(target, link)
+    except (OSError, NotImplementedError, AttributeError) as exc:
+        pytest.skip(f"hard links unavailable here: {exc}")
+
+
+def _junction(target_dir: str, link_dir: str) -> None:
+    """A second name for a directory: an NTFS junction, or a symlink elsewhere."""
+    if os.name == "nt":
+        try:
+            import _winapi
+
+            _winapi.CreateJunction(target_dir, link_dir)
+            return
+        except (ImportError, AttributeError, OSError) as exc:
+            pytest.skip(f"NTFS junctions unavailable here: {exc}")
+    try:
+        os.symlink(target_dir, link_dir, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"directory symlinks unavailable here: {exc}")
+
+
+def _modelspace_types(path) -> list[str]:
+    import ezdxf
+
+    return [e.dxftype() for e in ezdxf.readfile(str(path)).modelspace()]
 
 
 @_case_folding_fs
@@ -276,6 +320,93 @@ async def test_saving_to_a_case_variant_of_the_own_path_keeps_one_entry(backend,
     assert len(rows) == 1 and rows[0]["saved"] is True
     assert backend._active_key == key, "the same file keeps its key"
     assert (await backend.document_activate(key))["ok"] is True
+
+
+async def test_a_hard_link_to_an_open_file_reloads_instead_of_registering_twice(backend, tmp_path):
+    """Registry identity is the file (``st_dev``/``st_ino``), not the spelling.
+
+    ``normcase(abspath)`` folded case and separators only, so a hard link -
+    which ``Path.resolve()`` cannot fold either - registered a second entry:
+    both rows said ``saved: True``, a save from either overwrote the other's
+    bytes, and closing the 'clean' one dropped its work as ``discarded_changes:
+    False``.
+    """
+    target = tmp_path / "gear.dxf"
+    link = tmp_path / "gear_link.dxf"
+    await backend.drawing_save(str(target))
+    _hard_link(str(target), str(link))
+    assert os.path.samefile(target, link)
+    await backend.entity_create_line(0, 0, 1, 1)  # unsaved edit
+
+    reopened = await backend.drawing_open(str(link))
+    assert reopened["reloaded"] is True and reopened["open_documents"] == 1
+    rows = await backend.document_list()
+    assert len(rows) == 1 and rows[0]["entity_count"] == 0, "the reload reads the disk"
+    key = rows[0]["key"]
+
+    await backend.entity_create_circle(0, 0, 5)
+    await backend.drawing_save()
+    assert _modelspace_types(target) == ["CIRCLE"], "one entry, one file, one save"
+    assert (await backend.document_activate(str(target)))["active"] == key
+    assert (await backend.document_activate(str(link)))["active"] == key
+
+
+async def test_a_junction_to_an_open_file_reloads_instead_of_registering_twice(backend, tmp_path):
+    """Same rule through a directory junction (``mklink /J``), which
+    ``os.path.abspath`` leaves untouched - the route in-process callers take."""
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    target = real_dir / "gear.dxf"
+    await backend.drawing_save(str(target))
+    _junction(str(real_dir), str(tmp_path / "via_junction"))
+    aliased = tmp_path / "via_junction" / "gear.dxf"
+    assert os.path.samefile(target, aliased)
+    await backend.entity_create_line(0, 0, 1, 1)
+
+    reopened = await backend.drawing_open(str(aliased))
+    assert reopened["reloaded"] is True and reopened["open_documents"] == 1
+    await backend.entity_create_circle(0, 0, 5)
+    await backend.drawing_save()
+    assert _modelspace_types(target) == ["CIRCLE"]
+
+    await backend.drawing_new()
+    with pytest.raises(ValueError, match="already open as document"):
+        await backend.drawing_save_as(str(aliased))
+    assert _modelspace_types(target) == ["CIRCLE"], "a refusal writes nothing"
+    closed = await backend.document_close(str(aliased))
+    assert closed["discarded_changes"] is False and closed["open_documents"] == 1
+
+
+@_case_folding_fs
+async def test_case_variant_identity_does_not_depend_on_normcase(backend, tmp_path, monkeypatch):
+    """macOS: ``os.path.normcase`` is the identity, the default APFS volume
+    folds case. Reproduced here by giving ``normcase`` its POSIX definition -
+    the registry must still see one file, because it asks the disk."""
+    monkeypatch.setattr(os.path, "normcase", lambda s: s)
+    path = tmp_path / "Gear.dxf"
+    await backend.drawing_save(str(path))
+    await backend.entity_create_line(0, 0, 1, 1)
+
+    reopened = await backend.drawing_open(str(path).lower())
+    assert reopened["reloaded"] is True and reopened["open_documents"] == 1
+    await backend.entity_create_circle(0, 0, 5)
+    await backend.drawing_save()
+    assert _modelspace_types(path) == ["CIRCLE"]
+    assert len(await backend.document_list()) == 1
+
+
+async def test_save_target_that_does_not_exist_yet_is_compared_by_spelling(backend, tmp_path):
+    """A path with no file behind it cannot be stat'ed; it is still one file
+    with the spelling that another entry holds (an owner whose file was
+    removed from disk), and a save onto it is refused."""
+    path = tmp_path / "gone.dxf"
+    await backend.drawing_save(str(path))
+    path.unlink()
+    await backend.drawing_new()
+    with pytest.raises(ValueError, match="already open as document"):
+        await backend.drawing_save_as(str(path))
+    assert not path.exists(), "a refusal writes nothing"
+    assert (await backend.drawing_save_as(str(tmp_path / "other.dxf")))["ok"] is True
 
 
 async def test_drawing_close_with_save_refuses_a_shared_path(backend, tmp_path):
@@ -530,6 +661,27 @@ async def test_document_activate_accepts_a_lowercase_drive_over_the_wire(monkeyp
             await client.call_tool("document_close", {"name_or_path": spelled.lower()})
         ).structured_content
         assert closed["closed"] == os.path.abspath(spelled) and closed["open_documents"] == 1
+
+
+async def test_hard_link_over_the_wire_is_one_document(monkeypatch, tmp_path):
+    """Route (a) of the review finding: ``validate_path().resolve()`` does not
+    fold a hard link, so the wire hands the backend a second name for the
+    open file. One entry, one save, and the disk holds the last edit."""
+    monkeypatch.setenv("AUTOCAD_MCP_BACKEND", "ezdxf")
+    target = tmp_path / "gear.dxf"
+    link = tmp_path / "gear_link.dxf"
+    async with Client(server.mcp) as client:
+        await client.call_tool("drawing_new", {"bootstrap": False})
+        await client.call_tool("drawing_save", {"path": str(target)})
+        _hard_link(str(target), str(link))
+        await client.call_tool("entity_create_line", {"x1": 0, "y1": 0, "x2": 1, "y2": 1})
+        opened = (await client.call_tool("drawing_open", {"path": str(link)})).structured_content
+        assert opened["reloaded"] is True and opened["open_documents"] == 1
+        await client.call_tool("entity_create_circle", {"cx": 0, "cy": 0, "radius": 5})
+        await client.call_tool("drawing_save", {})
+        rows = (await client.call_tool("document_list", {})).structured_content
+        assert rows["count"] == 1 and rows["documents"][0]["saved"] is True
+    assert _modelspace_types(target) == ["CIRCLE"]
 
 
 # ── live engine, against a fake ActiveX surface ──────────────────────────────
