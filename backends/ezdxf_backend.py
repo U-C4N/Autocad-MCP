@@ -2259,7 +2259,7 @@ class EzdxfBackend(AutoCADBackend):
                     frozen_text = self._format_measurement(entity.get_measurement())
                     entity.dxf.text = frozen_text
 
-                entity.transform(matrix)
+                self._transform(entity, matrix)
                 source.move_to_layout(entity, target)
 
                 # Where the entity now sits, expressed in paper coordinates.
@@ -3545,7 +3545,7 @@ class EzdxfBackend(AutoCADBackend):
     async def entity_move(self, handle, dx, dy, dz=0.0) -> dict:
         def _sync():
             ent = self._get_entity(handle)
-            ent.translate(float(dx), float(dy), float(dz))
+            self._translate(ent, float(dx), float(dy), float(dz))
             self._mark_dirty()
             return {"ok": True, "handle": handle}
 
@@ -3556,7 +3556,7 @@ class EzdxfBackend(AutoCADBackend):
             ent = self._get_entity(handle)
             copy = ent.copy()
             self._msp().add_entity(copy)
-            copy.translate(float(dx), float(dy), float(dz))
+            self._translate(copy, float(dx), float(dy), float(dz))
             self._mark_dirty()
             return _entity_info_dxf(copy)
 
@@ -3570,7 +3570,9 @@ class EzdxfBackend(AutoCADBackend):
             m = Matrix44.z_rotate(math.radians(float(angle_deg)))
             # Translate to origin, rotate, translate back
             bx, by = float(base_x), float(base_y)
-            ent.transform(Matrix44.translate(-bx, -by, 0) @ m @ Matrix44.translate(bx, by, 0))
+            self._transform(
+                ent, Matrix44.translate(-bx, -by, 0) @ m @ Matrix44.translate(bx, by, 0)
+            )
             self._mark_dirty()
             return {"ok": True, "handle": handle}
 
@@ -3583,10 +3585,11 @@ class EzdxfBackend(AutoCADBackend):
 
             s = float(factor)
             bx, by = float(base_x), float(base_y)
-            ent.transform(
+            self._transform(
+                ent,
                 Matrix44.translate(-bx, -by, 0)
                 @ Matrix44.scale(s, s, s)
-                @ Matrix44.translate(bx, by, 0)
+                @ Matrix44.translate(bx, by, 0),
             )
             self._mark_dirty()
             return {"ok": True, "handle": handle}
@@ -3637,7 +3640,9 @@ class EzdxfBackend(AutoCADBackend):
                 )
             )
             tx, ty = float(x1), float(y1)
-            copy.transform(Matrix44.translate(-tx, -ty, 0) @ m @ Matrix44.translate(tx, ty, 0))
+            self._transform(
+                copy, Matrix44.translate(-tx, -ty, 0) @ m @ Matrix44.translate(tx, ty, 0)
+            )
             if delete_original:
                 self._msp().delete_entity(ent)
             self._mark_dirty()
@@ -3744,7 +3749,7 @@ class EzdxfBackend(AutoCADBackend):
                         continue  # skip original
                     copy = ent.copy()
                     msp.add_entity(copy)
-                    copy.translate(c * float(col_spacing), r * float(row_spacing), 0)
+                    self._translate(copy, c * float(col_spacing), r * float(row_spacing), 0)
                     results.append(_entity_info_dxf(copy))
             self._mark_dirty()
             return results
@@ -3780,7 +3785,7 @@ class EzdxfBackend(AutoCADBackend):
                     @ Matrix44.z_rotate(angle)
                     @ Matrix44.translate(cx, cy, 0)
                 )
-                copy.transform(m)
+                self._transform(copy, m)
                 results.append(_entity_info_dxf(copy))
             self._mark_dirty()
             return results
@@ -4541,6 +4546,13 @@ class EzdxfBackend(AutoCADBackend):
                 # `add_auto_attribs` attaches ATTRIBs to this INSERT for every
                 # ATTDEF the definition has; values for tags it lacks are ignored.
                 ref.add_auto_attribs(values)
+                # A multi-line ATTDEF becomes a multi-line ATTRIB through
+                # `embed_mtext`, which mirrors only the first line of the value
+                # into `dxf.text`; the whole value goes there (the convention
+                # `_write_attrib_value` keeps) so an R2010 save keeps every line.
+                for attrib in ref.attribs:
+                    if attrib.has_embedded_mtext_entity:
+                        attrib.dxf.text = self._attrib_value(attrib)
             self._mark_dirty()
             return _entity_info_dxf(ref)
 
@@ -4600,6 +4612,79 @@ class EzdxfBackend(AutoCADBackend):
         """The ``_ATTRIB_TO_TEXT`` members ``attrib`` (ATTRIB or ATTDEF) carries."""
         return {key: attrib.dxf.get(key) for key in cls._ATTRIB_TO_TEXT if attrib.dxf.hasattr(key)}
 
+    @staticmethod
+    def _anchored_mtext(attrib):
+        """The embedded MTEXT of a multi-line ``attrib`` (ATTRIB or ATTDEF) as a
+        virtual entity placed where the attribute itself is.
+
+        A multi-line attribute keeps its placement on two surfaces: the
+        ATTRIB's own ``insert``/``align_point`` (OCS, the frame of its
+        ``extrusion``) and the embedded MTEXT's ``insert`` (WCS). ezdxf keeps
+        them in step through ``transform`` (``BaseAttrib`` overrides it) but
+        not through ``translate``: ``Insert.translate`` calls ``Text.translate``
+        on every ATTRIB, which moves the ATTRIB's two points and nothing else
+        (ezdxf 1.4.4 ``attrib.py`` has no ``translate``). So after a move the
+        virtual MTEXT still said where the attribute *was*, ``block_explode``
+        burst the note 50 units from its symbol with a clean audit, and a
+        value write (``set_mtext`` re-places the ATTRIB from the MTEXT) pulled
+        the attribute back to the old spot while the INSERT stayed put.
+
+        The ATTRIB's placement is the attribute's placement -- it is what
+        ``entity_get`` reports, what a single-line attribute has, and what
+        every ezdxf write path maintains -- so the virtual entity is anchored
+        to it: the inverse of ezdxf's own ``_update_location_from_mtext``
+        (``get_placement()`` picks ``insert`` for a LEFT-aligned text and
+        ``align_point`` otherwise, the same rule the renderer uses).
+        """
+        mtext = attrib.virtual_mtext_entity()
+        mtext.dxf.insert = attrib.ocs().to_wcs(attrib.get_placement()[1])
+        return mtext
+
+    @classmethod
+    def _settle_attrib_mtext(cls, attrib) -> None:
+        """Put the embedded MTEXT of ``attrib`` where the ATTRIB now is; a
+        no-op for a single-line attribute.
+
+        Runs after every ``translate`` of an INSERT (``entity_move``,
+        ``entity_copy``, ``entity_array_rectangular``). The round trip is the
+        one ezdxf's ``BaseAttrib.transform`` uses; ``set_mtext`` also mirrors
+        only the first line into ``dxf.text``, so the value (the whole
+        ``Line1\\PLine2`` -- see ``_write_attrib_value``) is put back.
+        """
+        if not attrib.has_embedded_mtext_entity:
+            return
+        text = attrib.dxf.text
+        attrib.set_mtext(cls._anchored_mtext(attrib), graphic_properties=False)
+        attrib.dxf.text = text
+
+    @classmethod
+    def _translate(cls, ent, dx: float, dy: float, dz: float) -> None:
+        """``ent.translate(dx, dy, dz)`` that carries a multi-line ATTRIB's
+        embedded MTEXT along (see ``_anchored_mtext``)."""
+        ent.translate(dx, dy, dz)
+        if ent.dxftype() == "INSERT":
+            for attrib in ent.attribs:
+                cls._settle_attrib_mtext(attrib)
+
+    @staticmethod
+    def _transform(ent, m) -> None:
+        """``ent.transform(m)`` that keeps group 1 of a multi-line ATTRIB whole.
+
+        ezdxf's ``BaseAttrib.transform`` rebuilds the ATTRIB through
+        ``set_mtext``, which mirrors only the *first line* into ``dxf.text``:
+        a rotate, scale or mirror after ``block_set_attributes`` turned
+        ``A\\PB`` back into ``A`` on the one surface an R2010 save keeps, and
+        the reloaded drawing had lost every line but the first. The content
+        does not change under a transform, so the value is put back.
+        """
+        if ent.dxftype() != "INSERT":
+            ent.transform(m)
+            return
+        texts = [(a, a.dxf.text) for a in ent.attribs if a.has_embedded_mtext_entity]
+        ent.transform(m)
+        for attrib, text in texts:
+            attrib.dxf.text = text
+
     @classmethod
     def _burst_attrib(cls, layout, attrib, matrix=None):
         """Add the entity that stands in for ``attrib`` (ATTRIB or ATTDEF) to
@@ -4610,13 +4695,13 @@ class EzdxfBackend(AutoCADBackend):
         ``dxf.text`` is only the first line (ezdxf) or ``Line1\\PLine2...``
         (AutoCAD), so a TEXT built from it drops the other lines or renders
         literal ``\\P`` -- with a clean audit. BURST emits an MTEXT there.
-        ``virtual_mtext_entity()`` already carries the ATTRIB's graphic
-        properties and its WCS placement (ezdxf transforms the embedded MTEXT
-        with the ATTRIB). ``matrix``, when given, is the reference's matrix,
-        for an ATTDEF still in block coordinates.
+        ``_anchored_mtext`` carries the ATTRIB's graphic properties and its
+        placement (the embedded MTEXT's own ``insert`` is stale after a
+        ``translate``, see there). ``matrix``, when given, is the reference's
+        matrix, for an ATTDEF still in block coordinates.
         """
         if attrib.has_embedded_mtext_entity:
-            entity = attrib.virtual_mtext_entity()
+            entity = cls._anchored_mtext(attrib)
             if matrix is not None:
                 entity.transform(matrix)
             layout.add_entity(entity)
@@ -4791,8 +4876,8 @@ class EzdxfBackend(AutoCADBackend):
             return attrib.virtual_mtext_entity().text
         return attrib.dxf.text
 
-    @staticmethod
-    def _write_attrib_value(attrib, value: str) -> None:
+    @classmethod
+    def _write_attrib_value(cls, attrib, value: str) -> None:
         """Write ``value`` into ``attrib`` on every surface it has.
 
         Setting only ``dxf.text`` on a multi-line ATTRIB left the embedded
@@ -4800,9 +4885,13 @@ class EzdxfBackend(AutoCADBackend):
         value, ``block_explode`` burst the old one, and on an R2010 document
         (no embedded MTEXT exported) a save/reload carried the new value the
         exploded drawing never showed. The embedded MTEXT is rebuilt from its
-        own virtual entity with the new content -- the round trip ezdxf's
+        virtual entity with the new content -- the round trip ezdxf's
         ``BaseAttrib.transform`` itself uses -- so the MTEXT and the placement
-        stay one attribute.
+        stay one attribute. The virtual entity is anchored to the ATTRIB's
+        own placement first (``_anchored_mtext``): ``set_mtext`` re-places
+        the ATTRIB from the MTEXT, and after an ``entity_move`` the embedded
+        MTEXT still sat where the attribute *was*, so a value edit teleported
+        the attribute 50 units away from its symbol.
 
         ``set_mtext`` then mirrors only the *first line* into ``dxf.text``
         (ezdxf's own choice), and below R2018 ezdxf exports no embedded MTEXT,
@@ -4814,7 +4903,7 @@ class EzdxfBackend(AutoCADBackend):
         carries every line on every DXF version.
         """
         if attrib.has_embedded_mtext_entity:
-            mtext = attrib.virtual_mtext_entity()
+            mtext = cls._anchored_mtext(attrib)
             mtext.text = value
             attrib.set_mtext(mtext, graphic_properties=False)
         attrib.dxf.text = value

@@ -1391,6 +1391,238 @@ async def test_find_replace_leaves_a_single_line_attrib_single_line(backend):
     assert await backend.block_get_attributes(ref.handle) == {"TAG": "NEW-1"}
 
 
+# ── Task 2 (review 4): a moved multi-line attribute keeps one placement ───────
+
+
+def _placements(attrib) -> tuple[tuple, tuple]:
+    """(ATTRIB anchor, embedded MTEXT insert), both WCS -- the two surfaces a
+    multi-line attribute keeps its placement on."""
+    anchor = attrib.ocs().to_wcs(attrib.get_placement()[1])
+    return tuple(anchor), tuple(attrib.virtual_mtext_entity().dxf.insert)
+
+
+async def _insert_multi_line_plain(backend, name: str = "MLK"):
+    """The review's repro: unrotated INSERT at (10, 10) of LINE + ATTDEF NOTE,
+    the ATTRIB made multi-line (``L1\\PL2``) at its own insert (10, 13)."""
+    blk = backend._doc.blocks.new(name=name)
+    blk.add_line((0, 0), (10, 0))
+    blk.add_attdef("NOTE", insert=(0, 3), text="x", dxfattribs={"height": 2.5})
+    ref = await backend.block_insert(name, 10, 10, attributes={"NOTE": "first"})
+    attrib = backend._doc.entitydb[ref.handle].attribs[0]
+    _embed_multi_line(attrib, ["L1", "L2"], attrib.dxf.insert)
+    assert _placements(attrib) == ((10.0, 13.0, 0.0), (10.0, 13.0, 0.0)), "the premise"
+    return ref, attrib
+
+
+async def test_move_carries_the_embedded_mtext_of_a_multi_line_attrib(backend):
+    """``Insert.translate`` moves each ATTRIB's ``insert``/``align_point`` and
+    nothing else -- ezdxf's ``BaseAttrib`` overrides ``transform`` but not
+    ``translate`` -- so after ``entity_move`` the embedded MTEXT still sat at
+    the old place and ``block_explode`` burst it there: the LINE at (60, 60),
+    the note 50 units away at (10, 13), with a clean audit."""
+    ref, attrib = await _insert_multi_line_plain(backend)
+
+    await backend.entity_move(ref.handle, 50, 50)
+
+    assert _placements(attrib) == ((60.0, 63.0, 0.0), (60.0, 63.0, 0.0))
+    assert attrib.dxf.text == "L1", "a move does not touch the value"
+    result = await backend.block_explode(ref.handle)
+    (line_handle,) = result["inserted_handles"]
+    (note_handle,) = result["attribute_texts"]
+    assert tuple(backend._doc.entitydb[line_handle].dxf.start) == (60.0, 60.0, 0.0)
+    note = backend._doc.entitydb[note_handle]
+    assert note.dxftype() == "MTEXT" and note.text == "L1\\PL2"
+    assert tuple(note.dxf.insert) == (60.0, 63.0, 0.0), "the note moved with its symbol"
+    assert backend._doc.audit().errors == []
+
+
+async def test_set_attributes_after_a_move_leaves_the_attribute_where_the_move_put_it(backend):
+    """``_write_attrib_value`` rebuilt the embedded MTEXT from the stale virtual
+    entity and ``set_mtext`` re-placed the ATTRIB from it: a value edit after a
+    move teleported the attribute from (60, 63) back to (10, 13) while the
+    INSERT stayed at (60, 60). Before Task 2 the writer touched only
+    ``dxf.text`` and the ATTRIB stayed put, so this was a regression."""
+    ref, attrib = await _insert_multi_line_plain(backend)
+    await backend.entity_move(ref.handle, 50, 50)
+
+    await backend.block_set_attributes(ref.handle, {"NOTE": "NEW1\\PNEW2"})
+
+    assert tuple(backend._doc.entitydb[ref.handle].dxf.insert) == (60.0, 60.0, 0.0)
+    assert _placements(attrib) == ((60.0, 63.0, 0.0), (60.0, 63.0, 0.0))
+    assert await backend.block_get_attributes(ref.handle) == {"NOTE": "NEW1\\PNEW2"}
+    assert attrib.dxf.text == "NEW1\\PNEW2"
+
+
+async def test_find_replace_after_a_move_leaves_the_attribute_where_the_move_put_it(backend):
+    ref, attrib = await _insert_multi_line_plain(backend)
+    await backend.entity_move(ref.handle, 50, 50)
+
+    result = await backend.text_find_replace("L1", "X1")
+
+    assert result["replaced"] == 1
+    assert _placements(attrib) == ((60.0, 63.0, 0.0), (60.0, 63.0, 0.0))
+    assert await backend.block_get_attributes(ref.handle) == {"NOTE": "X1\\PL2"}
+
+
+async def test_copy_carries_the_embedded_mtext_of_a_multi_line_attrib(backend):
+    """``entity_copy`` is ``copy()`` + ``translate()``: the copy's ATTRIB moved,
+    its embedded MTEXT did not, and exploding the copy put the note on the
+    original."""
+    ref, original = await _insert_multi_line_plain(backend)
+
+    copied = await backend.entity_copy(ref.handle, 50, 50)
+
+    attrib = backend._doc.entitydb[copied.handle].attribs[0]
+    assert _placements(attrib) == ((60.0, 63.0, 0.0), (60.0, 63.0, 0.0))
+    assert _placements(original) == ((10.0, 13.0, 0.0), (10.0, 13.0, 0.0)), "the original stays"
+    result = await backend.block_explode(copied.handle)
+    (note_handle,) = result["attribute_texts"]
+    note = backend._doc.entitydb[note_handle]
+    assert note.text == "L1\\PL2" and tuple(note.dxf.insert) == (60.0, 63.0, 0.0)
+    assert backend._doc.audit().errors == []
+
+
+async def test_rectangular_array_carries_the_embedded_mtext_of_a_multi_line_attrib(backend):
+    ref, _ = await _insert_multi_line_plain(backend)
+
+    cells = await backend.entity_array_rectangular(ref.handle, 1, 3, 0, 20)
+
+    for index, cell in enumerate(cells, start=1):
+        attrib = backend._doc.entitydb[cell.handle].attribs[0]
+        expected = (10.0 + 20.0 * index, 13.0, 0.0)
+        assert _placements(attrib) == (expected, expected), f"cell {index}"
+
+
+async def test_move_of_a_rotated_reference_carries_the_embedded_mtext(backend):
+    """The rotated fixture the other multi-line tests use: the same delta on
+    both surfaces, whatever the reference's frame."""
+    ref, attrib = await _insert_multi_line(backend)
+    anchor, mtext = _placements(attrib)
+    assert anchor == pytest.approx(mtext), "the premise"
+
+    await backend.entity_move(ref.handle, 5, -7, 3)
+
+    moved_anchor, moved_mtext = _placements(attrib)
+    delta = (5.0, -7.0, 3.0)
+    assert moved_anchor == pytest.approx(tuple(a + d for a, d in zip(anchor, delta, strict=True)))
+    assert moved_mtext == pytest.approx(moved_anchor)
+
+
+async def test_explode_bursts_a_multi_line_attrib_at_the_attribs_own_placement(backend):
+    """A drawing whose two surfaces already disagree (written by a tool that,
+    like ``Insert.translate``, moved only the ATTRIB): the ATTRIB's own
+    placement is the attribute's placement -- it is what ``entity_get`` reports
+    and what a single-line attribute has -- so the burst MTEXT goes there, and
+    a value write keeps it there instead of snapping to the stale MTEXT."""
+    ref, attrib = await _insert_multi_line_plain(backend)
+    attrib.dxf.insert = (40.0, 41.0, 0.0)
+    attrib.dxf.align_point = (40.0, 41.0, 0.0)
+    assert _placements(attrib) == ((40.0, 41.0, 0.0), (10.0, 13.0, 0.0)), "the premise"
+
+    await backend.block_set_attributes(ref.handle, {"NOTE": "N1\\PN2"})
+    assert _placements(attrib) == ((40.0, 41.0, 0.0), (40.0, 41.0, 0.0))
+
+    result = await backend.block_explode(ref.handle)
+    (note_handle,) = result["attribute_texts"]
+    assert tuple(backend._doc.entitydb[note_handle].dxf.insert) == (40.0, 41.0, 0.0)
+
+
+async def test_explode_of_a_stale_multi_line_attrib_reads_the_attrib_placement(backend):
+    """The read-only twin: no write before the explode, the burst still lands
+    on the ATTRIB's placement."""
+    ref, attrib = await _insert_multi_line_plain(backend)
+    attrib.dxf.insert = (40.0, 41.0, 0.0)
+    attrib.dxf.align_point = (40.0, 41.0, 0.0)
+
+    result = await backend.block_explode(ref.handle)
+
+    (note_handle,) = result["attribute_texts"]
+    assert tuple(backend._doc.entitydb[note_handle].dxf.insert) == (40.0, 41.0, 0.0)
+
+
+async def _rotated(backend, handle):
+    await backend.entity_rotate(handle, 0, 0, 90)
+    return handle
+
+
+async def _scaled(backend, handle):
+    await backend.entity_scale(handle, 0, 0, 2.0)
+    return handle
+
+
+async def _mirrored(backend, handle):
+    """``entity_mirror`` transforms a *copy* and deletes the original."""
+    return (await backend.entity_mirror(handle, 0, 0, 0, 1, delete_original=True)).handle
+
+
+async def _polar_cell(backend, handle):
+    (cell,) = await backend.entity_array_polar(handle, 2, 180, 0, 0)
+    await backend.entity_delete(handle)
+    return cell.handle
+
+
+@pytest.mark.parametrize(
+    "op", [_rotated, _scaled, _mirrored, _polar_cell], ids=["rotate", "scale", "mirror", "polar"]
+)
+async def test_transform_keeps_the_whole_multi_line_value_in_group_1(backend, op, tmp_path):
+    """The ``transform`` twin of the move defect: ezdxf's ``BaseAttrib.transform``
+    goes through ``set_mtext``, which mirrors only the first line into
+    ``dxf.text`` -- so a rotate, scale or mirror after ``block_set_attributes``
+    turned ``A\\PB`` back into ``A`` on the surface an R2010 save keeps, and
+    the reloaded drawing had lost every line but the first."""
+    ref, attrib = await _insert_multi_line_plain(backend)
+    await backend.block_set_attributes(ref.handle, {"NOTE": "A\\PB"})
+    assert attrib.dxf.text == "A\\PB", "the premise"
+
+    handle = await op(backend, ref.handle)
+
+    attrib = backend._doc.entitydb[handle].attribs[0]
+    anchor, mtext = _placements(attrib)
+    assert anchor == pytest.approx(mtext), "the two surfaces still agree on placement"
+    assert attrib.dxf.text == "A\\PB"
+    assert await backend.block_get_attributes(handle) == {"NOTE": "A\\PB"}
+    path = tmp_path / "ml-transformed.dxf"
+    await backend.drawing_save_as(str(path))
+    await backend.drawing_open(str(path))
+    reloaded = next(e for e in backend._msp() if e.dxftype() == "INSERT")
+    assert await backend.block_get_attributes(reloaded.dxf.handle) == {"NOTE": "A\\PB"}
+
+
+async def test_insert_of_a_multi_line_attdef_keeps_the_whole_value_in_group_1(backend, tmp_path):
+    """The chain the review names: a title block whose ATTDEF is multi-line
+    (opened from an AutoCAD file), then ``block_insert``. ezdxf's
+    ``add_auto_attribs`` embeds the MTEXT through ``embed_mtext``, which
+    mirrors only the first line into ``dxf.text``, so an R2010 save of a
+    fresh insert kept ``A`` of ``A\\PB``."""
+    blk = backend._doc.blocks.new(name="MLT")
+    blk.add_line((0, 0), (10, 0))
+    attdef = blk.add_attdef("NOTE", insert=(0, 3), text="x", dxfattribs={"height": 2.5})
+    _embed_multi_line(attdef, ["D1", "D2"], (0, 3))
+
+    ref = await backend.block_insert("MLT", 10, 10, attributes={"NOTE": "A\\PB"})
+
+    attrib = backend._doc.entitydb[ref.handle].attribs[0]
+    assert attrib.has_embedded_mtext_entity and attrib.dxf.text == "A\\PB"
+    assert _placements(attrib) == ((10.0, 13.0, 0.0), (10.0, 13.0, 0.0))
+    assert await backend.block_get_attributes(ref.handle) == {"NOTE": "A\\PB"}
+    path = tmp_path / "ml-insert.dxf"
+    await backend.drawing_save_as(str(path))
+    await backend.drawing_open(str(path))
+    reloaded = next(e for e in backend._msp() if e.dxftype() == "INSERT")
+    assert await backend.block_get_attributes(reloaded.dxf.handle) == {"NOTE": "A\\PB"}
+
+
+async def test_move_of_a_single_line_attrib_reference_is_unchanged(backend):
+    _define_tagged_block(backend, "SLM")
+    ref = await backend.block_insert("SLM", 0, 0, attributes={"TAG": "P-1"})
+    attrib = backend._doc.entitydb[ref.handle].attribs[0]
+
+    await backend.entity_move(ref.handle, 5, 5)
+
+    assert not attrib.has_embedded_mtext_entity
+    assert tuple(attrib.dxf.insert) == (5.0, 8.0, 0.0) and attrib.dxf.text == "P-1"
+
+
 def _boom(*_args):
     raise RuntimeError("RPC_E_CALL_REJECTED: the application is busy")
 
