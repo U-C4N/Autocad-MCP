@@ -1082,7 +1082,7 @@ async def drawing_info(ctx: Context) -> dict:
 
 
 @cad_tool(
-    summary="Start a blank drawing, pre-seeded with the standard engineering layers.",
+    summary="Start a drawing: blank with the engineering layers, or from a bundled/own template.",
     cost="mutate",
 )
 @mcp.tool(
@@ -1090,7 +1090,11 @@ async def drawing_info(ctx: Context) -> dict:
     tags={"drawing"},
 )
 async def drawing_new(
-    template: Annotated[str | None, "Optional path to .dwt template file"] = None,
+    template: Annotated[
+        str | None,
+        "Bundled template name (drawing_template_list: iso_a3_mech, iso_a1_arch, iso_a3_pid, "
+        "ansi_b_mech, ansi_d_arch) or a path to a .dwt/.dxf template file.",
+    ] = None,
     bootstrap: Annotated[
         bool,
         Field(
@@ -1101,19 +1105,43 @@ async def drawing_new(
     ] = True,
     ctx: Context = None,
 ) -> dict:
-    """Create a new empty drawing, optionally from a template (.dwt).
+    """Create a new drawing, optionally from a template.
 
-    When ``bootstrap=True`` (default), the drawing is also seeded with the
-    standard engineering linetypes (CENTER/HIDDEN/PHANTOM) and layers
-    (GEOMETRY, DIM, CENTER, HIDDEN, PHANTOM, HATCH, TEXT, TITLEBLOCK).
+    A bundled name resolves to `templates/<name>.dxf` headlessly and
+    `templates/<name>.dwt` on the live engine (falling back to the DXF with
+    `source: "bundled_dxf"` when no `.dwt` twin is committed); a path is used
+    as given. The result carries `template: {name|path, path, source}`.
+
+    Refused before anything is replaced: a bare name that is not in the
+    catalogue (the message lists the five), a template path that does not
+    exist, and a path outside the allowed directories. With `bootstrap=True`
+    (default) the standard engineering linetypes and layers are ensured
+    afterwards — idempotent on a template that already has them.
     """
-    if template is not None:
-        validated_template = validate_path(template, allow_write=False)
-        template = str(validated_template)
-    await ctx.info(f"Creating new drawing (template={template}, bootstrap={bootstrap})")
+    from pathlib import Path as _P
+
+    from engineering.standards.templates import resolve_template
+
     backend = _backend(ctx)
+    template_info: dict | None = None
+    if template is not None:
+        try:
+            resolved, source = resolve_template(template, backend.name)
+        except ValueError as exc:
+            raise ToolError(f"drawing_new: {exc}") from exc
+        if source == "path":
+            resolved = str(validate_path(resolved, allow_write=False))
+            if not _P(resolved).is_file():
+                raise ToolError(f"drawing_new: template file not found: {resolved}")
+            template_info = {"path": resolved, "source": source}
+        else:
+            template_info = {"name": template.strip().lower(), "path": resolved, "source": source}
+        template = resolved
+    await ctx.info(f"Creating new drawing (template={template}, bootstrap={bootstrap})")
     raw = await backend.drawing_new(template)
     result = dict(raw) if isinstance(raw, dict) else {"result": raw}
+    if template_info is not None:
+        result["template"] = template_info
     if bootstrap:
         try:
             from engineering import (
@@ -6816,7 +6844,7 @@ async def pid_tag_parse(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 19: Page Setup & Templates (4 tools) ────────────────────────────
+# ── SECTION 19: Page Setup & Templates (5 tools) ────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -6972,6 +7000,37 @@ async def batch_plot(
         return await _batch_plot(_backend(ctx), layouts, str(destination), file_pattern)
     except ValueError as exc:
         raise ToolError(str(exc)) from exc
+
+
+@cad_tool(
+    summary="List the five bundled drawing templates: standard, sheet, layers, styles, page setup.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "List Drawing Templates", "readOnlyHint": True},
+    tags={"template", "drawing", "query"},
+)
+async def drawing_template_list(ctx: Context = None) -> dict:
+    """The templates `drawing_new(template=<name>)` can start from.
+
+    Each row: `standard` (ISO/ANSI), `sheet`, `paper`, `layout` (the sheet tab's
+    name), `layer_set` (mech / pid / iso13567), `dimstyle` / `textstyle`
+    (ISO-25 / ISOCP or ANSI / ROMANS), `scale`, `title_block` (the ISO 5457 A3
+    frame, A3 sheets only), the `settings` applied, and `files.dxf` /
+    `files.dwt` with `present` flags — the `.dwt` twins exist only once built
+    on a live AutoCAD (`scripts/smoke_settings_com.py --build-dwt`). Never
+    refuses; it reads a catalogue.
+    """
+    from engineering.standards.templates import TEMPLATES_DIR, template_rows
+
+    rows = template_rows()
+    return {
+        "ok": True,
+        "templates": rows,
+        "count": len(rows),
+        "templates_dir": str(TEMPLATES_DIR),
+        "engine": _backend(ctx).name,
+    }
 
 
 # ---------------------------------------------------------------------------

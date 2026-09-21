@@ -9,6 +9,7 @@ COPY server.py config.py security.py version.py ./
 COPY backends/ ./backends/
 COPY engineering/ ./engineering/
 COPY discovery/ ./discovery/
+COPY templates/ ./templates/
 
 RUN pip install --no-cache-dir -e .
 

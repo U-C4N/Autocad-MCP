@@ -445,7 +445,13 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
     ),
     "drawing_new": ToolAliases(
         acad=("NEW", "QNEW"),
-        synonyms=("new drawing", "start a drawing", "blank sheet", "create a file"),
+        synonyms=(
+            "new drawing",
+            "start a drawing",
+            "blank sheet",
+            "create a file",
+            "start from a bundled template",
+        ),
     ),
     "drawing_open": ToolAliases(
         acad=("OPEN",),
@@ -1443,6 +1449,17 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "batch print",
             "one pdf per sheet",
             "plot the whole drawing set",
+        ),
+    ),
+    "drawing_template_list": ToolAliases(
+        acad=(),
+        synonyms=(
+            "which templates are there",
+            "bundled templates",
+            "iso a3 template",
+            "ansi b sheet",
+            "start from a standard sheet",
+            "dwt list",
         ),
     ),
     "page_setup_apply": ToolAliases(

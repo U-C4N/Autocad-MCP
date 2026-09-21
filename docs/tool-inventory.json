@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 170,
+    "tools": 171,
     "resources": 8,
     "prompts": 5,
     "groups": 20
@@ -25,7 +25,7 @@
     "premium": 12,
     "solids": 5,
     "system": 7,
-    "templates": 2,
+    "templates": 3,
     "transactions": 3,
     "validation": 1,
     "view": 4
@@ -596,7 +596,7 @@
       "name": "drawing_new",
       "group": "drawing",
       "cost": "mutate",
-      "summary": "Start a blank drawing, pre-seeded with the standard engineering layers.",
+      "summary": "Start a drawing: blank with the engineering layers, or from a bundled/own template.",
       "tags": [
         "drawing"
       ],
@@ -724,6 +724,21 @@
         "title": "Drawing Settings (read / change)",
         "readOnlyHint": false,
         "destructiveHint": false
+      }
+    },
+    {
+      "name": "drawing_template_list",
+      "group": "templates",
+      "cost": "read",
+      "summary": "List the five bundled drawing templates: standard, sheet, layers, styles, page setup.",
+      "tags": [
+        "drawing",
+        "query",
+        "template"
+      ],
+      "annotations": {
+        "title": "List Drawing Templates",
+        "readOnlyHint": true
       }
     },
     {
