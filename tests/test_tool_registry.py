@@ -519,8 +519,11 @@ async def test_tool_group_sizes_are_unchanged():
     tag is ranked first in `_GROUP_TAG_PRIORITY` so those tools file under
     `pid` rather than under their secondary `query` / `create` tags. `system`
     moved 7 -> 8 when v1.6's `system_variable_describe` (the sysvar catalogue
-    as a read-only tool) opened SECTION 20. Every other number here has been
-    unchanged since the snapshot was taken.
+    as a read-only tool) opened SECTION 20. `drawing` moved 11 -> 13 when
+    v1.6's `drawing_properties_get` / `drawing_properties_set` (DWGPROPS on
+    both engines) joined SECTION 20 — tagged `drawing` and `settings`, and
+    `settings` is not a group tag, so they file under drawing. Every other
+    number here has been unchanged since the snapshot was taken.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
@@ -529,7 +532,7 @@ async def test_tool_group_sizes_are_unchanged():
         "blocks": 9,
         "corner_ops": 4,
         "dimensions": 5,
-        "drawing": 11,
+        "drawing": 13,
         "engineering": 10,
         "entity_creation": 18,
         "entity_modification": 16,
@@ -545,4 +548,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 167
+    assert sum(sizes.values()) == 169

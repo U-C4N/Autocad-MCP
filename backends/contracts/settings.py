@@ -505,3 +505,53 @@ def _decode_setting(key: str, kind: str, raw: Any) -> Any:
         except (TypeError, ValueError):
             return raw
     return raw
+
+
+# ---------------------------------------------------------------------------
+# Document properties (DWGPROPS) — validation shared by both engines
+# ---------------------------------------------------------------------------
+
+#: The SummaryInfo fields AutoCAD's DWGPROPS dialog shows on its Summary tab.
+SUMMARY_FIELDS = ("title", "subject", "author", "keywords", "comments")
+
+
+def validate_drawing_properties(
+    summary: dict | None, custom: dict | None
+) -> tuple[dict[str, str], dict[str, str], list[str]]:
+    """→ (summary fields to write, custom keys to write, custom keys to delete).
+
+    Refuses the whole request by name before either engine writes anything:
+    an unknown summary field is a ``ValueError``; a non-string summary value,
+    a non-string or empty custom key, or a custom value that is neither a
+    string nor ``None`` (``None`` deletes) is a ``TypeError``. Values are never
+    coerced with ``str()`` — a number the caller meant as text is theirs to
+    format.
+    """
+    if summary is not None and not isinstance(summary, dict):
+        raise TypeError("summary: must be an object of {field: text}")
+    written: dict[str, str] = {}
+    for field, value in (summary or {}).items():
+        if field not in SUMMARY_FIELDS:
+            raise ValueError(f"summary: unknown field {field!r} (valid: {list(SUMMARY_FIELDS)})")
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise TypeError(f"summary.{field}: must be a string, got {type(value).__name__}")
+        written[field] = value
+    if custom is not None and not isinstance(custom, dict):
+        raise TypeError("custom: must be an object of {key: text | null}")
+    to_write: dict[str, str] = {}
+    to_delete: list[str] = []
+    for key, value in (custom or {}).items():
+        if not isinstance(key, str) or not key.strip():
+            raise TypeError(f"custom: key {key!r} must be a non-empty string")
+        if value is None:
+            to_delete.append(key)
+        elif isinstance(value, str):
+            to_write[key] = value
+        else:
+            raise TypeError(
+                f"custom[{key!r}]: must be a string or null (null deletes the key), "
+                f"got {type(value).__name__}"
+            )
+    return written, to_write, to_delete

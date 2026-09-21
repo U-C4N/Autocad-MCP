@@ -39,7 +39,12 @@ from .base import (
     normalize_lineweight,
     shoelace_area,
 )
-from .contracts.settings import parse_scale, scale_value
+from .contracts.settings import (
+    SUMMARY_FIELDS,
+    parse_scale,
+    scale_value,
+    validate_drawing_properties,
+)
 from .quarantine import (
     AbandonedCall,
     DocumentQuarantineError,
@@ -1109,6 +1114,10 @@ class EzdxfBackend(AutoCADBackend):
                 "lisp": FeatureCapability(False, reason="live_com_only"),
                 "registry_sysvar": FeatureCapability(
                     False, reason="registry_saved_variables_have_no_home_in_a_file"
+                ),
+                "dwgprops": FeatureCapability(
+                    False,
+                    reason="summary_fields_need_live_autocad;custom_properties_supported",
                 ),
             },
         )
@@ -6086,3 +6095,55 @@ class EzdxfBackend(AutoCADBackend):
         else:
             entry.dxf.value = name
         return name
+
+    async def drawing_properties_get(self) -> dict:
+        def _sync():
+            doc = self._require_doc()
+            return {
+                "summary": {field: None for field in SUMMARY_FIELDS},
+                "summary_available": False,
+                "custom": {tag: value for tag, value in doc.header.custom_vars},
+                "backend": "ezdxf",
+            }
+
+        return await self._async(_sync)
+
+    async def drawing_properties_set(
+        self, summary: dict | None = None, custom: dict | None = None
+    ) -> dict:
+        written, to_write, to_delete = validate_drawing_properties(summary, custom)
+        if written:
+            # The five summary fields live in the DWG SummaryInfo stream, which
+            # a DXF has no slot for; refuse before the custom keys are touched.
+            raise UnsupportedCapabilityError(
+                "dwgprops",
+                "drawing_properties_set: the summary fields (title, subject, author, keywords, "
+                "comments) live in the DWG SummaryInfo, which the headless ezdxf backend cannot "
+                f"write (asked for {sorted(written)}). Custom properties work on both engines; "
+                "set the summary on the live COM backend.",
+            )
+
+        def _sync():
+            doc = self._require_doc()
+            custom_vars = doc.header.custom_vars
+            for key, value in to_write.items():
+                if custom_vars.has_tag(key):
+                    custom_vars.replace(key, value)
+                else:
+                    custom_vars.append(key, value)
+            deleted = []
+            for key in to_delete:
+                if custom_vars.has_tag(key):
+                    custom_vars.remove(key, all=True)
+                    deleted.append(key)
+            if to_write or deleted:
+                self._mark_dirty()
+            return {
+                "ok": True,
+                "summary_written": [],
+                "custom_written": sorted(to_write),
+                "custom_deleted": deleted,
+                "backend": "ezdxf",
+            }
+
+        return await self._async(_sync)

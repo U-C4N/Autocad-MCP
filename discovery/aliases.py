@@ -72,12 +72,15 @@ class ToolAliases:
 #   PLINE -- a raw polyline (entity_create_polyline) or a P&ID line run
 #       between two ports (pid_line_draw), which is an LWPOLYLINE with a
 #       class, a number and markers; a drafter typing it could mean either.
+#   DWGPROPS -- one dialog, three tabs: General (drawing_info), Summary and
+#       Custom (drawing_properties_get / drawing_properties_set).
 #
 # Every other AutoCAD command must map to exactly one tool.
 SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
     {
         "ARRAY",
         "BLOCK",
+        "DWGPROPS",
         "ERASE",
         "INSERT",
         "LAYER",
@@ -451,6 +454,28 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "drawing plan",
             "decide what to draw",
             "drawing intent",
+        ),
+    ),
+    "drawing_properties_get": ToolAliases(
+        acad=("DWGPROPS",),
+        synonyms=(
+            "drawing properties",
+            "document properties",
+            "summary info",
+            "title subject author keywords",
+            "custom properties",
+            "who made this drawing",
+        ),
+    ),
+    "drawing_properties_set": ToolAliases(
+        acad=("DWGPROPS",),
+        synonyms=(
+            "set the drawing title",
+            "set author and keywords",
+            "add a custom property",
+            "project number in the file properties",
+            "edit summary info",
+            "delete a custom property",
         ),
     ),
     "drawing_preflight": ToolAliases(

@@ -6853,7 +6853,7 @@ async def pid_tag_parse(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 20: Environment (1 tool) ────────────────────────────────────────
+# ── SECTION 20: Environment (3 tools) ───────────────────────────────────────
 # ---------------------------------------------------------------------------
 # Group C (settings) opens this section with `system_variable_describe` and,
 # in Task 16, the two `drawing_properties_*` tools; group V's merge extends the
@@ -6910,6 +6910,71 @@ async def system_variable_describe(
         "names": sorted(SYSVAR_CATALOG),
         "hint": "pass name=<VARIABLE> for one row or search=<words> to filter",
     }
+
+
+@cad_tool(
+    summary="Read the drawing's title, subject, author, keywords, comments and custom properties.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Drawing Properties (read)", "readOnlyHint": True},
+    tags={"drawing", "settings"},
+)
+async def drawing_properties_get(ctx: Context = None) -> dict:
+    """The DWGPROPS dialog as data: `summary` (title, subject, author, keywords,
+    comments), `summary_available`, and `custom` ({key: value}).
+
+    On the live engine the summary comes from the document's SummaryInfo. The
+    headless engine cannot read that stream, so the five summary fields are
+    `null` with `summary_available: false` — not empty strings, which would
+    claim the drawing has no title. Custom properties (`$CUSTOMPROPERTYTAG` /
+    `$CUSTOMPROPERTY` header pairs) are read on both engines.
+    """
+    return await _backend(ctx).drawing_properties_get()
+
+
+@cad_tool(
+    summary="Set the drawing's summary fields and add, change or delete custom properties.",
+    cost="safe",
+)
+@mcp.tool(
+    annotations={"title": "Drawing Properties (write)", "readOnlyHint": False},
+    tags={"drawing", "settings"},
+)
+async def drawing_properties_set(
+    title: Annotated[str | None, "SummaryInfo Title"] = None,
+    subject: Annotated[str | None, "SummaryInfo Subject"] = None,
+    author: Annotated[str | None, "SummaryInfo Author"] = None,
+    keywords: Annotated[str | None, "SummaryInfo Keywords"] = None,
+    comments: Annotated[str | None, "SummaryInfo Comments"] = None,
+    custom: Annotated[
+        dict | None,
+        "Custom properties to write: {key: text}; a null value deletes the key. "
+        "Keys not mentioned are left alone.",
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """Write DWGPROPS fields. Only the arguments given are touched; returns
+    `summary_written`, `custom_written` and `custom_deleted` (a key that was
+    never there is not reported deleted).
+
+    Refusals, before anything is written: a summary field on the headless
+    engine (`capability: dwgprops` — SummaryInfo lives in the DWG, a DXF has
+    no slot for it; custom properties still work headlessly), a non-string
+    value (`TypeError` naming the field or key — nothing is coerced with
+    `str()`), an empty custom key. On the live engine a custom key is added
+    with AddCustomInfo when new and changed with SetCustomByKey when present.
+    """
+    summary = {
+        "title": title,
+        "subject": subject,
+        "author": author,
+        "keywords": keywords,
+        "comments": comments,
+    }
+    touched = [k for k, v in summary.items() if v is not None] + sorted(custom or {})
+    await ctx.info(f"Setting drawing properties: {', '.join(touched) or 'nothing'}")
+    return await _backend(ctx).drawing_properties_set(summary, custom)
 
 
 # ---------------------------------------------------------------------------

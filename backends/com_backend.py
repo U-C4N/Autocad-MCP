@@ -36,6 +36,7 @@ from .base import (
     rad2deg,
     shoelace_area,
 )
+from .contracts.settings import SUMMARY_FIELDS, validate_drawing_properties
 
 log = logging.getLogger(__name__)
 
@@ -194,6 +195,9 @@ def _msp():
 
 
 _BUILTIN_LINETYPES = {"continuous", "bylayer", "byblock"}
+
+#: `drawing_properties_*` field → `IAcadSummaryInfo` property.
+_SUMMARY_ATTRS = {field: field.capitalize() for field in SUMMARY_FIELDS}
 
 
 def _ensure_linetype_loaded(name: str) -> None:
@@ -815,6 +819,7 @@ class ComBackend(AutoCADBackend):
                 "solid_3d": _solid_3d_capability(),
                 "lisp": FeatureCapability(True, "sanitized"),
                 "registry_sysvar": FeatureCapability(True, "native"),
+                "dwgprops": FeatureCapability(True, "native"),
             },
         )
 
@@ -4255,5 +4260,63 @@ class ComBackend(AutoCADBackend):
             _apply_entity_attrs(xline, layer, None, None)
             _regen()
             return _entity_info(xline)
+
+        return await self._run(_sync)
+
+    # ── settings (track E, group C) ───────────────────────────────────────────
+
+    async def drawing_properties_get(self) -> dict:
+        def _sync():
+            info = _acad_doc().SummaryInfo
+            summary = {
+                field: str(getattr(info, attr) or "") for field, attr in _SUMMARY_ATTRS.items()
+            }
+            custom: dict[str, str] = {}
+            for index in range(int(info.NumCustomInfo())):
+                key, value = info.GetCustomByIndex(index)
+                custom[str(key)] = str(value)
+            return {
+                "summary": summary,
+                "summary_available": True,
+                "custom": custom,
+                "backend": "com",
+            }
+
+        return await self._run(_sync)
+
+    async def drawing_properties_set(
+        self, summary: dict | None = None, custom: dict | None = None
+    ) -> dict:
+        # Validated before any ActiveX call: a bad field or value raises here
+        # and SummaryInfo is never touched.
+        written, to_write, to_delete = validate_drawing_properties(summary, custom)
+
+        def _sync():
+            info = _acad_doc().SummaryInfo
+            existing: set[str] = set()
+            for index in range(int(info.NumCustomInfo())):
+                key, _value = info.GetCustomByIndex(index)
+                existing.add(str(key))
+            for field, value in written.items():
+                setattr(info, _SUMMARY_ATTRS[field], value)
+            for key, value in to_write.items():
+                # AddCustomInfo on an existing key raises in AutoCAD; SetCustomByKey
+                # on a missing one does too — route by what is really there.
+                if key in existing:
+                    info.SetCustomByKey(key, value)
+                else:
+                    info.AddCustomInfo(key, value)
+            deleted = []
+            for key in to_delete:
+                if key in existing:
+                    info.RemoveCustomByKey(key)
+                    deleted.append(key)
+            return {
+                "ok": True,
+                "summary_written": sorted(written),
+                "custom_written": sorted(to_write),
+                "custom_deleted": deleted,
+                "backend": "com",
+            }
 
         return await self._run(_sync)
