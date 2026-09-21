@@ -454,29 +454,63 @@ async def test_fit_on_a_layout_plot_is_one_to_one(backend):
     assert frame["xlim"][1] - frame["xlim"][0] == pytest.approx(420.0)
 
 
-async def test_extents_plot_fits_the_printable_area_and_centres(backend, tmp_path):
+@pytest.mark.parametrize(
+    ("paper", "paper_units", "sheet_mm", "frame_units"),
+    [
+        pytest.param("ISO_A3", "mm", (420.0, 297.0), (800.0, 500.0), id="mm"),
+        pytest.param("ANSI_B", "inches", (432.0, 279.0), (16.0, 10.0), id="inches"),
+    ],
+)
+async def test_extents_plot_fits_the_printable_area_and_centres(
+    backend, tmp_path, paper, paper_units, sheet_mm, frame_units
+):
     """extents + fit: the paper-space extents (not the main viewport, which
-    ezdxf's bbox would count) scale to the printable area and sit centred."""
+    ezdxf's bbox would count) scale to the printable area and sit centred.
+
+    The inch sheet is the label's regression: ``effective_scale`` is paper
+    units per drawing unit, and 25.4 mm per paper unit *divides* the mm ratio.
+    Measured before the fix: the ANSI B fit reported ``607.06:1`` for a fit
+    that is ``1:1.06276`` (off by 25.4 squared) while the ink landed right,
+    and the mm sheet could not see it because there the unit is 1.
+    """
     await _sheet(backend)
     await backend.page_setup_apply(
-        SHEET, resolve_page_setup("ISO_A3", scale="fit", plot_area="extents", center=True)
+        SHEET,
+        resolve_page_setup(
+            paper,
+            "landscape",
+            scale="fit",
+            plot_area="extents",
+            center=True,
+            paper_units=paper_units,
+        ),
     )
     lay = backend._doc.layouts.get(SHEET)
-    lay.add_lwpolyline([(0, 0), (800, 0), (800, 500), (0, 500)], close=True)
-    top, bottom, left_mm, right_mm = (await backend.page_setup_list(SHEET))[0]["margins_mm"]
-    printable_w, printable_h = 420.0 - left_mm - right_mm, 297.0 - top - bottom
-    mm_per_unit = min(printable_w / 800.0, printable_h / 500.0)
+    sheet_w, sheet_h = sheet_mm
+    frame_w, frame_h = frame_units
+    lay.add_lwpolyline([(0, 0), (frame_w, 0), (frame_w, frame_h), (0, frame_h)], close=True)
+    row = (await backend.page_setup_list(SHEET))[0]
+    assert row["paper_units"] == paper_units and row["size_mm"] == list(sheet_mm)
+    top, bottom, left_mm, right_mm = row["margins_mm"]
+    printable_w, printable_h = sheet_w - left_mm - right_mm, sheet_h - top - bottom
+    mm_per_unit = min(printable_w / frame_w, printable_h / frame_h)
+    mm_per_paper_unit = 25.4 if paper_units == "inches" else 1.0
 
     frame = backend._paper_frame(lay)
     assert frame["plot_area"] == "extents" and frame["plot_area_applied"] is True
     assert frame["scale"] == "fit"
-    assert frame["xlim"][1] - frame["xlim"][0] == pytest.approx(420.0 / mm_per_unit)
+    # The axes window is unit-free: the sheet in drawing units.
+    assert frame["xlim"][1] - frame["xlim"][0] == pytest.approx(sheet_w / mm_per_unit)
 
     result, (first, last, width) = await _export_png(backend, tmp_path, SHEET, "extents")
-    assert result["effective_scale"] == scale_label(1.0, 1.0 / mm_per_unit)
-    # The frame is the wider of the two: it spans the printable width exactly.
-    assert abs(first - int(width * left_mm / 420.0)) <= 3, (first, last, width)
-    assert abs(last - int(width * (420.0 - right_mm) / 420.0)) <= 3, (first, last, width)
+    # Paper units per drawing unit, not millimetres per drawing unit.
+    assert result["effective_scale"] == scale_label(1.0, mm_per_paper_unit / mm_per_unit)
+    # The frame sits centred in the printable area; the mm case is width-bound
+    # (it spans the printable width exactly), the inch case is height-bound.
+    frame_mm = frame_w * mm_per_unit
+    ink_left_mm = left_mm + (printable_w - frame_mm) / 2.0
+    assert abs(first - int(width * ink_left_mm / sheet_w)) <= 3, (first, last, width)
+    assert abs(last - int(width * (ink_left_mm + frame_mm) / sheet_w)) <= 3, (first, last, width)
 
 
 async def test_extents_plot_at_a_fixed_scale_starts_at_the_plot_origin(backend):

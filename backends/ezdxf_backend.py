@@ -2524,7 +2524,12 @@ class EzdxfBackend(AutoCADBackend):
                 usable = [r for r in ratios if r is not None]
                 mm_per_unit = min(usable) if usable else 1.0
                 units_per_mm = 1.0 / mm_per_unit
-                paper_per_unit = mm_per_unit * unit
+                # ``unit`` is millimetres per paper unit (25.4 under inches),
+                # so paper units per drawing unit *divides* by it. Multiplying
+                # reported a 1:1.06 inch fit as ``607.06:1`` (off by 25.4^2)
+                # while the render itself was right, ``units_per_mm`` being
+                # unit-free; the mm sheet hid it because there ``unit`` is 1.
+                paper_per_unit = mm_per_unit / unit
                 effective = (
                     scale_label(paper_per_unit, 1.0)
                     if paper_per_unit >= 1.0
