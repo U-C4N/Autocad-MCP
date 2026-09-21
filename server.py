@@ -7240,7 +7240,9 @@ async def user_select(
     ctx: Context = None,
 ) -> dict:
     """Returns `handles` the operator picked — one with `mode="single"` (plus
-    the `picked` point), any number with `mode="multiple"` (Enter with nothing
+    the `picked` point `[x, y]` in **WCS** — AutoCAD reports it in the current
+    UCS and the tool translates, so a UCS made current by `ucs_set` never
+    shifts it), any number with `mode="multiple"` (Enter with nothing
     selected is `count: 0`, not a cancel). ESC → `cancelled: true`; a wait
     longer than `COM_CALL_TIMEOUT` → `timed_out: true`. Refusals: a mode
     outside the two, an empty prompt; headless, `capability:

@@ -148,7 +148,7 @@ class EnvironmentContract(ABC):
         reason="prompting the operator needs a live AutoCAD session",
     )
     async def user_select(self, prompt: str, mode: str = "single") -> dict:
-        """→ ``{"cancelled", "handles": [...]}``."""
+        """→ ``{"cancelled", "handles": [...]}``; ``mode="single"`` adds ``"picked": [x, y]`` in WCS."""
         ...
 
     @capability(  # noqa: B027 — @capability supplies the body

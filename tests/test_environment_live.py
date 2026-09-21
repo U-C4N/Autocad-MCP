@@ -157,9 +157,21 @@ def _com_error(description: str):
 
 
 class _FakeUtility:
+    """IAcadUtility as measured on AutoCAD 2026.
+
+    ``GetPoint`` answers in WCS; ``GetEntity``'s PickedPoint is in the
+    *current UCS* (``ucs_origin`` / ``ucs_xdir`` / ``ucs_ydir``, world by
+    default); ``TranslateCoordinates`` only accepts a VT_ARRAY|VT_R8 VARIANT —
+    the plain tuple GetEntity returns is refused as "Invalid argument Point".
+    """
+
     def __init__(self):
         self.calls: list[tuple[str, tuple]] = []
         self.point = (12.5, 7.25, 0.0)
+        self.picked_ucs = (3.0, 4.0, 0.0)
+        self.ucs_origin = (0.0, 0.0, 0.0)
+        self.ucs_xdir = (1.0, 0.0, 0.0)
+        self.ucs_ydir = (0.0, 1.0, 0.0)
         self.raise_on_pick = None
         self.entity = types.SimpleNamespace(Handle="1F3")
 
@@ -173,7 +185,34 @@ class _FakeUtility:
         self.calls.append(("GetEntity", (prompt,)))
         if self.raise_on_pick is not None:
             raise self.raise_on_pick
-        return self.entity, (3.0, 4.0, 0.0)
+        return self.entity, self.picked_ucs
+
+    def TranslateCoordinates(self, point, from_cs, to_cs, displacement):
+        import pythoncom
+        from win32com.client import VARIANT
+
+        if not isinstance(point, VARIANT) or point.varianttype != (
+            pythoncom.VT_ARRAY | pythoncom.VT_R8
+        ):
+            raise _com_error("Invalid argument Point in TranslateCoordinates")
+        self.calls.append(
+            ("TranslateCoordinates", (tuple(point.value), from_cs, to_cs, displacement))
+        )
+        assert (from_cs, to_cs, displacement) == (1, 0, False)  # acUCS → acWorld, a point
+        u, v, w = point.value
+        ox, oy, oz = self.ucs_origin
+        xx, xy, xz = self.ucs_xdir
+        yx, yy, yz = self.ucs_ydir
+        zx, zy, zz = (
+            xy * yz - xz * yy,
+            xz * yx - xx * yz,
+            xx * yy - xy * yx,
+        )
+        return (
+            ox + u * xx + v * yx + w * zx,
+            oy + u * xy + v * yy + w * zy,
+            oz + u * xz + v * yz + w * zz,
+        )
 
     def Prompt(self, text):
         self.calls.append(("Prompt", (text,)))
@@ -336,9 +375,40 @@ async def test_com_select_single_uses_getentity(com_backend):
         "picked": [3.0, 4.0],
         "backend": "com",
     }
-    assert document.Utility.calls == [("GetEntity", ("\nPick the flange",))]
+    assert document.Utility.calls == [
+        ("GetEntity", ("\nPick the flange",)),
+        ("TranslateCoordinates", ((3.0, 4.0, 0.0), 1, 0, False)),
+    ]
     document.Utility.raise_on_pick = _com_error("Function cancelled")
     assert (await backend.user_select("Pick"))["cancelled"] is True
+
+
+async def test_com_select_single_reports_the_pick_in_wcs_under_a_ucs(com_backend):
+    """MEASURED (AutoCAD 2026): GetEntity's PickedPoint is in the current UCS.
+
+    UCS origin (100,50,0) rotated 90 deg (X dir (0,1,0)); the operator picked
+    a circle at WCS (105,70): GetEntity reported (20,-5,0) and
+    TranslateCoordinates(acUCS → acWorld) gave (105,70,0). GetPoint already
+    answers in WCS, so ``user_pick_point`` and ``user_select`` must agree.
+    """
+    backend, app, document = com_backend
+    utility = document.Utility
+    utility.ucs_origin = (100.0, 50.0, 0.0)
+    utility.ucs_xdir = (0.0, 1.0, 0.0)
+    utility.ucs_ydir = (-1.0, 0.0, 0.0)
+    utility.picked_ucs = (20.0, -5.0, 0.0)
+    result = await backend.user_select("Pick the circle")
+    assert result["picked"] == [105.0, 70.0]
+    assert result["handles"] == ["1F3"] and result["cancelled"] is False
+    # A translated UCS without rotation (origin (100,50)): (15,20) → (115,70).
+    utility.ucs_xdir, utility.ucs_ydir = (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)
+    utility.picked_ucs = (15.0, 20.0, 0.0)
+    assert (await backend.user_select("Pick"))["picked"] == [115.0, 70.0]
+    # GetPoint is not translated — it already answers in WCS.
+    utility.point = (110.0, 70.0, 0.0)
+    point = await backend.user_pick_point("Pick")
+    assert (point["x"], point["y"]) == (110.0, 70.0)
+    assert not any(name == "TranslateCoordinates" for name, _ in utility.calls[-1:])
 
 
 async def test_com_select_multiple_uses_a_selection_set_and_deletes_it(com_backend):

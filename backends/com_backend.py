@@ -108,6 +108,11 @@ def _com_teardown():
             pass
 
 
+# AcCoordinateSystem, as Utility.TranslateCoordinates takes it (From / To).
+_AC_WORLD = 0
+_AC_UCS = 1
+
+
 def _apoint(x: float, y: float, z: float = 0.0):
     """Create a VARIANT double-array point for AutoCAD COM."""
     return win32com.client.VARIANT(
@@ -2081,11 +2086,24 @@ class ComBackend(AutoCADBackend):
                     if reason is None:
                         raise
                     return {"cancelled": True, "reason": reason, "handles": [], "backend": "com"}
+                # MEASURED (AutoCAD 2026): GetEntity's PickedPoint is in the
+                # *current UCS* — under a UCS at (100,50) rotated 90 deg, a pick
+                # on a circle at WCS (105,70) came back as (20,-5,0) — whereas
+                # Utility.GetPoint already answers in WCS. Every coordinate out
+                # of a tool is WCS, so translate acUCS → acWorld. The point must
+                # be a VT_ARRAY|VT_R8 VARIANT: the tuple GetEntity hands back is
+                # refused as "Invalid argument Point".
+                world = doc.Utility.TranslateCoordinates(
+                    _apoint(picked[0], picked[1], picked[2] if len(picked) > 2 else 0.0),
+                    _AC_UCS,
+                    _AC_WORLD,
+                    False,
+                )
                 return {
                     "cancelled": False,
                     "mode": "single",
                     "handles": [str(obj.Handle)],
-                    "picked": [float(picked[0]), float(picked[1])],
+                    "picked": [float(world[0]), float(world[1])],
                     "backend": "com",
                 }
             doc.Utility.Prompt(f"\n{text}\n")
