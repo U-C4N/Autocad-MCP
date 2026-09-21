@@ -4293,22 +4293,29 @@ class ComBackend(AutoCADBackend):
 
         def _sync():
             info = _acad_doc().SummaryInfo
+            # AutoCAD's custom keys are case-insensitive (measured on 2026:
+            # AddCustomInfo("PROJECT") over an existing "Project" raises
+            # 'Duplicate key'; SetCustomByKey / RemoveCustomByKey match either
+            # spelling and the stored spelling is kept), so existence is
+            # checked casefolded — a case-sensitive check routed "PROJECT" to
+            # AddCustomInfo and failed mid-write after the summary fields and
+            # the earlier keys were already applied.
             existing: set[str] = set()
             for index in range(int(info.NumCustomInfo())):
                 key, _value = info.GetCustomByIndex(index)
-                existing.add(str(key))
+                existing.add(str(key).casefold())
             for field, value in written.items():
                 setattr(info, _SUMMARY_ATTRS[field], value)
             for key, value in to_write.items():
                 # AddCustomInfo on an existing key raises in AutoCAD; SetCustomByKey
                 # on a missing one does too — route by what is really there.
-                if key in existing:
+                if key.casefold() in existing:
                     info.SetCustomByKey(key, value)
                 else:
                     info.AddCustomInfo(key, value)
             deleted = []
             for key in to_delete:
-                if key in existing:
+                if key.casefold() in existing:
                     info.RemoveCustomByKey(key)
                     deleted.append(key)
             return {

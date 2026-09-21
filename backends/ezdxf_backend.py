@@ -6142,15 +6142,26 @@ class EzdxfBackend(AutoCADBackend):
                     "Save as R2004 or newer first."
                 )
             custom_vars = doc.header.custom_vars
+            # AutoCAD's custom keys are case-insensitive (measured on 2026:
+            # SetCustomByKey("PROJECT") updates an existing "Project" and keeps
+            # that spelling; a second AddCustomInfo is 'Duplicate key'), and
+            # ezdxf's CustomVars are plain case-sensitive tuples, so the match
+            # is done here: an existing tag is updated in place under its
+            # stored spelling, never duplicated under a second one.
+            props = custom_vars.properties
             for key, value in to_write.items():
-                if custom_vars.has_tag(key):
-                    custom_vars.replace(key, value)
+                folded = key.casefold()
+                hits = [i for i, (tag, _v) in enumerate(props) if tag.casefold() == folded]
+                if hits:
+                    props[hits[0]] = (props[hits[0]][0], value)
                 else:
                     custom_vars.append(key, value)
             deleted = []
             for key in to_delete:
-                if custom_vars.has_tag(key):
-                    custom_vars.remove(key, all=True)
+                folded = key.casefold()
+                kept = [(tag, v) for tag, v in props if tag.casefold() != folded]
+                if len(kept) != len(props):
+                    props[:] = kept
                     deleted.append(key)
             if to_write or deleted:
                 self._mark_dirty()

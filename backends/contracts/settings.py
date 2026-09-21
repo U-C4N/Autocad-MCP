@@ -515,10 +515,14 @@ def _decode_setting(key: str, kind: str, raw: Any) -> Any:
 SUMMARY_FIELDS = ("title", "subject", "author", "keywords", "comments")
 
 
-#: Characters AutoCAD's ``SummaryInfo.AddCustomInfo`` rejects inside a custom
-#: key with ``Invalid key`` (measured on AutoCAD 2026; internal spaces, tabs
-#: and other unicode are accepted). ``\xa0`` is the no-break space.
-_CUSTOM_KEY_FORBIDDEN = {"=": "'='", ";": "';'", "\xa0": "a no-break space (U+00A0)"}
+#: The printable characters AutoCAD's ``SummaryInfo.AddCustomInfo`` rejects
+#: anywhere inside a custom key with ``Invalid key``. Measured on AutoCAD 2026
+#: by sweeping every character 0x20-0x7E through ``AddCustomInfo`` on a scratch
+#: document: exactly these thirteen are refused; every other printable ASCII
+#: character, every control character (0x01-0x1F, including tab), internal
+#: spaces, a no-break space and other unicode are accepted. Leading or
+#: trailing whitespace (space, tab or no-break space) is refused separately.
+_CUSTOM_KEY_FORBIDDEN = frozenset('"*,/:;<=>?\\`|')
 
 
 def _check_custom_text(key: str, text: str, what: str) -> None:
@@ -538,24 +542,30 @@ def _check_custom_text(key: str, text: str, what: str) -> None:
         )
 
 
-def _check_custom_key(key: str) -> None:
-    """Mirror AutoCAD's own custom-key rules so the live engine cannot refuse
-    mid-write. Measured: ``AddCustomInfo`` raises ``Invalid key`` for a key
-    with leading/trailing whitespace and for ``=``, ``;`` or a no-break space
-    anywhere in it — after the summary fields and earlier keys were already
-    applied — while the headless engine happily writes the same key."""
+def _check_custom_key_for_write(key: str) -> None:
+    """Mirror AutoCAD's ``AddCustomInfo`` key syntax so the live engine cannot
+    refuse mid-write. Measured on AutoCAD 2026: ``Invalid key`` for a key with
+    leading/trailing whitespace (space, tab, no-break space) or any of
+    ``_CUSTOM_KEY_FORBIDDEN`` anywhere in it — raised after the summary fields
+    and the earlier keys were already applied, while the headless engine
+    writes the same key without complaint. Only a *write* goes through
+    ``AddCustomInfo``; ``RemoveCustomByKey`` does not validate syntax (measured:
+    ``Key not found``, never ``Invalid key``), so a delete is not held to these
+    rules — a key that reached the drawing by other means (a DXF written by
+    ezdxf, say) must stay removable."""
     if key != key.strip():
         raise ValueError(
             f"custom: key {key!r} has leading or trailing whitespace — AutoCAD's "
             "AddCustomInfo rejects it as 'Invalid key'. Strip the key."
         )
-    for char, name in _CUSTOM_KEY_FORBIDDEN.items():
-        if char in key:
-            raise ValueError(
-                f"custom: key {key!r} contains {name} — AutoCAD's AddCustomInfo rejects "
-                "it as 'Invalid key'. Use another separator."
-            )
-    _check_custom_text(key, key, "key")
+    bad = sorted(set(key) & _CUSTOM_KEY_FORBIDDEN)
+    if bad:
+        shown = " ".join(repr(c) for c in bad)
+        raise ValueError(
+            f"custom: key {key!r} contains {shown} — AutoCAD's AddCustomInfo rejects "
+            f"it as 'Invalid key' (refused characters: {''.join(sorted(_CUSTOM_KEY_FORBIDDEN))}). "
+            "Use another separator."
+        )
 
 
 def validate_drawing_properties(
@@ -574,11 +584,20 @@ def validate_drawing_properties(
     enforce or the file format would break on, so the same call cannot succeed
     on one engine and half-apply on the other (``ValueError`` naming the key):
 
-    * a key with leading or trailing whitespace, or containing ``=``, ``;`` or
-      a no-break space — AutoCAD's ``AddCustomInfo`` rejects these as
-      ``Invalid key`` mid-write (measured on AutoCAD 2026), after the summary
-      fields and the earlier keys were already applied; the headless engine
-      writes them without complaint, and AutoCAD then loads them from the DXF;
+    * a key to *write* with leading or trailing whitespace, or containing any
+      of the thirteen characters ``" * , / : ; < = > ? \\ ` |`` — AutoCAD's
+      ``AddCustomInfo`` rejects exactly these as ``Invalid key`` mid-write
+      (measured on AutoCAD 2026 over every printable ASCII character), after
+      the summary fields and the earlier keys were already applied; the
+      headless engine writes them without complaint, and AutoCAD then loads
+      them from the DXF. A *delete* (``None``) is exempt: ``RemoveCustomByKey``
+      never validates syntax, and such keys do reach drawings by other routes,
+      so they must stay removable;
+    * two keys in one request that differ only by case — AutoCAD's custom keys
+      are case-insensitive (measured: ``AddCustomInfo("PROJECT")`` over an
+      existing ``Project`` raises ``Duplicate key``; ``SetCustomByKey`` /
+      ``RemoveCustomByKey`` match either spelling), so the second would fail
+      mid-write on the live engine and write a second tag headlessly;
     * a key or value containing a line break (LF or CR) — ezdxf emits custom
       properties unescaped, one header line per text, so the saved DXF is
       corrupt and the whole drawing fails to reopen (``DXFStructureError``),
@@ -599,13 +618,23 @@ def validate_drawing_properties(
         raise TypeError("custom: must be an object of {key: text | null}")
     to_write: dict[str, str] = {}
     to_delete: list[str] = []
+    seen: dict[str, str] = {}  # casefolded key -> the spelling seen first
     for key, value in (custom or {}).items():
         if not isinstance(key, str) or not key.strip():
             raise TypeError(f"custom: key {key!r} must be a non-empty string")
-        _check_custom_key(key)
+        _check_custom_text(key, key, "key")
+        folded = key.casefold()
+        if folded in seen:
+            raise ValueError(
+                f"custom: keys {seen[folded]!r} and {key!r} differ only by case — "
+                "AutoCAD's custom keys are case-insensitive (AddCustomInfo raises "
+                "'Duplicate key'). Mention the key once."
+            )
+        seen[folded] = key
         if value is None:
             to_delete.append(key)
         elif isinstance(value, str):
+            _check_custom_key_for_write(key)
             _check_custom_text(key, value, "value")
             to_write[key] = value
         else:

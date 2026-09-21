@@ -10,9 +10,14 @@ instead of losing the write at save).
 
 Custom keys and values are validated once, by name, against what would break
 *either* engine: keys AutoCAD's AddCustomInfo rejects mid-write as
-`Invalid key` (measured on AutoCAD 2026: leading/trailing whitespace, `=`,
-`;`, no-break space) and line breaks, which ezdxf writes unescaped and
-which corrupt the whole DXF.
+`Invalid key` (measured on AutoCAD 2026 by sweeping every printable ASCII
+character through a scratch document: leading/trailing whitespace and exactly
+the thirteen characters `" * , / : ; < = > ? \\ ` |` anywhere in the key --
+internal spaces, tabs, control characters, a no-break space and unicode are
+accepted), case-variant duplicates (AutoCAD's keys are case-insensitive:
+`Duplicate key`), and line breaks, which ezdxf writes unescaped and which
+corrupt the whole DXF. A delete is exempt from the AddCustomInfo syntax rules
+(RemoveCustomByKey never validates: `Key not found`, never `Invalid key`).
 """
 
 from __future__ import annotations
@@ -22,7 +27,11 @@ import types
 import pytest
 
 from backends.base import UnsupportedCapabilityError
-from backends.contracts.settings import SUMMARY_FIELDS, validate_drawing_properties
+from backends.contracts.settings import (
+    _CUSTOM_KEY_FORBIDDEN,
+    SUMMARY_FIELDS,
+    validate_drawing_properties,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -55,9 +64,15 @@ def test_validation_splits_writes_and_deletes():
         # mid-write after the summary and earlier keys were already applied.
         (None, {" BAD ": "x"}, ValueError, "' BAD '"),
         (None, {"PROJECT ": "x"}, ValueError, "trailing whitespace"),
+        (None, {"\tTAB": "x"}, ValueError, "leading or trailing whitespace"),
+        (None, {"NB\xa0": "x"}, ValueError, "leading or trailing whitespace"),
         (None, {"A=B": "x"}, ValueError, "'A=B' contains '='"),
         (None, {"A;B": "x"}, ValueError, "'A;B' contains ';'"),
-        (None, {"NB\xa0SP": "x"}, ValueError, "no-break space"),
+        (None, {"A:B/C": "x"}, ValueError, "'A:B/C' contains '/' ':'"),
+        # Case-variant duplicates: AutoCAD raises 'Duplicate key' on the second.
+        (None, {"Project": "a", "PROJECT": "b"}, ValueError, "differ only by case"),
+        (None, {"Project": "a", "PROJECT": None}, ValueError, "differ only by case"),
+        (None, {"Gr\u00fcn": "a", "GR\u00dcN": "b"}, ValueError, "differ only by case"),
         # A line break is written unescaped by ezdxf and corrupts the DXF.
         (None, {"NOTE": "line1\nline2"}, ValueError, "custom['NOTE']: the value"),
         (None, {"NOTE": "line1\rline2"}, ValueError, "line break"),
@@ -71,11 +86,54 @@ def test_validation_refuses_by_name(summary, custom, exc, fragment):
     assert fragment in str(excinfo.value)
 
 
-@pytest.mark.parametrize("key", ["IN SP", "T\tAB", "\u00dcn\u00efcode", "X" * 300])
+INVALID_KEY_CHARS = '"*,/:;<=>?\\`|'
+
+
+def test_forbidden_set_is_exactly_the_thirteen_measured_characters():
+    assert _CUSTOM_KEY_FORBIDDEN == frozenset(INVALID_KEY_CHARS)
+    assert len(_CUSTOM_KEY_FORBIDDEN) == 13
+
+
+@pytest.mark.parametrize("char", sorted(INVALID_KEY_CHARS))
+def test_validation_refuses_every_addcustominfo_invalid_key_character(char):
+    """Measured on AutoCAD 2026 (`AddCustomInfo(f"A{c}B", "v")` for every
+    c in 0x20-0x7E on a scratch document): exactly these thirteen raise
+    `Invalid key`. The earlier fix mirrored only `=` and `;`, so 'A:B',
+    'REV/2', 'SIZE, mm', 'A"B' ... still half-applied on the live engine."""
+    key = f"A{char}B"
+    with pytest.raises(ValueError, match="Invalid key") as excinfo:
+        validate_drawing_properties(None, {key: "x"})
+    assert repr(key) in str(excinfo.value) and repr(char) in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "IN SP",
+        "T\tAB",
+        "\u00dcn\u00efcode",
+        "X" * 300,
+        "NB\xa0SP",
+        "A\x01B",
+        "A\x1fB",
+        "A!#$%&'()+-.@[]^_{}~B",
+        "\u4e2d\u2014\u200b",
+    ],
+)
 def test_validation_accepts_keys_autocad_accepts(key):
-    """Measured: internal spaces, tabs, unicode and 300-char keys pass
+    """Measured: internal spaces, tabs, control characters, a no-break space,
+    unicode, every other printable ASCII character and 300-char keys pass
     AddCustomInfo; the validator must not be stricter than AutoCAD."""
     assert validate_drawing_properties(None, {key: "v"}) == ({}, {key: "v"}, [])
+
+
+@pytest.mark.parametrize("key", ["A=B", " PAD ", "A:B", "NB\xa0", 'A"B'])
+def test_validation_exempts_a_delete_from_the_addcustominfo_syntax_rules(key):
+    """A delete never calls AddCustomInfo, and RemoveCustomByKey does not
+    validate syntax (measured: 'Key not found', never 'Invalid key'), so a key
+    a DXF script wrote must stay removable. The line-break rule still holds
+    for both directions (a delete of such a key is pinned refused above)."""
+    assert validate_drawing_properties(None, {key: None}) == ({}, {}, [key])
 
 
 # ── headless engine ─────────────────────────────────────────────────────────
@@ -135,6 +193,60 @@ async def test_autocad_invalid_keys_are_refused_headlessly_too(backend):
     with pytest.raises(ValueError, match="' BAD '"):
         await backend.drawing_properties_set(custom={"AAA": "first", " BAD ": "x", "ZZZ": "n"})
     assert (await backend.drawing_properties_get())["custom"] == {}
+
+
+async def test_legacy_invalid_syntax_keys_stay_deletable_headlessly(tmp_path):
+    """Regression of 2b9791f: `_check_custom_key` ran before the `value is
+    None` branch, so `{'A=B': None}` on a document carrying 'A=B' (any ezdxf
+    script writes such keys; AutoCAD loads them from the DXF) was refused with
+    a reason that only applies to AddCustomInfo -- the tool showed a key it
+    could never remove."""
+    import ezdxf
+
+    from backends.ezdxf_backend import EzdxfBackend
+
+    path = tmp_path / "legacy.dxf"
+    doc = ezdxf.new("R2010")
+    for tag in ("A=B", "NB\xa0SP", " PAD ", "A:B"):
+        doc.header.custom_vars.append(tag, "legacy")
+    doc.saveas(str(path))
+    backend = EzdxfBackend()
+    await backend.connect()
+    try:
+        await backend.drawing_open(str(path))
+        assert (await backend.drawing_properties_get())["custom"] == {
+            "A=B": "legacy",
+            "NB\xa0SP": "legacy",
+            " PAD ": "legacy",
+            "A:B": "legacy",
+        }
+        res = await backend.drawing_properties_set(custom={"A=B": None, " PAD ": None})
+        assert res["custom_deleted"] == ["A=B", " PAD "]
+        assert (await backend.drawing_properties_get())["custom"] == {
+            "NB\xa0SP": "legacy",
+            "A:B": "legacy",
+        }
+        # ...but writing such a key is still refused, before anything is touched.
+        with pytest.raises(ValueError, match="'A:B' contains ':'"):
+            await backend.drawing_properties_set(custom={"A:B": "new", "OK": "x"})
+        assert (await backend.drawing_properties_get())["custom"] == {
+            "NB\xa0SP": "legacy",
+            "A:B": "legacy",
+        }
+    finally:
+        await backend.disconnect()
+
+
+async def test_custom_keys_match_case_insensitively_headlessly(backend):
+    """Mirrors AutoCAD (measured on 2026): a write to 'PROJECT' over an
+    existing 'Project' updates it under the stored spelling instead of adding
+    a second tag AutoCAD would call a duplicate; a delete matches either
+    spelling."""
+    await backend.drawing_properties_set(custom={"Project": "X-1", "Rev": "A"})
+    res = await backend.drawing_properties_set(custom={"PROJECT": "X-2", "rev": None})
+    assert res["custom_written"] == ["PROJECT"] and res["custom_deleted"] == ["rev"]
+    assert list(backend._doc.header.custom_vars) == [("Project", "X-2")]
+    assert (await backend.drawing_properties_get())["custom"] == {"Project": "X-2"}
 
 
 async def _backend_for_version(tmp_path, version: str):
@@ -274,17 +386,35 @@ class _FakeSummaryInfo:
         self.calls.append(("GetCustomByIndex", index))
         return self._custom[index]  # pywin32 hands [out] BSTR pairs back as a tuple
 
+    # Measured on AutoCAD 2026: the three mutators match keys case-insensitively,
+    # an existing key keeps its stored spelling, a second Add is 'Duplicate key',
+    # a Set/Remove of an absent key is 'Key not found'.
+
+    def _index(self, key):
+        for i, (k, _v) in enumerate(self._custom):
+            if k.casefold() == key.casefold():
+                return i
+        return None
+
     def AddCustomInfo(self, key, value):
         self.calls.append(("AddCustomInfo", key, value))
+        if self._index(key) is not None:
+            raise RuntimeError("AutoCAD COM error: Duplicate key")
         self._custom.append((key, value))
 
     def SetCustomByKey(self, key, value):
         self.calls.append(("SetCustomByKey", key, value))
-        self._custom = [(k, value if k == key else v) for k, v in self._custom]
+        i = self._index(key)
+        if i is None:
+            raise RuntimeError("AutoCAD COM error: Key not found")
+        self._custom[i] = (self._custom[i][0], value)
 
     def RemoveCustomByKey(self, key):
         self.calls.append(("RemoveCustomByKey", key))
-        self._custom = [(k, v) for k, v in self._custom if k != key]
+        i = self._index(key)
+        if i is None:
+            raise RuntimeError("AutoCAD COM error: Key not found")
+        del self._custom[i]
 
 
 @pytest.fixture
@@ -349,6 +479,53 @@ async def test_com_validates_before_touching_activex(com_backend):
     with pytest.raises(ValueError):
         await backend.drawing_properties_set(summary={"edition": "1"})
     assert info.calls == [] and info.Title == "Old title"
+
+
+@pytest.mark.parametrize(
+    "key", ["A:B", "REV/2", "SIZE, mm", 'A"B', "A\\B", "A<B>", "A|B", "A*B", "A?B"]
+)
+async def test_com_refuses_every_addcustominfo_invalid_key_before_any_write(com_backend, key):
+    """Re-measured on AutoCAD 2026 after 2b9791f: `summary={'subject':
+    'PARTIAL?'}, custom={'AAA': 'first', 'A:B': 'x', 'ZZZ': 'never'}` still
+    raised from AddCustomInfo('A:B') and left subject='PARTIAL?',
+    custom={'AAA': 'first'} -- the same half-write for every character the
+    first fix did not mirror. Nothing reaches SummaryInfo now."""
+    backend, info = com_backend
+    with pytest.raises(ValueError, match="Invalid key"):
+        await backend.drawing_properties_set(
+            summary={"subject": "PARTIAL?"},
+            custom={"AAA": "first", key: "x", "ZZZ": "never"},
+        )
+    assert info.calls == [] and info.Subject == ""
+    assert info._custom == [("PROJECT", "X-1"), ("OLD", "1")]
+
+
+async def test_com_deletes_a_legacy_invalid_syntax_key(com_backend):
+    """RemoveCustomByKey does not validate syntax (measured: 'Key not found'
+    for an absent 'A=B', never 'Invalid key'), so a key AutoCAD loaded from a
+    DXF is removed, not refused."""
+    backend, info = com_backend
+    info._custom.append(("A=B", "legacy"))
+    res = await backend.drawing_properties_set(custom={"A=B": None})
+    assert res["custom_deleted"] == ["A=B"]
+    assert ("RemoveCustomByKey", "A=B") in info.calls
+    assert info._custom == [("PROJECT", "X-1"), ("OLD", "1")]
+
+
+async def test_com_routes_case_variant_keys_to_set_and_remove(com_backend):
+    """Measured on AutoCAD 2026: AddCustomInfo('PROJECT') over an existing
+    'Project' raises 'Duplicate key' -- a case-sensitive existence check
+    routed it there and failed mid-write. Existence is matched casefolded."""
+    backend, info = com_backend
+    res = await backend.drawing_properties_set(custom={"project": "X-2", "old": None, "New": "n"})
+    assert res["custom_written"] == ["New", "project"] and res["custom_deleted"] == ["old"]
+    mutations = [c for c in info.calls if c[0] not in ("NumCustomInfo", "GetCustomByIndex")]
+    assert mutations == [
+        ("SetCustomByKey", "project", "X-2"),
+        ("AddCustomInfo", "New", "n"),
+        ("RemoveCustomByKey", "old"),
+    ]
+    assert info._custom == [("PROJECT", "X-2"), ("New", "n")], "stored spelling kept"
 
 
 async def test_com_refuses_autocad_invalid_keys_before_any_write(com_backend):

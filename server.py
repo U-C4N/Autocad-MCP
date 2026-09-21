@@ -6962,13 +6962,20 @@ async def drawing_properties_set(
     engine (`capability: dwgprops` — SummaryInfo lives in the DWG, a DXF has
     no slot for it; custom properties still work headlessly), a non-string
     value (`TypeError` naming the field or key — nothing is coerced with
-    `str()`), an empty custom key, a custom key AutoCAD's AddCustomInfo would
-    reject mid-write (leading/trailing whitespace, `=`, `;`, no-break space —
-    `ValueError` naming the key, on both engines), a line break in a custom
-    key or value (it corrupts the DXF on save), and headlessly a document
-    older than R2004 (`ValueError` — ezdxf only writes the custom-property
-    header pairs for AC1018+, so they would vanish at save; save as R2004 or
-    newer first). On the live engine a custom key is added with AddCustomInfo
+    `str()`), an empty custom key, a custom key to *write* that AutoCAD's
+    AddCustomInfo would reject mid-write (measured on AutoCAD 2026: leading or
+    trailing whitespace, or any of the thirteen characters
+    `" * , / : ; < = > ? \\ ` |` anywhere in the key; internal spaces, tabs
+    and unicode are fine — `ValueError` naming the key, on both engines; a
+    delete is exempt because RemoveCustomByKey never validates syntax, so a
+    key that reached the drawing another way stays removable), two keys in
+    one request that differ only by case (custom keys are case-insensitive in
+    AutoCAD), a line break in a custom key or value (it corrupts the DXF on
+    save), and headlessly a document older than R2004 (`ValueError` — ezdxf
+    only writes the custom-property header pairs for AC1018+, so they would
+    vanish at save; save as R2004 or newer first). A key is matched to the
+    drawing case-insensitively on both engines and keeps its stored spelling
+    when updated. On the live engine a custom key is added with AddCustomInfo
     when new and changed with SetCustomByKey when present.
     """
     summary = {
