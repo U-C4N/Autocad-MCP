@@ -6,6 +6,8 @@ import copy
 import math
 from typing import TYPE_CHECKING
 
+import anyio
+
 from .critique import PID_FOCUSES, issues_for
 from .drawlines import draw_line
 from .graph import build_graph
@@ -443,7 +445,18 @@ async def run_spec(backend: AutoCADBackend, spec: dict, dry_run: bool = False) -
         # a ``BaseException``) leave the placed symbols in the drawing inside
         # an open transaction — on COM with the undo mark still open, so every
         # later ``pid_from_spec`` was refused until a manual rollback.
-        await backend.transaction_rollback()
+        #
+        # The rollback is shielded because the MCP SDK cancels a request by
+        # cancelling an anyio scope, and anyio cancellation is level-triggered:
+        # ``task.cancel()`` is re-issued on every loop iteration while the task
+        # is still inside the cancelled scope. A bare ``await`` here would be
+        # cancelled at its first suspension, before the rollback body ran —
+        # measured through the real transport: five symbols left in an open
+        # transaction, and on COM the undo mark left open while the backend's
+        # flag already said "no transaction". A native ``Task.cancel()`` is
+        # delivered once and clears, so it was never the case that mattered.
+        with anyio.CancelScope(shield=True):
+            await backend.transaction_rollback()
         raise
     await backend.transaction_commit()
     graph = await build_graph(backend)
