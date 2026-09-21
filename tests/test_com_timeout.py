@@ -167,6 +167,12 @@ async def test_timed_out_transaction_begin_does_not_hide_an_open_undo_mark(
     marks = []
 
     class _FakeDoc:
+        def GetVariable(self, name):
+            return 0  # CMDACTIVE clear
+
+        def SendCommand(self, cmd):
+            marks.append(cmd.strip())  # the UNDO Mark begin sets first
+
         def StartUndoMark(self):
             marks.append("start")
             try:
@@ -185,7 +191,7 @@ async def test_timed_out_transaction_begin_does_not_hide_an_open_undo_mark(
         )
         again = await com_backend.transaction_begin()
         assert again == {"ok": False, "error": "A transaction is already active"}
-        assert marks == ["start"], "the second begin must not nest another undo mark"
+        assert marks == ["_.UNDO _M", "start"], "the second begin must not nest another undo mark"
     finally:
         release.set()
         assert finished.wait(5)

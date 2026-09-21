@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 import math
 from typing import TYPE_CHECKING
 
@@ -17,6 +18,8 @@ from .symbols import resolve, transform_port
 
 if TYPE_CHECKING:
     from backends.base import AutoCADBackend
+
+log = logging.getLogger(__name__)
 
 EXAMPLE_SPEC: dict = {
     "sheet": {
@@ -440,7 +443,7 @@ async def run_spec(backend: AutoCADBackend, spec: dict, dry_run: bool = False) -
             except ValueError as exc:
                 raise ValueError(f"{where}: {exc}") from exc
             crossings_total += drawn["crossings"]
-    except BaseException:
+    except BaseException as exc:
         # ``Exception`` alone let a client cancellation (``CancelledError`` is
         # a ``BaseException``) leave the placed symbols in the drawing inside
         # an open transaction — on COM with the undo mark still open, so every
@@ -455,8 +458,32 @@ async def run_spec(backend: AutoCADBackend, spec: dict, dry_run: bool = False) -
         # transaction, and on COM the undo mark left open while the backend's
         # flag already said "no transaction". A native ``Task.cancel()`` is
         # delivered once and clears, so it was never the case that mattered.
+        #
+        # Once the rollback body runs after a cancellation it can also *fail*
+        # (the COM hard timeout, ``_safe_send_command``'s own deadline, an
+        # ezdxf quarantine refusal). That failure must not replace the
+        # cancellation: the SDK has already answered the cancelled request,
+        # and only a cancellation exception is suppressed by its handler — an
+        # ordinary error makes it respond a second time, which trips
+        # ``assert not self._completed`` in ``mcp.shared.session`` and kills
+        # the whole session (measured through the real transport). So after a
+        # cancellation the rollback error is logged and the cancellation is
+        # what propagates; after any other error the rollback error propagates
+        # as before, with the original chained as its context.
+        cancelled = isinstance(exc, anyio.get_cancelled_exc_class())
         with anyio.CancelScope(shield=True):
-            await backend.transaction_rollback()
+            try:
+                await backend.transaction_rollback()
+            except Exception as rollback_exc:
+                if not cancelled:
+                    raise
+                log.error(
+                    "pid_from_spec: rollback after a cancelled request failed (%s: %s); "
+                    "the sheet may be half-drawn - check system_status and "
+                    "transaction_rollback before retrying",
+                    type(rollback_exc).__name__,
+                    rollback_exc,
+                )
         raise
     await backend.transaction_commit()
     graph = await build_graph(backend)

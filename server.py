@@ -3988,7 +3988,8 @@ _BATCH_GUARANTEE_NOTES = {
         "whole document to a temporary DXF, so it scales with drawing size."
     ),
     "best_effort_undo": (
-        "Rollback ends the AutoCAD undo mark and sends '_UNDO B' to the command line. "
+        "Rollback ends the AutoCAD undo group and sends '_UNDO _B' (back to the UNDO "
+        "Mark transaction_begin set) to the command line. "
         "AutoCAD executes that asynchronously and does not confirm it landed, so this "
         "is best-effort, NOT atomic. The before/after fingerprint below is the only "
         "evidence available; treat a mismatch as 'the undo has not landed (yet)' and "
@@ -4994,7 +4995,8 @@ async def transaction_commit(ctx: Context = None) -> dict:
 async def transaction_rollback(ctx: Context = None) -> dict:
     """Rollback the current transaction to the point of transaction_begin.
 
-    COM: Undoes all operations back to the last undo mark.
+    COM: Undoes all operations back to the UNDO Mark transaction_begin set;
+    refused (`ok: false`) when no transaction is active.
     ezdxf: Restores the document from the saved DXF snapshot.
 
     WARNING: This is destructive – all changes since transaction_begin are lost.
@@ -6839,7 +6841,11 @@ async def pid_from_spec(
     drawn port-to-port, inside one transaction: any bad item rolls the whole
     sheet back and the error names it (`lines[2].to`); so does an interruption
     (a client cancellation mid-run leaves no half-drawn sheet and no open
-    transaction). A non-finite coordinate, rotation, scale or stub is refused
+    transaction on either engine — the live one goes back to the UNDO Mark
+    `transaction_begin` set, so it never waits at an AutoCAD prompt; should
+    that rollback itself fail, the failure is logged, the cancellation is what
+    the client sees, and the drawing must be checked before a retry).
+    A non-finite coordinate, rotation, scale or stub is refused
     by path before anything is placed. The response carries the graph read
     back from the drawing and the P&ID critique issues, so the caller sees
     dangling ends or duplicate tags in the same round trip. `dry_run` returns

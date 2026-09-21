@@ -4368,6 +4368,22 @@ class ComBackend(AutoCADBackend):
 
         def _sync():
             doc = _acad_doc()
+            # `_UNDO _M` below is typed at the command line; with a command or
+            # prompt already active it would be swallowed as that command's
+            # input and no mark would exist for the rollback to go back to.
+            try:
+                cmd_active = int(doc.GetVariable("CMDACTIVE"))
+            except Exception as exc:
+                log.debug("CMDACTIVE read failed, proceeding anyway: %s", exc)
+                cmd_active = 0
+            if cmd_active:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"AutoCAD has an active command or prompt (CMDACTIVE={cmd_active}); "
+                        "press ESC in AutoCAD before transaction_begin."
+                    ),
+                }
             # R32: record the mark from inside the worker, immediately before
             # setting it. `_transaction_active = True` used to run only after
             # `_run` returned, so a timed-out begin left StartUndoMark open in
@@ -4376,10 +4392,22 @@ class ComBackend(AutoCADBackend):
             # exact inverse of the R16 fix transaction_commit already carries.
             # The abandoned STA thread cannot be cancelled, so the flag has to
             # be written where the call happens; and it is written *before*
-            # StartUndoMark because a call that hangs inside it may still land.
+            # the marks because a call that hangs inside them may still land.
             # A `_acad_doc()` that fails leaves the flag alone, which is right:
             # nothing reached AutoCAD.
             self._transaction_active = True
+            # Two marks, deliberately. StartUndoMark/EndUndoMark form an undo
+            # *group* (one UNDO step), not an UNDO Mark: on the live AutoCAD
+            # 2026 `_UNDO B` with no Mark answers "This will undo everything.
+            # OK? <Y>" and SendCommand blocks at that prompt until a human
+            # presses ESC (measured: rollback timed out at 60 s, the entities
+            # stayed, every COM client was rejected meanwhile). The Mark is set
+            # *before* the group so `_UNDO _B` in transaction_rollback lands
+            # exactly at the transaction's start — also when the group is
+            # empty, where `_UNDO 1` would be one step too many. Measured on
+            # AutoCAD 2026: Mark + group + 2 entities + `_UNDO _B` -> entities
+            # gone, CMDACTIVE 0, 47 ms; empty group -> nothing else undone.
+            doc.SendCommand("_.UNDO _M\n")
             doc.StartUndoMark()
             return {"ok": True, "message": "Transaction begun (AutoCAD undo mark set)"}
 
@@ -4399,12 +4427,21 @@ class ComBackend(AutoCADBackend):
             self._transaction_active = False
 
     async def transaction_rollback(self) -> dict:
+        # Without a transaction there is no Mark to go back to, and `_UNDO _B`
+        # would then prompt "This will undo everything. OK? <Y>" and block the
+        # STA worker at it (see transaction_begin). Refuse the same way the
+        # headless engine does.
+        if not self._transaction_active:
+            return {"ok": False, "error": "No active transaction to rollback"}
+
         def _sync():
             doc = _acad_doc()
             doc.EndUndoMark()
-            # R16: route UNDO B through the CMDACTIVE-aware sender instead of a raw
-            # SendCommand that could deadlock if a command/prompt is active.
-            self._safe_send_command(doc, "_UNDO B")
+            # R16: route UNDO Back through the CMDACTIVE-aware sender instead of
+            # a raw SendCommand that could deadlock if a command/prompt is active.
+            # Back to the Mark transaction_begin set before the group, so this
+            # never prompts and never undoes anything older than the transaction.
+            self._safe_send_command(doc, "_.UNDO _B")
             return {"ok": True, "message": "Transaction rolled back"}
 
         try:

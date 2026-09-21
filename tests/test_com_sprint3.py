@@ -101,7 +101,7 @@ async def test_run_lisp_captures_value_from_users1(monkeypatch):
 
 async def test_transaction_begin_sets_flag_and_marks_undo(monkeypatch):
     doc = _Doc()
-    doc.StartUndoMark = MagicMock()
+    doc.StartUndoMark = MagicMock(side_effect=lambda: doc.sent.append("StartUndoMark"))
     monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
 
     b = _backend_no_executor()
@@ -109,6 +109,25 @@ async def test_transaction_begin_sets_flag_and_marks_undo(monkeypatch):
     assert out["ok"] is True
     assert b._transaction_active is True
     doc.StartUndoMark.assert_called_once()
+    # The UNDO Mark goes in *before* the undo group: `_UNDO _B` in the rollback
+    # returns to it, and a Mark inside the group would be undone with it.
+    assert doc.sent == ["_.UNDO _M\n", "StartUndoMark"], doc.sent
+
+
+async def test_transaction_begin_refuses_while_a_prompt_is_active(monkeypatch):
+    """With CMDACTIVE set, SendCommand would feed `_UNDO _M` to the active
+    command as input and no Mark would exist for the rollback to reach."""
+    doc = _Doc()
+    doc.SetVariable("CMDACTIVE", 1)
+    doc.StartUndoMark = MagicMock()
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
+
+    b = _backend_no_executor()
+    out = await b.transaction_begin()
+    assert out["ok"] is False and "CMDACTIVE" in out["error"] and "ESC" in out["error"]
+    assert b._transaction_active is False, "nothing reached AutoCAD"
+    assert doc.sent == []
+    doc.StartUndoMark.assert_not_called()
 
 
 async def test_transaction_commit_clears_flag_on_error():
@@ -124,17 +143,63 @@ async def test_transaction_commit_clears_flag_on_error():
     assert b._transaction_active is False  # not left stale
 
 
-async def test_transaction_rollback_uses_safe_send_command(monkeypatch):
-    doc = _Doc()  # idle: CMDACTIVE=0 so _safe_send_command returns promptly
+class _MarkingDoc(_Doc):
+    """An idle doc that keeps AutoCAD's UNDO Mark bookkeeping.
+
+    On the live AutoCAD 2026 `_UNDO B` with no Mark answers "This will undo
+    everything. OK? <Y>" and `SendCommand` blocks at that prompt until a human
+    presses ESC (measured: the rollback hit the 60 s COM timeout, the entities
+    stayed, every COM client was rejected meanwhile). `StartUndoMark` /
+    `EndUndoMark` form an undo *group*, not a Mark. This fake answers the
+    unmarked Back the way the prompt would end up: as a failure, not a hang.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.marks = 0
+        self.group_open = False
+
+    def SendCommand(self, cmd):
+        super().SendCommand(cmd)
+        if cmd.strip() == "_.UNDO _M":
+            self.marks += 1
+        elif cmd.strip() == "_.UNDO _B":
+            if self.marks == 0:
+                raise RuntimeError("prompt: This will undo everything. OK? <Y>")
+            self.marks -= 1
+
+    def StartUndoMark(self):
+        self.group_open = True
+
+    def EndUndoMark(self):
+        self.group_open = False
+
+
+async def test_transaction_rollback_goes_back_to_the_mark_begin_set(monkeypatch):
+    doc = _MarkingDoc()  # idle: CMDACTIVE=0 so _safe_send_command returns promptly
     monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
 
     b = _backend_no_executor()
-    b._transaction_active = True
+    assert (await b.transaction_begin())["ok"] is True
     out = await b.transaction_rollback()
     assert out["ok"] is True
     assert b._transaction_active is False
-    # UNDO B went through _safe_send_command (which appends a trailing newline).
-    assert any("_UNDO B" in c for c in doc.sent)
+    # UNDO Back went through _safe_send_command (which appends a trailing
+    # newline) and found the Mark begin set: no prompt, group closed, Mark consumed.
+    assert [c.strip() for c in doc.sent] == ["_.UNDO _M", "_.UNDO _B"]
+    assert doc.marks == 0 and doc.group_open is False
+
+
+async def test_transaction_rollback_without_a_transaction_is_refused(monkeypatch):
+    """No transaction means no Mark: an unmarked `_UNDO _B` is the prompt
+    that strands the STA worker, so it is never sent."""
+    doc = _MarkingDoc()
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
+
+    b = _backend_no_executor()
+    out = await b.transaction_rollback()
+    assert out == {"ok": False, "error": "No active transaction to rollback"}
+    assert doc.sent == []
 
 
 # ── R13 — offset honors side_x/side_y and deletes the unused copy ───────────

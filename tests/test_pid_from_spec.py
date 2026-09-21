@@ -226,10 +226,14 @@ async def test_a_cancellation_with_a_com_call_in_flight_still_closes_the_undo_ma
 
     With a COM call blocking the worker when the scope is cancelled, the
     unshielded rollback's ``_run`` was cancelled while queued behind it — so
-    ``EndUndoMark`` / ``_UNDO B`` never reached AutoCAD — yet its ``finally``
+    ``EndUndoMark`` / ``_UNDO _B`` never reached AutoCAD — yet its ``finally``
     cleared ``_transaction_active``: ``system_status`` said "no transaction"
     while the undo mark was open, and the next ``transaction_begin`` nested a
     second ``StartUndoMark``.
+
+    The order pinned here is the one measured on the live AutoCAD 2026: the
+    UNDO *Mark* goes in before the undo group, so ``_UNDO _B`` lands at the
+    transaction's start instead of prompting "This will undo everything".
     """
     import asyncio
     import time
@@ -245,6 +249,8 @@ async def test_a_cancellation_with_a_com_call_in_flight_still_closes_the_undo_ma
     doc = types.SimpleNamespace(
         Name="Drawing1.dwg",
         FullName="",
+        GetVariable=lambda name: 0,  # CMDACTIVE clear
+        SendCommand=lambda cmd: sent.append(cmd.strip()),
         StartUndoMark=lambda: sent.append("StartUndoMark"),
         EndUndoMark=lambda: sent.append("EndUndoMark"),
     )
@@ -280,10 +286,146 @@ async def test_a_cancellation_with_a_com_call_in_flight_still_closes_the_undo_ma
             await in_flight.wait()
             tg.cancel_scope.cancel()
 
-        assert sent == ["StartUndoMark", "EndUndoMark", "_UNDO B"], sent
+        assert sent == ["_.UNDO _M", "StartUndoMark", "EndUndoMark", "_.UNDO _B"], sent
         assert backend._transaction_active is False
         # The mark really is closed, so the next transaction is a fresh one.
         assert (await backend.transaction_begin())["ok"] is True
-        assert sent[-1] == "StartUndoMark"
+        assert sent[-2:] == ["_.UNDO _M", "StartUndoMark"]
     finally:
         backend._executor.shutdown(wait=True)
+
+
+# ── a rollback that fails after a cancellation must not kill the session ─────
+
+
+async def _cancel_mid_run(run, *, in_flight) -> None:
+    """Cancel ``run`` through an anyio scope — the SDK's mechanism — once it is
+    inside ``draw_line``; returns normally only if the cancellation itself is
+    what left the task (a task group swallows its own cancellation and
+    re-raises anything else)."""
+    import anyio
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(run)
+        await in_flight.wait()
+        tg.cancel_scope.cancel()
+
+
+async def test_a_rollback_failure_after_a_cancellation_is_logged_not_raised(
+    backend, monkeypatch, caplog
+):
+    """Now that the shielded rollback body runs after a real cancellation it
+    can fail (the COM hard timeout, ``_safe_send_command``'s deadline, an ezdxf
+    quarantine refusal). That failure must not replace the cancellation: the
+    SDK has already answered the cancelled request and suppresses only a
+    cancellation exception — an ordinary error makes it respond a second time
+    and ``assert not self._completed`` kills the whole session."""
+    import asyncio
+    import logging
+
+    from engineering.pid import spec as spec_module
+
+    in_flight = asyncio.Event()
+
+    async def slow_draw_line(*args, **kwargs):
+        in_flight.set()
+        await asyncio.sleep(30)
+
+    async def failing_rollback():
+        raise RuntimeError("AutoCAD did not respond within 60s")
+
+    monkeypatch.setattr(spec_module, "draw_line", slow_draw_line)
+    monkeypatch.setattr(backend, "transaction_rollback", failing_rollback)
+
+    with caplog.at_level(logging.ERROR, logger="engineering.pid.spec"):
+        # With the rollback error escaping, the task group would raise it here.
+        await _cancel_mid_run(lambda: run_spec(backend, EXAMPLE_SPEC), in_flight=in_flight)
+
+    messages = [r.getMessage() for r in caplog.records if r.name == "engineering.pid.spec"]
+    assert any("did not respond within 60s" in m and "half-drawn" in m for m in messages), messages
+    monkeypatch.undo()
+    assert (await backend.transaction_rollback())["ok"] is True  # the test's own cleanup
+
+
+async def test_a_rollback_failure_after_an_ordinary_error_still_propagates(backend, monkeypatch):
+    """Only a cancellation is special. After a ``ValueError`` the rollback's
+    own failure is the error the caller gets, with the original chained."""
+    from engineering.pid import spec as spec_module
+
+    async def bad_place(backend, section, item):
+        raise ValueError("placement refused")
+
+    async def failing_rollback():
+        raise RuntimeError("AutoCAD did not respond within 60s")
+
+    monkeypatch.setattr(spec_module, "_place", bad_place)
+    monkeypatch.setattr(backend, "transaction_rollback", failing_rollback)
+
+    with pytest.raises(RuntimeError, match="did not respond") as exc:
+        await run_spec(backend, EXAMPLE_SPEC)
+    assert isinstance(exc.value.__context__, ValueError)
+    assert "equipment[0]: placement refused" in str(exc.value.__context__)
+    monkeypatch.undo()
+    assert (await backend.transaction_rollback())["ok"] is True
+
+
+async def test_a_rollback_failure_after_a_client_cancellation_leaves_the_session_alive(
+    client, monkeypatch
+):
+    """The same through the real transport: ``client.cancel(request id)``
+    mid-run, the rollback raises, and the *next* request is still answered.
+    Before the fix the server tried to respond twice to the cancelled request,
+    the lowlevel server's ``assert not self._completed`` escaped its task
+    group, ``system_status`` was never answered and ``Client.__aexit__``
+    re-raised the AssertionError."""
+    import asyncio
+
+    from fastmcp.exceptions import McpError
+
+    from backends import ezdxf_backend
+    from engineering.pid import spec as spec_module
+
+    async def slow_draw_line(*args, **kwargs):
+        await asyncio.sleep(30)
+
+    real_rollback = ezdxf_backend.EzdxfBackend.transaction_rollback
+    fail = True
+    calls: list[str] = []
+
+    async def rollback(self):
+        calls.append("rollback")
+        if fail:
+            raise RuntimeError("simulated rollback failure")
+        return await real_rollback(self)
+
+    monkeypatch.setattr(spec_module, "draw_line", slow_draw_line)
+    monkeypatch.setattr(ezdxf_backend.EzdxfBackend, "transaction_rollback", rollback)
+
+    async def depth() -> int:
+        return (await client.call_tool("system_status", {})).structured_content["transaction_depth"]
+
+    request_id = client.session._request_id
+    call = asyncio.ensure_future(client.call_tool("pid_from_spec", {"spec": EXAMPLE_SPEC}))
+
+    async def call_sent() -> bool:
+        return client.session._request_id > request_id
+
+    await _wait_until(call_sent)
+    await _wait_until(lambda: _is_depth(depth, 1))
+    await client.cancel(request_id)
+    with pytest.raises(McpError, match="cancelled"):
+        await call
+
+    async def rolled_back() -> bool:
+        return bool(calls)
+
+    await _wait_until(rolled_back)
+    # The session is alive: the next request is answered.
+    assert await asyncio.wait_for(depth(), timeout=5) == 1, "the failed rollback left it open"
+    fail = False  # the test's own cleanup, through the real rollback
+    assert (await client.call_tool("transaction_rollback", {})).structured_content["ok"] is True
+    assert await depth() == 0
+
+
+async def _is_depth(depth, wanted: int) -> bool:
+    return await depth() == wanted
