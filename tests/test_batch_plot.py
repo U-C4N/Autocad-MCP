@@ -1,13 +1,15 @@
 """batch_plot: every sheet to PDF, each sheet size read back from the PDF.
 
 The composition is exercised on the headless engine end to end; the COM-only
-piece of this task (the installed ctb scan) is fake-tested; the SECTION 19
+pieces of this task (the installed ctb scan, and the plot call's shape —
+foreground, by layout name, confirmed on disk) are fake-tested; the SECTION 19
 tools are called directly with a minimal context.
 """
 
 from __future__ import annotations
 
 import types
+from pathlib import Path
 
 import pytest
 from fastmcp.exceptions import ToolError
@@ -100,6 +102,70 @@ async def test_a_fresh_drawing_plots_its_one_default_sheet_at_the_dxf_default_si
     assert row["path"].endswith("Layout1.pdf") and row["paper"] == "ISO_A3"
 
 
+async def test_model_is_named_to_the_engine_even_when_a_sheet_is_current(backend, tmp_path):
+    """The Model row must be model space whichever tab is current. On COM the
+    export used to plot ``ActiveLayout`` for ``layout=None``, so with a sheet
+    current the "Model" PDF was that sheet again; batch_plot now names the
+    layout for every row, Model included."""
+    pytest.importorskip("matplotlib", reason="rendering needs the [pdf] extra")
+    await _two_sheets(backend)
+    await backend.layout_set_current("A3")
+    seen: list[str | None] = []
+    original = backend.drawing_export_pdf
+
+    async def _recording(path, layout=None):
+        seen.append(layout)
+        return await original(path, layout=layout)
+
+    backend.drawing_export_pdf = _recording
+    result = await batch_plot(backend, ["Model", "A3"], str(tmp_path))
+    assert seen == ["Model", "A3"]
+    assert result["ok"] and result["sheets"][0]["paper"] is None
+    assert result["sheets"][1]["paper"] == "ISO_A3"
+
+
+async def test_a_sheet_the_engine_cannot_plot_is_a_failed_row_not_a_lost_batch(backend, tmp_path):
+    """COM raises RuntimeError for an AutoCAD error (E_FAIL after a stranded
+    background job, say). That is one row's failure; the sheets already
+    written stay in the report with their evidence."""
+    pytest.importorskip("matplotlib", reason="rendering needs the [pdf] extra")
+    await _two_sheets(backend)
+    original = backend.drawing_export_pdf
+
+    async def _flaky(path, layout=None):
+        if layout == "B":
+            raise RuntimeError("AutoCAD COM error (-0x7ffdfff7): Unspecified error")
+        return await original(path, layout=layout)
+
+    backend.drawing_export_pdf = _flaky
+    result = await batch_plot(backend, None, str(tmp_path))
+    assert result["ok"] is False and result["count"] == 2
+    a3, b = result["sheets"]
+    assert a3["ok"] and a3["paper"] == "ISO_A3"
+    assert b == {
+        "layout": "B",
+        "ok": False,
+        "path": str(tmp_path / "untitled-B.pdf"),
+        "error": "AutoCAD COM error (-0x7ffdfff7): Unspecified error",
+    }
+
+
+async def test_a_plot_reported_ok_without_a_file_is_a_failed_row(backend, tmp_path):
+    """A background plot answers ok before any file exists; the row says so
+    instead of dying on ``path.stat()`` with an unhandled FileNotFoundError."""
+    await _two_sheets(backend)
+
+    async def _phantom(path, layout=None):
+        return {"ok": True, "path": path}
+
+    backend.drawing_export_pdf = _phantom
+    result = await batch_plot(backend, ["A3"], str(tmp_path))
+    assert result["ok"] is False
+    row = result["sheets"][0]
+    assert row["ok"] is False and "no file" in row["error"]
+    assert "bytes" not in row and "mediabox_mm" not in row
+
+
 # ── the tools ───────────────────────────────────────────────────────────────
 
 
@@ -159,7 +225,7 @@ def com_backend(monkeypatch, tmp_path):
     (styles / "readme.txt").write_bytes(b"")
     app = types.SimpleNamespace(
         Preferences=types.SimpleNamespace(
-            Files=types.SimpleNamespace(PrintStyleSheetPath=f"{styles};C:\\does\\not\\exist")
+            Files=types.SimpleNamespace(PrinterStyleSheetPath=f"{styles};C:\\does\\not\\exist")
         )
     )
     monkeypatch.setattr(module, "_acad_app", lambda: app)
@@ -199,3 +265,122 @@ async def test_com_plot_style_list_survives_an_unreachable_preferences_object(
     rows = await backend.plot_style_list()
     assert [row["name"] for row in rows] == list(CTB_CATALOG)
     assert all(row["installed"] is None for row in rows)
+
+
+# ── COM: the plot call's shape ──────────────────────────────────────────────
+
+
+@pytest.fixture
+def com_plot(monkeypatch):
+    """A fake document whose ``Plot.PlotToFile`` records the active layout and
+    BACKGROUNDPLOT at the moment of the plot — the two things AutoCAD acts on
+    and the reviewer measured wrong: with a sheet current, ``layout=None``
+    plotted that sheet; with the operator's BACKGROUNDPLOT=2 the file did not
+    exist when the call returned."""
+    pytest.importorskip("win32com.client", reason="pywin32 not installed")
+    from backends import com_backend as module
+
+    state = {
+        "vars": {"BACKGROUNDPLOT": 2},
+        "sets": [],
+        "active": "Layout1",
+        "plots": [],
+        "write_file": True,
+        "plotted": True,
+    }
+    names = ["Model", "Layout1", "Layout2"]
+
+    class _Layout:
+        def __init__(self, name):
+            self.Name = name
+
+    class _Layouts:
+        def Item(self, key):
+            for name in names:
+                if name.lower() == str(key).lower():
+                    return _Layout(name)
+            raise KeyError(key)
+
+    class _Plot:
+        def PlotToFile(self, path, config):
+            state["plots"].append((state["active"], config, state["vars"]["BACKGROUNDPLOT"]))
+            if state["write_file"]:
+                Path(path).write_bytes(b"%PDF-1.4 fake")
+            return state["plotted"]
+
+    class _Doc:
+        Layouts = _Layouts()
+        Plot = _Plot()
+
+        @property
+        def ActiveLayout(self):
+            return _Layout(state["active"])
+
+        @ActiveLayout.setter
+        def ActiveLayout(self, layout):
+            state["active"] = layout.Name
+
+        def GetVariable(self, name):
+            return state["vars"][name]
+
+        def SetVariable(self, name, value):
+            state["sets"].append((name, value))
+            state["vars"][name] = value
+
+    monkeypatch.setattr(module, "_acad_doc", lambda: _Doc())
+    backend = module.ComBackend()
+
+    async def _run_inline(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(backend, "_run", _run_inline)
+    return backend, state
+
+
+async def test_com_export_pdf_plots_model_space_by_name_in_the_foreground(com_plot, tmp_path):
+    backend, state = com_plot
+    out = tmp_path / "model.pdf"
+    result = await backend.drawing_export_pdf(str(out))
+    assert state["plots"] == [("Model", "DWG To PDF.pc3", 0)], (
+        "layout=None is model space, plotted with BACKGROUNDPLOT forced to 0"
+    )
+    assert result == {"ok": True, "path": str(out), "layout": "Model", "bytes": out.stat().st_size}
+    assert state["active"] == "Layout1", "the sheet that was current is current again"
+    assert state["vars"]["BACKGROUNDPLOT"] == 2, "the operator's setting is restored"
+    assert state["sets"] == [("BACKGROUNDPLOT", 0), ("BACKGROUNDPLOT", 2)]
+
+
+async def test_com_export_pdf_plots_the_named_sheet_and_restores_the_tab(com_plot, tmp_path):
+    backend, state = com_plot
+    result = await backend.drawing_export_pdf(str(tmp_path / "l2.pdf"), layout="layout2")
+    assert [row[0] for row in state["plots"]] == ["Layout2"]
+    assert result["ok"] and result["layout"] == "layout2"
+    assert state["active"] == "Layout1"
+
+
+async def test_com_export_pdf_leaves_backgroundplot_alone_when_already_foreground(
+    com_plot, tmp_path
+):
+    backend, state = com_plot
+    state["vars"]["BACKGROUNDPLOT"] = 0
+    await backend.drawing_export_pdf(str(tmp_path / "m.pdf"))
+    assert state["sets"] == []
+
+
+async def test_com_export_pdf_reports_a_refused_plot(com_plot, tmp_path):
+    backend, state = com_plot
+    state["plotted"] = False
+    state["write_file"] = False
+    result = await backend.drawing_export_pdf(str(tmp_path / "no.pdf"), layout="Layout1")
+    assert result["ok"] is False and "PlotToFile returned False" in result["error"]
+    assert state["vars"]["BACKGROUNDPLOT"] == 2
+
+
+async def test_com_export_pdf_reports_a_plot_that_left_no_file(com_plot, tmp_path):
+    """PlotToFile answering True with nothing on disk is the background-plot
+    signature; it is a failure, not an ok."""
+    backend, state = com_plot
+    state["write_file"] = False
+    result = await backend.drawing_export_pdf(str(tmp_path / "gone.pdf"))
+    assert result["ok"] is False and "wrote no file" in result["error"]
+    assert "bytes" not in result

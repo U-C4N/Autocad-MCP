@@ -1041,23 +1041,73 @@ class ComBackend(AutoCADBackend):
         return await self.drawing_save_as(path, "dxf")
 
     async def drawing_export_pdf(self, path: str, layout: str | None = None) -> dict:
+        """Plot one layout to PDF through ``Plot.PlotToFile`` and confirm the file.
+
+        ``layout=None`` means model space, as the tool advertises — the Model
+        tab is made current for the plot (and the previous tab restored), so
+        the row is never silently the sheet that happened to be active.
+
+        Measured on AutoCAD 2026 with the operator's default BACKGROUNDPLOT=2:
+        ``PlotToFile`` returns True immediately, the job is queued to the
+        background plotter, and no file exists when the call comes back —
+        seconds later the folder was still empty, and a foreground plot
+        attempted after such a stranded job raised E_FAIL. So the plot is
+        forced to the foreground (``BACKGROUNDPLOT=0``, restored afterwards),
+        the method's boolean is honoured, and ``ok`` is reported only once the
+        file is on disk with a size.
+        """
+
         def _sync():
             doc = _acad_doc()
-            previous = None
-            if layout:
-                previous = doc.ActiveLayout.Name
-                if previous != layout:
-                    doc.ActiveLayout = doc.Layouts.Item(layout)
+            target = layout.strip() if layout and layout.strip() else "Model"
+            previous = doc.ActiveLayout.Name
+            switched = False
+            if previous.lower() != target.lower():
+                doc.ActiveLayout = doc.Layouts.Item(target)
+                switched = True
+            old_background = None
             try:
-                plot = doc.Plot
-                plot.PlotToFile(path, "DWG To PDF.pc3")
-                result = {"ok": True, "path": path}
-                if layout:
-                    result["layout"] = layout
-                return result
+                try:
+                    old_background = int(doc.GetVariable("BACKGROUNDPLOT"))
+                except Exception as exc:
+                    log.debug("BACKGROUNDPLOT unreadable (%s); plotting as configured", exc)
+                if old_background not in (None, 0):
+                    doc.SetVariable("BACKGROUNDPLOT", 0)
+                plotted = doc.Plot.PlotToFile(path, "DWG To PDF.pc3")
+                written = Path(path)
+                if not plotted:
+                    return {
+                        "ok": False,
+                        "path": path,
+                        "layout": target,
+                        "error": "PlotToFile returned False: AutoCAD refused the plot "
+                        "(check the layout's plot area and the 'DWG To PDF.pc3' device)",
+                    }
+                if not written.is_file():
+                    return {
+                        "ok": False,
+                        "path": path,
+                        "layout": target,
+                        "error": "PlotToFile reported success but wrote no file at "
+                        f"{path} (BACKGROUNDPLOT was {old_background})",
+                    }
+                return {
+                    "ok": True,
+                    "path": path,
+                    "layout": target,
+                    "bytes": written.stat().st_size,
+                }
             finally:
-                if previous is not None and previous != layout:
-                    doc.ActiveLayout = doc.Layouts.Item(previous)
+                if old_background not in (None, 0):
+                    try:
+                        doc.SetVariable("BACKGROUNDPLOT", old_background)
+                    except Exception as exc:
+                        log.warning("could not restore BACKGROUNDPLOT=%s: %s", old_background, exc)
+                if switched:
+                    try:
+                        doc.ActiveLayout = doc.Layouts.Item(previous)
+                    except Exception as exc:
+                        log.warning("could not restore the active layout %r: %s", previous, exc)
 
         return await self._run(_sync)
 
@@ -2267,7 +2317,7 @@ class ComBackend(AutoCADBackend):
     async def plot_style_list(self) -> list[dict]:
         """The ctb catalogue, marked against the files in AutoCAD's plot style path.
 
-        ``Preferences.Files.PrintStyleSheetPath`` is a ``;``-separated list of
+        ``Preferences.Files.PrinterStyleSheetPath`` is a ``;``-separated list of
         folders. Every read is guarded: a folder that cannot be listed is
         skipped, and when the Preferences object is unreachable the catalogue
         rows come back with ``installed: None`` rather than a fabricated False.
@@ -2277,9 +2327,9 @@ class ComBackend(AutoCADBackend):
         def _sync():
             rows = [{"name": name, "source": "catalog", "installed": None} for name in CTB_CATALOG]
             try:
-                raw = str(_acad_app().Preferences.Files.PrintStyleSheetPath or "")
+                raw = str(_acad_app().Preferences.Files.PrinterStyleSheetPath or "")
             except Exception as exc:
-                log.debug("Preferences.Files.PrintStyleSheetPath unreadable: %s", exc)
+                log.debug("Preferences.Files.PrinterStyleSheetPath unreadable: %s", exc)
                 return rows
             installed: dict[str, str] = {}
             for folder in (part.strip() for part in raw.split(";")):

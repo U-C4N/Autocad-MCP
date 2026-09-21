@@ -6917,7 +6917,7 @@ async def page_setup_apply(
 async def plot_style_list(ctx: Context = None) -> dict:
     """The ctb files AutoCAD ships (`monochrome.ctb`, `acad.ctb`, `Grayscale.ctb`,
     the Screening set, …) and, on the live engine, the files actually present
-    in `Preferences.Files.PrintStyleSheetPath` (`source: "installed"`,
+    in `Preferences.Files.PrinterStyleSheetPath` (`source: "installed"`,
     `installed: true/false` per row). Headlessly `installed` is `null`: there
     is no installation to scan, and the catalogue is not evidence of one.
     Never refuses; an unreadable Preferences object degrades to the catalogue.

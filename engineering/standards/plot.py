@@ -36,7 +36,10 @@ async def batch_plot(
     """Plot layouts to PDF and read each sheet size back from the file.
 
     ``layouts=None`` plots every paper-space layout; ``Model`` is plotted only
-    when named. Refuses (``ValueError``, before any PDF is written): an empty
+    when named, and is passed to the engine by name so the model row is model
+    space whichever tab is current. A sheet the engine cannot plot, or reports
+    plotted without a file, is a per-row ``ok: False`` with its ``error``; the
+    rows before it stay. Refuses (``ValueError``, before any PDF is written): an empty
     list, a layout that does not exist, a pattern with a path separator, and
     a pattern without ``{layout}`` when more than one sheet would be written.
     The output folder is created, then every output path goes through
@@ -95,10 +98,29 @@ async def batch_plot(
     sheets: list[dict] = []
     for name, path in planned:
         is_model = name.lower() == "model"
-        result = await backend.drawing_export_pdf(str(path), layout=None if is_model else name)
+        # The layout is always named — "Model" included — so the engine plots
+        # the tab this row is labelled with, never the one that happens to be
+        # current. A plot that fails inside the engine (COM raises RuntimeError
+        # for an AutoCAD error) or that reports ok without leaving a file is a
+        # failed row, not a lost batch: the sheets already plotted are kept.
+        try:
+            result = await backend.drawing_export_pdf(str(path), layout=name)
+        except RuntimeError as exc:
+            sheets.append({"layout": name, "ok": False, "path": str(path), "error": str(exc)})
+            continue
         if not result.get("ok", False):
             sheets.append(
                 {"layout": name, "ok": False, "path": str(path), "error": result.get("error")}
+            )
+            continue
+        if not path.is_file():
+            sheets.append(
+                {
+                    "layout": name,
+                    "ok": False,
+                    "path": str(path),
+                    "error": "the engine reported the plot ok but no file was written",
+                }
             )
             continue
         row = {"layout": name, "ok": True, "path": str(path), "bytes": path.stat().st_size}
