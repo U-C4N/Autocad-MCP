@@ -6962,8 +6962,14 @@ async def drawing_properties_set(
     engine (`capability: dwgprops` — SummaryInfo lives in the DWG, a DXF has
     no slot for it; custom properties still work headlessly), a non-string
     value (`TypeError` naming the field or key — nothing is coerced with
-    `str()`), an empty custom key. On the live engine a custom key is added
-    with AddCustomInfo when new and changed with SetCustomByKey when present.
+    `str()`), an empty custom key, a custom key AutoCAD's AddCustomInfo would
+    reject mid-write (leading/trailing whitespace, `=`, `;`, no-break space —
+    `ValueError` naming the key, on both engines), a line break in a custom
+    key or value (it corrupts the DXF on save), and headlessly a document
+    older than R2004 (`ValueError` — ezdxf only writes the custom-property
+    header pairs for AC1018+, so they would vanish at save; save as R2004 or
+    newer first). On the live engine a custom key is added with AddCustomInfo
+    when new and changed with SetCustomByKey when present.
     """
     summary = {
         "title": title,

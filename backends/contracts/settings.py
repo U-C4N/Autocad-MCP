@@ -515,6 +515,49 @@ def _decode_setting(key: str, kind: str, raw: Any) -> Any:
 SUMMARY_FIELDS = ("title", "subject", "author", "keywords", "comments")
 
 
+#: Characters AutoCAD's ``SummaryInfo.AddCustomInfo`` rejects inside a custom
+#: key with ``Invalid key`` (measured on AutoCAD 2026; internal spaces, tabs
+#: and other unicode are accepted). ``\xa0`` is the no-break space.
+_CUSTOM_KEY_FORBIDDEN = {"=": "'='", ";": "';'", "\xa0": "a no-break space (U+00A0)"}
+
+
+def _check_custom_text(key: str, text: str, what: str) -> None:
+    """A newline in a custom key or value corrupts the DXF on save.
+
+    ezdxf writes custom properties verbatim as ``9 / $CUSTOMPROPERTYTAG / 1 /
+    {key}`` and ``9 / $CUSTOMPROPERTY / 1 / {value}`` header lines — a line
+    break inside either text starts a new (invalid) group and the reopened
+    file fails with ``DXFStructureError``. Refused here so neither engine
+    writes it.
+    """
+    if "\n" in text or "\r" in text:
+        raise ValueError(
+            f"custom[{key!r}]: the {what} contains a line break, which corrupts the "
+            "DXF on save (the whole drawing would fail to reopen, not just the "
+            "property). Custom properties are single-line."
+        )
+
+
+def _check_custom_key(key: str) -> None:
+    """Mirror AutoCAD's own custom-key rules so the live engine cannot refuse
+    mid-write. Measured: ``AddCustomInfo`` raises ``Invalid key`` for a key
+    with leading/trailing whitespace and for ``=``, ``;`` or a no-break space
+    anywhere in it — after the summary fields and earlier keys were already
+    applied — while the headless engine happily writes the same key."""
+    if key != key.strip():
+        raise ValueError(
+            f"custom: key {key!r} has leading or trailing whitespace — AutoCAD's "
+            "AddCustomInfo rejects it as 'Invalid key'. Strip the key."
+        )
+    for char, name in _CUSTOM_KEY_FORBIDDEN.items():
+        if char in key:
+            raise ValueError(
+                f"custom: key {key!r} contains {name} — AutoCAD's AddCustomInfo rejects "
+                "it as 'Invalid key'. Use another separator."
+            )
+    _check_custom_text(key, key, "key")
+
+
 def validate_drawing_properties(
     summary: dict | None, custom: dict | None
 ) -> tuple[dict[str, str], dict[str, str], list[str]]:
@@ -526,6 +569,20 @@ def validate_drawing_properties(
     string nor ``None`` (``None`` deletes) is a ``TypeError``. Values are never
     coerced with ``str()`` — a number the caller meant as text is theirs to
     format.
+
+    Custom keys and values are also held to the rules the *other* engine would
+    enforce or the file format would break on, so the same call cannot succeed
+    on one engine and half-apply on the other (``ValueError`` naming the key):
+
+    * a key with leading or trailing whitespace, or containing ``=``, ``;`` or
+      a no-break space — AutoCAD's ``AddCustomInfo`` rejects these as
+      ``Invalid key`` mid-write (measured on AutoCAD 2026), after the summary
+      fields and the earlier keys were already applied; the headless engine
+      writes them without complaint, and AutoCAD then loads them from the DXF;
+    * a key or value containing a line break (LF or CR) — ezdxf emits custom
+      properties unescaped, one header line per text, so the saved DXF is
+      corrupt and the whole drawing fails to reopen (``DXFStructureError``),
+      not just the property.
     """
     if summary is not None and not isinstance(summary, dict):
         raise TypeError("summary: must be an object of {field: text}")
@@ -545,9 +602,11 @@ def validate_drawing_properties(
     for key, value in (custom or {}).items():
         if not isinstance(key, str) or not key.strip():
             raise TypeError(f"custom: key {key!r} must be a non-empty string")
+        _check_custom_key(key)
         if value is None:
             to_delete.append(key)
         elif isinstance(value, str):
+            _check_custom_text(key, value, "value")
             to_write[key] = value
         else:
             raise TypeError(

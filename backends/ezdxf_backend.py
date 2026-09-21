@@ -1117,7 +1117,7 @@ class EzdxfBackend(AutoCADBackend):
                 ),
                 "dwgprops": FeatureCapability(
                     False,
-                    reason="summary_fields_need_live_autocad;custom_properties_supported",
+                    reason="summary_fields_need_live_autocad;custom_properties_need_r2004_or_newer",
                 ),
             },
         )
@@ -6125,6 +6125,22 @@ class EzdxfBackend(AutoCADBackend):
 
         def _sync():
             doc = self._require_doc()
+            if (to_write or to_delete) and doc.dxfversion < "AC1018":
+                # Measured: ezdxf emits $CUSTOMPROPERTYTAG / $CUSTOMPROPERTY only
+                # after $LASTSAVEDBY, a header variable that does not exist
+                # before R2004 (its own CustomVars docstring says so). On an
+                # R12 or R2000 document the in-memory write "succeeded",
+                # drawing_properties_get echoed it back, and drawing_save_as
+                # (version kept) wrote nothing -- the header-only write that
+                # vanishes on save, the class f3ff703 removed for CANNOSCALE.
+                # Refused here, before custom_vars is touched.
+                raise ValueError(
+                    f"custom properties: this document is DXF {doc.dxfversion} "
+                    f"({doc.acad_release}), and $CUSTOMPROPERTYTAG / $CUSTOMPROPERTY "
+                    "header pairs are only written for R2004 (AC1018) or newer, so "
+                    f"{sorted(to_write) + sorted(to_delete)} would be lost on save. "
+                    "Save as R2004 or newer first."
+                )
             custom_vars = doc.header.custom_vars
             for key, value in to_write.items():
                 if custom_vars.has_tag(key):

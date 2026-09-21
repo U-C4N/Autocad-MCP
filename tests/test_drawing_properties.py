@@ -4,7 +4,15 @@ Headlessly the five summary fields live in the DWG SummaryInfo stream, which
 ezdxf cannot write, so any non-null summary field is refused with
 `capability: dwgprops` before anything is touched; custom properties are
 `$CUSTOMPROPERTYTAG` / `$CUSTOMPROPERTY` header pairs and work on both
-engines (measured: they survive save + reopen).
+engines (measured: they survive save + reopen on R2004 and newer; ezdxf
+only emits the pairs for AC1018+, so an older document is refused headlessly
+instead of losing the write at save).
+
+Custom keys and values are validated once, by name, against what would break
+*either* engine: keys AutoCAD's AddCustomInfo rejects mid-write as
+`Invalid key` (measured on AutoCAD 2026: leading/trailing whitespace, `=`,
+`;`, no-break space) and line breaks, which ezdxf writes unescaped and
+which corrupt the whole DXF.
 """
 
 from __future__ import annotations
@@ -42,12 +50,32 @@ def test_validation_splits_writes_and_deletes():
         (None, {"": "x"}, TypeError, "non-empty"),
         ("Gearbox", None, TypeError, "summary"),
         (None, ["PROJECT"], TypeError, "custom"),
+        # Keys AutoCAD's AddCustomInfo rejects as 'Invalid key' (measured on
+        # AutoCAD 2026) -- refused here so the live engine never fails
+        # mid-write after the summary and earlier keys were already applied.
+        (None, {" BAD ": "x"}, ValueError, "' BAD '"),
+        (None, {"PROJECT ": "x"}, ValueError, "trailing whitespace"),
+        (None, {"A=B": "x"}, ValueError, "'A=B' contains '='"),
+        (None, {"A;B": "x"}, ValueError, "'A;B' contains ';'"),
+        (None, {"NB\xa0SP": "x"}, ValueError, "no-break space"),
+        # A line break is written unescaped by ezdxf and corrupts the DXF.
+        (None, {"NOTE": "line1\nline2"}, ValueError, "custom['NOTE']: the value"),
+        (None, {"NOTE": "line1\rline2"}, ValueError, "line break"),
+        (None, {"K\nEY": "x"}, ValueError, "the key contains a line break"),
+        (None, {"K\nEY": None}, ValueError, "the key contains a line break"),
     ],
 )
 def test_validation_refuses_by_name(summary, custom, exc, fragment):
     with pytest.raises(exc) as excinfo:
         validate_drawing_properties(summary, custom)
     assert fragment in str(excinfo.value)
+
+
+@pytest.mark.parametrize("key", ["IN SP", "T\tAB", "\u00dcn\u00efcode", "X" * 300])
+def test_validation_accepts_keys_autocad_accepts(key):
+    """Measured: internal spaces, tabs, unicode and 300-char keys pass
+    AddCustomInfo; the validator must not be stricter than AutoCAD."""
+    assert validate_drawing_properties(None, {key: "v"}) == ({}, {key: "v"}, [])
 
 
 # ── headless engine ─────────────────────────────────────────────────────────
@@ -83,6 +111,96 @@ async def test_custom_properties_write_replace_delete_and_survive_reopen(backend
     await backend.drawing_save_as(path)
     await backend.drawing_open(path)
     assert (await backend.drawing_properties_get())["custom"] == {"PROJECT": "X-2"}
+
+
+async def test_line_break_is_refused_before_any_write_and_the_file_still_opens(backend, tmp_path):
+    """Measured: `custom={'NOTE': 'line1\\nline2', 'AFTER': 'ok'}` reported
+    `ok: True`, and the saved DXF failed to reopen with
+    `DXFStructureError: Invalid group code "line2"` -- the whole drawing lost,
+    reported as success. The request is refused as a whole, so AFTER is not
+    written either, and the file saved afterwards reopens."""
+    with pytest.raises(ValueError, match=r"custom\['NOTE'\]: the value contains a line break"):
+        await backend.drawing_properties_set(custom={"NOTE": "line1\nline2", "AFTER": "ok"})
+    assert (await backend.drawing_properties_get())["custom"] == {}
+    path = str(tmp_path / "clean.dxf")
+    await backend.drawing_save_as(path)
+    await backend.drawing_open(path)
+    assert (await backend.drawing_properties_get())["custom"] == {}
+
+
+async def test_autocad_invalid_keys_are_refused_headlessly_too(backend):
+    """The headless engine used to write ' BAD ', 'A=B' and 'A;B' without
+    complaint (and AutoCAD loaded them from the DXF) while the live engine
+    half-applied the same call; both now refuse before writing."""
+    with pytest.raises(ValueError, match="' BAD '"):
+        await backend.drawing_properties_set(custom={"AAA": "first", " BAD ": "x", "ZZZ": "n"})
+    assert (await backend.drawing_properties_get())["custom"] == {}
+
+
+async def _backend_for_version(tmp_path, version: str):
+    import ezdxf
+
+    from backends.ezdxf_backend import EzdxfBackend
+
+    path = tmp_path / f"{version}.dxf"
+    ezdxf.new(version).saveas(str(path))
+    backend = EzdxfBackend()
+    await backend.connect()
+    await backend.drawing_open(str(path))
+    return backend
+
+
+@pytest.mark.parametrize("version, dxfversion", [("R12", "AC1009"), ("R2000", "AC1015")])
+async def test_custom_properties_before_r2004_are_refused_rather_than_lost(
+    tmp_path, version, dxfversion
+):
+    """Measured: on an R12 or R2000 document `drawing_properties_set` reported
+    `ok: True, custom_written: ['PROJECT']`, `drawing_properties_get` echoed
+    it from memory, and `drawing_save_as` (version kept) wrote nothing --
+    ezdxf emits $CUSTOMPROPERTYTAG / $CUSTOMPROPERTY only after $LASTSAVEDBY,
+    which does not exist before R2004. The header-only write that vanishes on
+    save, the class f3ff703 removed for CANNOSCALE. Refused up front, before
+    custom_vars is touched; the reopened file is read back to prove it."""
+    backend = await _backend_for_version(tmp_path, version)
+    try:
+        assert backend._doc.dxfversion == dxfversion
+        with pytest.raises(ValueError, match=dxfversion) as excinfo:
+            await backend.drawing_properties_set(custom={"PROJECT": "X-1", "REV": "B"})
+        assert "R2004 or newer" in str(excinfo.value)
+        assert "PROJECT" in str(excinfo.value)
+        assert list(backend._doc.header.custom_vars) == []
+        assert (await backend.drawing_properties_get())["custom"] == {}
+        # A delete on the same document is refused for the same reason: it
+        # would report a key removed that the file could never have held.
+        with pytest.raises(ValueError, match="R2004 or newer"):
+            await backend.drawing_properties_set(custom={"PROJECT": None})
+        # An empty request touches nothing and is not a write to refuse.
+        res = await backend.drawing_properties_set(custom={})
+        assert res["ok"] is True and res["custom_written"] == []
+
+        out = tmp_path / f"{version}_out.dxf"
+        await backend.drawing_save_as(str(out))
+        await backend.drawing_open(str(out))
+        assert backend._doc.dxfversion == dxfversion
+        assert (await backend.drawing_properties_get())["custom"] == {}
+    finally:
+        await backend.disconnect()
+
+
+async def test_custom_properties_on_r2004_survive_save_and_reopen(tmp_path):
+    """The oldest version that carries the pairs -- the boundary the refusal
+    sits on -- round-trips."""
+    backend = await _backend_for_version(tmp_path, "R2004")
+    try:
+        res = await backend.drawing_properties_set(custom={"PROJECT": "X-1"})
+        assert res["custom_written"] == ["PROJECT"]
+        out = tmp_path / "r2004_out.dxf"
+        await backend.drawing_save_as(str(out))
+        await backend.drawing_open(str(out))
+        assert backend._doc.dxfversion == "AC1018"
+        assert (await backend.drawing_properties_get())["custom"] == {"PROJECT": "X-1"}
+    finally:
+        await backend.disconnect()
 
 
 async def test_summary_is_refused_headlessly_before_any_write(backend):
@@ -231,3 +349,19 @@ async def test_com_validates_before_touching_activex(com_backend):
     with pytest.raises(ValueError):
         await backend.drawing_properties_set(summary={"edition": "1"})
     assert info.calls == [] and info.Title == "Old title"
+
+
+async def test_com_refuses_autocad_invalid_keys_before_any_write(com_backend):
+    """Measured on AutoCAD 2026: `summary={'subject': 'PARTIAL?'},
+    custom={'AAA': 'first', ' BAD ': 'x', 'ZZZ': 'never'}` raised an unnamed
+    COM error from AddCustomInfo(' BAD ') and left subject and AAA written,
+    ZZZ absent -- a half-applied write reported as an error. The shared
+    validator now names the key and nothing reaches SummaryInfo."""
+    backend, info = com_backend
+    with pytest.raises(ValueError, match="' BAD '"):
+        await backend.drawing_properties_set(
+            summary={"subject": "PARTIAL?"},
+            custom={"AAA": "first", " BAD ": "x", "ZZZ": "never"},
+        )
+    assert info.calls == [] and info.Subject == ""
+    assert info._custom == [("PROJECT", "X-1"), ("OLD", "1")]
