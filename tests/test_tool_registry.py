@@ -495,7 +495,7 @@ async def test_tool_groups_is_byte_identical_to_the_source_declared_grouping():
 
 
 async def test_tool_group_sizes_are_unchanged():
-    """Frozen snapshot of the surface (171 tools, 20 groups).
+    """Frozen snapshot of the surface (172 tools, 20 groups).
 
     Taken before @cad_tool landed at 131 tools; `batch` moved 2 -> 3 when
     v1.5.0's `cad_batch` joined `entity_batch_create`/`entity_batch_modify`, and
@@ -523,7 +523,8 @@ async def test_tool_group_sizes_are_unchanged():
     — all tagged `layout`, which `_GROUP_TAG_PRIORITY` ranks above
     `query`/`export`, so they file with the sheets they set up. `templates`
     moved 2 -> 3 when v1.6's `drawing_template_list` joined SECTION 19
-    (tagged `template`, which ranks above `drawing`). Every other number
+    (tagged `template`, which ranks above `drawing`), then 3 -> 4 when
+    `drawing_template_save` joined. Every other number
     here has been unchanged since the snapshot was taken.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
@@ -544,9 +545,9 @@ async def test_tool_group_sizes_are_unchanged():
         "premium": 12,
         "solids": 5,
         "system": 7,
-        "templates": 3,
+        "templates": 4,
         "transactions": 3,
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 171
+    assert sum(sizes.values()) == 172

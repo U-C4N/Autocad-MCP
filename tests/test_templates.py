@@ -10,6 +10,7 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 import server
+from backends.base import UnsupportedCapabilityError
 from engineering.standards.templates import (
     TEMPLATE_CATALOG,
     TEMPLATES_DIR,
@@ -371,3 +372,116 @@ async def test_com_drawing_new_tool_reports_the_converted_dwt(com_new):
         assert documents.calls[-1] == ("Add", template["dwt"])
     else:
         assert "dwt" not in template and documents.calls == [("Add", template["path"])]
+
+
+# ── drawing_template_save ───────────────────────────────────────────────────
+
+
+async def test_template_save_dxf_headless_round_trips(backend, tmp_path):
+    await backend.layer_create("MINE", color=3)
+    out = tmp_path / "mine_template.dxf"
+    result = await backend.drawing_template_save(str(out), name="Mine", description="my sheet")
+    assert result == {
+        "ok": True,
+        "path": str(out),
+        "format": "dxf",
+        "backend": "ezdxf",
+        "name": "Mine",
+        "description_written": False,
+        "description_note": (
+            "DXF has no template description field; it is a DWG/DWT summary property "
+            "(capability 'dwgprops')"
+        ),
+    }
+    assert out.is_file()
+    await server.drawing_new(template=str(out), ctx=_Ctx(backend))
+    assert "MINE" in {layer.name for layer in await backend.layer_list()}
+
+
+async def test_template_save_dwt_headless_is_refused_with_the_capability(backend, tmp_path):
+    out = tmp_path / "mine.dwt"
+    with pytest.raises(UnsupportedCapabilityError) as excinfo:
+        await backend.drawing_template_save(str(out))
+    assert excinfo.value.capability == "dwt_write"
+    message = str(excinfo.value)
+    assert ".dxf" in message and "com" in message.lower()
+    assert not out.exists()
+
+
+async def test_template_save_refuses_other_suffixes(backend, tmp_path):
+    with pytest.raises(ValueError, match=r"\.dxf"):
+        await backend.drawing_template_save(str(tmp_path / "mine.txt"))
+
+
+async def test_template_save_tool_validates_the_path(backend, tmp_path):
+    with pytest.raises(ToolError):
+        await server.drawing_template_save("../../outside.dxf", ctx=_Ctx(backend))
+    result = await server.drawing_template_save(str(tmp_path / "t.dxf"), ctx=_Ctx(backend))
+    assert result["ok"] and result["name"] == "t"
+
+
+class _SaveRecorder:
+    def __init__(self):
+        self.calls = []
+        self.SummaryInfo = types.SimpleNamespace()
+        self.Name = "Drawing1.dwg"
+
+    def SaveAs(self, path, fmt=None):
+        self.calls.append(("SaveAs", path, fmt))
+        self.Name = Path(path).name
+
+
+@pytest.fixture
+def com_backend(monkeypatch):
+    pytest.importorskip("win32com.client", reason="pywin32 not installed")
+    from backends import com_backend as module
+
+    document = _SaveRecorder()
+    monkeypatch.setattr(module, "_acad_doc", lambda: document)
+    backend = module.ComBackend()
+
+    async def _run_inline(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(backend, "_run", _run_inline)
+    return backend, document
+
+
+async def test_com_template_save_dwt_uses_ac2018_template(com_backend, tmp_path):
+    backend, document = com_backend
+    out = str(tmp_path / "mine.dwt")
+    result = await backend.drawing_template_save(out, description="A3 mech")
+    assert document.calls == [("SaveAs", out, 66)]
+    assert document.SummaryInfo.Comments == "A3 mech"
+    assert result == {
+        "ok": True,
+        "path": out,
+        "format": "dwt",
+        "backend": "com",
+        "name": "mine",
+        "description_written": True,
+        "document_rebound": True,
+    }
+
+
+async def test_com_template_save_dxf_uses_the_dxf_code(com_backend, tmp_path):
+    backend, document = com_backend
+    out = str(tmp_path / "mine.dxf")
+    result = await backend.drawing_template_save(out)
+    assert document.calls == [("SaveAs", out, 61)]
+    assert result["format"] == "dxf" and result["description_written"] is False
+
+
+async def test_com_save_as_dwt_no_longer_writes_an_r13_dxf(com_backend, tmp_path):
+    """drawing_save_as mapped 'dwt' to 5, which is AcSaveAsType.acR13_dxf."""
+    backend, document = com_backend
+    out = str(tmp_path / "x.dwt")
+    await backend.drawing_save_as(out, "dwt")
+    assert document.calls == [("SaveAs", out, 66)]
+
+
+async def test_com_template_save_refuses_other_suffixes_before_saving(com_backend, tmp_path):
+    backend, document = com_backend
+    with pytest.raises(ValueError, match=r"\.dwt"):
+        await backend.drawing_template_save(str(tmp_path / "x.dwg"))
+    assert document.calls == []

@@ -6855,7 +6855,7 @@ async def pid_tag_parse(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 19: Page Setup & Templates (5 tools) ────────────────────────────
+# ── SECTION 19: Page Setup & Templates (6 tools) ────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -7042,6 +7042,44 @@ async def drawing_template_list(ctx: Context = None) -> dict:
         "templates_dir": str(TEMPLATES_DIR),
         "engine": _backend(ctx).name,
     }
+
+
+@cad_tool(
+    summary="Save the current drawing as a template: .dwt on live AutoCAD, .dxf headlessly.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Save As Template", "destructiveHint": False},
+    tags={"template", "drawing"},
+)
+async def drawing_template_save(
+    path: Annotated[str, "Destination .dwt (live AutoCAD) or .dxf (either engine)."],
+    name: Annotated[str | None, "Template name for the report (default: the file stem)."] = None,
+    description: Annotated[
+        str | None, "Template description → DWT summary Comments on the live engine."
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """AutoCAD's SAVEAS → Drawing Template, on both engines.
+
+    Live AutoCAD writes a real `.dwt` (`SaveAs(path, ac2018_Template)`) and
+    puts `description` into the template's summary Comments; the active
+    document is rebound to the new file, as SAVEAS does. Headlessly a `.dxf`
+    template is written — `drawing_new(template=<path>)` opens it — and a
+    `.dwt` request is refused with capability `dwt_write` (the message names
+    the DXF route and the COM route); a description is reported
+    `description_written: false` because DXF has nowhere to keep it. Any other
+    suffix, and any path outside the allowed directories, is refused before
+    a byte is written.
+
+    Pack: core · lean: no (`drawing_save_as` is not lean either).
+    """
+    validated = validate_path(path, allow_write=True)
+    await ctx.info(f"Saving template: {validated}")
+    try:
+        return await _backend(ctx).drawing_template_save(str(validated), name, description)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

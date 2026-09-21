@@ -123,6 +123,18 @@ _DWG_WRITE_REFUSAL = (
 )
 
 
+# A DWT is a DWG container with a template flag. ezdxf cannot write it, and a
+# DXF under a .dwt name is exactly the mislabelled file the DWG refusal exists
+# to prevent. The DXF route works headlessly end to end: drawing_new(template=)
+# opens a .dxf template.
+_DWT_WRITE_REFUSAL = (
+    "drawing_template_save: the headless ezdxf backend cannot write DWT — a .dwt is a DWG "
+    "container, and ezdxf has no DWG writer. Save the template as .dxf instead "
+    "(drawing_new(template='{stem}.dxf') opens it headlessly), or switch to the live COM "
+    "backend (AUTOCAD_MCP_BACKEND=com, needs Windows + AutoCAD) for a real .dwt."
+)
+
+
 def _is_dwg_path(path: str) -> bool:
     """True when `path` names a DWG file. The extension is authoritative (N2)."""
     return Path(path).suffix.lower() == ".dwg"
@@ -2687,10 +2699,39 @@ class EzdxfBackend(AutoCADBackend):
         return [{"name": name, "source": "catalog", "installed": None} for name in CTB_CATALOG]
 
     async def drawing_template_save(self, path, name=None, description=None) -> dict:
-        # Completed in Task 20; declared here so the ABC instantiates.
-        raise UnsupportedCapabilityError(
-            "dwt_write", "drawing_template_save: not implemented yet (Task 20)"
-        )
+        """Save the current drawing as a template — DXF only, headlessly.
+
+        ``.dwt`` is refused with capability ``dwt_write`` before anything is
+        written; ``.dxf`` goes through ``drawing_save_as`` (the document is
+        rebound to the new path, as AutoCAD's SAVEAS does). A description has
+        no home in a DXF header — it is a DWG/DWT summary property — so it is
+        reported ``description_written: False`` rather than dropped silently.
+        """
+        suffix = Path(path).suffix.lower()
+        if suffix == ".dwt":
+            raise UnsupportedCapabilityError(
+                "dwt_write", _DWT_WRITE_REFUSAL.format(stem=Path(path).stem)
+            )
+        if suffix != ".dxf":
+            raise ValueError(
+                f"drawing_template_save: path must end in .dxf (headless) or .dwt (live "
+                f"AutoCAD), got {path!r}"
+            )
+        saved = await self.drawing_save_as(path, "dxf")
+        result = {
+            "ok": True,
+            "path": saved["path"],
+            "format": "dxf",
+            "backend": "ezdxf",
+            "name": name or Path(path).stem,
+            "description_written": False,
+        }
+        if description is not None:
+            result["description_note"] = (
+                "DXF has no template description field; it is a DWG/DWT summary property "
+                "(capability 'dwgprops')"
+            )
+        return result
 
     # ── 3D solids (unsupported headlessly — honest capability boundary) ─────
 

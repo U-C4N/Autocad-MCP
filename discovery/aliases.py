@@ -76,6 +76,8 @@ class ToolAliases:
 #       (page_setup_list vs page_setup_apply).
 #   PLOT -- one sheet to PDF (drawing_export_pdf) or every sheet in one go
 #       (batch_plot); a drafter typing it could mean either.
+#   SAVEAS -- the same command saves a copy (drawing_save_as) or a template
+#       (drawing_template_save, its "Drawing Template" file type).
 #
 # Every other AutoCAD command must map to exactly one tool.
 SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
@@ -91,6 +93,7 @@ SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
         "PLINE",
         "PLOT",
         "QSELECT",
+        "SAVEAS",
         "SETVAR",
         "ZOOM",
     }
@@ -1460,6 +1463,16 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "ansi b sheet",
             "start from a standard sheet",
             "dwt list",
+        ),
+    ),
+    "drawing_template_save": ToolAliases(
+        acad=("SAVEAS",),
+        synonyms=(
+            "save as template",
+            "make a dwt",
+            "template from this drawing",
+            "save as dwt",
+            "reuse this sheet setup",
         ),
     ),
     "page_setup_apply": ToolAliases(

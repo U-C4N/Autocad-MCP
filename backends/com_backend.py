@@ -1117,8 +1117,10 @@ class ComBackend(AutoCADBackend):
     async def drawing_save_as(self, path: str, fmt: str = "dwg") -> dict:
         def _sync():
             doc = _acad_doc()
-            # AutoCAD SaveAs format constants: 12=DWG R2010, 61=DXF R2010
-            fmt_map = {"dwg": 12, "dxf": 61, "dwt": 5}
+            # AutoCAD AcSaveAsType: 12 = ac2000_dwg, 61 = ac2013_dxf, 66 = ac2018_Template.
+            # "dwt" was 5 (acR13_dxf) until v1.6: a DWT request wrote an R13 DXF
+            # under a .dwt name.
+            fmt_map = {"dwg": 12, "dxf": 61, "dwt": 66}
             acad_fmt = fmt_map.get(fmt.lower(), 12)
             doc.SaveAs(path, acad_fmt)
             return {"ok": True, "path": path, "format": fmt}
@@ -2136,6 +2138,10 @@ class ComBackend(AutoCADBackend):
     # scripts/smoke_settings_com.py (Task 24).
 
     _AC_NO_ROTATION = 0
+    #: AcSaveAsType, AutoCAD 2026 typelib: ac2018_Template = 66 (acNative = 64,
+    #: ac2013_dxf = 61). The spec's "acTemplateDwg" is not a member of the enum.
+    _AC_SAVEAS_TEMPLATE = 66
+    _AC_SAVEAS_DXF = 61
     #: Layout properties a ConfigName write can move as a side effect (measured
     #: live for CanonicalMediaName; units / rotation are re-applied on the same
     #: evidence-before-trust basis) — snapshotted before the device switch and
@@ -2442,10 +2448,40 @@ class ComBackend(AutoCADBackend):
         return await self._run(_sync)
 
     async def drawing_template_save(self, path, name=None, description=None) -> dict:
-        # Completed in Task 20; declared here so the ABC instantiates.
-        raise UnsupportedCapabilityError(
-            "dwt_write", "drawing_template_save: not implemented yet (Task 20)"
-        )
+        """``SaveAs(path, ac2018_Template)`` for ``.dwt``, the DXF code for ``.dxf``.
+
+        AutoCAD's template description is its summary-info Comments field, so
+        ``description`` is written there first (``description_written`` says
+        whether it took). SaveAs rebinds the active document to the new file,
+        as the SAVEAS command does — reported as ``document_rebound``.
+        Fake-tested; executed live by ``scripts/smoke_settings_com.py --build-dwt``.
+        """
+        suffix = Path(path).suffix.lower()
+        if suffix not in (".dwt", ".dxf"):
+            raise ValueError(f"drawing_template_save: path must end in .dwt or .dxf, got {path!r}")
+
+        def _sync():
+            doc = _acad_doc()
+            description_written = False
+            if description is not None:
+                try:
+                    doc.SummaryInfo.Comments = str(description)
+                    description_written = True
+                except Exception as exc:
+                    log.debug("SummaryInfo.Comments write failed: %s", exc)
+            code = self._AC_SAVEAS_TEMPLATE if suffix == ".dwt" else self._AC_SAVEAS_DXF
+            doc.SaveAs(path, code)
+            return {
+                "ok": True,
+                "path": path,
+                "format": suffix[1:],
+                "backend": "com",
+                "name": name or Path(path).stem,
+                "description_written": description_written,
+                "document_rebound": True,
+            }
+
+        return await self._run(_sync)
 
     # ── 3D solids (native ActiveX; gated behind ENABLE_3D at the tool layer) ─
 

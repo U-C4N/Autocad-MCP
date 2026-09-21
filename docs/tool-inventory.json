@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 171,
+    "tools": 172,
     "resources": 8,
     "prompts": 5,
     "groups": 20
@@ -25,7 +25,7 @@
     "premium": 12,
     "solids": 5,
     "system": 7,
-    "templates": 3,
+    "templates": 4,
     "transactions": 3,
     "validation": 1,
     "view": 4
@@ -739,6 +739,20 @@
       "annotations": {
         "title": "List Drawing Templates",
         "readOnlyHint": true
+      }
+    },
+    {
+      "name": "drawing_template_save",
+      "group": "templates",
+      "cost": "mutate",
+      "summary": "Save the current drawing as a template: .dwt on live AutoCAD, .dxf headlessly.",
+      "tags": [
+        "drawing",
+        "template"
+      ],
+      "annotations": {
+        "title": "Save As Template",
+        "destructiveHint": false
       }
     },
     {
