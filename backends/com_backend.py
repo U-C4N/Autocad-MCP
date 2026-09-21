@@ -1896,6 +1896,234 @@ class ComBackend(AutoCADBackend):
 
         return await self._run(_sync)
 
+    # ── application, preferences, operator prompts ────────────────────────────
+
+    async def system_launch(self, visible: bool = True, open_path: str | None = None) -> dict:
+        """Attach to the running application, or start it; optionally open a file.
+
+        Honours ``CAD_PROGID`` on both paths, like ``_acad_app``: ``Dispatch``
+        launches the application, so falling back to AutoCAD would start the
+        very product the operator said they were not using. The path is
+        validated before any COM call.
+        """
+        path = str(validate_path(open_path, allow_write=False)) if open_path else None
+
+        def _sync():
+            progid = config.settings.cad_progid
+            app = _COM_STATE.get("app")
+            launched = False
+            if app is None:
+                try:
+                    app = win32com.client.GetActiveObject(progid)
+                except Exception as exc:
+                    log.debug("GetActiveObject(%r) failed, dispatching: %s", progid, exc)
+                    app = win32com.client.Dispatch(progid)
+                    launched = True
+                _COM_STATE["app"] = app
+            try:
+                app.Visible = bool(visible)
+            except Exception as exc:  # some hosts refuse to hide
+                log.debug("Visible=%s refused: %s", visible, exc)
+            document = None
+            if path:
+                document = str(app.Documents.Open(path).Name)
+            elif int(app.Documents.Count):
+                document = str(app.ActiveDocument.Name)
+            return {
+                "launched": launched,
+                "attached": not launched,
+                "version": str(app.Version),
+                "document": document,
+                "visible": bool(visible),
+                "progid": progid,
+                "backend": "com",
+            }
+
+        result = await self._run(_sync)
+        await self._ensure_document_state()
+        return result
+
+    async def preferences_get(self, keys: list[str] | None = None) -> dict:
+        from engineering.environment.preferences import (
+            PREFERENCE_KEYS,
+            READ_ONLY_KEYS,
+            decode_value,
+            known_keys,
+            split_key,
+        )
+
+        if keys is None:
+            wanted = known_keys()
+        else:
+            if isinstance(keys, str) or not isinstance(keys, (list, tuple)):
+                raise TypeError("preferences_get: keys must be a list of preference names")
+            unknown = [k for k in keys if k not in PREFERENCE_KEYS and k not in READ_ONLY_KEYS]
+            if unknown:
+                raise ValueError(
+                    f"preferences_get: unknown preference keys {unknown}; known: {known_keys()}"
+                )
+            wanted = list(keys)
+
+        def _sync():
+            prefs = _acad_app().Preferences
+            values = {}
+            for key in wanted:
+                section, member = split_key(key)
+                values[key] = decode_value(key, getattr(getattr(prefs, section), member))
+            return {
+                "values": values,
+                "read_only": [k for k in wanted if k in READ_ONLY_KEYS],
+                "backend": "com",
+            }
+
+        return await self._run(_sync)
+
+    async def preferences_set(self, key: str, value) -> dict:
+        from engineering.environment.preferences import (
+            decode_value,
+            split_key,
+            validate_preference,
+        )
+
+        coerced = validate_preference(key, value)  # read-only / unknown / range: refused here
+        section, member = split_key(key)
+
+        def _sync():
+            target = getattr(_acad_app().Preferences, section)
+            old = getattr(target, member)
+            setattr(target, member, coerced)
+            new = getattr(target, member)
+            return {
+                "ok": True,
+                "key": key,
+                "old": decode_value(key, old),
+                "new": decode_value(key, new),
+                "changed": old != new,
+                "backend": "com",
+            }
+
+        return await self._run(_sync)
+
+    @staticmethod
+    def _prompt_text(prompt, where: str, max_len: int = 255) -> str:
+        from engineering.environment.names import validate_name
+
+        return validate_name(prompt, what=f"{where}: prompt", max_len=max_len)
+
+    @staticmethod
+    def _com_cancel_reason(exc) -> str | None:
+        """The operator's cancel as ActiveX reports it, or None for any other COM error.
+
+        ESC in GetPoint / GetEntity / SelectOnScreen raises DISP_E_EXCEPTION
+        (-2147352567) with AutoCAD's description ("User input is a keyword",
+        "Function cancelled"). Anything else is a real failure and propagates.
+        """
+        args = getattr(exc, "args", ())
+        if not args or args[0] != -2147352567:
+            return None
+        detail = args[2] if len(args) > 2 and isinstance(args[2], tuple) else ()
+        description = detail[2] if len(detail) > 2 and detail[2] else "cancelled"
+        return str(description)
+
+    async def _interactive(self, func):
+        """Run an operator prompt; a wall-clock timeout is an answer, not a crash.
+
+        ``_run`` has already rebuilt the STA executor by the time its
+        "did not respond" error surfaces (the worker is still blocked inside
+        the prompt); the next call re-attaches lazily, exactly as after any
+        other timeout. ``COM_CALL_TIMEOUT`` is the budget the operator has.
+        """
+        try:
+            return await self._run(func)
+        except RuntimeError as exc:
+            if str(exc).startswith("AutoCAD did not respond"):
+                return {
+                    "timed_out": True,
+                    "timeout_s": config.settings.com_call_timeout,
+                    "error": str(exc),
+                }
+            raise
+
+    async def user_pick_point(self, prompt: str) -> dict:
+        text = self._prompt_text(prompt, "user_pick_point")
+
+        def _sync():
+            doc = _acad_doc()
+            try:
+                point = doc.Utility.GetPoint(pythoncom.Missing, f"\n{text}")
+            except _COM_ERROR as exc:
+                reason = self._com_cancel_reason(exc)
+                if reason is None:
+                    raise
+                return {"cancelled": True, "reason": reason, "backend": "com"}
+            return {
+                "cancelled": False,
+                "x": float(point[0]),
+                "y": float(point[1]),
+                "z": float(point[2]) if len(point) > 2 else 0.0,
+                "backend": "com",
+            }
+
+        return await self._interactive(_sync)
+
+    async def user_select(self, prompt: str, mode: str = "single") -> dict:
+        if mode not in ("single", "multiple"):
+            raise ValueError(f"user_select: mode must be 'single' or 'multiple', got {mode!r}")
+        text = self._prompt_text(prompt, "user_select")
+
+        def _sync():
+            doc = _acad_doc()
+            if mode == "single":
+                try:
+                    obj, picked = doc.Utility.GetEntity(f"\n{text}")
+                except _COM_ERROR as exc:
+                    reason = self._com_cancel_reason(exc)
+                    if reason is None:
+                        raise
+                    return {"cancelled": True, "reason": reason, "handles": [], "backend": "com"}
+                return {
+                    "cancelled": False,
+                    "mode": "single",
+                    "handles": [str(obj.Handle)],
+                    "picked": [float(picked[0]), float(picked[1])],
+                    "backend": "com",
+                }
+            doc.Utility.Prompt(f"\n{text}\n")
+            ss = doc.SelectionSets.Add(f"_PICK_{uuid.uuid4().hex[:8]}")
+            try:
+                try:
+                    ss.SelectOnScreen()
+                except _COM_ERROR as exc:
+                    reason = self._com_cancel_reason(exc)
+                    if reason is None:
+                        raise
+                    return {"cancelled": True, "reason": reason, "handles": [], "backend": "com"}
+                handles = [str(ss.Item(i).Handle) for i in range(int(ss.Count))]
+                # Enter with nothing selected is an empty answer, not a cancel.
+                return {
+                    "cancelled": False,
+                    "mode": "multiple",
+                    "handles": handles,
+                    "count": len(handles),
+                    "backend": "com",
+                }
+            finally:
+                try:
+                    ss.Delete()
+                except Exception as exc:
+                    log.debug("SelectionSet cleanup failed: %s", exc)
+
+        return await self._interactive(_sync)
+
+    async def system_prompt_message(self, text: str) -> dict:
+        clean = self._prompt_text(text, "system_prompt_message", max_len=2000)
+
+        def _sync():
+            _acad_doc().Utility.Prompt(f"\n{clean}\n")
+            return {"ok": True, "text": clean, "backend": "com"}
+
+        return await self._run(_sync)
+
     # ── selection filters (M8 / F1) ──────────────────────────────────────────
     #
     # VERIFIED against a live AutoCAD 2026 (2026-08-05).

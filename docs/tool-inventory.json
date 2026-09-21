@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 179,
+    "tools": 185,
     "resources": 8,
     "prompts": 5,
     "groups": 20
@@ -24,7 +24,7 @@
     "pid": 9,
     "premium": 12,
     "solids": 5,
-    "system": 7,
+    "system": 13,
     "templates": 2,
     "transactions": 3,
     "validation": 1,
@@ -2142,6 +2142,61 @@
       }
     },
     {
+      "name": "system_launch",
+      "group": "system",
+      "cost": "safe",
+      "summary": "Attach to the running AutoCAD or start it, optionally opening a file (live only).",
+      "tags": [
+        "system"
+      ],
+      "annotations": {
+        "title": "Launch / Attach AutoCAD",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "system_preferences_get",
+      "group": "system",
+      "cost": "read",
+      "summary": "Read AutoCAD preferences from the whitelist (OPTIONS dialog values; live only).",
+      "tags": [
+        "system"
+      ],
+      "annotations": {
+        "title": "Get Preferences",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "system_preferences_set",
+      "group": "system",
+      "cost": "safe",
+      "summary": "Change one whitelisted AutoCAD preference; reports old and new (live only).",
+      "tags": [
+        "system"
+      ],
+      "annotations": {
+        "title": "Set Preference",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "system_prompt_message",
+      "group": "system",
+      "cost": "safe",
+      "summary": "Print a message on AutoCAD's command line (live only).",
+      "tags": [
+        "system"
+      ],
+      "annotations": {
+        "title": "Command-Line Message",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
       "name": "system_run_command",
       "group": "system",
       "cost": "escape",
@@ -2344,6 +2399,32 @@
         "title": "Set UCS",
         "readOnlyHint": false,
         "destructiveHint": false
+      }
+    },
+    {
+      "name": "user_pick_point",
+      "group": "system",
+      "cost": "read",
+      "summary": "Ask the operator to pick a point on screen (live only; blocks until they do).",
+      "tags": [
+        "system"
+      ],
+      "annotations": {
+        "title": "Ask Operator: Pick Point",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "user_select",
+      "group": "system",
+      "cost": "read",
+      "summary": "Ask the operator to select one entity or a set on screen (live only).",
+      "tags": [
+        "system"
+      ],
+      "annotations": {
+        "title": "Ask Operator: Select",
+        "readOnlyHint": true
       }
     },
     {

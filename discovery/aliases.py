@@ -76,6 +76,9 @@ class ToolAliases:
 #       (document_close); a drafter typing it could mean either.
 #   LAYERSTATE, VIEW, UCS -- umbrella dialog/option commands (save, restore,
 #       list, delete in one) that this server splits into discrete tools.
+#   OPTIONS -- one dialog both reads and writes a preference; the server
+#       splits read (system_preferences_get) and write (system_preferences_set),
+#       the SETVAR precedent.
 #
 # Every other AutoCAD command must map to exactly one tool.
 SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
@@ -89,6 +92,7 @@ SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
         "LAYERSTATE",
         "LAYOUT",
         "MEASUREGEOM",
+        "OPTIONS",
         "PLINE",
         "QSELECT",
         "SETVAR",
@@ -1503,6 +1507,46 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "save which layers are frozen",
         ),
     ),
+    "system_launch": ToolAliases(
+        acad=(),
+        synonyms=(
+            "start autocad",
+            "launch autocad",
+            "attach to the running autocad",
+            "is autocad running",
+            "open autocad with this file",
+        ),
+    ),
+    "system_preferences_get": ToolAliases(
+        acad=("OPTIONS",),
+        synonyms=(
+            "read a preference",
+            "autosave interval",
+            "support file search path",
+            "what is the pickbox size",
+            "options dialog value",
+        ),
+    ),
+    "system_preferences_set": ToolAliases(
+        acad=("OPTIONS",),
+        synonyms=(
+            "change a preference",
+            "set the autosave interval",
+            "cursor size",
+            "pickbox size",
+            "default plot style table",
+        ),
+    ),
+    "system_prompt_message": ToolAliases(
+        acad=(),
+        synonyms=(
+            "message on the command line",
+            "tell the operator",
+            "print to the command line",
+            "command line note",
+            "say something in autocad",
+        ),
+    ),
     "ucs_list": ToolAliases(
         acad=("UCS", "UCSMAN"),
         synonyms=("the current ucs", "list coordinate systems", "named ucs", "ucs manager"),
@@ -1525,6 +1569,26 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "new coordinate system at this origin",
             "rotate the ucs",
             "ucs origin",
+        ),
+    ),
+    "user_pick_point": ToolAliases(
+        acad=("ID",),
+        synonyms=(
+            "pick a point",
+            "click a point on screen",
+            "ask the operator for a point",
+            "where should this go",
+            "let me click",
+        ),
+    ),
+    "user_select": ToolAliases(
+        acad=("SELECT",),
+        synonyms=(
+            "let me select",
+            "pick objects on screen",
+            "ask the operator to select",
+            "select on screen",
+            "hand me the selection",
         ),
     ),
     "view_named_list": ToolAliases(

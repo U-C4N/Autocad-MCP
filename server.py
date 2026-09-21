@@ -6819,7 +6819,7 @@ async def pid_tag_parse(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 20: Environment (13 tools) ──────────────────────────────────────
+# ── SECTION 20: Environment (19 tools) ──────────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -7118,6 +7118,151 @@ async def ucs_restore(
     Refusal: an unknown name (lists the saved ones). Tool coordinates stay
     WCS. Pack: settings · lean: no."""
     return await _backend(ctx).ucs_restore(name)
+
+
+@cad_tool(
+    summary="Attach to the running AutoCAD or start it, optionally opening a file (live only).",
+    cost="safe",
+)
+@mcp.tool(
+    annotations={
+        "title": "Launch / Attach AutoCAD",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+    },
+    tags={"system"},
+)
+async def system_launch(
+    visible: Annotated[bool, "Show the application window"] = True,
+    open_path: Annotated[str | None, "A .dwg/.dxf to open after attaching"] = None,
+    ctx: Context = None,
+) -> dict:
+    """Connect to the application named by `CAD_PROGID` (attach if running,
+    launch otherwise) and report `launched`, `attached`, `version` and the
+    active `document`. Refusals: headless, `capability: "live_application"`
+    (there is no application to launch); an `open_path` that fails path
+    validation. Pack: settings · lean: no.
+    """
+    if open_path is not None:
+        open_path = str(validate_path(open_path, allow_write=False))
+    await ctx.info(f"Launching or attaching to {config.settings.cad_progid}")
+    return await _backend(ctx).system_launch(visible, open_path)
+
+
+@cad_tool(
+    summary="Read AutoCAD preferences from the whitelist (OPTIONS dialog values; live only).",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Get Preferences", "readOnlyHint": True},
+    tags={"system"},
+)
+async def system_preferences_get(
+    keys: Annotated[
+        list[str] | None,
+        "Subset of OpenSave.SaveAsType, OpenSave.AutoSaveInterval, OpenSave.CreateBackup, "
+        "OpenSave.IncrementalSavePercent, Display.CursorSize, Drafting.AutoSnapMarkerSize, "
+        "Drafting.AutoSnapTooltip, Selection.PickBoxSize, Output.DefaultPlotStyleTable, "
+        "Output.DefaultOutputDevice, Files.SupportPath, Files.TemplateDwgPath, "
+        "Files.PrinterStyleSheetPath, Files.PrinterConfigPath; omit for all",
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """The whitelisted `Preferences.*` values, enum values as names
+    (`SaveAsType: "ac2018_dwg"`), with `read_only` naming the four `Files.*`
+    paths. Refusals: headless, `capability: "preferences"` (they live in the
+    running application, not in a file); a key outside the whitelist.
+    Pack: settings · lean: no.
+    """
+    return await _backend(ctx).preferences_get(keys)
+
+
+@cad_tool(
+    summary="Change one whitelisted AutoCAD preference; reports old and new (live only).",
+    cost="safe",
+)
+@mcp.tool(
+    annotations={"title": "Set Preference", "readOnlyHint": False, "destructiveHint": False},
+    tags={"system"},
+)
+async def system_preferences_set(
+    key: Annotated[str, "A writable key from system_preferences_get"],
+    value: Annotated[Any, "New value: bool, int within the key's range, string, or an enum name"],
+    ctx: Context = None,
+) -> dict:
+    """Write one preference and report `old`, `new` and `changed`.
+
+    Refusals, all before any write: a read-only key (`Files.*`), an unknown
+    key, a value of the wrong type, an int outside the authored range
+    (`AutoSaveInterval` 0–600 min, `CursorSize` 1–100, `PickBoxSize` 0–50, …),
+    an unknown `SaveAsType` name; headless, `capability: "preferences"`.
+    Pack: settings · lean: no.
+    """
+    await ctx.info(f"Setting preference {key} = {value!r}")
+    return await _backend(ctx).preferences_set(key, value)
+
+
+@cad_tool(
+    summary="Ask the operator to pick a point on screen (live only; blocks until they do).",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Ask Operator: Pick Point", "readOnlyHint": True},
+    tags={"system"},
+)
+async def user_pick_point(
+    prompt: Annotated[str, "Shown on the command line, e.g. 'Pick the base point'"],
+    ctx: Context = None,
+) -> dict:
+    """`Utility.GetPoint`: returns the WCS `x`, `y` (`z`) the operator clicks.
+
+    ESC is an answer, not an error: `cancelled: true` with AutoCAD's reason.
+    Waiting longer than `COM_CALL_TIMEOUT` returns `timed_out: true` (the
+    prompt is abandoned on AutoCAD's side; press ESC there). Refusals: an
+    empty prompt; headless, `capability: "interactive_prompt"` (no operator).
+    Pack: settings · lean: no.
+    """
+    await ctx.info(f"Asking the operator to pick a point: {prompt}")
+    return await _backend(ctx).user_pick_point(prompt)
+
+
+@cad_tool(
+    summary="Ask the operator to select one entity or a set on screen (live only).",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Ask Operator: Select", "readOnlyHint": True},
+    tags={"system"},
+)
+async def user_select(
+    prompt: Annotated[str, "Shown on the command line"],
+    mode: Annotated[str, "single (GetEntity) | multiple (SelectOnScreen)"] = "single",
+    ctx: Context = None,
+) -> dict:
+    """Returns `handles` the operator picked — one with `mode="single"` (plus
+    the `picked` point), any number with `mode="multiple"` (Enter with nothing
+    selected is `count: 0`, not a cancel). ESC → `cancelled: true`; a wait
+    longer than `COM_CALL_TIMEOUT` → `timed_out: true`. Refusals: a mode
+    outside the two, an empty prompt; headless, `capability:
+    "interactive_prompt"`. Pack: settings · lean: no.
+    """
+    await ctx.info(f"Asking the operator to select ({mode}): {prompt}")
+    return await _backend(ctx).user_select(prompt, mode)
+
+
+@cad_tool(summary="Print a message on AutoCAD's command line (live only).", cost="safe")
+@mcp.tool(
+    annotations={"title": "Command-Line Message", "readOnlyHint": False, "destructiveHint": False},
+    tags={"system"},
+)
+async def system_prompt_message(
+    text: Annotated[str, "The message; one line is best"],
+    ctx: Context = None,
+) -> dict:
+    """`Utility.Prompt`: tell the operator something where they are looking.
+    Nothing in the drawing changes. Refusals: an empty message; headless,
+    `capability: "interactive_prompt"`. Pack: settings · lean: no."""
+    return await _backend(ctx).system_prompt_message(text)
 
 
 # ---------------------------------------------------------------------------

@@ -522,8 +522,12 @@ async def test_tool_group_sizes_are_unchanged():
     `document_close` (multi-document on both engines) opened SECTION 20;
     `layers` moved 14 -> 18 with the four `layer_state_*` tools and `view`
     4 -> 10 with `view_named_*` and `ucs_*` (UCS files under `view`, where
-    AutoCAD's own ribbon keeps it) when v1.6's SECTION 20 grew. Every
-    other number here has been unchanged since the snapshot was taken.
+    AutoCAD's own ribbon keeps it) when v1.6's SECTION 20 grew. `system`
+    moved 7 -> 13 with v1.6's live-only environment tools (`system_launch`,
+    `system_preferences_get/set`, `user_pick_point`, `user_select`,
+    `system_prompt_message`), which refuse headlessly with declared
+    capability keys. Every other number here has been unchanged since the
+    snapshot was taken.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
@@ -542,10 +546,10 @@ async def test_tool_group_sizes_are_unchanged():
         "pid": 9,
         "premium": 12,
         "solids": 5,
-        "system": 7,
+        "system": 13,
         "templates": 2,
         "transactions": 3,
         "validation": 1,
         "view": 10,
     }
-    assert sum(sizes.values()) == 179
+    assert sum(sizes.values()) == 185
