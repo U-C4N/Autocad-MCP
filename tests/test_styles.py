@@ -621,13 +621,89 @@ class _FakeBlock:
 
     def __init__(self, *entities):
         self.entities = list(entities)
+        self.item_reads = 0
 
     @property
     def Count(self):
         return len(self.entities)
 
     def Item(self, index):
+        self.item_reads += 1
         return _NarrowedToIAcadEntity(self.entities[index])
+
+
+class _FakeSelectionSet:
+    """An ``AcadSelectionSet`` filled by ``Select(acSelectionSetAll, ..., filter)``
+    — ``ssget "X"`` over every layout's block — with the two filter groups
+    the backend sends: 0 (DXF name, ``DIMENSION`` for every dimension class)
+    and 3 (dimension style, a *wildcard pattern*, so the backend must hand it
+    over backtick-escaped; the fake unescapes and compares literally,
+    case-insensitively, the way AutoCAD does — measured live). ``Item`` is
+    declared ``IAcadEntity*`` and comes back narrowed, like ``IAcadBlock.Item``."""
+
+    def __init__(self, name, document):
+        self.Name = name
+        self._document = document
+        self._members: list = []
+        self.deleted = False
+
+    @staticmethod
+    def _unescape(pattern: str) -> str:
+        out, escaped = [], False
+        for char in pattern:
+            if escaped:
+                out.append(char)
+                escaped = False
+            elif char == "`":
+                escaped = True
+            elif char in "*?#@.~[],":
+                raise AssertionError(
+                    f"unescaped wildcard {char!r} in filter {pattern!r}: a style named "
+                    "A.B would also select the dimensions of A_B"
+                )
+            else:
+                out.append(char)
+        return "".join(out)
+
+    def Select(self, mode, point1, point2, filter_types, filter_values):
+        assert mode == 5, "acSelectionSetAll — every layout, not the current space"
+        assert point1 is None and point2 is None
+        types_ = list(filter_types.value)
+        values = list(filter_values.value)
+        assert types_ == [0, 3], types_
+        assert values[0] == "DIMENSION"
+        wanted = self._unescape(values[1]).lower()
+        self._document.SelectionSets.selects.append((self.Name, values[1]))
+        self._members = [
+            entity
+            for layout_index in range(self._document.Layouts.Count)
+            for entity in self._document.Layouts.Item(layout_index).Block.entities
+            if "Dimension" in entity.ObjectName and str(entity.StyleName).lower() == wanted
+        ]
+
+    @property
+    def Count(self):
+        return len(self._members)
+
+    def Item(self, index):
+        return _NarrowedToIAcadEntity(self._members[index])
+
+    def Delete(self):
+        self.deleted = True
+        self._document.SelectionSets.entries.remove(self)
+
+
+class _FakeSelectionSets:
+    def __init__(self, document):
+        self._document = document
+        self.entries: list[_FakeSelectionSet] = []
+        self.selects: list[tuple[str, str]] = []  # (set name, group-3 filter value)
+
+    def Add(self, name):
+        assert all(ss.Name != name for ss in self.entries), f"selection set {name!r} exists"
+        ss = _FakeSelectionSet(name, self._document)
+        self.entries.append(ss)
+        return ss
 
 
 class _FakeLayouts:
@@ -847,7 +923,16 @@ class _FakeDocument:
         sheet_dim = types.SimpleNamespace(
             ObjectName="AcDbAlignedDimension", StyleName="Standard", Handle="2C"
         )
-        self.Layouts = _FakeLayouts(_FakeBlock(dim, line), _FakeBlock(sheet_dim))
+        dotted = types.SimpleNamespace(
+            ObjectName="AcDbRadialDimension", StyleName="A.B", Handle="2E"
+        )
+        underscored = types.SimpleNamespace(
+            ObjectName="AcDbRadialDimension", StyleName="A_B", Handle="2F"
+        )
+        self.Layouts = _FakeLayouts(
+            _FakeBlock(dim, line, dotted), _FakeBlock(sheet_dim, underscored)
+        )
+        self.SelectionSets = _FakeSelectionSets(self)
         self.Blocks = _FakeBlocks("*Model_Space", "*Paper_Space", "MyArrow")
         self.Dictionaries = _FakeDictionaries(
             self.calls,
@@ -1455,33 +1540,66 @@ async def test_com_dimstyle_modify_refuses_a_missing_arrowhead_and_restores_on_f
     )
 
 
-async def test_com_dimensions_using_style_reads_through_the_iacadentity_narrowing(com_backend):
-    """Finding 4: `IAcadBlock.Item` is declared `IAcadEntity*`, so with a
-    makepy cache `.StyleName` on a dimension raises AttributeError, and the
-    old blanket `except` reported `[]` for a style a dimension used. The fake
-    narrows the same way; the walker un-narrows and swallows nothing."""
+async def test_com_dimensions_using_style_is_one_filtered_selection_not_a_walk(com_backend):
+    """One ``SelectionSet.Select(acSelectionSetAll, (0 . "DIMENSION") (3 . style))``
+    answers from AutoCAD's index, whatever the drawing size. The walk it
+    replaced un-narrowed every entity of every layout (~8-10 ms each) and put
+    `dimstyle_modify` past COM_CALL_TIMEOUT on a ~6k-entity drawing after its
+    write had landed. The fake narrows ``SelectionSet.Item`` to IAcadEntity,
+    as pywin32 does; ``Handle`` is an IAcadObject member and answers."""
     from backends.com_backend import _com_dimensions_using
 
     backend, document = com_backend
-    narrowed = document.Layouts.Item(0).Block.Item(0)
-    assert narrowed.ObjectName == "AcDbRotatedDimension" and narrowed.Handle == "2A"
-    with pytest.raises(AttributeError, match="'IAcadEntity' object has no attribute 'StyleName'"):
-        getattr(narrowed, "StyleName")  # noqa: B009 — the read itself is what raises
-    assert _com_dimensions_using(document, "iso-25") == ["2A"]
-    assert _com_dimensions_using(document, "Standard") == ["2C"]
+    assert _com_dimensions_using(document, "iso-25") == ["2A"], "case-insensitive"
+    assert _com_dimensions_using(document, "Standard") == ["2C"], "paper space too"
     assert _com_dimensions_using(document, "NOPE") == []
+    blocks = [document.Layouts.Item(i).Block for i in range(document.Layouts.Count)]
+    assert [block.item_reads for block in blocks] == [0, 0], "no per-entity COM read"
+    assert document.SelectionSets.entries == [], "every selection set is deleted again"
+    assert len(document.SelectionSets.selects) == 3 and document.calls == [], (
+        "one Select per lookup, nothing else on the document"
+    )
 
-    class _BrokenDimension:
-        ObjectName = "AcDbAlignedDimension"
-        Handle = "2D"
+    more = types.SimpleNamespace(ObjectName="AcDbAlignedDimension", StyleName="ISO-25", Handle="A")
+    document.Layouts.Item(1).Block.entities.insert(0, more)
+    assert _com_dimensions_using(document, "ISO-25") == ["A", "2A"], (
+        "ascending handle order, not the selection set's report order"
+    )
 
-        @property
-        def StyleName(self):
-            raise RuntimeError("RPC_E_CALL_REJECTED")
 
-    document.Layouts.Item(1).Block.entities.append(_BrokenDimension())
-    with pytest.raises(RuntimeError, match="RPC_E_CALL_REJECTED"):
-        _com_dimensions_using(document, "Standard")
+async def test_com_dimensions_using_style_escapes_wildcards_in_the_style_name(com_backend):
+    """The group-3 filter value is a wcmatch pattern: measured live, ``A.B``
+    selected the dimensions of ``A_B`` too, ``N#1`` those of ``N21``,
+    ``P[1]`` those of ``P1``, ``S@X`` those of ``SAX``. Backtick-escaping
+    the name makes the match literal (and the fake refuses a raw wildcard)."""
+    from backends.com_backend import _com_dimensions_using, _wcmatch_literal
+
+    backend, document = com_backend
+    assert _wcmatch_literal("ISO-25") == "ISO`-25"
+    assert _wcmatch_literal("A.B") == "A`.B"
+    assert _wcmatch_literal("N#1 P[1] S@X T~ *?,") == "N`#1 P`[1`] S`@X T`~ `*`?`,"
+    assert _wcmatch_literal("Plain_Name 2") == "Plain_Name 2"
+    assert _com_dimensions_using(document, "A.B") == ["2E"], "not A_B's dimension"
+    assert _com_dimensions_using(document, "a_b") == ["2F"]
+    assert [value for _, value in document.SelectionSets.selects[-2:]] == ["A`.B", "a_b"]
+
+
+async def test_com_dimensions_using_style_swallows_nothing_and_still_cleans_up(com_backend):
+    from backends.com_backend import _com_dimensions_using
+
+    backend, document = com_backend
+
+    def rejected(self, *args):
+        raise RuntimeError("RPC_E_CALL_REJECTED")
+
+    original = _FakeSelectionSet.Select
+    _FakeSelectionSet.Select = rejected
+    try:
+        with pytest.raises(RuntimeError, match="RPC_E_CALL_REJECTED"):
+            _com_dimensions_using(document, "Standard")
+    finally:
+        _FakeSelectionSet.Select = original
+    assert document.SelectionSets.entries == [], "the selection set is deleted on failure too"
 
 
 async def test_truetype_face_reads_family_and_subfamily(tmp_path):

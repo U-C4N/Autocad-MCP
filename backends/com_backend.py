@@ -314,30 +314,66 @@ def _same_dimvar(old: Any, new: Any) -> bool:
     return str(old) == str(new)
 
 
-def _com_dimensions_using(doc, style_name: str) -> list[str]:
-    """Handles of every dimension, in every layout, whose StyleName is ``style_name``.
+#: ``SelectionSet.Select`` mode ``acSelectionSetAll`` (AcSelect enum): every
+#: entity in the database, in every layout — ``ssget "X"``.
+_AC_SELECTION_SET_ALL = 5
 
-    ``IAcadBlock.Item`` is declared ``IAcadEntity*`` (acax25enu.tlb), so with a
-    makepy cache present every member comes back narrowed to ``IAcadEntity``
-    and ``.StyleName`` — a member of the dimension classes, not of the entity
-    base — raises ``AttributeError``. Measured live (AutoCAD 2026): a rotated
-    dimension drawn with ``PROBE-ANSI`` answered ``[]`` because a blanket
-    ``except`` turned that AttributeError into "no dimension uses it". Each
-    item is therefore un-narrowed (``_com_unnarrow``), and nothing is
-    swallowed: a read that fails is an error the caller sees, not an empty
-    list reported as fact.
+#: Characters an ``ssget`` filter string treats as wildcards (AutoCAD's
+#: ``wcmatch`` grammar). Symbol names may carry most of them: a dimension
+#: style called ``A.B`` also matched ``A_B``, ``N#1`` matched ``N21``,
+#: ``P[1]`` matched ``P1`` and ``S@X`` matched ``SAX`` until the name was
+#: escaped (measured live, AutoCAD 2026).
+_WCMATCH_SPECIALS = frozenset("*?#@.~[]-,`")
+
+
+def _wcmatch_literal(text: str) -> str:
+    """``text`` spelled so an ``ssget`` filter matches it literally.
+
+    Every wildcard-significant character is escaped with a backtick, the
+    grammar's own escape. A symbol name can never contain a backtick itself
+    (AutoCAD refuses one), so the escaped form is unambiguous; the match stays
+    case-insensitive, as any symbol-table name comparison is.
     """
-    wanted = style_name.lower()
-    handles: list[str] = []
-    for index in range(doc.Layouts.Count):
-        block = doc.Layouts.Item(index).Block
-        for position in range(block.Count):
-            obj = _com_unnarrow(block.Item(position))
-            if "Dimension" not in str(obj.ObjectName):
-                continue
-            if str(obj.StyleName).lower() == wanted:
-                handles.append(str(obj.Handle))
-    return handles
+    return "".join("`" + char if char in _WCMATCH_SPECIALS else char for char in text)
+
+
+def _com_dimensions_using(doc, style_name: str) -> list[str]:
+    """Handles of every DIMENSION, in every layout, whose style is ``style_name``.
+
+    One filtered ``SelectionSet.Select(acSelectionSetAll)`` — the ``ssget "X"``
+    route with ``(0 . "DIMENSION") (3 . <style>)`` — answers from AutoCAD's own
+    index, so the cost does not grow with the drawing. The walk this replaced
+    read ``ObjectName`` on every entity of every layout through a dynamic
+    proxy (~8-10 ms each), which put ``dimstyle_modify`` past the 60 s
+    ``COM_CALL_TIMEOUT`` on a drawing of ~6k entities — after its write had
+    already landed. Measured live (AutoCAD 2026, 1000 LINEs + 14 dimensions
+    across model and paper space): walk 12.7-15.8 s, this 0.02-0.09 s, same
+    handles. The style name is escaped as a literal (``_wcmatch_literal``)
+    because the filter is a wildcard pattern; the ``DIMENSION`` group-0 name
+    keeps parity with the headless engine's ``query("DIMENSION")``.
+
+    Handles come back in ascending handle order (database order), whatever
+    order the selection set reports them in. Nothing is swallowed: a
+    selection that fails is an error the caller sees, not an empty list
+    reported as fact.
+    """
+    ss = doc.SelectionSets.Add(f"_DIMSTYLE_{uuid.uuid4().hex[:8]}")
+    try:
+        filter_types = _ai([0, 3])
+        filter_values = win32com.client.VARIANT(
+            pythoncom.VT_ARRAY | pythoncom.VT_VARIANT,
+            ["DIMENSION", _wcmatch_literal(style_name)],
+        )
+        ss.Select(_AC_SELECTION_SET_ALL, None, None, filter_types, filter_values)
+        # ``Handle`` is an IAcadObject member, so it answers on the narrowed
+        # ``IAcadEntity`` wrapper ``SelectionSet.Item`` hands back.
+        handles = [str(ss.Item(index).Handle) for index in range(ss.Count)]
+    finally:
+        try:
+            ss.Delete()
+        except Exception as exc:
+            log.debug("SelectionSet cleanup failed: %s", exc)
+    return sorted(handles, key=lambda handle: int(handle, 16))
 
 
 #: File suffixes AutoCAD hands to the Windows font system rather than its
