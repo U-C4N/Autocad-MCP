@@ -1112,6 +1112,13 @@ async def drawing_new(
     `source: "bundled_dxf"` when no `.dwt` twin is committed); a path is used
     as given. The result carries `template: {name|path, path, source}`.
 
+    On the live engine only a genuine `.dwt` reaches `Documents.Add` —
+    measured on AutoCAD 2026, `Add(<file.dxf>)` silently returns the default
+    drawing — so a `.dxf` template (bundled or a path) is first converted
+    through AutoCAD into a cached `.dwt` and `template.dwt` names it
+    (`template.dwt_cached` says whether the conversion was reused). The
+    drawing then really carries the template's layers, tabs and page setup.
+
     Refused before anything is replaced: a bare name that is not in the
     catalogue (the message lists the five), a template path that does not
     exist, and a path outside the allowed directories. With `bootstrap=True`
@@ -1140,7 +1147,11 @@ async def drawing_new(
     await ctx.info(f"Creating new drawing (template={template}, bootstrap={bootstrap})")
     raw = await backend.drawing_new(template)
     result = dict(raw) if isinstance(raw, dict) else {"result": raw}
+    converted = result.pop("template_dwt", None)
     if template_info is not None:
+        if converted:  # the live engine built a .dwt from the .dxf (see ComBackend.drawing_new)
+            template_info["dwt"] = converted["path"]
+            template_info["dwt_cached"] = bool(converted.get("cached"))
         result["template"] = template_info
     if bootstrap:
         try:

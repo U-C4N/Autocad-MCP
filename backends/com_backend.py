@@ -169,6 +169,71 @@ def _acad_app():
     return _COM_STATE["app"]
 
 
+#: ``AcSaveAsType`` template constants, newest first: ac2018_Template,
+#: ac2013_Template, ac2010_Template. A seat older than the first refuses it
+#: with a COM error and the next one is tried.
+_TEMPLATE_SAVE_FORMATS = (66, 62, 50)
+
+
+def _template_cache_dir() -> Path:
+    import tempfile
+
+    return Path(tempfile.gettempdir()) / "acadmcp-templates"
+
+
+def _template_as_dwt(app, source: Path) -> tuple[Path, bool]:
+    """A real ``.dwt`` for ``source``, built once through AutoCAD and cached.
+
+    ``Documents.Add(<file>)`` accepts only a genuine DWT: measured on AutoCAD
+    2026, ``Add(templates/iso_a3_mech.dxf)`` returned the default acadiso
+    drawing (layers ``['0']``, tabs ``Layout1``/``Layout2``) exactly as
+    ``Add()`` and ``Add(<nonexistent.dwt>)`` did, and the DXF bytes renamed
+    ``.dwt`` fared no better. Opening the file and saving it as a template
+    (``SaveAs(path, ac2018_Template)``) is what yields the eleven layers and
+    the ``A3`` tab, so that is done here — once per file content, keyed on the
+    path, size and mtime, under the temp folder — and the ``.dwt`` is what
+    ``Add`` is handed. Returns ``(dwt_path, cached)``.
+
+    Must only be called from the COM executor thread. The conversion document
+    is opened read-only and closed without saving in a ``finally``; the
+    ``.dwt`` on disk is the only thing it leaves behind.
+    """
+    import hashlib
+
+    source = Path(source).resolve()
+    stat = source.stat()
+    digest = hashlib.sha1(
+        f"{source}|{stat.st_size}|{stat.st_mtime_ns}".encode("utf-8", "surrogateescape")
+    ).hexdigest()[:12]
+    cache_dir = _template_cache_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    dwt = cache_dir / f"{source.stem}-{digest}.dwt"
+    if dwt.is_file() and dwt.stat().st_size > 0:
+        return dwt, True
+    doc = app.Documents.Open(str(source), True)
+    try:
+        last_exc: Exception | None = None
+        for fmt in _TEMPLATE_SAVE_FORMATS:
+            try:
+                doc.SaveAs(str(dwt), fmt)
+                break
+            except _COM_ERROR as exc:
+                last_exc = exc
+                log.debug("SaveAs(%s, %d) refused: %s", dwt, fmt, exc)
+        else:
+            raise RuntimeError(
+                f"could not save {source.name} as a .dwt template: {last_exc}"
+            ) from last_exc
+    finally:
+        try:
+            doc.Close(False)
+        except Exception as exc:  # the temp document must never stay open
+            log.warning("template conversion document did not close: %s", exc)
+    if not dwt.is_file() or dwt.stat().st_size == 0:
+        raise RuntimeError(f"AutoCAD reported the template saved but {dwt} is not on disk")
+    return dwt, False
+
+
 def _acad_doc():
     """Return active AutoCAD document."""
     app = _acad_app()
@@ -993,13 +1058,36 @@ class ComBackend(AutoCADBackend):
         return await self._run(_sync)
 
     async def drawing_new(self, template: str | None = None) -> dict:
+        """``Documents.Add()``, or ``Documents.Add(<dwt>)`` from a template file.
+
+        A template that is not already a ``.dwt`` (the bundled ``.dxf`` files,
+        an explicit ``.dxf`` path) is first converted into one through AutoCAD
+        itself — see ``_template_as_dwt`` for the measurement that makes this
+        necessary — and the result reports ``template_dwt: {path, cached}``.
+        A template path that is not a file is refused here rather than handed
+        to ``Add``, which would silently create the default drawing instead.
+        """
+
         def _sync():
             app = _acad_app()
-            if template:
-                doc = app.Documents.Add(template)
-            else:
+            if not template:
                 doc = app.Documents.Add()
-            return {"ok": True, "name": doc.Name}
+                return {"ok": True, "name": doc.Name}
+            source = Path(template)
+            if not source.is_file():
+                raise FileNotFoundError(
+                    f"template file not found: {template} (Documents.Add would silently "
+                    "create the default drawing instead)"
+                )
+            result: dict[str, Any] = {"ok": True}
+            if source.suffix.lower() == ".dwt":
+                dwt = source
+            else:
+                dwt, cached = _template_as_dwt(app, source)
+                result["template_dwt"] = {"path": str(dwt), "cached": cached}
+            doc = app.Documents.Add(str(dwt))
+            result["name"] = doc.Name
+            return result
 
         result = await self._run(_sync)
         await self._ensure_document_state()

@@ -158,10 +158,13 @@ def resolve_template(name_or_path: str, engine: str) -> tuple[str, str]:
 
     A catalogue name resolves to ``templates/<name>.dxf`` (headless) or
     ``templates/<name>.dwt`` (live), falling back to the DXF with
-    ``source="bundled_dxf"`` when the ``.dwt`` twin is missing. Anything with a
-    path separator or a ``.dwt``/``.dxf`` suffix is a path (``source="path"``,
-    not checked here). A bare word that is not in the catalogue is refused
-    with the catalogue names.
+    ``source="bundled_dxf"`` when the ``.dwt`` twin is missing — the live
+    engine then converts that DXF into a real ``.dwt`` itself before
+    ``Documents.Add`` (``ComBackend.drawing_new``), because AutoCAD ignores a
+    DXF handed to ``Add`` and silently returns the default drawing. Anything
+    with a path separator or a ``.dwt``/``.dxf`` suffix is a path
+    (``source="path"``, not checked here). A bare word that is not in the
+    catalogue is refused with the catalogue names.
     """
     raw = str(name_or_path or "").strip()
     if not raw:

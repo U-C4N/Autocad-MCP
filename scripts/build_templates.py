@@ -11,9 +11,15 @@ what ships.
 
 Styles: once group S's ``dimstyle_create`` / ``textstyle_create`` are on the
 backend they are used (ISO-25 / ISOCP, ANSI / ROMANS, set current). Until then
-the same values (spec §4.1) are written as header DIM variables so the template
-already dimensions correctly; the final task re-runs this script after the S
-merge and re-commits the five files.
+the same values (spec §4.1) are written twice — as header DIM variables, which
+is what a live seat dimensions with, *and* onto the ``Standard`` dimstyle
+entry, which is what the headless renderer reads (it never consults the
+header; ``_with_header_dimvars`` folds six of the variables, so the other
+eight — DIMTAD, DIMTIH, DIMTOH, DIMEXE, DIMEXO, DIMGAP, DIMLUNIT, DIMLWD/E —
+were a header-only no-op: measured, ``ansi_b_mech`` dimensioned with ISO text
+placement headlessly while AutoCAD honoured the header). Both engines now
+dimension the same template the same way; the final task re-runs this script
+after the S merge and re-commits the five files.
 
 ``--check`` rebuilds into a temporary folder and compares line by line after
 masking the values ezdxf cannot keep constant — measured on 2026-09-16, exactly
@@ -115,11 +121,14 @@ async def _apply_styles(backend, spec: TemplateSpec) -> dict:
         )
         return {"mode": "styles", "dimstyle": dim["name"], "textstyle": text["name"]}
     applied = {}
+    standard = backend._doc.dimstyles.get("Standard")  # what the headless renderer reads
     for variable, value in _FALLBACK_DIMVARS[spec.dimstyle_preset].items():
         applied[variable] = (await backend.system_set_variable(variable, value))["ok"]
+        standard.dxf.set(variable.lower(), value)
     return {
         "mode": "header_dimvars",
         "applied": applied,
+        "dimstyle": standard.dxf.name,
         "pending": "dimstyle_create/textstyle_create not on this backend yet (group S)",
     }
 
