@@ -199,6 +199,27 @@ _BUILTIN_LINETYPES = {"continuous", "bylayer", "byblock"}
 #: `drawing_properties_*` field → `IAcadSummaryInfo` property.
 _SUMMARY_ATTRS = {field: field.capitalize() for field in SUMMARY_FIELDS}
 
+#: `IAcadSummaryInfo` failure codes, as the `scode` in a `com_error`'s
+#: excepinfo (measured on AutoCAD 2026; the description next to them is
+#: English while the HRESULT text is localised, so the code is matched first).
+_SUMMARYINFO_DUPLICATE_KEY = -2145386475  # AddCustomInfo: 'Duplicate key'
+_SUMMARYINFO_KEY_NOT_FOUND = -2145386476  # Set/RemoveCustomByKey: 'Key not found'
+
+
+def _summaryinfo_error_is(exc: BaseException, scode: int, description: str) -> bool:
+    """True when `exc` is the `IAcadSummaryInfo` failure `scode` / `description`.
+
+    `com_error.args[2]` is the excepinfo tuple ``(wCode, source, description,
+    helpfile, helpcontext, scode)``; a missing or foreign excepinfo is never a
+    match, so an unrelated COM failure keeps propagating.
+    """
+    info = exc.args[2] if len(exc.args) > 2 else None
+    if not isinstance(info, tuple):
+        return False
+    code = info[5] if len(info) > 5 else None
+    desc = str(info[2] or "") if len(info) > 2 else ""
+    return code == scode or desc.strip().casefold() == description.casefold()
+
 
 def _ensure_linetype_loaded(name: str) -> None:
     """If `name` is not already loaded, load it via -LINETYPE behind FILEDIA=0.
@@ -4293,31 +4314,43 @@ class ComBackend(AutoCADBackend):
 
         def _sync():
             info = _acad_doc().SummaryInfo
-            # AutoCAD's custom keys are case-insensitive (measured on 2026:
-            # AddCustomInfo("PROJECT") over an existing "Project" raises
-            # 'Duplicate key'; SetCustomByKey / RemoveCustomByKey match either
-            # spelling and the stored spelling is kept), so existence is
-            # checked casefolded — a case-sensitive check routed "PROJECT" to
-            # AddCustomInfo and failed mid-write after the summary fields and
-            # the earlier keys were already applied.
+            # AutoCAD matches custom keys by its own simple per-character case
+            # compare (measured on 2026: AddCustomInfo("PROJECT") over an
+            # existing "Project" is 'Duplicate key', yet "Straße" and
+            # "STRASSE" are two keys -- Python's casefold() merges them, and a
+            # routing built on it sent "STRASSE" to SetCustomByKey, which
+            # failed 'Key not found' after the summary fields and the earlier
+            # keys were already applied). So only an exact spelling is routed
+            # from here; for everything else AutoCAD decides: AddCustomInfo's
+            # 'Duplicate key' means the key is there under another spelling
+            # and it is set instead, RemoveCustomByKey's 'Key not found' means
+            # it is not there and the delete is reported as not done. No
+            # routing guess can then half-write.
             existing: set[str] = set()
             for index in range(int(info.NumCustomInfo())):
                 key, _value = info.GetCustomByIndex(index)
-                existing.add(str(key).casefold())
+                existing.add(str(key))
             for field, value in written.items():
                 setattr(info, _SUMMARY_ATTRS[field], value)
             for key, value in to_write.items():
-                # AddCustomInfo on an existing key raises in AutoCAD; SetCustomByKey
-                # on a missing one does too — route by what is really there.
-                if key.casefold() in existing:
+                if key in existing:
                     info.SetCustomByKey(key, value)
-                else:
+                    continue
+                try:
                     info.AddCustomInfo(key, value)
+                except _COM_ERROR as exc:
+                    if not _summaryinfo_error_is(exc, _SUMMARYINFO_DUPLICATE_KEY, "Duplicate key"):
+                        raise
+                    info.SetCustomByKey(key, value)
             deleted = []
             for key in to_delete:
-                if key.casefold() in existing:
+                try:
                     info.RemoveCustomByKey(key)
-                    deleted.append(key)
+                except _COM_ERROR as exc:
+                    if not _summaryinfo_error_is(exc, _SUMMARYINFO_KEY_NOT_FOUND, "Key not found"):
+                        raise
+                    continue
+                deleted.append(key)
             return {
                 "ok": True,
                 "summary_written": sorted(written),

@@ -14,8 +14,10 @@ Custom keys and values are validated once, by name, against what would break
 character through a scratch document: leading/trailing whitespace and exactly
 the thirteen characters `" * , / : ; < = > ? \\ ` |` anywhere in the key --
 internal spaces, tabs, control characters, a no-break space and unicode are
-accepted), case-variant duplicates (AutoCAD's keys are case-insensitive:
-`Duplicate key`), and line breaks, which ezdxf writes unescaped and which
+accepted), two keys AutoCAD would call one key (its key compare is a simple
+per-character case compare -- `Project`/`PROJECT` collide with `Duplicate
+key`, `Stra\u00dfe`/`STRASSE` are both stored; `custom_key_fold` pins the
+measured table), and line breaks, which ezdxf writes unescaped and which
 corrupt the whole DXF. A delete is exempt from the AddCustomInfo syntax rules
 (RemoveCustomByKey never validates: `Key not found`, never `Invalid key`).
 """
@@ -30,6 +32,7 @@ from backends.base import UnsupportedCapabilityError
 from backends.contracts.settings import (
     _CUSTOM_KEY_FORBIDDEN,
     SUMMARY_FIELDS,
+    custom_key_fold,
     validate_drawing_properties,
 )
 
@@ -134,6 +137,64 @@ def test_validation_exempts_a_delete_from_the_addcustominfo_syntax_rules(key):
     a DXF script wrote must stay removable. The line-break rule still holds
     for both directions (a delete of such a key is pinned refused above)."""
     assert validate_drawing_properties(None, {key: None}) == ({}, {}, [key])
+
+
+# Measured on AutoCAD 2026 (AddCustomInfo of the second spelling over the
+# first on a scratch Documents.Add() document, Close(False)): SAME is
+# 'Duplicate key', DISTINCT is both stored. Every DISTINCT pair is equal under
+# Python's str.casefold(), which is why a casefold() routing sent 'STRASSE' to
+# SetCustomByKey over 'Stra\u00dfe' and failed 'Key not found' mid-write.
+SAME_KEY_PAIRS = [
+    ("Project", "PROJECT"),
+    ("Gr\u00fcn", "GR\u00dcN"),
+    ("\u00e9", "\u00c9"),  # é / É
+    ("\u00ff", "\u0178"),  # ÿ / Ÿ
+    ("\u0142", "\u0141"),  # ł / Ł
+    ("\u03c3", "\u03a3"),  # σ / Σ
+    ("\u044f", "\u042f"),  # я / Я
+    ("\u01c6", "\u01c4"),  # ǆ / Ǆ
+    ("i", "I"),
+]
+# The six pairs str.casefold() merges (measured DISTINCT in AutoCAD).
+CASEFOLD_MERGED_PAIRS = [
+    ("Stra\u00dfe", "STRASSE"),  # ß uppercases to SS
+    ("\u1e9e", "\u00df"),  # ẞ / ß
+    ("kelvin", "\u212aelvin"),  # k / Kelvin sign
+    ("\u00b5", "\u039c"),  # micro sign / Greek capital mu
+    ("\u03c3\u03c2", "\u03a3\u03a3"),  # σς / ΣΣ (final sigma)
+    ("\u01c5", "\u01c4"),  # ǅ / Ǆ (title-case digraph)
+]
+DISTINCT_KEY_PAIRS = CASEFOLD_MERGED_PAIRS + [
+    ("\u0131", "I"),  # dotless ı / I (the fold is not Turkish-aware either)
+    ("\u0130", "i"),  # dotted İ / i (lower() is two code points)
+]
+
+
+@pytest.mark.parametrize("a, b", SAME_KEY_PAIRS)
+def test_custom_key_fold_merges_what_autocad_calls_one_key(a, b):
+    assert custom_key_fold(a) == custom_key_fold(b)
+    assert len(custom_key_fold(a)) == len(a) and len(custom_key_fold(b)) == len(b)
+
+
+@pytest.mark.parametrize("a, b", DISTINCT_KEY_PAIRS)
+def test_custom_key_fold_keeps_what_autocad_stores_twice(a, b):
+    assert custom_key_fold(a) != custom_key_fold(b)
+    assert len(custom_key_fold(a)) == len(a) and len(custom_key_fold(b)) == len(b)
+
+
+@pytest.mark.parametrize("a, b", CASEFOLD_MERGED_PAIRS)
+def test_casefold_is_the_wrong_rule_for_these(a, b):
+    """Why 4fe2d96 regressed: every one of these is casefold()-equal."""
+    assert a.casefold() == b.casefold()
+
+
+@pytest.mark.parametrize("a, b", DISTINCT_KEY_PAIRS)
+def test_validation_accepts_two_keys_autocad_stores_side_by_side(a, b):
+    """Measured: AddCustomInfo('Stra\u00dfe') then AddCustomInfo('STRASSE')
+    both succeed, so refusing them as 'differ only by case' was a false
+    refusal with a false reason. German \u00df keys are realistic title-block
+    metadata."""
+    assert validate_drawing_properties(None, {a: "1", b: "2"}) == ({}, {a: "1", b: "2"}, [])
 
 
 # ── headless engine ─────────────────────────────────────────────────────────
@@ -247,6 +308,20 @@ async def test_custom_keys_match_case_insensitively_headlessly(backend):
     assert res["custom_written"] == ["PROJECT"] and res["custom_deleted"] == ["rev"]
     assert list(backend._doc.header.custom_vars) == [("Project", "X-2")]
     assert (await backend.drawing_properties_get())["custom"] == {"Project": "X-2"}
+
+
+@pytest.mark.parametrize("a, b", DISTINCT_KEY_PAIRS)
+async def test_headless_keeps_keys_autocad_keeps_apart(backend, a, b):
+    """Measured: `custom={'Stra\u00dfe': 's1'}` then `{'STRASSE': 's2'}` gave
+    custom={'Stra\u00dfe': 's2'} headlessly -- the first value overwritten and
+    no 'STRASSE' tag -- where AutoCAD holds both. Same for the Kelvin sign."""
+    await backend.drawing_properties_set(custom={a: "s1"})
+    res = await backend.drawing_properties_set(custom={b: "s2"})
+    assert res["custom_written"] == [b]
+    assert list(backend._doc.header.custom_vars) == [(a, "s1"), (b, "s2")]
+    res = await backend.drawing_properties_set(custom={b: None})
+    assert res["custom_deleted"] == [b]
+    assert list(backend._doc.header.custom_vars) == [(a, "s1")]
 
 
 async def _backend_for_version(tmp_path, version: str):
@@ -386,35 +461,53 @@ class _FakeSummaryInfo:
         self.calls.append(("GetCustomByIndex", index))
         return self._custom[index]  # pywin32 hands [out] BSTR pairs back as a tuple
 
-    # Measured on AutoCAD 2026: the three mutators match keys case-insensitively,
-    # an existing key keeps its stored spelling, a second Add is 'Duplicate key',
-    # a Set/Remove of an absent key is 'Key not found'.
+    # Measured on AutoCAD 2026: the three mutators match keys by AutoCAD's
+    # simple per-character case compare (`custom_key_fold` pins the table --
+    # 'PROJECT' finds 'Project', 'STRASSE' does not find 'Stra\u00dfe'), an
+    # existing key keeps its stored spelling, a second Add is 'Duplicate key'
+    # (scode -2145386475), a Set/Remove of an absent key is 'Key not found'
+    # (scode -2145386476), and a key AddCustomInfo rejects is 'Invalid key'
+    # (scode -2145386465). The com_error shape is the one pywin32 raised live:
+    # a localised HRESULT text and the English description in the excepinfo.
 
     def _index(self, key):
         for i, (k, _v) in enumerate(self._custom):
-            if k.casefold() == key.casefold():
+            if custom_key_fold(k) == custom_key_fold(key):
                 return i
         return None
 
     def AddCustomInfo(self, key, value):
         self.calls.append(("AddCustomInfo", key, value))
+        if set(key) & _CUSTOM_KEY_FORBIDDEN:
+            raise _com_error("Invalid key", -2145386465)
         if self._index(key) is not None:
-            raise RuntimeError("AutoCAD COM error: Duplicate key")
+            raise _com_error("Duplicate key", -2145386475)
         self._custom.append((key, value))
 
     def SetCustomByKey(self, key, value):
         self.calls.append(("SetCustomByKey", key, value))
         i = self._index(key)
         if i is None:
-            raise RuntimeError("AutoCAD COM error: Key not found")
+            raise _com_error("Key not found", -2145386476)
         self._custom[i] = (self._custom[i][0], value)
 
     def RemoveCustomByKey(self, key):
         self.calls.append(("RemoveCustomByKey", key))
         i = self._index(key)
         if i is None:
-            raise RuntimeError("AutoCAD COM error: Key not found")
+            raise _com_error("Key not found", -2145386476)
         del self._custom[i]
+
+
+def _com_error(description, scode):
+    import pywintypes
+
+    return pywintypes.com_error(
+        -2147352567,
+        "\u00d6zel durum olu\u015ftu.",
+        (0, "AutoCAD.Application", description, "OLE_ERR.CHM", scode, scode),
+        None,
+    )
 
 
 @pytest.fixture
@@ -466,10 +559,12 @@ async def test_com_set_writes_summary_and_routes_custom_by_existence(com_backend
     assert info.Title == "Gearbox" and info.Author == "U. Can" and info.Keywords == "gear"
     mutations = [c for c in info.calls if c[0] not in ("NumCustomInfo", "GetCustomByIndex")]
     assert mutations == [
-        ("SetCustomByKey", "PROJECT", "X-2"),  # existed → set
+        ("SetCustomByKey", "PROJECT", "X-2"),  # exact spelling present → set
         ("AddCustomInfo", "REV", "B"),  # new → add
-        ("RemoveCustomByKey", "OLD"),  # existed → remove; NOPE never touched
+        ("RemoveCustomByKey", "OLD"),  # removed
+        ("RemoveCustomByKey", "NOPE"),  # 'Key not found' → not reported deleted
     ]
+    assert info._custom == [("PROJECT", "X-2"), ("REV", "B")]
 
 
 async def test_com_validates_before_touching_activex(com_backend):
@@ -512,20 +607,89 @@ async def test_com_deletes_a_legacy_invalid_syntax_key(com_backend):
     assert info._custom == [("PROJECT", "X-1"), ("OLD", "1")]
 
 
-async def test_com_routes_case_variant_keys_to_set_and_remove(com_backend):
-    """Measured on AutoCAD 2026: AddCustomInfo('PROJECT') over an existing
-    'Project' raises 'Duplicate key' -- a case-sensitive existence check
-    routed it there and failed mid-write. Existence is matched casefolded."""
+async def test_com_lets_autocad_route_a_case_variant_key(com_backend):
+    """Measured on AutoCAD 2026: AddCustomInfo('project') over an existing
+    'PROJECT' raises 'Duplicate key' -- a case-sensitive existence check
+    routed it there and failed mid-write; a casefold() check then routed
+    'STRASSE' over 'Stra\u00dfe' to SetCustomByKey and failed the same way.
+    Now only an exact spelling is routed here; otherwise AutoCAD's own
+    compare decides: 'Duplicate key' falls back to SetCustomByKey."""
     backend, info = com_backend
     res = await backend.drawing_properties_set(custom={"project": "X-2", "old": None, "New": "n"})
     assert res["custom_written"] == ["New", "project"] and res["custom_deleted"] == ["old"]
     mutations = [c for c in info.calls if c[0] not in ("NumCustomInfo", "GetCustomByIndex")]
     assert mutations == [
-        ("SetCustomByKey", "project", "X-2"),
+        ("AddCustomInfo", "project", "X-2"),  # AutoCAD: 'Duplicate key'
+        ("SetCustomByKey", "project", "X-2"),  # → set under the stored spelling
         ("AddCustomInfo", "New", "n"),
         ("RemoveCustomByKey", "old"),
     ]
     assert info._custom == [("PROJECT", "X-2"), ("New", "n")], "stored spelling kept"
+
+
+@pytest.mark.parametrize("stored, written", DISTINCT_KEY_PAIRS)
+async def test_com_writes_a_key_autocad_keeps_apart_without_half_writing(
+    com_backend, stored, written
+):
+    """Measured live: with 'Stra\u00dfe' present, `summary={'subject': 'HALF?'},
+    custom={'BEFORE': 'b', 'STRASSE': 's2', 'AFTER': 'never?'}` routed
+    'STRASSE' to SetCustomByKey on the casefold() match, AutoCAD answered
+    'Key not found', and the request raised with subject and BEFORE applied
+    and AFTER never written. AddCustomInfo of both spellings succeeds in
+    AutoCAD; the route must not be guessed from a Python fold."""
+    backend, info = com_backend
+    info._custom.append((stored, "s1"))
+    # A delete of the other spelling is 'Key not found' in AutoCAD (measured:
+    # RuntimeError after the request's writes were applied): reported as not
+    # deleted, no error, and the rest of the request still lands.
+    res = await backend.drawing_properties_set(custom={written: None, "OLD": None})
+    assert res["custom_deleted"] == ["OLD"] and res["ok"] is True
+    assert info._custom == [("PROJECT", "X-1"), (stored, "s1")]
+    res = await backend.drawing_properties_set(
+        summary={"subject": "HALF?"},
+        custom={"BEFORE": "b", written: "s2", "AFTER": "never?"},
+    )
+    assert res["custom_written"] == sorted(["BEFORE", written, "AFTER"])
+    assert info.Subject == "HALF?"
+    assert info._custom == [
+        ("PROJECT", "X-1"),
+        (stored, "s1"),
+        ("BEFORE", "b"),
+        (written, "s2"),
+        ("AFTER", "never?"),
+    ]
+    assert ("SetCustomByKey", written, "s2") not in info.calls
+    # Each spelling is now its own key: deleting one keeps the other.
+    res = await backend.drawing_properties_set(custom={written: None})
+    assert res["custom_deleted"] == [written]
+    assert (written, "s2") not in info._custom and (stored, "s1") in info._custom
+
+
+async def test_com_propagates_an_unrelated_summaryinfo_failure(com_backend):
+    """Only 'Duplicate key' is answered with SetCustomByKey and only 'Key not
+    found' is swallowed on a delete; any other COM failure keeps raising (the
+    fixture runs the COM callable inline, so the raw com_error is what
+    surfaces here; `_run` wraps it in RuntimeError on the real path)."""
+    import pywintypes
+
+    backend, info = com_backend
+
+    def _boom(key, value):
+        info.calls.append(("AddCustomInfo", key, value))
+        raise _com_error("Some other failure", -2145386400)
+
+    info.AddCustomInfo = _boom
+    with pytest.raises(pywintypes.com_error, match="Some other failure"):
+        await backend.drawing_properties_set(custom={"NEW": "x"})
+    assert ("SetCustomByKey", "NEW", "x") not in info.calls
+
+    def _boom_remove(key):
+        info.calls.append(("RemoveCustomByKey", key))
+        raise _com_error("Some other failure", -2145386400)
+
+    info.RemoveCustomByKey = _boom_remove
+    with pytest.raises(pywintypes.com_error, match="Some other failure"):
+        await backend.drawing_properties_set(custom={"OLD": None})
 
 
 async def test_com_refuses_autocad_invalid_keys_before_any_write(com_backend):

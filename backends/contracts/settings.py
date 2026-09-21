@@ -525,6 +525,43 @@ SUMMARY_FIELDS = ("title", "subject", "author", "keywords", "comments")
 _CUSTOM_KEY_FORBIDDEN = frozenset('"*,/:;<=>?\\`|')
 
 
+def custom_key_fold(key: str) -> str:
+    """Fold a custom-property key the way AutoCAD compares them.
+
+    AutoCAD's ``AddCustomInfo`` / ``SetCustomByKey`` / ``RemoveCustomByKey``
+    match keys by a *simple* one-to-one case compare, not Unicode full case
+    folding. Measured on AutoCAD 2026 (``AddCustomInfo`` of the second
+    spelling over the first): ``Project``/``PROJECT``, ``Grün``/``GRÜN``,
+    ``é``/``É``, ``ÿ``/``Ÿ``, ``ł``/``Ł``, ``σ``/``Σ``, ``я``/``Я`` and
+    ``ǆ``/``Ǆ`` are the same key (``Duplicate key``), while ``Straße``/
+    ``STRASSE``, ``ẞ``/``ß``, ``kelvin``/``Kelvin`` (Kelvin sign), ``µ``/``Μ``,
+    ``σς``/``ΣΣ`` and ``ǅ``/``Ǆ`` are distinct (both stored) — every one of
+    which Python's ``str.casefold()`` calls equal. So this folds each character
+    to its lowercase only when the mapping is a single character that
+    round-trips (``lower().upper() == upper()``, ``upper().lower() == lower()``
+    and the character is one of the two); anything else — ``ß`` (uppercases
+    to ``SS``), the final sigma ``ς``, the micro sign ``µ``, the Kelvin sign,
+    the title-case digraph ``ǅ``, dotless ``ı`` and dotted ``İ`` — is kept as
+    is. The result never changes length. This is what the headless engine and
+    the validator match on; the live engine lets AutoCAD decide (see
+    ``ComBackend.drawing_properties_set``).
+    """
+    out: list[str] = []
+    for c in key:
+        lo, up = c.lower(), c.upper()
+        if (
+            len(lo) == 1
+            and len(up) == 1
+            and lo.upper() == up
+            and up.lower() == lo
+            and c in (lo, up)
+        ):
+            out.append(lo)
+        else:
+            out.append(c)
+    return "".join(out)
+
+
 def _check_custom_text(key: str, text: str, what: str) -> None:
     """A newline in a custom key or value corrupts the DXF on save.
 
@@ -593,11 +630,12 @@ def validate_drawing_properties(
       them from the DXF. A *delete* (``None``) is exempt: ``RemoveCustomByKey``
       never validates syntax, and such keys do reach drawings by other routes,
       so they must stay removable;
-    * two keys in one request that differ only by case — AutoCAD's custom keys
-      are case-insensitive (measured: ``AddCustomInfo("PROJECT")`` over an
-      existing ``Project`` raises ``Duplicate key``; ``SetCustomByKey`` /
-      ``RemoveCustomByKey`` match either spelling), so the second would fail
-      mid-write on the live engine and write a second tag headlessly;
+    * two keys in one request that AutoCAD would treat as the same key — its
+      key compare is a simple one-to-one case compare (``custom_key_fold``;
+      measured: ``AddCustomInfo("PROJECT")`` over an existing ``Project``
+      raises ``Duplicate key``, while ``Straße`` and ``STRASSE`` are two
+      keys), so the second would fail mid-write on the live engine and write
+      a second tag headlessly;
     * a key or value containing a line break (LF or CR) — ezdxf emits custom
       properties unescaped, one header line per text, so the saved DXF is
       corrupt and the whole drawing fails to reopen (``DXFStructureError``),
@@ -618,16 +656,17 @@ def validate_drawing_properties(
         raise TypeError("custom: must be an object of {key: text | null}")
     to_write: dict[str, str] = {}
     to_delete: list[str] = []
-    seen: dict[str, str] = {}  # casefolded key -> the spelling seen first
+    seen: dict[str, str] = {}  # folded key (AutoCAD's rule) -> the spelling seen first
     for key, value in (custom or {}).items():
         if not isinstance(key, str) or not key.strip():
             raise TypeError(f"custom: key {key!r} must be a non-empty string")
         _check_custom_text(key, key, "key")
-        folded = key.casefold()
+        folded = custom_key_fold(key)
         if folded in seen:
             raise ValueError(
                 f"custom: keys {seen[folded]!r} and {key!r} differ only by case — "
-                "AutoCAD's custom keys are case-insensitive (AddCustomInfo raises "
+                "AutoCAD compares custom keys with a simple per-character case "
+                "compare and calls these the same key (AddCustomInfo raises "
                 "'Duplicate key'). Mention the key once."
             )
         seen[folded] = key

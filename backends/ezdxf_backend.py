@@ -41,6 +41,7 @@ from .base import (
 )
 from .contracts.settings import (
     SUMMARY_FIELDS,
+    custom_key_fold,
     parse_scale,
     scale_value,
     validate_drawing_properties,
@@ -6142,24 +6143,26 @@ class EzdxfBackend(AutoCADBackend):
                     "Save as R2004 or newer first."
                 )
             custom_vars = doc.header.custom_vars
-            # AutoCAD's custom keys are case-insensitive (measured on 2026:
-            # SetCustomByKey("PROJECT") updates an existing "Project" and keeps
-            # that spelling; a second AddCustomInfo is 'Duplicate key'), and
-            # ezdxf's CustomVars are plain case-sensitive tuples, so the match
-            # is done here: an existing tag is updated in place under its
+            # AutoCAD compares custom keys with a simple per-character case
+            # compare (measured on 2026: SetCustomByKey("PROJECT") updates an
+            # existing "Project" and keeps that spelling, a second AddCustomInfo
+            # is 'Duplicate key' -- but 'Straße' and 'STRASSE' are two keys,
+            # which str.casefold() would merge), and ezdxf's CustomVars are
+            # plain case-sensitive tuples, so the match is done here with
+            # custom_key_fold: an existing tag is updated in place under its
             # stored spelling, never duplicated under a second one.
             props = custom_vars.properties
             for key, value in to_write.items():
-                folded = key.casefold()
-                hits = [i for i, (tag, _v) in enumerate(props) if tag.casefold() == folded]
+                folded = custom_key_fold(key)
+                hits = [i for i, (tag, _v) in enumerate(props) if custom_key_fold(tag) == folded]
                 if hits:
                     props[hits[0]] = (props[hits[0]][0], value)
                 else:
                     custom_vars.append(key, value)
             deleted = []
             for key in to_delete:
-                folded = key.casefold()
-                kept = [(tag, v) for tag, v in props if tag.casefold() != folded]
+                folded = custom_key_fold(key)
+                kept = [(tag, v) for tag, v in props if custom_key_fold(tag) != folded]
                 if len(kept) != len(props):
                     props[:] = kept
                     deleted.append(key)

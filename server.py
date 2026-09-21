@@ -6969,14 +6969,17 @@ async def drawing_properties_set(
     and unicode are fine — `ValueError` naming the key, on both engines; a
     delete is exempt because RemoveCustomByKey never validates syntax, so a
     key that reached the drawing another way stays removable), two keys in
-    one request that differ only by case (custom keys are case-insensitive in
-    AutoCAD), a line break in a custom key or value (it corrupts the DXF on
-    save), and headlessly a document older than R2004 (`ValueError` — ezdxf
-    only writes the custom-property header pairs for AC1018+, so they would
-    vanish at save; save as R2004 or newer first). A key is matched to the
-    drawing case-insensitively on both engines and keeps its stored spelling
-    when updated. On the live engine a custom key is added with AddCustomInfo
-    when new and changed with SetCustomByKey when present.
+    one request that AutoCAD would call the same key (its key compare is a
+    simple per-character case compare: `Project`/`PROJECT` and `Grün`/`GRÜN`
+    are one key, `Straße`/`STRASSE` are two), a line break in a custom key or
+    value (it corrupts the DXF on save), and headlessly a document older than
+    R2004 (`ValueError` — ezdxf only writes the custom-property header pairs
+    for AC1018+, so they would vanish at save; save as R2004 or newer first).
+    A key is matched to the drawing by that same rule on both engines and
+    keeps its stored spelling when updated. On the live engine an exact
+    spelling is changed with SetCustomByKey; otherwise AutoCAD decides —
+    AddCustomInfo, and on its 'Duplicate key' SetCustomByKey; a delete is
+    RemoveCustomByKey, and its 'Key not found' is reported as not deleted.
     """
     summary = {
         "title": title,
