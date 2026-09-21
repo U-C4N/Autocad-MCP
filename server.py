@@ -6662,6 +6662,11 @@ async def pid_line_draw(
     (reported, never refused) and `port_reuse` names ports that already had a
     line (branching is legal). Signal classes get ISA-5.1 markers (`//`, `X`,
     `L`, `o`) as small blocks on segments >= 15 mm; electric is dashed by layer.
+    A signal line carries no pipe line number: it gets no auto-built number
+    and no label, and does not consume the process sequence — a verbatim
+    `line_number` is still written and labelled. With waypoints, a bubble's
+    exit leaves towards the first waypoint (and the entry arrives from the
+    last one); `crossings` follows existing arcs, not their chords.
     """
     from engineering.pid.drawlines import draw_line
 

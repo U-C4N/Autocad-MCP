@@ -13,7 +13,7 @@ from .critique import PID_FOCUSES, issues_for
 from .drawlines import draw_line
 from .graph import build_graph
 from .insert import place_symbol
-from .lines import AXIS, LINE_CLASSES, count_crossings, route, snap_axis
+from .lines import AXIS, LINE_CLASSES, aim_points, count_crossings, route, snap_axis
 from .symbols import resolve, transform_port
 
 if TYPE_CHECKING:
@@ -311,9 +311,9 @@ def _plan_lines(norm: dict) -> list[dict]:
             raise ValueError(f"{ref}: no port {port!r}; ports: {', '.join(entry['ports'])}")
         return entry["ports"][port]
 
-    def anchor(ep: dict, other: dict):
+    def anchor(ep: dict, aim):
         if ep["radius"] > 0:
-            axis = snap_axis(other["x"] - ep["x"], other["y"] - ep["y"])
+            axis = snap_axis(aim[0] - ep["x"], aim[1] - ep["y"])
             ux, uy = AXIS[axis]
             return (ep["x"] + ux * ep["radius"], ep["y"] + uy * ep["radius"]), axis
         return (ep["x"], ep["y"]), ep["direction_deg"]
@@ -322,11 +322,11 @@ def _plan_lines(norm: dict) -> list[dict]:
     for index, (where, line) in enumerate(_all_lines(norm)):
         try:
             start, end = endpoint(line["from"]), endpoint(line["to"])
-            s, sd = anchor(start, end)
-            e, ed = anchor(end, start)
-            vertices = route(
-                s, sd, e, ed, stub=float(line.get("stub", 5.0)), mode=line.get("route", "auto")
-            )
+            mode = line.get("route", "auto")
+            s_aim, e_aim = aim_points((start["x"], start["y"]), (end["x"], end["y"]), mode)
+            s, sd = anchor(start, s_aim)
+            e, ed = anchor(end, e_aim)
+            vertices = route(s, sd, e, ed, stub=float(line.get("stub", 5.0)), mode=mode)
         except ValueError as exc:
             raise ValueError(f"{where}: {exc}") from exc
         crossings = count_crossings(vertices, [p["vertices"] for p in planned])

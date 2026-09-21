@@ -11,6 +11,7 @@ from .lines import (
     DEFAULT_NUMBER_FORMAT,
     LINE_CLASSES,
     PID_LINE_LAYERS,
+    aim_points,
     count_crossings,
     format_line_number,
     label_placement,
@@ -130,10 +131,11 @@ async def existing_pid_lines(backend: AutoCADBackend) -> list[dict]:
     return out
 
 
-def _anchor(endpoint: dict, other: dict) -> tuple[tuple[float, float], float | None]:
-    """Where the line actually starts/ends: on the circle for radial ports."""
+def _anchor(endpoint: dict, aim: tuple[float, float]) -> tuple[tuple[float, float], float | None]:
+    """Where the line actually starts/ends: on the circle for radial ports,
+    leaving along the axis towards ``aim`` (see ``aim_points``)."""
     if endpoint["radius"] > 0:
-        axis = snap_axis(other["x"] - endpoint["x"], other["y"] - endpoint["y"])
+        axis = snap_axis(aim[0] - endpoint["x"], aim[1] - endpoint["y"])
         ux, uy = AXIS[axis]
         return (
             endpoint["x"] + ux * endpoint["radius"],
@@ -176,8 +178,9 @@ async def draw_line(
     end = await resolve_endpoint(backend, to)
     if start["handle"] and start["handle"] == end["handle"] and start["port"] == end["port"]:
         raise ValueError("from and to are the same port")
-    s_point, s_dir = _anchor(start, end)
-    e_point, e_dir = _anchor(end, start)
+    s_aim, e_aim = aim_points((start["x"], start["y"]), (end["x"], end["y"]), route_mode)
+    s_point, s_dir = _anchor(start, s_aim)
+    e_point, e_dir = _anchor(end, e_aim)
     path = route(s_point, s_dir, e_point, e_dir, stub=stub, mode=route_mode)
 
     existing = await existing_pid_lines(backend)
@@ -197,17 +200,23 @@ async def draw_line(
         for ep in (start, end)
         if ep["handle"] and (ep["handle"], ep["port"]) in used
     ]
-    seq = max_seq + 1
-    if line_number is None:
-        fmt = number_format or DEFAULT_NUMBER_FORMAT
-        fields = {
-            "size": size,
-            "service": service,
-            "seq": seq,
-            "spec": spec,
-            "insulation": insulation,
-        }
-        line_number = format_line_number(fmt, **fields) or None
+    if cls.kind == "signal":
+        # An ISA-5.1 signal line carries no pipe line number: no fabricated
+        # number, no label, and the process sequence is left alone. A
+        # verbatim ``line_number`` is still honoured (and labelled).
+        seq = None
+    else:
+        seq = max_seq + 1
+        if line_number is None:
+            fmt = number_format or DEFAULT_NUMBER_FORMAT
+            fields = {
+                "size": size,
+                "service": service,
+                "seq": seq,
+                "spec": spec,
+                "insulation": insulation,
+            }
+            line_number = format_line_number(fmt, **fields) or None
 
     await ensure_layer(backend, cls.layer)
     poly = await backend.entity_create_polyline(

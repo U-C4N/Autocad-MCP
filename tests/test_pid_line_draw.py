@@ -290,3 +290,137 @@ async def test_existing_lines_are_seen_on_the_com_engine(monkeypatch):
     assert lines[0]["vertices"] == [(100.0, 106.0), (100.0, 128.0), (207.0, 128.0)]
     assert lines[0]["payload"]["seq"] == 7
     assert lines[0]["payload"]["from"] == {"handle": "2A", "port": "discharge"}
+
+
+# ── Track A hardening (track E wave 0, Task 6) ───────────────────────────────
+
+
+async def _bubble_and_valve(backend):
+    cv = await place_symbol(backend, "globe", 100, 100, tag="FCV-1", actuator="diaphragm")
+    fic = await place_symbol(
+        backend, "instrument", 100, 160, tag="FIC-1", type="dcs", location="primary"
+    )
+    return cv, fic
+
+
+async def test_signal_lines_carry_no_fabricated_number_and_do_not_consume_the_sequence(backend):
+    """A signal line has no pipe line number: no auto number, no label, and the
+    process sequence is left alone."""
+    cv, fic = await _bubble_and_valve(backend)
+    pump, vessel = await _pump_and_vessel(backend)
+    signal = await draw_line(
+        backend, {"handle": fic["handle"]}, {"handle": cv["handle"], "port": "signal"}, "pneumatic"
+    )
+    assert signal["line_number"] is None and signal["label_handle"] is None
+    payload = await read_payload(backend, signal["handle"])
+    assert payload["number"] is None and payload["seq"] is None
+    labels = await backend.entity_count(type_filter="TEXT", layer_filter="PROCESS-LINE-TEXT")
+    assert labels == 0, "no label text was written for the signal line"
+
+    process = await draw_line(
+        backend,
+        {"handle": pump["handle"], "port": "discharge"},
+        {"handle": vessel["handle"], "port": "N3"},
+        size="100",
+        service="P",
+    )
+    assert process["line_number"] == "100-P-1", "the signal line did not consume seq 1"
+    assert (await read_payload(backend, process["handle"]))["seq"] == 1
+
+    # A signal line given size/service still gets no auto number (kind rules).
+    electric = await draw_line(
+        backend, {"handle": fic["handle"]}, {"x": 160, "y": 160}, "electric", size="IA", service="S"
+    )
+    assert electric["line_number"] is None and electric["label_handle"] is None
+
+    # A verbatim number is honoured and labelled, seq stays None.
+    named = await draw_line(
+        backend, {"handle": fic["handle"]}, {"x": 40, "y": 160}, "electric", line_number="IA-7"
+    )
+    assert named["line_number"] == "IA-7" and named["label_handle"]
+    assert (await backend.entity_get(named["label_handle"])).properties["text"] == "IA-7"
+    assert (await read_payload(backend, named["handle"]))["seq"] is None
+
+    # The next process line is 2, not 4.
+    second = await draw_line(
+        backend,
+        {"handle": vessel["handle"], "port": "N4"},
+        {"x": 300, "y": 128},
+        size="80",
+        service="P",
+    )
+    assert second["line_number"] == "80-P-2"
+
+
+async def test_a_bubble_exit_aims_at_the_first_waypoint(backend):
+    """With waypoints the radial port must leave towards the first waypoint;
+    aiming at the far end put the exit on the wrong side and the first segment
+    cut through the bubble (measured: 4.93 mm from the centre of a r=5 bubble)."""
+    fic = await place_symbol(
+        backend, "instrument", 100, 160, tag="FIC-1", type="dcs", location="primary"
+    )
+    result = await draw_line(
+        backend,
+        {"handle": fic["handle"]},
+        {"x": 100, "y": 100},
+        "electric",
+        route_mode=[[130, 160], [130, 100]],
+    )
+    assert result["vertices"] == [[105.0, 160.0], [130.0, 160.0], [130.0, 100.0], [100.0, 100.0]]
+    # Every vertex of the drawn line is on or outside the bubble.
+    for x, y in result["vertices"]:
+        assert ((x - 100) ** 2 + (y - 160) ** 2) ** 0.5 >= 5.0 - 1e-9
+
+
+async def test_a_bubble_entry_aims_at_the_last_waypoint(backend):
+    fic = await place_symbol(
+        backend, "instrument", 100, 160, tag="FIC-1", type="dcs", location="primary"
+    )
+    result = await draw_line(
+        backend,
+        {"x": 100, "y": 100},
+        {"handle": fic["handle"]},
+        "electric",
+        route_mode=[[130, 100], [130, 160]],
+    )
+    assert result["vertices"] == [[100.0, 100.0], [130.0, 100.0], [130.0, 160.0], [105.0, 160.0]]
+
+
+async def test_dry_run_plans_the_same_bubble_exit_as_the_real_run(backend):
+    from engineering.pid.spec import run_spec
+
+    spec = {
+        "instruments": [
+            {
+                "id": "FIC-1",
+                "type": "dcs",
+                "location": "primary",
+                "x": 100,
+                "y": 160,
+                "tag": "FIC-1",
+            }
+        ],
+        "valves": [
+            {
+                "id": "FCV-1",
+                "symbol": "globe",
+                "actuator": "diaphragm",
+                "x": 100,
+                "y": 100,
+                "tag": "FCV-1",
+            }
+        ],
+        "lines": [
+            {
+                "from": "FIC-1",
+                "to": "FCV-1.signal",
+                "class": "electric",
+                "route": [[130, 160], [130, 109]],
+            }
+        ],
+    }
+    planned = await run_spec(backend, spec, dry_run=True)
+    assert planned["lines"][0]["vertices"][0] == [105.0, 160.0]
+    drawn = await run_spec(backend, spec)
+    edge = drawn["graph"]["edges"][0]
+    assert edge["line_number"] is None, "signal lines from a spec are unnumbered too"

@@ -198,6 +198,21 @@ def route(start, start_dir, end, end_dir, stub: float = 5.0, mode="auto") -> lis
     return valid[0]
 
 
+def aim_points(start, end, mode) -> tuple[Point, Point]:
+    """What each end of a line aims at: the other end, or — with waypoints —
+    the first waypoint for the start and the last one for the end.
+
+    A radial (bubble) port leaves its circle along the axis towards its aim
+    point. Aiming at the far end while the route is a waypoint list put the
+    exit on the wrong side of the bubble, so the first segment cut through it.
+    """
+    if isinstance(mode, (list, tuple)) and len(mode) > 0:
+        return _finite_point("waypoints[0]", mode[0]), _finite_point(
+            f"waypoints[{len(mode) - 1}]", mode[-1]
+        )
+    return _finite_point("end", end), _finite_point("start", start)
+
+
 def label_placement(vertices, offset: float = 1.5) -> tuple[float, float, float, int]:
     """Midpoint of the longest segment, offset to its left, readable rotation."""
     pts = [(float(x), float(y)) for x, y in vertices]

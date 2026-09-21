@@ -119,20 +119,22 @@ async def test_line_list_rows(backend):
     rows = line_list(graph)
     assert [list(r) for r in rows] == [LINE_KEYS] * 4
     numbered = [r for r in rows if r["line_number"]]
-    # The signal line carries no size/service/spec, so its default-format
-    # number is the bare sequence "3" (empty fields drop out, spec 6.4) — and
-    # a natural sort files 3 before 100.
-    assert [r["line_number"] for r in numbered] == ["3", "100-P-1-CS1", "100-P-2-CS1"]
-    signal = numbered[0]
-    assert signal["line_class"] == "pneumatic" and signal["number_source"] == "xdata"
+    # An ISA-5.1 signal line carries no pipe line number (track E, Task 6):
+    # the pneumatic line is unnumbered and did not consume a sequence number,
+    # so the two process lines are 1 and 2.
+    assert [r["line_number"] for r in numbered] == ["100-P-1-CS1", "100-P-2-CS1"]
+    signal = next(r for r in rows if r["line_class"] == "pneumatic")
+    assert signal["line_number"] is None and signal["number_source"] is None
     assert signal["from_tag"] == "FIC-101" and signal["to_tag"] == "FCV-101"
     assert signal["to_port"] == "signal"
-    first = numbered[1]
+    first = numbered[0]
     assert first["from_tag"] == "P-101" and first["from_port"] == "discharge"
     assert first["to_tag"] == "FCV-101" and first["length_mm"] > 0
-    assert rows[-1]["line_number"] is None, "untagged rows sort last"
-    assert rows[-1]["from_tag"] == "V-201" and rows[-1]["from_port"] == "N4"
-    assert rows[-1]["to_tag"] is None and rows[-1]["number_source"] is None
+    unnumbered = [r for r in rows if r["line_number"] is None]
+    assert rows[-2:] == unnumbered, "untagged rows sort last"
+    hand_drawn = next(r for r in unnumbered if r["from_tag"] == "V-201")
+    assert hand_drawn["from_port"] == "N4"
+    assert hand_drawn["to_tag"] is None and hand_drawn["number_source"] is None
 
 
 async def test_equipment_list_rows(backend):

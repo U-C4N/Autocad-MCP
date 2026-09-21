@@ -381,19 +381,27 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
         graph = result["graph"]
         index = instrument_index(graph)
         lines = line_list(graph)
-        # The spec numbers its two process lines; the signal line and the
-        # connector line are left to the default ``number_format``, which with
-        # no size/service/spec/insulation collapses to the bare sequence
-        # number. Both must come back through XDATA, not a label search.
+        # The spec numbers its two process lines; the connector line is left
+        # to the default ``number_format``, which with no size/service/spec/
+        # insulation collapses to the bare sequence number, and it must come
+        # back through XDATA, not a label search. The electric signal line is
+        # unnumbered by rule (ISA-5.1 signal lines carry no pipe line number)
+        # and must not have consumed a sequence number: the connector is "3".
         authored = "100-P-1001-CS1"
         numbers = {(r["from_tag"], r["to_tag"]): r["line_number"] for r in lines}
         authored_ok = (
             numbers.get(("P-101", "FCV-101")) == authored
             and numbers.get(("FCV-101", "V-201")) == authored
         )
-        sequenced = [r for r in lines if r["line_number"] != authored]
-        sequenced_ok = len(sequenced) == 2 and all(
-            r["line_number"].isdigit() and r["number_source"] == "xdata" for r in sequenced
+        others = [r for r in lines if r["line_number"] != authored]
+        signal = [r for r in others if r["line_class"] == "electric"]
+        sequenced = [r for r in others if r["line_class"] != "electric"]
+        sequenced_ok = (
+            len(signal) == 1
+            and signal[0]["line_number"] is None
+            and len(sequenced) == 1
+            and sequenced[0]["line_number"] == "3"
+            and sequenced[0]["number_source"] == "xdata"
         )
         passed = (
             len(graph["nodes"]) == 5

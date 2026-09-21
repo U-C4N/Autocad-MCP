@@ -1384,6 +1384,8 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "line number",
             "connect the pump to the vessel",
             "pneumatic signal",
+            "unnumbered signal line",
+            "route a line through waypoints",
         ),
     ),
     "pid_graph": ToolAliases(
