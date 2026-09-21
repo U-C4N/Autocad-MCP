@@ -6818,7 +6818,7 @@ async def pid_tag_parse(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 18: Styles (9 tools) ────────────────────────────────────────────
+# ── SECTION 18: Styles (10 tools) ───────────────────────────────────────────
 # ---------------------------------------------------------------------------
 #
 # Pack: core (drafting essentials). Lean profile: dimstyle_set_current and
@@ -7074,6 +7074,42 @@ async def mleaderstyle_create(
     values = resolve_mleaderstyle(preset, overrides)
     await ctx.info(f"Multileader style {name!r} from preset {preset}")
     return await _backend(ctx).mleaderstyle_create(name, values)
+
+
+@cad_tool(
+    summary="Put the drawing on ISO or ANSI in one call: dimstyle, text style, units, mech layers.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Drawing: Apply Drafting Standard", "readOnlyHint": False},
+    tags={"style", "drawing"},
+)
+async def drawing_apply_standard(
+    standard: Annotated[
+        str, "iso (ISO-25 / ISOCP, decimal comma) | ansi (ANSI / ROMANS, decimal point)"
+    ],
+    layers: Annotated[bool, "Also bootstrap the mech layer set with ISO 128 lineweights"] = True,
+    units: Annotated[
+        bool, "Also write INSUNITS mm, LUNITS/AUNITS decimal, LTSCALE 1, DIMSCALE 1"
+    ] = True,
+    ctx: Context = None,
+) -> dict:
+    """One call for the common case: the standard's dimension style (created
+    if missing, then current), its text style (created if missing, then
+    current), the shared units, and with `layers` the `mech` layer set (ANSI
+    layer naming is company-specific, so both standards share it).
+
+    Every item reports `created` or already present; `settings.changed`
+    names only the variables that moved, so a second call reports nothing.
+    An existing ISO-25 / ANSI style is reused as it is, not reset — use
+    `dimstyle_modify` to change one. Refuses an unknown standard before any
+    write; the underlying style refusals (`dimstyle_create`,
+    `textstyle_create`) apply unchanged. In the `lean` profile (Task 13).
+    """
+    from engineering.standards.apply import apply_standard
+
+    await ctx.info(f"Applying the {standard} drafting standard")
+    return await apply_standard(_backend(ctx), standard, layers, units)
 
 
 # ---------------------------------------------------------------------------

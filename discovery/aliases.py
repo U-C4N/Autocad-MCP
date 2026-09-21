@@ -1476,6 +1476,17 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "activate a dimstyle",
         ),
     ),
+    "drawing_apply_standard": ToolAliases(
+        acad=(),
+        synonyms=(
+            "set the drawing up to iso",
+            "iso drafting standard",
+            "ansi drawing setup",
+            "apply the drafting standard",
+            "iso-25 and isocp in one go",
+            "standard styles units and layers",
+        ),
+    ),
     "mleaderstyle_create": ToolAliases(
         acad=("MLEADERSTYLE",),
         synonyms=(

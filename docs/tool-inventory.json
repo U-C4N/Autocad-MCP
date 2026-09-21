@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 175,
+    "tools": 176,
     "resources": 8,
     "prompts": 5,
     "groups": 21
@@ -24,7 +24,7 @@
     "pid": 9,
     "premium": 12,
     "solids": 5,
-    "styles": 9,
+    "styles": 10,
     "system": 7,
     "templates": 2,
     "transactions": 3,
@@ -519,6 +519,20 @@
       "annotations": {
         "title": "Drawing: Apply ISO Layer Set (bootstrap)",
         "destructiveHint": false
+      }
+    },
+    {
+      "name": "drawing_apply_standard",
+      "group": "styles",
+      "cost": "mutate",
+      "summary": "Put the drawing on ISO or ANSI in one call: dimstyle, text style, units, mech layers.",
+      "tags": [
+        "drawing",
+        "style"
+      ],
+      "annotations": {
+        "title": "Drawing: Apply Drafting Standard",
+        "readOnlyHint": false
       }
     },
     {

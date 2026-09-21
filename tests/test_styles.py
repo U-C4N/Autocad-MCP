@@ -999,7 +999,9 @@ def com_backend(monkeypatch, tmp_path):
     monkeypatch.setattr(_FakeStyle, "support_folder", support)
     document = _FakeDocument()
     app = types.SimpleNamespace(
-        Preferences=types.SimpleNamespace(Files=types.SimpleNamespace(SupportPath=str(support)))
+        Preferences=types.SimpleNamespace(Files=types.SimpleNamespace(SupportPath=str(support))),
+        GetVariable=document.GetVariable,
+        SetVariable=document.SetVariable,
     )
     monkeypatch.setattr(module, "_acad_doc", lambda: document)
     monkeypatch.setattr(module, "_acad_app", lambda: app)
@@ -1626,3 +1628,91 @@ async def test_truetype_face_reads_family_and_subfamily(tmp_path):
         assert _truetype_face(windows_arial) == ("Arial", False, False)
     assert _com_font_path(str(regular)) == regular
     assert _com_font_path(str(tmp_path / "missing.ttf")) is None
+
+
+# ── drawing_apply_standard ──────────────────────────────────────────────────
+
+
+async def test_apply_iso_then_dimension_linear_carries_iso25(backend):
+    from engineering.standards.apply import apply_standard
+
+    result = await apply_standard(backend, "iso")
+    assert result["standard"] == "iso"
+    assert result["dimstyle"] == {"name": "ISO-25", "created": True, "current": True}
+    assert result["textstyle"] == {"name": "ISOCP", "created": True, "current": True}
+    assert result["settings"]["changed"] == {"INSUNITS": [6, 4]}, "ezdxf.new() starts in metres"
+    assert result["layers"]["layer_set"] == "mech"
+    assert result["layers"]["layers"]["DIM"] in ("created", "exists")
+    dim = await backend.dimension_linear(0, 0, 33.333, 0, 16, -30)
+    assert _rendered(backend, dim.handle) == ("33,33", 2.5, [2.5])
+    assert backend._doc.header["$TEXTSTYLE"] == "ISOCP"
+    assert await backend.system_get_variable("LUNITS") == 2
+    assert await backend.system_get_variable("INSUNITS") == 4
+
+
+async def test_apply_ansi_then_dimension_linear_carries_ansi(backend):
+    from engineering.standards.apply import apply_standard
+
+    result = await apply_standard(backend, "ANSI", layers=False)
+    assert result["dimstyle"]["name"] == "ANSI" and result["textstyle"]["name"] == "ROMANS"
+    assert result["layers"] is None
+    dim = await backend.dimension_linear(0, 0, 33.333, 0, 16, -30)
+    assert _rendered(backend, dim.handle) == ("33.33", 3.0, [3.0])
+
+
+async def test_second_apply_is_idempotent_and_reports_nothing_created(backend):
+    from engineering.standards.apply import apply_standard
+
+    await apply_standard(backend, "iso")
+    again = await apply_standard(backend, "iso")
+    assert again["dimstyle"]["created"] is False and again["textstyle"]["created"] is False
+    assert again["settings"]["changed"] == {}
+    assert set(again["layers"]["layers"].values()) == {"exists"}
+    swapped = await apply_standard(backend, "ansi", layers=False)
+    assert swapped["dimstyle"]["created"] is True
+    assert (await backend.dimstyle_list())[0]["name"] == "ANSI"
+    back = await apply_standard(backend, "iso", layers=False, units=False)
+    assert back["dimstyle"]["created"] is False and back["settings"] == {
+        "changed": {},
+        "applied": False,
+    }
+    assert backend._doc.header["$DIMSTYLE"] == "ISO-25"
+
+
+async def test_apply_refuses_an_unknown_standard_before_writing(backend):
+    from engineering.standards.apply import apply_standard
+
+    with pytest.raises(ValueError, match="standard"):
+        await apply_standard(backend, "din")
+    with pytest.raises(TypeError, match="layers"):
+        await apply_standard(backend, "iso", layers="yes")
+    assert [r["name"] for r in await backend.dimstyle_list()] == ["Standard"]
+    assert await backend.system_get_variable("INSUNITS") == 6
+
+
+async def test_apply_standard_tool_is_registered_in_the_styles_group(backend):
+    import server
+
+    names = {t.name for t in await server._registered_tools() if getattr(t, "name", None)}
+    assert "drawing_apply_standard" in names
+    styles_group = set((await server._tool_groups())["styles"])
+    assert styles_group == STYLE_TOOLS | {"drawing_apply_standard"}, "SECTION 18 is exactly ten"
+    result = await server.drawing_apply_standard(standard="iso", layers=False, ctx=_Ctx(backend))
+    assert result["dimstyle"]["created"] is True
+
+
+async def test_com_apply_standard_creates_both_styles_and_sets_units(com_backend):
+    from engineering.standards.apply import apply_standard
+
+    backend, document = com_backend
+    document.variables.update(
+        {"INSUNITS": 1, "LUNITS": 4, "AUNITS": 0, "LTSCALE": 1.0, "DIMSCALE": 1.0}
+    )
+    result = await apply_standard(backend, "iso", layers=False)
+    assert result["dimstyle"]["created"] is True and result["textstyle"]["created"] is True
+    assert result["settings"]["changed"] == {"INSUNITS": [1, 4], "LUNITS": [4, 2]}
+    names = [call[0] for call in document.calls]
+    assert names[0] == "TextStyles.Add" and "DimStyles.Add" in names
+    assert ("ActiveTextStyle", "ISOCP") in document.calls
+    assert document.ActiveDimStyle.Name == "ISO-25"
+    assert document.variables["DIMDSEP"] == "," and document.variables["INSUNITS"] == 4
