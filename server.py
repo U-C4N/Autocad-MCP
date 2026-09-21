@@ -6951,8 +6951,11 @@ async def layer_state_restore(
     `applied` says how many layers and which properties moved. Refusals: an
     unknown state name (lists the saved ones), a property outside the eight
     (names the index). Live, a layer AutoCAD refuses to change (freezing the
-    active layer) lands in `warnings` instead of failing the call. Portable
-    server states, not Layer States Manager entries. Pack: settings · lean: no.
+    active layer, making a frozen layer current) lands in `warnings` instead
+    of failing the call; the state's current layer is thawed before it is
+    made current when `frozen` is being restored, so save → freeze → restore
+    round-trips. Portable server states, not Layer States Manager entries.
+    Pack: settings · lean: no.
     """
     await ctx.info(f"Restoring layer state {name!r}")
     return await _backend(ctx).layer_state_restore(name, properties)
@@ -7022,12 +7025,18 @@ async def view_named_restore(
     name: Annotated[str, "A name from view_named_list"],
     ctx: Context = None,
 ) -> dict:
-    """Live: sets the active viewport to the saved centre/height/width
-    (`applied: "active_viewport"`). Headless there is no display: the saved
-    window is written to the `*Active` VPORT — the view AutoCAD opens the file
-    on — and the result says `applied: "header_only"`, the same reported-no-op
-    rule as `view_zoom_extents`. Refusal: an unknown name (lists the saved
-    views). Pack: settings · lean: no."""
+    """Live: zooms the active viewport to the saved window the way `-VIEW _R`
+    does — VIEWCTR becomes the saved centre and VIEWSIZE the saved height
+    (or width / display aspect when the window is wider than the display);
+    `applied: "zoom_window"` plus the read-back `viewctr` / `viewsize`.
+    Headless there is no display: the saved window is fitted into the
+    `*Active` VPORT — the view AutoCAD opens the file on — whose aspect ratio
+    is left as the file carries it (AutoCAD reconciles a changed aspect by the
+    viewport's lower-left corner, which shifts the centre); the result says
+    `applied: "header_only"` with the written `vport_height` and the kept
+    `aspect_ratio`, the same reported-no-op rule as `view_zoom_extents`.
+    Refusal: an unknown name (lists the saved views). Pack: settings · lean:
+    no."""
     return await _backend(ctx).view_named_restore(name)
 
 

@@ -102,6 +102,8 @@ async def test_view_replace_restore_and_list(backend):
         "width": pytest.approx(26.8),
         "applied": "header_only",
         "store": "vport_active",
+        "vport_height": 20.0,
+        "aspect_ratio": pytest.approx(1.34),
         "backend": "ezdxf",
     }
     (vport,) = backend._doc.viewports.get("*Active")
@@ -114,6 +116,28 @@ async def test_view_replace_restore_and_list(backend):
     with pytest.raises(ValueError, match="height must be > 0"):
         await backend.view_named_save("BAD", center=[0, 0], height=0)
     assert "BAD" not in backend._doc.views
+
+
+async def test_view_restore_keeps_the_vport_aspect_and_fits_the_window(backend):
+    """Measured (AutoCAD 2026, display aspect 2.013): the *Active VPORT's
+    aspect ratio is reconciled against the real display by the viewport's
+    lower-left corner — a 10x20 view at (5, 6) written with aspect 0.5
+    opened at VIEWCTR (20.134, 6), and the default 1.34 at (11.734, 6). The
+    aspect is the display's (AutoCAD writes it at save), so restore leaves it
+    alone and fits the window into it, like `-VIEW _R` does."""
+    (vport,) = backend._doc.viewports.get("*Active") or [backend._doc.viewports.new("*Active")]
+    vport.dxf.aspect_ratio = 2.0125  # what AutoCAD wrote for a 2262 x 1124 display
+    await backend.view_named_save("TALL", center=[5, 6], height=20, width=10)
+    await backend.view_named_save("WIDE", center=[5, 6], height=20, width=100)
+    tall = await backend.view_named_restore("TALL")
+    assert vport.dxf.aspect_ratio == pytest.approx(2.0125), "never rewritten from w / h"
+    assert tuple(vport.dxf.center)[:2] == (5.0, 6.0)
+    assert vport.dxf.height == 20.0 and tall["vport_height"] == 20.0
+    assert tall["aspect_ratio"] == pytest.approx(2.0125)
+    wide = await backend.view_named_restore("WIDE")
+    assert vport.dxf.aspect_ratio == pytest.approx(2.0125)
+    assert vport.dxf.height == pytest.approx(100.0 / 2.0125)
+    assert wide["vport_height"] == pytest.approx(100.0 / 2.0125) and wide["height"] == 20.0
 
 
 async def test_view_is_written_as_a_plan_view_on_disk(backend, tmp_path):
@@ -361,14 +385,30 @@ class _FakeUcsCollection:
         return u
 
 
+# Measured (AutoCAD 2026): `-VIEW _S` of VIEWSIZE 20 recorded width 40.267
+# and the corner-anchored restores landed at x = 10.134 / 20.134 — all three
+# say the display aspect was 2.0134, i.e. a 2263 x 1124 SCREENSIZE.
+_SCREEN = (2263.0, 1124.0)
+_DISPLAY_ASPECT = _SCREEN[0] / _SCREEN[1]  # 2.0134
+
+
 class _FakeDocument:
-    def __init__(self):
+    """``GetVariable`` is an AcadDocument member (``hasattr(app, "GetVariable")``
+    is False live). ``ActiveViewport`` is deliberately STALE — measured, the
+    AcadViewport object keeps the document's initial view whatever the
+    display shows — so any code that reads it saves the wrong window."""
+
+    def __init__(self, variables):
         self.Views = _FakeViews()
         self.UserCoordinateSystems = _FakeUcsCollection()
-        self._viewport = types.SimpleNamespace(Center=(30.0, 40.0), Height=100.0, Width=150.0)
+        self.variables = variables
+        self._viewport = types.SimpleNamespace(Center=(298.98, 148.5), Height=297.0, Width=597.97)
         self.viewport_sets = 0
         self.ActiveUCS = None
         self.commands: list[str] = []
+
+    def GetVariable(self, name):
+        return self.variables[name]
 
     @property
     def ActiveViewport(self):
@@ -383,12 +423,29 @@ class _FakeDocument:
         self.commands.append(macro)
 
 
+class _FakeApp:
+    """No ``GetVariable``. ``ZoomWindow`` models ZOOM Window / `-VIEW _R`:
+    the window is centred and fitted to the display aspect (measured live:
+    `-VIEW _R` of a 10x20 view at (5, 6) gives VIEWCTR (5, 6), VIEWSIZE 20)."""
+
+    def __init__(self, document):
+        self.document = document
+        self.zoom_windows: list[tuple[tuple, tuple]] = []
+
+    def ZoomWindow(self, lower_left, upper_right):
+        self.zoom_windows.append((tuple(lower_left), tuple(upper_right)))
+        w = upper_right[0] - lower_left[0]
+        h = upper_right[1] - lower_left[1]
+        cx, cy = lower_left[0] + w / 2.0, lower_left[1] + h / 2.0
+        self.document.variables["VIEWCTR"] = (cx, cy, 0.0)
+        self.document.variables["VIEWSIZE"] = max(h, w / _DISPLAY_ASPECT)
+
+
 @pytest.fixture
 def com_backend(monkeypatch):
     pytest.importorskip("win32com.client", reason="pywin32 not installed")
     from backends import com_backend as module
 
-    document = _FakeDocument()
     variables = {
         "CMDACTIVE": 0,
         "UCSNAME": "",
@@ -396,8 +453,13 @@ def com_backend(monkeypatch):
         "UCSORG": (0.0, 0.0, 0.0),
         "UCSXDIR": (1.0, 0.0, 0.0),
         "UCSYDIR": (0.0, 1.0, 0.0),
+        "VIEWCTR": (5.0, 6.0, 0.0),
+        "VIEWSIZE": 20.0,
+        "SCREENSIZE": _SCREEN,
     }
-    app = types.SimpleNamespace(GetVariable=lambda name: variables[name])
+    document = _FakeDocument(variables)
+    app = _FakeApp(document)
+    assert not hasattr(app, "GetVariable"), "AcadApplication has no GetVariable member"
     monkeypatch.setattr(module, "_acad_doc", lambda: document)
     monkeypatch.setattr(module, "_acad_app", lambda: app)
     monkeypatch.setattr(module, "_regen", lambda: None)
@@ -412,28 +474,59 @@ def com_backend(monkeypatch):
     return backend, document, variables
 
 
-async def test_com_view_save_defaults_to_the_active_viewport(com_backend):
+async def test_com_view_save_defaults_to_viewctr_viewsize_not_the_viewport_object(com_backend):
+    """Measured (AutoCAD 2026): after ``_.ZOOM _C 5,6 20`` VIEWCTR is (5, 6)
+    and VIEWSIZE 20 while ``doc.ActiveViewport`` still answers the initial
+    view (298.98, 148.5) x 297 — and AutoCAD's own `-VIEW _S` records
+    centre (5, 6), height 20, width 20 x the display aspect (40.267)."""
     backend, document, _ = com_backend
     result = await backend.view_named_save("HOME")
     assert document.Views.calls == [("Add", ("HOME",))]
     (view,) = document.Views.views
-    assert view.Center == (30.0, 40.0) and view.Height == 100.0 and view.Width == 150.0
-    assert result["center"] == [30.0, 40.0] and result["replaced"] is False
+    assert view.Center == (5.0, 6.0) and view.Height == 20.0
+    assert view.Width == pytest.approx(20.0 * _DISPLAY_ASPECT)
+    assert result["center"] == [5.0, 6.0] and result["replaced"] is False
+    assert result["width"] == pytest.approx(40.267, abs=1e-3), "what `-VIEW _S` recorded live"
     again = await backend.view_named_save("home", center=[1, 2], height=10)
     assert again["replaced"] is True and len(document.Views.views) == 1
-    assert view.Center == (1.0, 2.0) and view.Height == 10.0 and view.Width == 15.0
+    assert view.Center == (1.0, 2.0) and view.Height == 10.0
+    assert view.Width == pytest.approx(10.0 * _DISPLAY_ASPECT), (
+        "width defaults to the display aspect"
+    )
+    assert document.viewport_sets == 0
 
 
-async def test_com_view_restore_sets_the_active_viewport(com_backend):
-    backend, document, _ = com_backend
+async def test_com_view_restore_zooms_the_window_like_view_r(com_backend):
+    """Measured (AutoCAD 2026, display aspect 2.013): writing Center/Height/
+    Width into the AcadViewport lands a 30x20 view at (5, 6) on VIEWCTR
+    (10.134, 6) and a 10x20 one on (20.134, 6) — AutoCAD anchors the
+    lower-left corner and widens. `-VIEW _R` gives VIEWCTR (5, 6), VIEWSIZE
+    20 for both, and so does ZOOM Window on the saved rectangle."""
+    backend, document, variables = com_backend
+    from backends import com_backend as module
+
+    app = module._acad_app()  # the fixture's _FakeApp
     await backend.view_named_save("HOME", center=[5, 6], height=20, width=30)
-    result = await backend.view_named_restore("HOME")
-    assert result["applied"] == "active_viewport"
-    assert document.ActiveViewport.Center == (5.0, 6.0)
-    assert document.ActiveViewport.Height == 20.0 and document.ActiveViewport.Width == 30.0
-    assert document.viewport_sets == 1, "ActiveX applies a viewport change only on re-assignment"
+    await backend.view_named_save("TALL", center=[5, 6], height=20, width=10)
+    await backend.view_named_save("WIDE", center=[5, 6], height=20, width=100)
+    for name, expect_size in (("HOME", 20.0), ("TALL", 20.0), ("WIDE", 100.0 / _DISPLAY_ASPECT)):
+        result = await backend.view_named_restore(name)
+        assert result["applied"] == "zoom_window" and result["center"] == [5.0, 6.0]
+        assert result["viewctr"] == [5.0, 6.0], name
+        assert result["viewsize"] == pytest.approx(expect_size), name
+        assert variables["VIEWCTR"][:2] == (5.0, 6.0)
+    assert app.zoom_windows == [
+        ((-10.0, -4.0, 0.0), (20.0, 16.0, 0.0)),
+        ((0.0, -4.0, 0.0), (10.0, 16.0, 0.0)),
+        ((-45.0, -4.0, 0.0), (55.0, 16.0, 0.0)),
+    ]
+    # The stale AcadViewport object was neither written nor re-assigned.
+    assert document.viewport_sets == 0
+    assert document.ActiveViewport.Center == (298.98, 148.5)
     assert await backend.view_named_list() == [
-        {"name": "HOME", "center": [5.0, 6.0], "height": 20.0, "width": 30.0}
+        {"name": "HOME", "center": [5.0, 6.0], "height": 20.0, "width": 30.0},
+        {"name": "TALL", "center": [5.0, 6.0], "height": 20.0, "width": 10.0},
+        {"name": "WIDE", "center": [5.0, 6.0], "height": 20.0, "width": 100.0},
     ]
 
 
@@ -492,6 +585,30 @@ async def test_com_ucs_restore_world_sends_the_ucs_command_when_idle(com_backend
     with pytest.raises(RuntimeError, match="CMDACTIVE"):
         await backend.ucs_restore("world")
     assert len(document.commands) == 1
+
+
+async def test_com_ucs_restore_world_refuses_when_cmdactive_cannot_be_read(com_backend):
+    """The guard once swallowed a failed read as "idle" — with the read on the
+    wrong object (``app.GetVariable``) it failed on every call, so `_.UCS _W`
+    went into whatever prompt was open. A read failure now refuses."""
+    backend, document, variables = com_backend
+    del variables["CMDACTIVE"]
+    with pytest.raises(RuntimeError, match="cannot verify AutoCAD is idle"):
+        await backend.ucs_restore("world")
+    assert document.commands == []
+
+
+async def test_com_ucs_reads_sysvars_from_the_document_never_the_application(com_backend):
+    """Live, ``AutoCAD.Application.GetVariable`` raises AttributeError: the
+    member is on AcadDocument. The fixture's app has none, so every UCS path
+    here would blow up on the old code."""
+    backend, document, variables = com_backend
+    from backends import com_backend as module
+
+    assert not hasattr(module._acad_app(), "GetVariable")
+    rows = await backend.ucs_list()
+    assert [(r["name"], r["current"]) for r in rows] == [("world", True)]
+    assert (await backend.ucs_restore("world"))["current"] is True
 
 
 async def test_com_ucs_refuses_before_activex(com_backend):

@@ -2650,10 +2650,20 @@ class EzdxfBackend(AutoCADBackend):
             cx, cy = float(view.dxf.center.x), float(view.dxf.center.y)
             h, w = float(view.dxf.height), float(view.dxf.width)
             vport = self._active_vport(doc)
+            # The *Active VPORT's aspect ratio is the DISPLAY's, written by
+            # AutoCAD at its last save, and AutoCAD reconciles the stored
+            # window against the real display by its lower-left corner: a
+            # stored aspect that differs from the display's shifts the centre
+            # by (display − stored) · height / 2. Measured (AutoCAD 2026,
+            # display aspect 2.013): a 10x20 view at (5, 6) written with
+            # aspect 0.5 opened at VIEWCTR (20.134, 6). So the aspect is left
+            # as the file carries it and the window is FITTED into it —
+            # height = max(h, w / aspect), the same rule `-VIEW _R` applies —
+            # which is exactly what AutoCAD's own restore-then-save writes.
+            aspect = float(vport.dxf.get("aspect_ratio", 1.34)) or 1.34
+            fit_height = max(h, w / aspect)
             vport.dxf.center = (cx, cy)
-            vport.dxf.height = h
-            if h > 0:
-                vport.dxf.aspect_ratio = w / h
+            vport.dxf.height = fit_height
             # The orientation travels with the window: a foreign drawing's
             # VIEW may be oblique or twisted, and flattening it to a plan view
             # of the same center would be a silent lie. The attribute read
@@ -2674,6 +2684,8 @@ class EzdxfBackend(AutoCADBackend):
                 # initial view when it opens the file. No live display moves.
                 "applied": "header_only",
                 "store": "vport_active",
+                "vport_height": fit_height,
+                "aspect_ratio": aspect,
                 "backend": "ezdxf",
             }
 

@@ -76,7 +76,10 @@ class EnvironmentContract(ABC):
 
     @abstractmethod
     async def view_named_restore(self, name: str) -> dict:
-        """ezdxf: sets the ``*Active`` VPORT, ``"applied": "header_only"``."""
+        """COM: ZOOM Window on the saved rectangle (``"applied": "zoom_window"``
+        plus the read-back ``viewctr`` / ``viewsize``); ezdxf: fits the window
+        into the ``*Active`` VPORT without touching its aspect ratio,
+        ``"applied": "header_only"`` plus ``vport_height`` / ``aspect_ratio``."""
         ...
 
     @abstractmethod

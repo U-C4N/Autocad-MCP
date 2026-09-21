@@ -10,7 +10,6 @@ the COM tests prove the ActiveX call shapes.
 from __future__ import annotations
 
 import json
-import types
 
 import pytest
 
@@ -338,15 +337,49 @@ class _FakeDictionaries:
 
 
 class _FakeLayer:
+    """Models the two refusals measured live (AutoCAD 2026): the active layer
+    cannot be frozen, and a frozen layer cannot be made active."""
+
     def __init__(self, name, **props):
         self.Name = name
         self.Color = props.get("color", 7)
         self.Linetype = props.get("linetype", "Continuous")
         self.LineWeight = props.get("lineweight", -3)
         self.LayerOn = props.get("on", True)
-        self.Freeze = props.get("frozen", False)
+        self._frozen = props.get("frozen", False)
         self.Lock = props.get("locked", False)
         self.Plottable = props.get("plot", True)
+        self.document = None
+
+    @property
+    def Freeze(self):
+        return self._frozen
+
+    @Freeze.setter
+    def Freeze(self, value):
+        if value and self.document is not None and self.document.ActiveLayer is self:
+            raise RuntimeError("AutoCAD COM error: cannot freeze the current layer")
+        self._frozen = bool(value)
+
+
+class _FakeDocument:
+    def __init__(self, layers, current):
+        self.Dictionaries = _FakeDictionaries()
+        self.Layers = _FakeLayers(layers)
+        self._active = current
+        for lyr in layers:
+            lyr.document = self
+
+    @property
+    def ActiveLayer(self):
+        return self._active
+
+    @ActiveLayer.setter
+    def ActiveLayer(self, layer):
+        if layer.Freeze:
+            # Measured: com_error 'Error setting active layer' (-2145320874).
+            raise RuntimeError("AutoCAD COM error (-0x7ffdfff7): Error setting active layer")
+        self._active = layer
 
 
 class _FakeLayers:
@@ -376,11 +409,7 @@ def com_backend(monkeypatch):
         _FakeLayer("GEOMETRY", lineweight=50),
         _FakeLayer("HIDDEN", color=8, linetype="HIDDEN", frozen=True, plot=False),
     ]
-    document = types.SimpleNamespace(
-        Dictionaries=_FakeDictionaries(),
-        Layers=_FakeLayers(layers),
-        ActiveLayer=layers[1],
-    )
+    document = _FakeDocument(layers, current=layers[1])
     monkeypatch.setattr(module, "_acad_doc", lambda: document)
     monkeypatch.setattr(module, "_ensure_linetype_loaded", lambda name: None)
     monkeypatch.setattr(module, "_regen", lambda: None)
@@ -427,6 +456,47 @@ async def test_com_restore_reads_the_xrecord_and_writes_layer_properties(com_bac
     assert hidden.Freeze is True and hidden.Color == 8 and hidden.Plottable is False
     assert document.ActiveLayer.Name == "GEOMETRY"
     assert result["missing_layers"] == [] and result["new_layers"] == []
+
+
+async def test_com_restore_thaws_the_states_current_layer_before_making_it_current(com_backend):
+    """The spec's own acceptance path, measured live: save with GEOMETRY
+    current and HIDDEN frozen → thaw HIDDEN, make 0 current, freeze GEOMETRY
+    → restore. AutoCAD refuses ``ActiveLayer = <frozen>``, so the write
+    before the loop raised an opaque COM error and nothing was applied."""
+    backend, document = com_backend
+    await backend.layer_state_save("PLOT")
+    geometry = document.Layers.Item("GEOMETRY")
+    hidden = document.Layers.Item("HIDDEN")
+    hidden.Freeze = False
+    document.ActiveLayer = document.Layers.Item("0")
+    geometry.Freeze = True
+    result = await backend.layer_state_restore("PLOT")
+    assert "warnings" not in result, result
+    assert document.ActiveLayer is geometry and geometry.Freeze is False
+    assert hidden.Freeze is True
+    assert result["applied"] == {
+        "layers": 3,
+        "properties": list(PROPERTIES),
+        "current_layer": "GEOMETRY",
+    }
+
+
+async def test_com_restore_reports_a_refused_current_layer_instead_of_failing(com_backend):
+    """Without ``frozen`` in the requested properties the thaw is not ours to
+    make: AutoCAD's refusal lands in ``warnings`` and the rest still applies."""
+    backend, document = com_backend
+    await backend.layer_state_save("PLOT")
+    geometry = document.Layers.Item("GEOMETRY")
+    hidden = document.Layers.Item("HIDDEN")
+    hidden.Color = 3
+    document.ActiveLayer = document.Layers.Item("0")
+    geometry.Freeze = True
+    result = await backend.layer_state_restore("PLOT", properties=["color", "current"])
+    assert result["applied"]["current_layer"] is None
+    assert result["applied"]["layers"] == 3 and hidden.Color == 8
+    assert geometry.Freeze is True and document.ActiveLayer.Name == "0"
+    (warning,) = result["warnings"]
+    assert warning.startswith("GEOMETRY: cannot be made current: ")
 
 
 async def test_com_list_and_delete(com_backend):

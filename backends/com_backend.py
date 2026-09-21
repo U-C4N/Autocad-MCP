@@ -1534,9 +1534,22 @@ class ComBackend(AutoCADBackend):
             warnings: list[str] = []
             # Current first: AutoCAD refuses to freeze the active layer, so the
             # active one must already be the state's before the loop freezes.
+            # And it refuses to make a *frozen* layer current (measured, AutoCAD
+            # 2026: ``doc.ActiveLayer = <frozen>`` raises 'Error setting active
+            # layer'), so when the state thaws its own current layer that thaw
+            # comes before the ActiveLayer write instead of after it in the
+            # loop. Only a requested property is touched: without "frozen" the
+            # refusal stands and lands in ``warnings`` like every other one.
             if "current" in props and state["current_layer"] not in missing:
-                doc.ActiveLayer = doc.Layers.Item(state["current_layer"])
-                current = state["current_layer"]
+                target_name = state["current_layer"]
+                target = doc.Layers.Item(target_name)
+                try:
+                    if "frozen" in props and not bool(state["layers"][target_name]["frozen"]):
+                        target.Freeze = False
+                    doc.ActiveLayer = target
+                    current = target_name
+                except Exception as exc:  # e.g. the state's current layer is frozen
+                    warnings.append(f"{target_name}: cannot be made current: {exc}")
             applied = 0
             for layer_name, snap in state["layers"].items():
                 if layer_name in missing:
@@ -1634,6 +1647,13 @@ class ComBackend(AutoCADBackend):
             return None
 
     @staticmethod
+    def _com_display_aspect(doc) -> float:
+        """Width / height of the current viewport's display, from SCREENSIZE."""
+        size = doc.GetVariable("SCREENSIZE")
+        sx, sy = float(size[0]), float(size[1])
+        return sx / sy if sx > 0 and sy > 0 else 1.0
+
+    @staticmethod
     def _com_view_row(view) -> dict:
         center = view.Center
         return {
@@ -1652,12 +1672,20 @@ class ComBackend(AutoCADBackend):
 
         def _sync():
             doc = _acad_doc()
-            vport = doc.ActiveViewport
-            vp_center = vport.Center
-            vp_height = float(vport.Height) or 1.0
-            aspect = float(vport.Width) / vp_height if vp_height else 1.5
-            cx, cy = args["center"] or (float(vp_center[0]), float(vp_center[1]))
-            h = args["height"] or vp_height
+            # "The current view" is VIEWCTR / VIEWSIZE at the display's aspect
+            # (SCREENSIZE), which is what AutoCAD's own `-VIEW _S` records.
+            # NOT ``doc.ActiveViewport.Center/Height/Width``: that object does
+            # not track the display — measured (AutoCAD 2026) it still
+            # answered the document's initial view after `_.ZOOM _C 5,6 20`,
+            # after ``app.ZoomCenter`` and after its own values were written.
+            if args["center"] is None or args["height"] is None or args["width"] is None:
+                view_center = doc.GetVariable("VIEWCTR")
+                view_height = float(doc.GetVariable("VIEWSIZE")) or 1.0
+                aspect = self._com_display_aspect(doc)
+            else:
+                view_center, view_height, aspect = None, 1.0, 1.0
+            cx, cy = args["center"] or (float(view_center[0]), float(view_center[1]))
+            h = args["height"] or view_height
             w = args["width"] or h * aspect
             view = self._com_view(doc, clean)
             replaced = view is not None
@@ -1695,14 +1723,26 @@ class ComBackend(AutoCADBackend):
                     f"view_named_restore: no named view {clean!r}; saved views: {names}"
                 )
             row = self._com_view_row(view)
-            vport = doc.ActiveViewport
-            vport.Center = _av(row["center"])
-            vport.Height = row["height"]
-            vport.Width = row["width"]
-            # ActiveX applies viewport changes only when the object is assigned back.
-            doc.ActiveViewport = vport
-            _regen()
-            return {"ok": True, **row, "applied": "active_viewport", "backend": "com"}
+            # NOT ``vport.Center/Height/Width`` + ``doc.ActiveViewport = vport``:
+            # AutoCAD reconciles a width that does not match the display aspect
+            # by anchoring the viewport's lower-left corner and widening, so the
+            # view lands off-centre (measured, AutoCAD 2026, display aspect
+            # 2.013: a 10x20 view at (5, 6) restored to VIEWCTR (20.134, 6)).
+            # `-VIEW _R` centres the saved window and fits it — VIEWCTR = the
+            # saved centre, VIEWSIZE = max(height, width / aspect) — and so
+            # does ZOOM Window on the same rectangle, without a SendCommand.
+            (cx, cy), h, w = row["center"], row["height"], row["width"]
+            _acad_app().ZoomWindow(
+                _apoint(cx - w / 2.0, cy - h / 2.0), _apoint(cx + w / 2.0, cy + h / 2.0)
+            )
+            result = {"ok": True, **row, "applied": "zoom_window", "backend": "com"}
+            try:  # the read-back is what a reviewer measures the tool against
+                ctr = doc.GetVariable("VIEWCTR")
+                result["viewctr"] = [float(ctr[0]), float(ctr[1])]
+                result["viewsize"] = float(doc.GetVariable("VIEWSIZE"))
+            except Exception as exc:
+                log.debug("VIEWCTR/VIEWSIZE read-back failed: %s", exc)
+            return result
 
         return await self._run(_sync)
 
@@ -1736,9 +1776,10 @@ class ComBackend(AutoCADBackend):
         from engineering.environment.ucs import WORLD, WORLD_ORIGIN, WORLD_X_AXIS, WORLD_Y_AXIS
 
         def _sync():
-            app = _acad_app()
+            # GetVariable is an AcadDocument member; AcadApplication has none
+            # (measured: ``hasattr(app, "GetVariable") is False``).
             doc = _acad_doc()
-            current = str(app.GetVariable("UCSNAME") or "")
+            current = str(doc.GetVariable("UCSNAME") or "")
             rows = [
                 {
                     "name": WORLD,
@@ -1757,15 +1798,15 @@ class ComBackend(AutoCADBackend):
             # (UCS Origin / 3P without saving) as well as for WCS — verified
             # live (AutoCAD 2026: after `_.UCS _O 10,10,0`, UCSNAME="" and
             # WORLDUCS=0). WORLDUCS is AutoCAD's own answer to "is this WCS".
-            if int(app.GetVariable("WORLDUCS")) == 1:
+            if int(doc.GetVariable("WORLDUCS")) == 1:
                 rows[0]["current"] = True
             else:
                 rows.append(
                     {
                         "name": None,
-                        "origin": [float(c) for c in app.GetVariable("UCSORG")],
-                        "x_axis": [float(c) for c in app.GetVariable("UCSXDIR")],
-                        "y_axis": [float(c) for c in app.GetVariable("UCSYDIR")],
+                        "origin": [float(c) for c in doc.GetVariable("UCSORG")],
+                        "x_axis": [float(c) for c in doc.GetVariable("UCSXDIR")],
+                        "y_axis": [float(c) for c in doc.GetVariable("UCSYDIR")],
                         "current": True,
                     }
                 )
@@ -1820,16 +1861,20 @@ class ComBackend(AutoCADBackend):
         clean = validate_name(name, what="UCS name")
 
         def _sync():
-            app = _acad_app()
             doc = _acad_doc()
             if clean.lower() == WORLD:
                 # No ActiveX member selects WCS; the command does. Same guard as
-                # system_run_command: never send into an active prompt.
+                # system_run_command: never send into an active prompt. The
+                # read is a document member, and a failed read REFUSES: a
+                # swallowed error here once forced cmd_active to 0 and sent
+                # `_.UCS _W` into whatever prompt was open.
                 try:
-                    cmd_active = int(app.GetVariable("CMDACTIVE"))
+                    cmd_active = int(doc.GetVariable("CMDACTIVE"))
                 except Exception as exc:
-                    log.debug("CMDACTIVE read failed, proceeding: %s", exc)
-                    cmd_active = 0
+                    raise RuntimeError(
+                        "ucs_restore: cannot verify AutoCAD is idle (CMDACTIVE read "
+                        f"failed: {exc}); nothing was sent"
+                    ) from exc
                 if cmd_active:
                     raise RuntimeError(
                         "AutoCAD has an active command or prompt (CMDACTIVE="
