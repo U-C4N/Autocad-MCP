@@ -1007,3 +1007,83 @@ async def test_com_mleaderstyle_create_adds_the_dictionary_to_a_drawing_without_
     assert [obj.Name for obj in document.mleader_dictionary.objects] == ["ISO"]
     rows = await backend.mleaderstyle_list()
     assert [row["name"] for row in rows] == ["ISO"] and rows[0]["arrow_size"] == 2.5
+
+
+# ── the MCP tools (SECTION 18) ──────────────────────────────────────────────
+
+STYLE_TOOLS = {
+    "dimstyle_list",
+    "dimstyle_create",
+    "dimstyle_modify",
+    "dimstyle_set_current",
+    "textstyle_list",
+    "textstyle_create",
+    "textstyle_set_current",
+    "mleaderstyle_list",
+    "mleaderstyle_create",
+}
+
+
+class _Ctx:
+    """Enough of a fastmcp Context for a direct tool call (tests/test_capabilities.py)."""
+
+    def __init__(self, backend):
+        self.lifespan_context = {"backend": backend}
+
+    async def info(self, *_args, **_kwargs):
+        return None
+
+
+async def test_style_tools_are_registered_and_grouped_under_styles():
+    import server
+
+    names = {t.name for t in await server._registered_tools() if getattr(t, "name", None)}
+    assert STYLE_TOOLS <= names
+    groups = await server._tool_groups()
+    assert STYLE_TOOLS <= set(groups["styles"]), "the style tag must win over query/create/modify"
+    for other in ("layers", "drawing", "entity_query", "entity_creation", "entity_modification"):
+        assert not STYLE_TOOLS & set(groups.get(other, [])), other
+
+
+async def test_dimstyle_tools_resolve_the_preset_then_write(backend):
+    import server
+
+    ctx = _Ctx(backend)
+    created = await server.dimstyle_create(
+        name="ISO-25", preset="iso-25", overrides={"dimdec": 3}, set_current=True, ctx=ctx
+    )
+    assert created["current"] is True and created["values"]["DIMDEC"] == 3
+    listed = await server.dimstyle_list(ctx=ctx)
+    assert listed["count"] == 2 and listed["current"] == "ISO-25"
+    modified = await server.dimstyle_modify(name="ISO-25", overrides={"DIMTXT": 3.5}, ctx=ctx)
+    assert modified["changed"] == {"DIMTXT": [2.5, 3.5]}
+    switched = await server.dimstyle_set_current(name="Standard", ctx=ctx)
+    assert switched["previous"] == "ISO-25" and switched["current"] == "Standard"
+
+
+async def test_dimstyle_create_tool_refuses_an_unknown_override_before_writing(backend):
+    import server
+
+    ctx = _Ctx(backend)
+    with pytest.raises(ValueError, match="DIMFOO"):
+        await server.dimstyle_create(name="X", overrides={"DIMFOO": 1}, ctx=ctx)
+    with pytest.raises(ValueError, match="preset"):
+        await server.dimstyle_create(name="X", preset="din", ctx=ctx)
+    assert (await server.dimstyle_list(ctx=ctx))["count"] == 1
+
+
+async def test_textstyle_and_mleaderstyle_tools_round_trip(backend):
+    import server
+
+    ctx = _Ctx(backend)
+    made = await server.textstyle_create(name="ISOCP", font="isocp", set_current=True, ctx=ctx)
+    assert made["font_resolved"] is True
+    assert (await server.textstyle_list(ctx=ctx))["current"] == "ISOCP"
+    assert (await server.textstyle_set_current(name="Standard", ctx=ctx))["previous"] == "ISOCP"
+    leader = await server.mleaderstyle_create(
+        name="ISO", preset="iso", overrides={"arrow_size": 3}, ctx=ctx
+    )
+    assert leader["values"]["arrow_size"] == 3.0 and leader["textstyle_created"] is False
+    assert (await server.mleaderstyle_list(ctx=ctx))["count"] == 2
+    with pytest.raises(ValueError, match="preset"):
+        await server.mleaderstyle_create(name="X", preset="din", ctx=ctx)
