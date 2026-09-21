@@ -495,7 +495,7 @@ async def test_tool_groups_is_byte_identical_to_the_source_declared_grouping():
 
 
 async def test_tool_group_sizes_are_unchanged():
-    """Frozen snapshot of the surface (161 tools, 20 groups).
+    """Frozen snapshot of the surface (170 tools, 20 groups).
 
     Taken before @cad_tool landed at 131 tools; `batch` moved 2 -> 3 when
     v1.5.0's `cad_batch` joined `entity_batch_create`/`entity_batch_modify`, and
@@ -517,7 +517,11 @@ async def test_tool_group_sizes_are_unchanged():
     when `pid_tag_parse` (the ISA-5.1 tag grammar as a read-only tool)
     joined; the `pid`
     tag is ranked first in `_GROUP_TAG_PRIORITY` so those tools file under
-    `pid` rather than under their secondary `query` / `create` tags. Every
+    `pid` rather than under their secondary `query` / `create` tags.
+    `layouts` moved 12 -> 16 when v1.6's SECTION 19 opened with
+    `page_setup_list` / `page_setup_apply` / `plot_style_list` / `batch_plot`
+    — all tagged `layout`, which `_GROUP_TAG_PRIORITY` ranks above
+    `query`/`export`, so they file with the sheets they set up. Every
     other number here has been unchanged since the snapshot was taken.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
@@ -533,7 +537,7 @@ async def test_tool_group_sizes_are_unchanged():
         "entity_modification": 16,
         "entity_query": 9,
         "layers": 14,
-        "layouts": 12,
+        "layouts": 16,
         "pid": 9,
         "premium": 12,
         "solids": 5,
@@ -543,4 +547,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 166
+    assert sum(sizes.values()) == 170

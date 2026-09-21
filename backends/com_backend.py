@@ -2265,10 +2265,43 @@ class ComBackend(AutoCADBackend):
         return failed
 
     async def plot_style_list(self) -> list[dict]:
-        # Completed in Task 18 (installed ctb scan); the catalogue rows already answer.
+        """The ctb catalogue, marked against the files in AutoCAD's plot style path.
+
+        ``Preferences.Files.PrintStyleSheetPath`` is a ``;``-separated list of
+        folders. Every read is guarded: a folder that cannot be listed is
+        skipped, and when the Preferences object is unreachable the catalogue
+        rows come back with ``installed: None`` rather than a fabricated False.
+        """
         from engineering.standards.papers import CTB_CATALOG
 
-        return [{"name": name, "source": "catalog", "installed": None} for name in CTB_CATALOG]
+        def _sync():
+            rows = [{"name": name, "source": "catalog", "installed": None} for name in CTB_CATALOG]
+            try:
+                raw = str(_acad_app().Preferences.Files.PrintStyleSheetPath or "")
+            except Exception as exc:
+                log.debug("Preferences.Files.PrintStyleSheetPath unreadable: %s", exc)
+                return rows
+            installed: dict[str, str] = {}
+            for folder in (part.strip() for part in raw.split(";")):
+                if not folder:
+                    continue
+                try:
+                    entries = sorted(Path(folder).iterdir())
+                except OSError as exc:
+                    log.debug("plot style folder %r not listable: %s", folder, exc)
+                    continue
+                for entry in entries:
+                    if entry.suffix.lower() in (".ctb", ".stb"):
+                        installed.setdefault(entry.name.lower(), entry.name)
+            catalog_lower = {row["name"].lower() for row in rows}
+            for row in rows:
+                row["installed"] = row["name"].lower() in installed
+            for key, name in installed.items():
+                if key not in catalog_lower:
+                    rows.append({"name": name, "source": "installed", "installed": True})
+            return rows
+
+        return await self._run(_sync)
 
     async def drawing_template_save(self, path, name=None, description=None) -> dict:
         # Completed in Task 20; declared here so the ABC instantiates.

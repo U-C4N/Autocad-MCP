@@ -72,6 +72,10 @@ class ToolAliases:
 #   PLINE -- a raw polyline (entity_create_polyline) or a P&ID line run
 #       between two ports (pid_line_draw), which is an LWPOLYLINE with a
 #       class, a number and markers; a drafter typing it could mean either.
+#   PAGESETUP -- the Page Setup Manager both shows and edits a sheet's setup
+#       (page_setup_list vs page_setup_apply).
+#   PLOT -- one sheet to PDF (drawing_export_pdf) or every sheet in one go
+#       (batch_plot); a drafter typing it could mean either.
 #
 # Every other AutoCAD command must map to exactly one tool.
 SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
@@ -83,7 +87,9 @@ SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
         "LAYER",
         "LAYOUT",
         "MEASUREGEOM",
+        "PAGESETUP",
         "PLINE",
+        "PLOT",
         "QSELECT",
         "SETVAR",
         "ZOOM",
@@ -1425,6 +1431,50 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "instrument tag letters",
             "decode the tag",
             "loop number",
+        ),
+    ),
+    # ── Page setup & templates (track E) ────────────────────────────────────
+    "batch_plot": ToolAliases(
+        acad=("PUBLISH", "PLOT"),
+        synonyms=(
+            "print all sheets to pdf",
+            "plot every layout",
+            "publish the sheet set",
+            "batch print",
+            "one pdf per sheet",
+            "plot the whole drawing set",
+        ),
+    ),
+    "page_setup_apply": ToolAliases(
+        acad=("PAGESETUP",),
+        synonyms=(
+            "page setup",
+            "set the paper size",
+            "a3 landscape",
+            "plot scale",
+            "monochrome ctb",
+            "which printer",
+            "set up the sheet for printing",
+        ),
+    ),
+    "page_setup_list": ToolAliases(
+        acad=("PAGESETUP",),
+        synonyms=(
+            "what paper is this sheet",
+            "page setup of each layout",
+            "plot settings",
+            "sheet size and orientation",
+            "which ctb is set",
+        ),
+    ),
+    "plot_style_list": ToolAliases(
+        acad=("STYLESMANAGER",),
+        synonyms=(
+            "ctb files",
+            "plot style table",
+            "pen assignments",
+            "monochrome or grayscale",
+            "which plot styles are installed",
         ),
     ),
 }

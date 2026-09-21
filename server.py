@@ -6816,6 +6816,165 @@ async def pid_tag_parse(
 
 
 # ---------------------------------------------------------------------------
+# ── SECTION 19: Page Setup & Templates (4 tools) ────────────────────────────
+# ---------------------------------------------------------------------------
+
+
+@cad_tool(
+    summary="Read each sheet's page setup: paper, orientation, ctb, scale, device.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "List Page Setups", "readOnlyHint": True},
+    tags={"layout", "plot", "query"},
+)
+async def page_setup_list(
+    layout: Annotated[
+        str | None, "One paper-space layout, or omit for every sheet (Model is never listed)."
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """The page setup stored on each paper-space layout.
+
+    `paper` is the catalogue name (ISO_A3, ANSI_B, …) when the stored size
+    matches one within 0.5 mm, otherwise the media name as stored; `size_mm`,
+    `orientation`, `plot_style` (ctb), `scale` ("fit", "1:50", or a custom
+    ratio), `plot_area`, `device`, `margins_mm` [top, bottom, left, right] and
+    `center` are read back from the LAYOUT object (headless) or the AutoCAD
+    Layout (live). Refuses an unknown layout name and `Model` (model space has
+    no sheet; plot it with `drawing_export_pdf(layout=None)`).
+    """
+    try:
+        rows = await _backend(ctx).page_setup_list(layout)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+    return {"ok": True, "layouts": rows, "count": len(rows)}
+
+
+@cad_tool(
+    summary="Set a sheet's paper, orientation, ctb, plot scale and device (PAGESETUP).",
+    cost="safe",
+)
+@mcp.tool(
+    annotations={"title": "Apply Page Setup", "destructiveHint": False},
+    tags={"layout", "plot"},
+)
+async def page_setup_apply(
+    layout: Annotated[str, "Paper-space layout to set up (never 'Model')."],
+    paper: Annotated[str, "ISO_A0…ISO_A4 or ANSI_A…ANSI_E (short forms A3, ansi_b accepted)."],
+    orientation: Annotated[str, "landscape | portrait"] = "landscape",
+    plot_style: Annotated[
+        str, "Plot style table, e.g. monochrome.ctb, acad.ctb, Grayscale.ctb (plot_style_list)."
+    ] = "monochrome.ctb",
+    scale: Annotated[
+        str, "fit | 1:1 | 1:2 | 1:5 | 1:10 | 1:20 | 1:50 | 1:100 | 2:1 | 5:1 | 10:1"
+    ] = "fit",
+    plot_area: Annotated[str, "layout | extents"] = "layout",
+    device: Annotated[str, "Plotter configuration (.pc3) or printer name."] = "DWG To PDF.pc3",
+    margins_mm: Annotated[
+        list[float] | None,
+        "[top, bottom, left, right] in mm. Headless only: AutoCAD takes margins from the .pc3.",
+    ] = None,
+    center: Annotated[bool, "Centre the plot on the paper."] = True,
+    ctx: Context = None,
+) -> dict:
+    """AutoCAD's PAGESETUP as one call, on both engines.
+
+    Paper sizes are ISO 216 / ANSI Y14.1; the media is written in AutoCAD's own
+    spelling (`ISO_A3_(420.00_x_297.00_MM)`). `changed` lists only the values
+    that moved — re-applying the same setup reports `{}`. An unknown ctb is
+    written and reported `plot_style_known: false` (a missing ctb only matters
+    at plot time). Viewports on the sheet are never touched.
+
+    Refused before anything is written: an unknown paper, orientation, scale
+    or plot_area, an empty device or plot_style, margins that leave no
+    printable area, `Model`, an unknown layout. On the live engine `margins_mm`
+    is refused (the .pc3 owns them) and a media the device does not offer is
+    refused with the device's names for the same paper.
+
+    The proof is the PDF: `batch_plot` reads each sheet's `/MediaBox` back.
+    """
+    from engineering.standards.papers import resolve_page_setup
+
+    try:
+        setup = resolve_page_setup(
+            paper, orientation, plot_style, scale, plot_area, device, margins_mm, center
+        )
+        await ctx.info(f"Applying page setup {setup['paper']} {orientation} to {layout}")
+        return await _backend(ctx).page_setup_apply(layout, setup)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@cad_tool(
+    summary="List the plot style tables (ctb): the AutoCAD catalogue, plus what is installed.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "List Plot Styles", "readOnlyHint": True},
+    tags={"layout", "plot", "query"},
+)
+async def plot_style_list(ctx: Context = None) -> dict:
+    """The ctb files AutoCAD ships (`monochrome.ctb`, `acad.ctb`, `Grayscale.ctb`,
+    the Screening set, …) and, on the live engine, the files actually present
+    in `Preferences.Files.PrintStyleSheetPath` (`source: "installed"`,
+    `installed: true/false` per row). Headlessly `installed` is `null`: there
+    is no installation to scan, and the catalogue is not evidence of one.
+    Never refuses; an unreadable Preferences object degrades to the catalogue.
+    """
+    backend = _backend(ctx)
+    rows = await backend.plot_style_list()
+    return {"ok": True, "styles": rows, "count": len(rows), "backend": backend.name}
+
+
+@cad_tool(
+    summary="Plot every sheet (or the named ones) to PDF; each sheet size is read back from its PDF.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Batch Plot", "destructiveHint": False},
+    tags={"layout", "plot", "export"},
+)
+async def batch_plot(
+    output_dir: Annotated[str, "Folder for the PDFs (created if missing)."],
+    layouts: Annotated[
+        list[str] | None,
+        "Layouts to plot; omit for every paper-space layout. 'Model' only when named.",
+    ] = None,
+    format: Annotated[str, "pdf (the only format this release plots)."] = "pdf",
+    file_pattern: Annotated[
+        str, "File name per sheet; {drawing} and {layout} are substituted."
+    ] = "{drawing}-{layout}.pdf",
+    ctx: Context = None,
+) -> dict:
+    """AutoCAD's PUBLISH for a PDF set, through `drawing_export_pdf(layout=…)`.
+
+    One row per sheet: `path`, `bytes`, and `mediabox_mm` **parsed from the
+    PDF that was written** (`/MediaBox`, points → mm), with `paper` naming the
+    catalogue size it matches within 0.5 mm — so the sheet size is verified,
+    never assumed. Model space is included only when named.
+
+    Refused before any file is written: a format other than pdf, an empty
+    `layouts` list, a layout that does not exist, a `file_pattern` containing a
+    path separator or lacking `{layout}` when more than one sheet is plotted,
+    and any output path outside the allowed directories. A sheet whose PDF has
+    no readable MediaBox is reported with `mediabox_mm: null` and an `error`.
+    """
+    from engineering.standards.plot import batch_plot as _batch_plot
+
+    if str(format).lower() != "pdf":
+        raise ToolError(
+            f"batch_plot: format must be 'pdf' (got {format!r}); PDF is the only plot format"
+        )
+    destination = validate_path(output_dir, allow_write=True)
+    await ctx.info(f"Batch plotting {layouts or 'every sheet'} to {destination}")
+    try:
+        return await _batch_plot(_backend(ctx), layouts, str(destination), file_pattern)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
 # ── RESOURCES ───────────────────────────────────────────────────────────────
 # ---------------------------------------------------------------------------
 
