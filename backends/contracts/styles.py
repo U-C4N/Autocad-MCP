@@ -14,8 +14,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from backends.capability import capability
-
 
 class StylesContract(ABC):
     @abstractmethod
@@ -115,29 +113,24 @@ class StylesContract(ABC):
     async def mleaderstyle_list(self) -> list[dict]:
         """``[{name, arrow_size, landing_gap, text_style, text_height, values_available}]``.
 
-        Headless the values are read from the MLEADERSTYLE object (schema
-        defaults for an unset field). ActiveX exposes no MLeaderStyle object,
-        so the live engine reads the *names* from the ``ACAD_MLEADERSTYLE``
-        dictionary and reports the four values ``None`` with
-        ``values_available: False``.
+        Both engines report the four values (``values_available: True``).
+        Headless they are read from the MLEADERSTYLE object (schema defaults
+        for an unset field); live from the ``AcadMLeaderStyle`` objects the
+        ``ACAD_MLEADERSTYLE`` dictionary holds (``ArrowSize`` / ``LandingGap``
+        / ``TextHeight`` in drawing units, ``TextStyle`` a name) — ActiveX
+        exposes no *collection* property for them, but the dictionary items
+        are full ``IAcadMLeaderStyle`` objects.
         """
         ...
 
-    # B027 (empty method, no @abstractmethod) is what this pattern looks like
-    # from the outside: the decorator replaces the `...` body with the refusing
-    # default, so the source really is empty on purpose.
-    @capability(  # noqa: B027
-        "mleaderstyle",
-        reason=(
-            "ActiveX exposes no MLeaderStyle collection; use leader_create_mleader's "
-            "per-leader parameters (arrow size, landing, text height) or the headless "
-            "backend (AUTOCAD_MCP_BACKEND=ezdxf)"
-        ),
-    )
+    @abstractmethod
     async def mleaderstyle_create(self, name: str, values: dict) -> dict:
         """Create a multileader style from a resolved ``values`` dict
         (``engineering.standards.mleaderstyles.resolve_mleaderstyle``).
-        ezdxf only. Returns ``{ok, name, values, textstyle_created}``; the
-        text style follows the ``dimstyle_create`` rule (exists or preset,
-        else refused by name); a clash is refused."""
+        Both engines: ezdxf on ``doc.mleader_styles``; live through
+        ``Dictionaries.Item("ACAD_MLEADERSTYLE").AddObject(name,
+        "AcDbMLeaderStyle")`` and the object's property writes. Returns
+        ``{ok, name, values, textstyle_created}``; the text style follows the
+        ``dimstyle_create`` rule (exists or preset, else refused by name); a
+        clash is refused — before anything is written."""
         ...

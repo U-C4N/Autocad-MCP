@@ -16,7 +16,6 @@ import ezdxf
 import pytest
 
 import config
-from backends.base import UnsupportedCapabilityError
 from backends.capability import is_capability_default
 from backends.ezdxf_backend import _current_dimstyle_name, _current_textstyle_name
 from engineering.standards.dimstyles import PRESET_VARIABLES, resolve_dimstyle
@@ -162,13 +161,31 @@ async def test_builtin_arrowheads_render_save_and_report_one_spelling(backend, t
     )
     again = await backend.dimstyle_modify("ISO-25", {"DIMBLK": "OBLIQUE", "DIMBLK1": "_dot"})
     assert again["changed"] == {}, "re-setting a value to itself is not a change (spec §8.3)"
+    # The style is current, so Restore loaded it into the $DIM* header. The
+    # header is DXF-facing: a built-in is spelled with its underscore there
+    # (what a live seat stores and what COM's system_get_variable returns),
+    # never ezdxf's writer spelling the DIMSTYLE entry holds.
+    header = backend._doc.header
+    assert (header["$DIMBLK"], header["$DIMBLK1"], header["$DIMBLK2"]) == ("_OBLIQUE", "_DOT", "")
+    assert await backend.system_get_variable("DIMBLK") == "_OBLIQUE", "the same answer as COM"
     path = str(tmp_path / "arrows.dxf")
     await backend.drawing_save_as(path)
+    saved = ezdxf.readfile(path)
+    assert saved.header["$DIMBLK"] == "_OBLIQUE" and saved.header["$DIMBLK1"] == "_DOT", (
+        "the file names the block it actually holds, not a block that does not exist"
+    )
+    assert "_OBLIQUE" in saved.blocks and "_DOT" in saved.blocks
     await backend.drawing_open(path)
     rows = {r["name"]: r for r in await backend.dimstyle_list()}
     assert rows["ISO-25"]["values"]["DIMBLK"] == "_OBLIQUE", "reloaded, the same spelling"
+    assert await backend.system_get_variable("DIMBLK") == "_OBLIQUE"
     reopened = await backend.dimstyle_modify("ISO-25", {"DIMBLK": "oblique"})
     assert reopened["changed"] == {}
+    await backend.dimstyle_set_current("Standard")
+    header = backend._doc.header  # drawing_open replaced the document
+    assert (header["$DIMBLK"], header["$DIMBLK1"], header["$DIMBLK2"]) == ("", "", ""), (
+        "closed filled is the empty string in the header, as in a fresh drawing"
+    )
 
 
 async def test_user_arrowhead_block_must_exist_before_anything_is_written(backend):
@@ -434,12 +451,20 @@ async def test_mleaderstyle_refusals_write_nothing(backend):
     assert not backend._doc.mleader_styles.has_entry("X")
 
 
-async def test_both_capability_maps_declare_mleaderstyle(backend):
+async def test_mleaderstyle_is_not_a_capability_boundary_on_either_engine(backend):
+    """The v1.6 plan declared `mleaderstyle` COM-unsupported ("ActiveX exposes
+    no MLeaderStyle collection"). The type library says otherwise: the
+    ACAD_MLEADERSTYLE dictionary items are IAcadMLeaderStyle objects and
+    AddObject(name, "AcDbMLeaderStyle") creates one. A refusal resting on a
+    false premise is exactly what CLAUDE.md forbids `@capability` for, so
+    neither map declares the key and neither engine inherits a default."""
     from backends.com_backend import ComBackend
 
-    assert backend.capabilities().to_dict()["features"]["mleaderstyle"]["supported"] is True
-    com = ComBackend().capabilities().to_dict()["features"]["mleaderstyle"]
-    assert com["supported"] is False and "leader_create_mleader" in com["reason"]
+    assert "mleaderstyle" not in backend.capabilities().to_dict()["features"]
+    assert "mleaderstyle" not in ComBackend().capabilities().to_dict()["features"]
+    for engine in (type(backend), ComBackend):
+        assert not is_capability_default(engine, "mleaderstyle_create")
+        assert not is_capability_default(engine, "mleaderstyle_list")
 
 
 # ── live engine, against a fake ActiveX surface ──────────────────────────────
@@ -506,9 +531,32 @@ class _FakeLayouts:
         return self.layouts[index]
 
 
+class _FakeMLeaderStyle:
+    """An AcadMLeaderStyle: the properties acax25enu.tlb's IAcadMLeaderStyle
+    exposes that the backend reads or writes (doubles in drawing units, the
+    text style by name), with AutoCAD's defaults for a fresh style."""
+
+    PROPERTIES = ("ArrowSize", "LandingGap", "TextHeight", "TextStyle")
+
+    def __init__(self, name, calls):
+        self.Name = name
+        self.ObjectName = "AcDbMLeaderStyle"
+        self.ArrowSize, self.LandingGap, self.TextHeight, self.TextStyle = 4.0, 2.0, 4.0, "Standard"
+        self._calls = calls  # last: property writes are recorded from here on
+
+    def __setattr__(self, key, value):
+        if key in self.PROPERTIES and "_calls" in vars(self):
+            self._calls.append(("MLeaderStyle." + key, self.Name, value))
+        super().__setattr__(key, value)
+
+
 class _FakeDictionary:
-    def __init__(self, *names):
-        self.objects = [types.SimpleNamespace(mleader_name=name) for name in names]
+    """The ACAD_MLEADERSTYLE dictionary: Count/Item/GetName over its objects
+    and AddObject(keyword, class_name), the documented VBA route."""
+
+    def __init__(self, calls, *names):
+        self._calls = calls
+        self.objects = [_FakeMLeaderStyle(name, calls) for name in names]
 
     @property
     def Count(self):
@@ -518,7 +566,15 @@ class _FakeDictionary:
         return self.objects[index]
 
     def GetName(self, obj):
-        return obj.mleader_name
+        return obj.Name
+
+    def AddObject(self, keyword, class_name):
+        self._calls.append(("Dictionary.AddObject", keyword, class_name))
+        if class_name != "AcDbMLeaderStyle":
+            raise RuntimeError(f"cannot create {class_name} here")
+        style = _FakeMLeaderStyle(keyword, self._calls)
+        self.objects.append(style)
+        return style
 
 
 class _FakeDictionaries:
@@ -570,7 +626,7 @@ class _FakeDocument:
         )
         self.Layouts = _FakeLayouts(_FakeBlock(dim, line), _FakeBlock(sheet_dim))
         self.Dictionaries = _FakeDictionaries(
-            {"ACAD_MLEADERSTYLE": _FakeDictionary("Standard", "Annotative")}
+            {"ACAD_MLEADERSTYLE": _FakeDictionary(self.calls, "Standard", "Annotative")}
         )
 
     def GetVariable(self, name):
@@ -751,36 +807,74 @@ async def test_com_textstyle_create_sets_font_width_oblique_height(com_backend):
     assert back == {"ok": True, "current": "Standard", "previous": "ISOCP", "changed": True}
 
 
-async def test_com_mleaderstyle_list_reads_the_dictionary_names_only(com_backend):
+async def test_com_mleaderstyle_list_reads_the_values_off_the_dictionary_objects(com_backend):
     backend, document = com_backend
+    dictionary = document.Dictionaries.Item("ACAD_MLEADERSTYLE")
+    dictionary.objects[1].ArrowSize = 3.0
+    dictionary.objects[1].TextStyle = "ISOCP"
+    document.calls.clear()  # fixture setup, not backend calls
     rows = await backend.mleaderstyle_list()
     assert rows == [
         {
             "name": "Annotative",
-            "arrow_size": None,
-            "landing_gap": None,
-            "text_style": None,
-            "text_height": None,
-            "values_available": False,
+            "arrow_size": 3.0,
+            "landing_gap": 2.0,
+            "text_style": "ISOCP",
+            "text_height": 4.0,
+            "values_available": True,
         },
         {
             "name": "Standard",
-            "arrow_size": None,
-            "landing_gap": None,
-            "text_style": None,
-            "text_height": None,
-            "values_available": False,
+            "arrow_size": 4.0,
+            "landing_gap": 2.0,
+            "text_style": "Standard",
+            "text_height": 4.0,
+            "values_available": True,
         },
     ]
+    assert document.calls == [], "a list reads; it writes nothing"
 
 
-async def test_com_mleaderstyle_create_refuses_with_the_capability_key(com_backend):
-    from backends.com_backend import ComBackend
-
+async def test_com_mleaderstyle_create_adds_the_object_then_writes_its_properties(com_backend):
     backend, document = com_backend
-    assert is_capability_default(ComBackend, "mleaderstyle_create")
-    with pytest.raises(UnsupportedCapabilityError) as excinfo:
-        await backend.mleaderstyle_create("ISO", resolve_mleaderstyle("iso", None))
-    assert excinfo.value.capability == "mleaderstyle"
-    assert "leader_create_mleader" in str(excinfo.value)
-    assert document.calls == []
+    result = await backend.mleaderstyle_create("ISO", resolve_mleaderstyle("iso", None))
+    assert result == {
+        "ok": True,
+        "name": "ISO",
+        "values": {
+            "arrow_size": 2.5,
+            "landing_gap": 1.0,
+            "text_style": "ISOCP",
+            "text_height": 2.5,
+        },
+        "textstyle_created": True,
+    }
+    names = [call[0] for call in document.calls]
+    assert names.index("TextStyles.Add") < names.index("Dictionary.AddObject"), (
+        "the text style exists before TextStyle names it"
+    )
+    assert ("Dictionary.AddObject", "ISO", "AcDbMLeaderStyle") in document.calls
+    writes = [call for call in document.calls if call[0].startswith("MLeaderStyle.")]
+    assert writes == [
+        ("MLeaderStyle.ArrowSize", "ISO", 2.5),
+        ("MLeaderStyle.LandingGap", "ISO", 1.0),
+        ("MLeaderStyle.TextHeight", "ISO", 2.5),
+        ("MLeaderStyle.TextStyle", "ISO", "ISOCP"),
+    ]
+    rows = {row["name"]: row for row in await backend.mleaderstyle_list()}
+    assert rows["ISO"] == {**result["values"], "name": "ISO", "values_available": True}
+
+
+async def test_com_mleaderstyle_refusals_write_nothing(com_backend):
+    backend, document = com_backend
+    dictionary = document.Dictionaries.Item("ACAD_MLEADERSTYLE")
+    with pytest.raises(ValueError, match="already exists"):
+        await backend.mleaderstyle_create("standard", resolve_mleaderstyle("iso", None))
+    with pytest.raises(ValueError, match="text_style"):
+        await backend.mleaderstyle_create("X", resolve_mleaderstyle("iso", {"text_style": "NOPE"}))
+    with pytest.raises(ValueError, match="missing"):
+        await backend.mleaderstyle_create("X", {"arrow_size": 2.5})
+    with pytest.raises(ValueError, match="arrow_size"):
+        await backend.mleaderstyle_create("X", {**resolve_mleaderstyle("iso"), "arrow_size": 0})
+    assert document.calls == [], "nothing reached ActiveX"
+    assert [obj.Name for obj in dictionary.objects] == ["Standard", "Annotative"]

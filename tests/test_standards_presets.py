@@ -30,6 +30,7 @@ from engineering.standards.mleaderstyles import (
     MLEADER_KEYS,
     MLEADER_PRESETS,
     resolve_mleaderstyle,
+    validate_mleaderstyle,
 )
 from engineering.standards.textstyles import TEXT_PRESETS, resolve_font, validate_textstyle
 
@@ -564,3 +565,28 @@ def test_resolve_mleaderstyle_applies_overrides():
 def test_resolve_mleaderstyle_refuses_by_name(preset, overrides, exc, fragment):
     with pytest.raises(exc, match=fragment):
         resolve_mleaderstyle(preset, overrides)
+
+
+def test_validate_mleaderstyle_types_the_four_keys_and_refuses_by_name():
+    """What both engines' ``mleaderstyle_create`` run before any write: a
+    hand-built dict is held to the same rules as a preset override."""
+    assert validate_mleaderstyle(resolve_mleaderstyle("iso")) == MLEADER_PRESETS["iso"]
+    typed = validate_mleaderstyle(
+        {"arrow_size": 3, "landing_gap": 0, "text_style": " arial ", "text_height": 2, "extra": 1}
+    )
+    assert typed == {
+        "arrow_size": 3.0,
+        "landing_gap": 0.0,
+        "text_style": "arial",
+        "text_height": 2.0,
+    }
+    with pytest.raises(ValueError, match=r"missing \['landing_gap', 'text_style', 'text_height'\]"):
+        validate_mleaderstyle({"arrow_size": 2.5})
+    with pytest.raises(ValueError, match="arrow_size"):
+        validate_mleaderstyle({**MLEADER_PRESETS["iso"], "arrow_size": 0})
+    with pytest.raises(ValueError, match="text_style"):
+        validate_mleaderstyle({**MLEADER_PRESETS["iso"], "text_style": "a|b"})
+    with pytest.raises(TypeError, match="text_height"):
+        validate_mleaderstyle({**MLEADER_PRESETS["iso"], "text_height": "2.5"})
+    with pytest.raises(TypeError, match="values"):
+        validate_mleaderstyle(["arrow_size"])

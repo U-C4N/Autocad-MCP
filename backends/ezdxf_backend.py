@@ -830,8 +830,18 @@ def _sync_header_to_dimstyle(doc, style) -> None:
     `Standard` reproduces the header `drawing_new` made. `DIMTXSTY` has no
     schema default; AutoCAD reads ``Standard`` for it, as `_dimstyle_value`
     reports.
+
+    The arrowheads cross a vocabulary boundary here. The DIMSTYLE entry holds
+    ezdxf's writer spelling (``OBLIQUE``, see `_write_dimstyle_values`); the
+    ``$DIMBLK`` / ``$DIMBLK1`` / ``$DIMBLK2`` header variables are DXF-facing
+    and spell a built-in with its underscore (``_OBLIQUE``, what a live seat
+    stores and what `system_get_variable("DIMBLK")` returns on COM). Copied
+    raw, the saved file carried ``$DIMBLK "OBLIQUE"`` next to blocks named
+    ``_OBLIQUE`` — a current-override naming a block that does not exist —
+    and the two engines answered the same read two ways. `reported_arrowhead`
+    is the same read-side rule `_dimstyle_value` applies.
     """
-    from engineering.standards.dimstyles import DIM_VARIABLE_WHITELIST
+    from engineering.standards.dimstyles import DIM_VARIABLE_WHITELIST, reported_arrowhead
 
     for var in sorted(DIM_VARIABLE_WHITELIST):
         attr = var.lower()
@@ -840,6 +850,8 @@ def _sync_header_to_dimstyle(doc, style) -> None:
             value = _dimstyle_schema_default(var)
         if value is None and var == "DIMTXSTY":
             value = "Standard"
+        if var in _ARROWHEAD_VARS:
+            value = reported_arrowhead(value)
         key = f"${var}"
         if value is None:
             try:
@@ -1342,7 +1354,6 @@ class EzdxfBackend(AutoCADBackend):
                     False, reason="acis_generation_requires_live_autocad"
                 ),
                 "lisp": FeatureCapability(False, reason="live_com_only"),
-                "mleaderstyle": FeatureCapability(True, "native"),
             },
         )
 
@@ -6079,38 +6090,29 @@ class EzdxfBackend(AutoCADBackend):
         return await self._async(_sync)
 
     async def mleaderstyle_create(self, name: str, values: dict) -> dict:
-        from engineering.standards.mleaderstyles import MLEADER_KEYS
+        from engineering.standards.mleaderstyles import validate_mleaderstyle
         from security import sanitize_symbol_name
 
         clean = sanitize_symbol_name(name, kind="mleaderstyle")
-        missing = [key for key in MLEADER_KEYS if key not in values]
-        if missing:
-            raise ValueError(
-                f"mleaderstyle_create: values is missing {missing}; resolve a preset first"
-            )
+        typed = validate_mleaderstyle(values)
 
         def _sync():
             doc = self._require_doc()
             if doc.mleader_styles.has_entry(clean):
                 raise ValueError(f"mleaderstyle_create: leader style {clean!r} already exists")
             text_style_name, textstyle_created = _ensure_textstyle(
-                doc, str(values["text_style"]), refusal_key="text_style"
+                doc, typed["text_style"], refusal_key="text_style"
             )
             style = doc.mleader_styles.new(clean)
-            style.dxf.arrow_head_size = float(values["arrow_size"])
-            style.dxf.landing_gap_size = float(values["landing_gap"])
-            style.dxf.char_height = float(values["text_height"])
+            style.dxf.arrow_head_size = typed["arrow_size"]
+            style.dxf.landing_gap_size = typed["landing_gap"]
+            style.dxf.char_height = typed["text_height"]
             style.dxf.text_style_handle = doc.styles.get(text_style_name).dxf.handle
             self._mark_dirty()
             return {
                 "ok": True,
                 "name": clean,
-                "values": {
-                    "arrow_size": float(values["arrow_size"]),
-                    "landing_gap": float(values["landing_gap"]),
-                    "text_style": text_style_name,
-                    "text_height": float(values["text_height"]),
-                },
+                "values": {**typed, "text_style": text_style_name},
                 "textstyle_created": textstyle_created,
             }
 

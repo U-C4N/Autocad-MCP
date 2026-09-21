@@ -2,8 +2,10 @@
 
 Sized to match the dimension presets they sit beside (ISO-25: 2.5 mm arrows
 and lettering; ANSI: 3 mm), so a leader note and a dimension on the same
-sheet read at one size. Only ezdxf can author an MLEADERSTYLE object;
-ActiveX exposes no collection for it (see ``backends/contracts/styles.py``).
+sheet read at one size. Both engines author the style: ezdxf on
+``doc.mleader_styles``, ActiveX through the ``ACAD_MLEADERSTYLE`` dictionary's
+``AddObject(name, "AcDbMLeaderStyle")`` and the ``IAcadMLeaderStyle``
+properties (see ``backends/contracts/styles.py``).
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from typing import Any
 
 from engineering.standards.names import check_name
 
-__all__ = ["MLEADER_KEYS", "MLEADER_PRESETS", "resolve_mleaderstyle"]
+__all__ = ["MLEADER_KEYS", "MLEADER_PRESETS", "resolve_mleaderstyle", "validate_mleaderstyle"]
 
 MLEADER_PRESETS: dict[str, dict[str, Any]] = {
     "iso": {"arrow_size": 2.5, "landing_gap": 1.0, "text_style": "ISOCP", "text_height": 2.5},
@@ -57,3 +59,27 @@ def resolve_mleaderstyle(preset: str, overrides: dict | None = None) -> dict[str
         else:
             values[name] = _positive(name, value)
     return values
+
+
+def validate_mleaderstyle(values: Any) -> dict[str, Any]:
+    """The four ``MLEADER_KEYS`` of ``values``, typed, or a refusal naming the key.
+
+    What both engines' ``mleaderstyle_create`` run before touching a table:
+    a missing key is ``ValueError`` (``resolve a preset first``), and each
+    value is checked exactly as :func:`resolve_mleaderstyle` checks an
+    override — so a hand-built dict is held to the preset's rules too.
+    Unknown keys are ignored: the row shape is the contract, not the input.
+    """
+    if not isinstance(values, dict):
+        raise TypeError(f"values: expected a mapping, got {type(values).__name__}")
+    missing = [key for key in MLEADER_KEYS if key not in values]
+    if missing:
+        raise ValueError(
+            f"mleaderstyle_create: values is missing {missing}; resolve a preset first"
+        )
+    return {
+        "arrow_size": _positive("arrow_size", values["arrow_size"]),
+        "landing_gap": _positive("landing_gap", values["landing_gap"], allow_zero=True),
+        "text_style": check_name("text_style", values["text_style"], what="text style name"),
+        "text_height": _positive("text_height", values["text_height"]),
+    }

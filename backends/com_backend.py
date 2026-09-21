@@ -341,6 +341,39 @@ def _com_font_on_support_path(font_file: str) -> bool:
     return any((Path(folder) / font_file).is_file() for folder in support.split(";") if folder)
 
 
+_MLEADERSTYLE_DICTIONARY = "ACAD_MLEADERSTYLE"
+_MLEADERSTYLE_CLASS = "AcDbMLeaderStyle"
+
+
+def _com_mleaderstyle_dictionary(doc, *, create: bool = False):
+    """The ``ACAD_MLEADERSTYLE`` dictionary, or None when the drawing has none.
+
+    ActiveX exposes no ``MLeaderStyles`` *collection*, but the dictionary's
+    items are full ``IAcadMLeaderStyle`` objects (acax25enu.tlb: ``Name``,
+    ``ArrowSize``, ``LandingGap``, ``TextHeight``, ``TextStyle``, ...), and
+    ``IAcadDictionary.AddObject(keyword, "AcDbMLeaderStyle")`` — the
+    documented VBA route — creates one. Every drawing AutoCAD makes carries
+    the dictionary; ``create`` adds it to a foreign file that does not. The
+    route is verified against the AutoCAD 2026 type library and fake-tested;
+    its live execution is scripts/smoke_settings_com.py's job.
+    """
+    try:
+        return doc.Dictionaries.Item(_MLEADERSTYLE_DICTIONARY)
+    except Exception:
+        if not create:
+            return None
+    return doc.Dictionaries.Add(_MLEADERSTYLE_DICTIONARY)
+
+
+def _com_mleaderstyle_rows(dictionary) -> list[tuple[str, Any]]:
+    """``(name, AcadMLeaderStyle)`` for every item, named by the dictionary key."""
+    rows = []
+    for index in range(dictionary.Count):
+        style = dictionary.Item(index)
+        rows.append((str(dictionary.GetName(style)), style))
+    return rows
+
+
 def _ensure_com_textstyle(doc, name: str, *, refusal_key: str) -> tuple[str, bool]:
     """``(name as AutoCAD spells it, created)``; a preset is created, anything else missing is refused."""
     from engineering.standards.textstyles import TEXT_PRESETS
@@ -923,13 +956,6 @@ class ComBackend(AutoCADBackend):
                 "viewport_render": FeatureCapability(True, "native"),
                 "solid_3d": _solid_3d_capability(),
                 "lisp": FeatureCapability(True, "sanitized"),
-                "mleaderstyle": FeatureCapability(
-                    False,
-                    reason=(
-                        "no_activex_mleaderstyle_collection;"
-                        "use_leader_create_mleader_per_leader_parameters"
-                    ),
-                ),
             },
         )
 
@@ -4420,25 +4446,57 @@ class ComBackend(AutoCADBackend):
     async def mleaderstyle_list(self) -> list[dict]:
         def _sync():
             doc = _acad_doc()
-            try:
-                dictionary = doc.Dictionaries.Item("ACAD_MLEADERSTYLE")
-            except Exception:
+            dictionary = _com_mleaderstyle_dictionary(doc)
+            if dictionary is None:
                 return []
             rows = []
-            for index in range(dictionary.Count):
+            for name, style in _com_mleaderstyle_rows(dictionary):
                 rows.append(
                     {
-                        "name": str(dictionary.GetName(dictionary.Item(index))),
-                        # ActiveX exposes no MLeaderStyle object: names only.
-                        "arrow_size": None,
-                        "landing_gap": None,
-                        "text_style": None,
-                        "text_height": None,
-                        "values_available": False,
+                        "name": name,
+                        "arrow_size": float(style.ArrowSize),
+                        "landing_gap": float(style.LandingGap),
+                        "text_style": str(style.TextStyle),
+                        "text_height": float(style.TextHeight),
+                        "values_available": True,
                     }
                 )
             rows.sort(key=lambda row: row["name"].lower())
             return rows
+
+        return await self._run(_sync)
+
+    async def mleaderstyle_create(self, name: str, values: dict) -> dict:
+        from engineering.standards.mleaderstyles import validate_mleaderstyle
+
+        clean = sanitize_symbol_name(name, kind="mleaderstyle")
+        typed = validate_mleaderstyle(values)
+
+        def _sync():
+            doc = _acad_doc()
+            dictionary = _com_mleaderstyle_dictionary(doc, create=True)
+            wanted = clean.lower()
+            if any(
+                existing.lower() == wanted for existing, _ in _com_mleaderstyle_rows(dictionary)
+            ):
+                raise ValueError(f"mleaderstyle_create: leader style {clean!r} already exists")
+            # The text style must exist before TextStyle can name it — and a
+            # name that is neither present nor a preset is refused here,
+            # before AddObject, so a refusal leaves no half-made style behind.
+            text_style_name, textstyle_created = _ensure_com_textstyle(
+                doc, typed["text_style"], refusal_key="text_style"
+            )
+            style = dictionary.AddObject(clean, _MLEADERSTYLE_CLASS)
+            style.ArrowSize = typed["arrow_size"]
+            style.LandingGap = typed["landing_gap"]
+            style.TextHeight = typed["text_height"]
+            style.TextStyle = text_style_name
+            return {
+                "ok": True,
+                "name": clean,
+                "values": {**typed, "text_style": text_style_name},
+                "textstyle_created": textstyle_created,
+            }
 
         return await self._run(_sync)
 

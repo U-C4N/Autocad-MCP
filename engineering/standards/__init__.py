@@ -23,7 +23,11 @@ from engineering.standards.dimstyles import (
     resolve_dimstyle,
     validate_overrides,
 )
-from engineering.standards.mleaderstyles import MLEADER_PRESETS, resolve_mleaderstyle
+from engineering.standards.mleaderstyles import (
+    MLEADER_PRESETS,
+    resolve_mleaderstyle,
+    validate_mleaderstyle,
+)
 from engineering.standards.textstyles import TEXT_PRESETS, resolve_font, validate_textstyle
 
 __all__ = [
@@ -42,6 +46,7 @@ __all__ = [
     "resolve_dimstyle",
     "resolve_font",
     "resolve_mleaderstyle",
+    "validate_mleaderstyle",
     "validate_overrides",
     "validate_textstyle",
 ]
