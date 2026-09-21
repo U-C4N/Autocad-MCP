@@ -137,6 +137,30 @@ async def test_line_list_rows(backend):
     assert hand_drawn["to_tag"] is None and hand_drawn["number_source"] is None
 
 
+async def test_line_list_keeps_a_signal_line_unnumbered_beside_a_labelled_pipe(backend):
+    """The line list prints what the reader publishes, and the reader must not
+    hand a 12 mm-parallel signal run the header's label (its own XDATA says
+    ``number: null``)."""
+    proc = await draw_line(
+        backend, {"x": 20, "y": 100}, {"x": 200, "y": 100}, size="100", service="P"
+    )
+    ft = await place_symbol(
+        backend, "instrument", 40, 112, tag="FT-1", type="dcs", location="primary"
+    )
+    fic = await place_symbol(
+        backend, "instrument", 180, 112, tag="FIC-1", type="dcs", location="primary"
+    )
+    sig = await draw_line(backend, {"handle": ft["handle"]}, {"handle": fic["handle"]}, "electric")
+    rows = {r["handle"]: r for r in line_list(await build_graph(backend))}
+    assert (rows[proc["handle"]]["line_number"], rows[proc["handle"]]["number_source"]) == (
+        "100-P-1",
+        "xdata",
+    )
+    signal = rows[sig["handle"]]
+    assert (signal["line_number"], signal["number_source"]) == (None, None)
+    assert (signal["from_tag"], signal["to_tag"]) == ("FT-1", "FIC-1")
+
+
 async def test_equipment_list_rows(backend):
     graph = await _pid(backend)
     rows = equipment_list(graph)

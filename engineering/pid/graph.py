@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from .lines import LAYER_TO_CLASS, PID_LINE_LAYERS
+from .lines import LAYER_TO_CLASS, LINE_CLASSES, PID_LINE_LAYERS
 from .symbols import Port, transform_port
 from .tags import parse_tag
 from .xdata import read_payload
@@ -53,6 +53,15 @@ FAMILY_KIND = {"instrument": "instrument", "valve": "valve", "connector": "conne
 LINE_NUMBER_RE = re.compile(r'^\d+(?:"|MM)?-[A-Z]{1,4}-\d+', re.IGNORECASE)
 CONFIDENCE = {"catalog": 1.0, "xdata": 0.95, "heuristic": 0.6, "inferred": 0.3}
 _PAGE = 1000
+
+
+def _is_signal_class(line_class: str | None) -> bool:
+    """True for a class that is a signal in the ISA-5.1 sense (`signal_unknown`
+    is the layer-classified one that LINE_CLASSES does not list)."""
+    if line_class == "signal_unknown":
+        return True
+    cls = LINE_CLASSES.get(line_class) if line_class else None
+    return bool(cls and cls.kind == "signal")
 
 
 @dataclass
@@ -684,7 +693,15 @@ async def build_graph(
             if found:
                 node.tag, node.tag_source = found, "text"
     for edge in edges.values():
-        if edge.line_number:
+        if edge.line_number or edge.payload or _is_signal_class(edge.line_class):
+            # The label search is a fallback for a line that carries no
+            # record of its own. An engine-authored line (payload) is that
+            # record — its `number: null` is the answer, not an invitation to
+            # adopt the nearest pipe's label. A signal line never has a pipe
+            # line number (ISA-5.1), and LINE_NUMBER_RE is the pipe grammar,
+            # so any match near it belongs to a neighbouring pipe: the
+            # ordinary transmitter-to-controller run 12 mm above a header
+            # would otherwise be listed under the header's number.
             continue
         a, b = max(zip(edge.vertices, edge.vertices[1:], strict=False), key=lambda s: math.dist(*s))
         found = _text_near(
