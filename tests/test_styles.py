@@ -550,12 +550,64 @@ class _FakeMLeaderStyle:
         super().__setattr__(key, value)
 
 
+class _NarrowedToIAcadObject:
+    """What pywin32 hands back for ``Dictionaries.Item``, ``Dictionary.Item``
+    and ``Dictionary.AddObject`` once a makepy cache for the AutoCAD type
+    library exists: acax25enu.tlb declares all three as returning
+    ``IAcadObject*``, so the result is the gen_py ``IAcadObject`` class, which
+    exposes only IAcadObject members and raises AttributeError for everything
+    the runtime class (``IAcadDictionary``, ``IAcadMLeaderStyle``) adds — on a
+    read *and* on a property write. The full object is reachable only through
+    ``_oleobj_``, which is how the backend must un-narrow it (this is exactly
+    what happened live on AutoCAD 2026 before the fix)."""
+
+    IACADOBJECT_MEMBERS = frozenset(
+        {
+            "Application",
+            "Database",
+            "Document",
+            "Handle",
+            "HasExtensionDictionary",
+            "ObjectID",
+            "ObjectName",
+            "OwnerID",
+            "Delete",
+            "Erase",
+            "GetExtensionDictionary",
+            "GetXData",
+            "SetXData",
+        }
+    )
+
+    def __init__(self, raw):
+        object.__setattr__(self, "_oleobj_", raw)
+
+    def __getattr__(self, key):
+        if key in self.IACADOBJECT_MEMBERS:
+            return getattr(self._oleobj_, key)
+        raise AttributeError(
+            "'<win32com.gen_py.AutoCAD 2025 Type Library.IAcadObject instance>' "
+            f"object has no attribute {key!r}"
+        )
+
+    def __setattr__(self, key, value):
+        # gen_py's DispatchBaseClass.__setattr__ consults _prop_map_put_, and
+        # IAcadObject's is empty: every property write raises.
+        raise AttributeError(
+            "'<win32com.gen_py.AutoCAD 2025 Type Library.IAcadObject instance>' "
+            f"object has no attribute {key!r}"
+        )
+
+
 class _FakeDictionary:
     """The ACAD_MLEADERSTYLE dictionary: Count/Item/GetName over its objects
-    and AddObject(keyword, class_name), the documented VBA route."""
+    and AddObject(keyword, class_name), the documented VBA route. Item and
+    AddObject hand their result over narrowed to IAcadObject, as pywin32
+    does."""
 
     def __init__(self, calls, *names):
         self._calls = calls
+        self.ObjectName = "AcDbDictionary"
         self.objects = [_FakeMLeaderStyle(name, calls) for name in names]
 
     @property
@@ -563,10 +615,14 @@ class _FakeDictionary:
         return len(self.objects)
 
     def Item(self, index):
-        return self.objects[index]
+        return _NarrowedToIAcadObject(self.objects[index])
 
     def GetName(self, obj):
-        return obj.Name
+        # ActiveX takes the object itself; a narrowed wrapper resolves to the
+        # same object, so both spellings name it.
+        raw = getattr(obj, "_oleobj_", obj)
+        assert raw in self.objects, "GetName: object is not in this dictionary"
+        return raw.Name
 
     def AddObject(self, keyword, class_name):
         self._calls.append(("Dictionary.AddObject", keyword, class_name))
@@ -574,16 +630,27 @@ class _FakeDictionary:
             raise RuntimeError(f"cannot create {class_name} here")
         style = _FakeMLeaderStyle(keyword, self._calls)
         self.objects.append(style)
-        return style
+        return _NarrowedToIAcadObject(style)
 
 
 class _FakeDictionaries:
-    def __init__(self, entries):
+    """``doc.Dictionaries``: Item is declared IAcadObject* (narrowed); Add is
+    declared IAcadDictionary* and comes back with its full surface."""
+
+    def __init__(self, calls, entries):
+        self._calls = calls
         self.entries = entries
 
     def Item(self, name):
         if name not in self.entries:
             raise RuntimeError(f"no dictionary {name}")
+        return _NarrowedToIAcadObject(self.entries[name])
+
+    def Add(self, name):
+        self._calls.append(("Dictionaries.Add", name))
+        if name in self.entries:
+            raise RuntimeError(f"dictionary {name} already exists")
+        self.entries[name] = _FakeDictionary(self._calls)
         return self.entries[name]
 
 
@@ -626,8 +693,15 @@ class _FakeDocument:
         )
         self.Layouts = _FakeLayouts(_FakeBlock(dim, line), _FakeBlock(sheet_dim))
         self.Dictionaries = _FakeDictionaries(
-            {"ACAD_MLEADERSTYLE": _FakeDictionary(self.calls, "Standard", "Annotative")}
+            self.calls,
+            {"ACAD_MLEADERSTYLE": _FakeDictionary(self.calls, "Standard", "Annotative")},
         )
+
+    @property
+    def mleader_dictionary(self) -> _FakeDictionary:
+        """The raw ACAD_MLEADERSTYLE dictionary, for test setup and assertions
+        (the backend only ever sees it narrowed through ``Dictionaries.Item``)."""
+        return self.Dictionaries.entries["ACAD_MLEADERSTYLE"]
 
     def GetVariable(self, name):
         return self.variables[name]
@@ -809,7 +883,7 @@ async def test_com_textstyle_create_sets_font_width_oblique_height(com_backend):
 
 async def test_com_mleaderstyle_list_reads_the_values_off_the_dictionary_objects(com_backend):
     backend, document = com_backend
-    dictionary = document.Dictionaries.Item("ACAD_MLEADERSTYLE")
+    dictionary = document.mleader_dictionary
     dictionary.objects[1].ArrowSize = 3.0
     dictionary.objects[1].TextStyle = "ISOCP"
     document.calls.clear()  # fixture setup, not backend calls
@@ -867,7 +941,7 @@ async def test_com_mleaderstyle_create_adds_the_object_then_writes_its_propertie
 
 async def test_com_mleaderstyle_refusals_write_nothing(com_backend):
     backend, document = com_backend
-    dictionary = document.Dictionaries.Item("ACAD_MLEADERSTYLE")
+    dictionary = document.mleader_dictionary
     with pytest.raises(ValueError, match="already exists"):
         await backend.mleaderstyle_create("standard", resolve_mleaderstyle("iso", None))
     with pytest.raises(ValueError, match="text_style"):
@@ -878,3 +952,58 @@ async def test_com_mleaderstyle_refusals_write_nothing(com_backend):
         await backend.mleaderstyle_create("X", {**resolve_mleaderstyle("iso"), "arrow_size": 0})
     assert document.calls == [], "nothing reached ActiveX"
     assert [obj.Name for obj in dictionary.objects] == ["Standard", "Annotative"]
+
+
+async def test_com_dictionary_route_is_narrowed_to_iacadobject_until_unwrapped(com_backend):
+    """The failure mode as it happened live (AutoCAD 2026, pywin32 with a
+    makepy cache): every object the dictionary route returns is wrapped as
+    the DECLARED type, IAcadObject, so Count / Item / GetName on the
+    dictionary and ArrowSize on a style raise AttributeError. The fake
+    models that narrowing, and `_com_unnarrow` is the one door through it —
+    a raw non-COM `_oleobj_` is handed back as-is, an object without one is
+    returned unchanged."""
+    from backends.com_backend import _com_unnarrow
+
+    backend, document = com_backend
+    narrowed = document.Dictionaries.Item("ACAD_MLEADERSTYLE")
+    assert narrowed.ObjectName == "AcDbDictionary", "IAcadObject members still answer"
+    with pytest.raises(AttributeError, match="no attribute 'Count'"):
+        getattr(narrowed, "Count")  # noqa: B009 — the read itself is what raises
+    with pytest.raises(AttributeError, match="no attribute 'Item'"):
+        narrowed.Item(0)
+    raw = document.mleader_dictionary
+    assert _com_unnarrow(narrowed) is raw
+    assert _com_unnarrow(raw) is raw, "an object without _oleobj_ is returned unchanged"
+
+    item = raw.Item(0)
+    assert item.ObjectName == "AcDbMLeaderStyle"
+    with pytest.raises(AttributeError, match="no attribute 'ArrowSize'"):
+        getattr(item, "ArrowSize")  # noqa: B009
+    with pytest.raises(AttributeError, match="no attribute 'ArrowSize'"):
+        item.ArrowSize = 2.5
+    assert _com_unnarrow(item) is raw.objects[0]
+
+    added = raw.AddObject("LDR-A", "AcDbMLeaderStyle")
+    with pytest.raises(AttributeError, match="no attribute 'TextStyle'"):
+        added.TextStyle = "ISOCP"
+    assert _com_unnarrow(added) is raw.objects[-1]
+    assert raw.GetName(added) == raw.GetName(raw.objects[-1]) == "LDR-A"
+
+
+async def test_com_mleaderstyle_create_adds_the_dictionary_to_a_drawing_without_one(com_backend):
+    """A foreign drawing may lack ACAD_MLEADERSTYLE: list reports no styles
+    (and never adds the dictionary), create adds it through Dictionaries.Add
+    — whose IAcadDictionary* result is un-narrowed like the rest — and then
+    the style."""
+    backend, document = com_backend
+    del document.Dictionaries.entries["ACAD_MLEADERSTYLE"]
+    assert await backend.mleaderstyle_list() == []
+    assert document.calls == [] and "ACAD_MLEADERSTYLE" not in document.Dictionaries.entries
+    result = await backend.mleaderstyle_create("ISO", resolve_mleaderstyle("iso", None))
+    assert result["ok"] is True and result["name"] == "ISO"
+    names = [call[0] for call in document.calls]
+    assert names.index("Dictionaries.Add") < names.index("Dictionary.AddObject")
+    assert ("Dictionaries.Add", "ACAD_MLEADERSTYLE") in document.calls
+    assert [obj.Name for obj in document.mleader_dictionary.objects] == ["ISO"]
+    rows = await backend.mleaderstyle_list()
+    assert [row["name"] for row in rows] == ["ISO"] and rows[0]["arrow_size"] == 2.5

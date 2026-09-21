@@ -345,6 +345,37 @@ _MLEADERSTYLE_DICTIONARY = "ACAD_MLEADERSTYLE"
 _MLEADERSTYLE_CLASS = "AcDbMLeaderStyle"
 
 
+def _com_unnarrow(obj):
+    """Re-dispatch ``obj`` on its raw ``IDispatch`` so its *runtime* class is reachable.
+
+    acax25enu.tlb declares ``IAcadDictionaries.Item``, ``IAcadDictionary.Item``
+    and ``IAcadDictionary.AddObject`` as returning ``IAcadObject*``. Whenever a
+    makepy cache for the AutoCAD type library exists (it does on any machine
+    where ``win32com.client.gencache`` ever ran against AutoCAD), pywin32 wraps
+    such a return in the gen_py class of the *declared* type, and that wrapper
+    exposes only ``IAcadObject`` members: ``.Count`` / ``.Item`` / ``.GetName``
+    on the dictionary and ``.ArrowSize`` / ``.TextStyle`` on a leader style all
+    raise ``AttributeError`` even though the live object answers them. (The
+    rest of this backend never meets the problem: ``HandleToObject`` is declared
+    ``IDispatch*``, which keeps the concrete class, and ``ModelSpace.Item`` is
+    read only through ``IAcadEntity`` members.)
+
+    ``win32com.client.dynamic.Dispatch`` on the raw interface builds a
+    late-bound proxy from the object's own type info, so every member of the
+    concrete class resolves — verified live on AutoCAD 2026 — and, unlike
+    ``CastTo``, it never calls ``gencache.EnsureDispatch`` and never writes the
+    makepy cache. A wrapper whose ``_oleobj_`` is not a COM interface (the
+    fake in tests/test_styles.py) is unwrapped to that object as-is; anything
+    without ``_oleobj_`` is returned unchanged.
+    """
+    ole = getattr(obj, "_oleobj_", None)
+    if ole is None:
+        return obj
+    if _COM_IMPORTS_OK and isinstance(ole, pythoncom.TypeIIDs[pythoncom.IID_IDispatch]):
+        return win32com.client.dynamic.Dispatch(ole)
+    return ole
+
+
 def _com_mleaderstyle_dictionary(doc, *, create: bool = False):
     """The ``ACAD_MLEADERSTYLE`` dictionary, or None when the drawing has none.
 
@@ -353,23 +384,31 @@ def _com_mleaderstyle_dictionary(doc, *, create: bool = False):
     ``ArrowSize``, ``LandingGap``, ``TextHeight``, ``TextStyle``, ...), and
     ``IAcadDictionary.AddObject(keyword, "AcDbMLeaderStyle")`` — the
     documented VBA route — creates one. Every drawing AutoCAD makes carries
-    the dictionary; ``create`` adds it to a foreign file that does not. The
-    route is verified against the AutoCAD 2026 type library and fake-tested;
-    its live execution is scripts/smoke_settings_com.py's job.
+    the dictionary; ``create`` adds it to a foreign file that does not.
+
+    Every object this route hands over goes through ``_com_unnarrow`` (see
+    there): ``Dictionaries.Item`` is declared ``IAcadObject*`` and comes back
+    as a wrapper with no ``Count``. Verified live on AutoCAD 2026 (list and
+    create on a scratch document); scripts/smoke_settings_com.py re-runs it.
     """
     try:
-        return doc.Dictionaries.Item(_MLEADERSTYLE_DICTIONARY)
+        dictionary = doc.Dictionaries.Item(_MLEADERSTYLE_DICTIONARY)
     except Exception:
         if not create:
             return None
-    return doc.Dictionaries.Add(_MLEADERSTYLE_DICTIONARY)
+        dictionary = doc.Dictionaries.Add(_MLEADERSTYLE_DICTIONARY)
+    return _com_unnarrow(dictionary)
 
 
 def _com_mleaderstyle_rows(dictionary) -> list[tuple[str, Any]]:
-    """``(name, AcadMLeaderStyle)`` for every item, named by the dictionary key."""
+    """``(name, AcadMLeaderStyle)`` for every item, named by the dictionary key.
+
+    Each ``Item(i)`` is un-narrowed: declared ``IAcadObject*``, it would
+    otherwise carry no ``ArrowSize``.
+    """
     rows = []
     for index in range(dictionary.Count):
-        style = dictionary.Item(index)
+        style = _com_unnarrow(dictionary.Item(index))
         rows.append((str(dictionary.GetName(style)), style))
     return rows
 
@@ -4486,7 +4525,9 @@ class ComBackend(AutoCADBackend):
             text_style_name, textstyle_created = _ensure_com_textstyle(
                 doc, typed["text_style"], refusal_key="text_style"
             )
-            style = dictionary.AddObject(clean, _MLEADERSTYLE_CLASS)
+            # AddObject is declared IAcadObject* too: un-narrowed, or the
+            # first property write below raises AttributeError.
+            style = _com_unnarrow(dictionary.AddObject(clean, _MLEADERSTYLE_CLASS))
             style.ArrowSize = typed["arrow_size"]
             style.LandingGap = typed["landing_gap"]
             style.TextHeight = typed["text_height"]
