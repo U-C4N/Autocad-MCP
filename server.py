@@ -6883,8 +6883,13 @@ async def dimstyle_create(
     DIMCLRD/E/T, DIMSAH, DIMBLK1/2, DIMCEN); a value outside its range
     (DIMDEC 0-8, sizes > 0, DIMTAD 0-4, DIMDSEP one character, lineweights an
     AutoCAD code); a name that already exists (use `dimstyle_modify`); a
-    DIMTXSTY that is neither an existing text style nor a bundled preset
-    (ISOCP, ISOCPEUR, ARIAL, ROMANS — those are created, `textstyle_created`).
+    user DIMBLK/DIMBLK1/DIMBLK2 naming a block the drawing does not define
+    (built-in arrowheads need none); a DIMTXSTY that is neither an existing
+    text style nor a bundled preset (ISOCP, ISOCPEUR, ARIAL, ROMANS — those
+    are created on both engines, `textstyle_created`; live, a preset whose
+    font file the seat lacks is refused the same way, nothing written). On
+    the live engine a write ActiveX still refuses after the style is added
+    is rolled back — previous style current, the half-made entry deleted.
     With `set_current` the next dimension carries the style on both engines.
     """
     from engineering.standards.dimstyles import resolve_dimstyle
@@ -6915,10 +6920,11 @@ async def dimstyle_modify(
     says they still show the old style until redrawn (AutoCAD re-renders on
     the next regen). Refuses a missing style, an empty `overrides`, a key
     outside the whitelist, a value outside its range, a DIMTXSTY that does
-    not exist — all before any write. On the live engine, editing a
-    non-current style makes it current for the duration of the call and the
-    previous style is restored (its unsaved overrides are discarded, which is
-    AutoCAD's own DIMSTYLE rule).
+    not exist, a user arrowhead block the drawing does not define — all
+    before any write. On the live engine, editing a non-current style makes
+    it current for the duration of the call and the previous style is
+    restored — also when a write fails midway (its unsaved overrides are
+    discarded, which is AutoCAD's own DIMSTYLE rule).
     """
     await ctx.info(f"Modifying dimension style {name!r}")
     return await _backend(ctx).dimstyle_modify(name, overrides)
@@ -6982,12 +6988,17 @@ async def textstyle_create(
 ) -> dict:
     """Create a text style.
 
-    A font that is neither a bundled preset nor on the engine's font path is
-    *written* and reported `font_resolved: false` (AutoCAD substitutes at
-    open; the headless renderer falls back) — never refused, because a DXF
-    stores only the name. Refuses, before any write: a name that exists, an
-    empty font, `width_factor <= 0`, `height < 0`, an oblique angle outside
-    ±85°.
+    Headlessly a font nobody can find is *written* and reported
+    `font_resolved: false` (AutoCAD substitutes at open; the headless
+    renderer falls back), because a DXF stores only the name. The live
+    engine cannot do that: ActiveX refuses a font AutoCAD cannot open, so a
+    file that is neither on its support path nor in the Windows Fonts folder
+    is refused there before any write (the message names the folders and the
+    presets); a TrueType font is written by its typeface (`SetFont`, what the
+    STYLE dialog does — the record carries `arial.ttf`, never a machine
+    path), an SHX by the file name. Refuses, before any write on both
+    engines: a name that exists, an empty font, `width_factor <= 0`,
+    `height < 0`, an oblique angle outside ±85°.
     """
     await ctx.info(f"Text style {name!r} with font {font!r}")
     return await _backend(ctx).textstyle_create(
@@ -7055,7 +7066,8 @@ async def mleaderstyle_create(
     unknown preset; an override key outside the four; `arrow_size` /
     `text_height <= 0`, `landing_gap < 0`; a name that exists; a `text_style`
     that is neither present nor a bundled preset (ISOCP, ISOCPEUR, ARIAL,
-    ROMANS — those are created, `textstyle_created`).
+    ROMANS — those are created on both engines, `textstyle_created`; live, a
+    preset whose font file the seat lacks is refused, nothing written).
     """
     from engineering.standards.mleaderstyles import resolve_mleaderstyle
 

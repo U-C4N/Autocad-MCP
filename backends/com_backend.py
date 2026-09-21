@@ -10,6 +10,7 @@ import asyncio
 import io
 import logging
 import math
+import os
 import sys
 import time
 import uuid
@@ -314,31 +315,261 @@ def _same_dimvar(old: Any, new: Any) -> bool:
 
 
 def _com_dimensions_using(doc, style_name: str) -> list[str]:
-    """Handles of every dimension, in every layout, whose StyleName is ``style_name``."""
+    """Handles of every dimension, in every layout, whose StyleName is ``style_name``.
+
+    ``IAcadBlock.Item`` is declared ``IAcadEntity*`` (acax25enu.tlb), so with a
+    makepy cache present every member comes back narrowed to ``IAcadEntity``
+    and ``.StyleName`` — a member of the dimension classes, not of the entity
+    base — raises ``AttributeError``. Measured live (AutoCAD 2026): a rotated
+    dimension drawn with ``PROBE-ANSI`` answered ``[]`` because a blanket
+    ``except`` turned that AttributeError into "no dimension uses it". Each
+    item is therefore un-narrowed (``_com_unnarrow``), and nothing is
+    swallowed: a read that fails is an error the caller sees, not an empty
+    list reported as fact.
+    """
     wanted = style_name.lower()
     handles: list[str] = []
     for index in range(doc.Layouts.Count):
         block = doc.Layouts.Item(index).Block
         for position in range(block.Count):
-            obj = block.Item(position)
-            try:
-                if "Dimension" in str(obj.ObjectName) and str(obj.StyleName).lower() == wanted:
-                    handles.append(str(obj.Handle))
-            except Exception:
+            obj = _com_unnarrow(block.Item(position))
+            if "Dimension" not in str(obj.ObjectName):
                 continue
+            if str(obj.StyleName).lower() == wanted:
+                handles.append(str(obj.Handle))
     return handles
 
 
-def _com_font_on_support_path(font_file: str) -> bool:
-    """Whether AutoCAD's support path (Preferences.Files.SupportPath) holds the file."""
-    path = Path(font_file)
-    if path.is_absolute():
-        return path.is_file()
+#: File suffixes AutoCAD hands to the Windows font system rather than its
+#: SHX loader (see ``_com_locate_font``).
+_TRUETYPE_SUFFIXES = frozenset({".ttf", ".ttc", ".otf"})
+
+
+def _com_font_folders() -> list[Path]:
+    """Every folder a font file is looked for, in order.
+
+    AutoCAD's support path (``Preferences.Files.SupportPath``, which carries
+    the install's ``fonts`` folder with the SHX shape files), then the Windows
+    font folders — machine-wide ``%WINDIR%\\Fonts`` (where AutoCAD's installer
+    puts ISOCPEUR next to Arial; measured) and the per-user
+    ``%LOCALAPPDATA%\\Microsoft\\Windows\\Fonts``.
+    """
+    folders: list[Path] = []
     try:
         support = str(_acad_app().Preferences.Files.SupportPath)
     except Exception:
-        return False
-    return any((Path(folder) / font_file).is_file() for folder in support.split(";") if folder)
+        support = ""
+    folders.extend(Path(folder) for folder in support.split(";") if folder)
+    windir = os.environ.get("WINDIR") or os.environ.get("SystemRoot")
+    if windir:
+        folders.append(Path(windir) / "Fonts")
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        folders.append(Path(local) / "Microsoft" / "Windows" / "Fonts")
+    return folders
+
+
+def _com_font_path(font_file: str) -> Path | None:
+    """The file ``font_file`` names on this machine, or None when nobody has it.
+
+    An absolute path must exist as given; a bare name is searched over
+    ``_com_font_folders``, and a name without a suffix also as ``.shx`` (the
+    SHX loader appends it: ``fontFile = "isocp"`` is accepted live and stored
+    as given).
+    """
+    path = Path(font_file)
+    if path.is_absolute():
+        return path if path.is_file() else None
+    names = [font_file] if path.suffix else [font_file, font_file + ".shx"]
+    for folder in _com_font_folders():
+        for name in names:
+            candidate = folder / name
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _truetype_face(path: Path) -> tuple[str, bool, bool] | None:
+    """``(family, bold, italic)`` from a TrueType/OpenType file's ``name`` table.
+
+    The family (name ID 1) is the typeface Windows GDI — and therefore
+    AutoCAD's ``TextStyle.SetFont`` — knows the font by; the subfamily (ID 2)
+    says whether it is the bold and/or italic face, which ``SetFont`` takes
+    as flags. Windows/Unicode strings (platform 3, en-US preferred) win over
+    Macintosh Roman ones. A collection (``ttcf``) is read by its first font.
+    None for a file that is not an sfnt or carries no family name.
+    """
+    import struct
+
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    try:
+        offset = struct.unpack(">I", data[12:16])[0] if data[:4] == b"ttcf" else 0
+        num_tables = struct.unpack(">H", data[offset + 4 : offset + 6])[0]
+        name_table = None
+        for index in range(num_tables):
+            record = offset + 12 + 16 * index
+            if data[record : record + 4] == b"name":
+                name_table = struct.unpack(">II", data[record + 8 : record + 16])
+                break
+        if name_table is None:
+            return None
+        table_offset, _length = name_table
+        count, strings = struct.unpack(">HH", data[table_offset + 2 : table_offset + 6])
+        found: dict[tuple[int, int], str] = {}  # (name id, priority) -> text
+        for index in range(count):
+            record = table_offset + 6 + 12 * index
+            platform, _encoding, language, name_id, length, start = struct.unpack(
+                ">HHHHHH", data[record : record + 12]
+            )
+            if name_id not in (1, 2):
+                continue
+            raw = data[table_offset + strings + start : table_offset + strings + start + length]
+            if platform == 3:
+                priority = 0 if language == 0x409 else 1
+                text = raw.decode("utf-16-be", "replace")
+            elif platform == 1:
+                priority = 2
+                text = raw.decode("mac-roman", "replace")
+            else:
+                continue
+            found.setdefault((name_id, priority), text)
+    except (struct.error, IndexError):
+        return None
+    family = next((found[key] for key in sorted(found) if key[0] == 1), "").strip()
+    if not family:
+        return None
+    subfamily = next((found[key] for key in sorted(found) if key[0] == 2), "").lower()
+    return family, "bold" in subfamily, "italic" in subfamily or "oblique" in subfamily
+
+
+class _ComFont:
+    """A font file located for the live engine: where it is and, for
+    TrueType, the typeface ``SetFont`` needs (None for an SHX)."""
+
+    __slots__ = ("font_file", "path", "face")
+
+    def __init__(self, font_file: str, path: Path, face: tuple[str, bool, bool] | None):
+        self.font_file = font_file
+        self.path = path
+        self.face = face
+
+
+def _com_font_refusal(key: str, font_file: str, detail: str) -> ValueError:
+    from engineering.standards.textstyles import TEXT_PRESETS
+
+    presets = sorted(font for font, _w, _o in TEXT_PRESETS.values())
+    return ValueError(
+        f"{key}: font file {font_file!r} {detail}; ActiveX refuses a font it cannot open, "
+        "so the live engine refuses it before any write (headlessly it would be written and "
+        "reported font_resolved false) — copy the file to a support-path or Windows Fonts "
+        f"folder, or use a bundled preset ({presets})"
+    )
+
+
+def _com_locate_font(key: str, font_file: str) -> _ComFont:
+    """The font ``font_file`` names, resolved *before* ``TextStyles.Add`` — or a refusal.
+
+    Asked first because ``TextStyle.fontFile`` on a file AutoCAD cannot open
+    raises ``DISP_E_EXCEPTION 'Filer error'`` (measured on AutoCAD 2026 for
+    ``nosuchfont.shx``) *after* the table already holds the new name with an
+    empty font — a stub a retry then meets as "already exists". A TrueType
+    file must also carry a readable family name, because that — not the file
+    name — is what the write uses (``_com_write_font``).
+    """
+    path = _com_font_path(font_file)
+    if path is None:
+        raise _com_font_refusal(
+            key, font_file, "is not on AutoCAD's support path or in the Windows Fonts folder"
+        )
+    face = None
+    if path.suffix.lower() in _TRUETYPE_SUFFIXES:
+        face = _truetype_face(path)
+        if face is None:
+            raise _com_font_refusal(key, font_file, f"({path}) is not a readable TrueType file")
+    return _ComFont(font_file, path, face)
+
+
+def _com_write_font(style, font: _ComFont) -> None:
+    """Set ``style``'s font from a ``_com_locate_font`` result.
+
+    Measured on AutoCAD 2026: ``fontFile = "isocp.shx"`` (an SHX on the
+    support path) is accepted and stored as given, so an SHX is written by
+    the name the caller gave. A bare TrueType name — ``"arial.ttf"``,
+    ``"isocpeur.ttf"``, bundled presets included — raises ``'Filer error'``
+    although the files exist; the full path is accepted but the STYLE record
+    then carries the machine path (``fontFile`` reads back
+    ``C:\\Windows\\Fonts\\arial.ttf``); ``SetFont("Arial", bold, italic, 0, 0)``
+    — AutoCAD's own STYLE-dialog route — is accepted and reads back as the
+    clean ``arial.ttf``. A TrueType font is therefore written by its typeface,
+    and ``SetFont`` refusing a face Windows has not installed (``'Invalid
+    input'``) is the one failure that can still land after ``Add``; the
+    caller removes the entry it added.
+    """
+    if font.face is None:
+        style.fontFile = font.font_file
+    else:
+        family, bold, italic = font.face
+        style.SetFont(family, bold, italic, 0, 0)
+
+
+def _com_delete_quietly(obj, what: str) -> None:
+    """Best-effort ``Delete`` of a half-made table entry on an error path."""
+    try:
+        obj.Delete()
+    except Exception as exc:
+        log.warning("could not remove half-made %s: %s", what, exc)
+
+
+def _com_create_textstyle(
+    doc, name: str, font_file: str, *, width: float, oblique_deg: float, height: float, key: str
+):
+    """``TextStyles.Add`` plus its font, width, oblique and height — or nothing.
+
+    The font is located first (``_com_locate_font``) so a refusal precedes
+    the ``Add``; a write that still fails removes the entry it added, because
+    a STYLE row with an empty font that blocks a retry as "already exists" is
+    exactly the half-made state measured before this helper existed.
+    """
+    font = _com_locate_font(key, font_file)
+    style = doc.TextStyles.Add(name)
+    try:
+        _com_write_font(style, font)
+        style.Width = float(width)
+        style.ObliqueAngle = deg2rad(oblique_deg)
+        style.Height = float(height)
+    except Exception:
+        _com_delete_quietly(style, f"text style {name!r}")
+        raise
+    return style
+
+
+def _com_require_arrowhead_blocks(doc, values: dict[str, Any]) -> None:
+    """Refuse a user arrowhead block the drawing does not define — before any write.
+
+    The live twin of the headless ``_require_arrowhead_blocks``: a built-in
+    (``ARROWHEAD_BLOCKS``) and closed filled (``""``) need no block, a user
+    name must be in ``doc.Blocks`` — AutoCAD's ``SetVariable("DIMBLK",
+    "NOSUCHBLOCK")`` raises ``DISP_E_EXCEPTION`` mid-write, after
+    ``DimStyles.Add`` and ``ActiveDimStyle`` (measured: the half-made style was
+    left *current*). The name is rewritten to the block table's own spelling,
+    the rule the headless engine follows.
+    """
+    from engineering.standards.dimstyles import ARROWHEAD_BLOCKS
+
+    for var in ("DIMBLK", "DIMBLK1", "DIMBLK2"):
+        name = values.get(var)
+        if not name or name in ARROWHEAD_BLOCKS:
+            continue
+        block = _com_named(doc.Blocks, name)
+        if block is None:
+            raise ValueError(
+                f"{var}: block {name!r} does not exist in this drawing; define it first "
+                "with block_define, or name one of AutoCAD's built-in arrowheads"
+            )
+        values[var] = str(block.Name)
 
 
 _MLEADERSTYLE_DICTIONARY = "ACAD_MLEADERSTYLE"
@@ -427,11 +658,9 @@ def _ensure_com_textstyle(doc, name: str, *, refusal_key: str) -> tuple[str, boo
             f"bundled preset ({sorted(TEXT_PRESETS)}); create it first with textstyle_create"
         )
     font_file, width, oblique = preset
-    style = doc.TextStyles.Add(name.upper())
-    style.fontFile = font_file
-    style.Width = float(width)
-    style.ObliqueAngle = deg2rad(oblique)
-    style.Height = 0.0
+    _com_create_textstyle(
+        doc, name.upper(), font_file, width=width, oblique_deg=oblique, height=0.0, key=refusal_key
+    )
     return name.upper(), True
 
 
@@ -4307,21 +4536,39 @@ class ComBackend(AutoCADBackend):
                     f"dimstyle_create: dimension style {clean!r} already exists; "
                     "use dimstyle_modify to change it"
                 )
-            # The text style must exist before DIMTXSTY can name it.
+            # Every refusal precedes the first write: a user arrowhead block
+            # must exist (SetVariable("DIMBLK", ...) would otherwise raise
+            # mid-loop, after Add and ActiveDimStyle), and the text style must
+            # exist before DIMTXSTY can name it.
+            _com_require_arrowhead_blocks(doc, typed)
             txsty, textstyle_created = _ensure_com_textstyle(
                 doc, str(typed.get("DIMTXSTY", "Standard")), refusal_key="DIMTXSTY"
             )
             previous = doc.ActiveDimStyle
             style = doc.DimStyles.Add(clean)
-            doc.ActiveDimStyle = style
-            for var, value in {**typed, "DIMTXSTY": txsty}.items():
-                doc.SetVariable(var, _com_dimvar_for_write(var, value))
-            style.CopyFrom(doc)
-            written = {
-                var: _com_dimvar_for_report(var, doc.GetVariable(var)) for var in PRESET_VARIABLES
-            }
-            if not set_current:
+            try:
+                doc.ActiveDimStyle = style
+                for var, value in {**typed, "DIMTXSTY": txsty}.items():
+                    doc.SetVariable(var, _com_dimvar_for_write(var, value))
+                style.CopyFrom(doc)
+                written = {
+                    var: _com_dimvar_for_report(var, doc.GetVariable(var))
+                    for var in PRESET_VARIABLES
+                }
+                if not set_current:
+                    doc.ActiveDimStyle = previous
+            except Exception:
+                # Restoring the previous style discards the unsaved overrides
+                # (AutoCAD's own Restore rule) and frees the new entry for
+                # Delete, so the drawing is left exactly as it was found —
+                # the half-made style is never the operator's current style.
                 doc.ActiveDimStyle = previous
+                _com_delete_quietly(style, f"dimension style {clean!r}")
+                if textstyle_created:
+                    created = _com_named(doc.TextStyles, txsty)
+                    if created is not None:
+                        _com_delete_quietly(created, f"text style {txsty!r}")
+                raise
             _regen()
             return {
                 "ok": True,
@@ -4354,19 +4601,27 @@ class ComBackend(AutoCADBackend):
                     f"DIMTXSTY: text style {typed['DIMTXSTY']!r} does not exist in this drawing; "
                     "create it first with textstyle_create"
                 )
+            _com_require_arrowhead_blocks(doc, typed)
             previous = doc.ActiveDimStyle
             switched = str(previous.Name).lower() != str(style.Name).lower()
             if switched:
                 doc.ActiveDimStyle = style
-            before = {var: _com_dimvar_for_report(var, doc.GetVariable(var)) for var in typed}
-            changed: dict[str, list] = {}
-            for var, value in typed.items():
-                if _same_dimvar(before[var], value):
-                    continue
-                doc.SetVariable(var, _com_dimvar_for_write(var, value))
-                changed[var] = [before[var], value]
-            if changed:
-                style.CopyFrom(doc)
+            try:
+                before = {var: _com_dimvar_for_report(var, doc.GetVariable(var)) for var in typed}
+                changed: dict[str, list] = {}
+                for var, value in typed.items():
+                    if _same_dimvar(before[var], value):
+                        continue
+                    doc.SetVariable(var, _com_dimvar_for_write(var, value))
+                    changed[var] = [before[var], value]
+                if changed:
+                    style.CopyFrom(doc)
+            except Exception:
+                # Re-activating a style discards its unsaved overrides, so a
+                # failed write leaves the target style as it was saved and the
+                # operator's current style as it was found.
+                doc.ActiveDimStyle = style if not switched else previous
+                raise
             if switched:
                 doc.ActiveDimStyle = previous
             using = _com_dimensions_using(doc, str(style.Name))
@@ -4443,18 +4698,28 @@ class ComBackend(AutoCADBackend):
             doc = _acad_doc()
             if _com_named(doc.TextStyles, spec["name"]) is not None:
                 raise ValueError(f"textstyle_create: text style {spec['name']!r} already exists")
-            style = doc.TextStyles.Add(spec["name"])
-            style.fontFile = spec["font_file"]
-            style.Width = spec["width_factor"]
-            style.ObliqueAngle = deg2rad(spec["oblique_deg"])
-            style.Height = spec["height"]
+            # Unlike the headless engine, which stores a name nobody can find
+            # and says `font_resolved: false`, ActiveX refuses a font it
+            # cannot open — so the file is located before TextStyles.Add and
+            # a font AutoCAD cannot see is refused with nothing written.
+            style = _com_create_textstyle(
+                doc,
+                spec["name"],
+                spec["font_file"],
+                width=spec["width_factor"],
+                oblique_deg=spec["oblique_deg"],
+                height=spec["height"],
+                key="font",
+            )
             if set_current:
                 doc.ActiveTextStyle = style
             return {
                 "ok": True,
                 "name": spec["name"],
                 "font": spec["font_file"],
-                "font_resolved": spec["known"] or _com_font_on_support_path(spec["font_file"]),
+                # Always true here: a font the live engine could not locate
+                # was refused above, never written.
+                "font_resolved": True,
                 "current": bool(set_current),
             }
 

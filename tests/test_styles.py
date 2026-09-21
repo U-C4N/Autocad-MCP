@@ -11,6 +11,7 @@ restores that style's saved DIM* settings.
 from __future__ import annotations
 
 import types
+from pathlib import Path
 
 import ezdxf
 import pytest
@@ -470,15 +471,97 @@ async def test_mleaderstyle_is_not_a_capability_boundary_on_either_engine(backen
 # ── live engine, against a fake ActiveX surface ──────────────────────────────
 
 
+#: The font files the fake seat's font folder holds: the SHX presets (empty
+#: files — the SHX loader is never read here) and the TrueType presets as
+#: minimal sfnt files whose ``name`` table carries the family, plus a bold
+#: face and txt.shx. The ``com_backend`` fixture writes them to a tmp folder.
+FAKE_SHX_FONTS = ("isocp.shx", "romans.shx", "txt.shx")
+FAKE_TTF_FONTS = {
+    "arial.ttf": ("Arial", "Regular"),
+    "arialbd.ttf": ("Arial", "Bold"),
+    "isocpeur.ttf": ("ISOCPEUR", "Regular"),
+    "orphan.ttf": ("Orphan Face", "Regular"),  # a file Windows has not installed
+}
+#: The typefaces the fake Windows font system has installed — what SetFont accepts.
+FAKE_INSTALLED_FACES = {"Arial": "arial", "ISOCPEUR": "isocpeur"}
+
+
+def minimal_sfnt(family: str, subfamily: str) -> bytes:
+    """A TrueType file reduced to its table directory and a ``name`` table
+    with Windows/Unicode (platform 3, en-US) family and subfamily records —
+    enough for ``_truetype_face`` and nothing else."""
+    import struct
+
+    records, strings = b"", b""
+    for name_id, text in ((1, family), (2, subfamily)):
+        raw = text.encode("utf-16-be")
+        records += struct.pack(">HHHHHH", 3, 1, 0x409, name_id, len(raw), len(strings))
+        strings += raw
+    header = struct.pack(">HHH", 0, 2, 6 + len(records))
+    name_table = header + records + strings
+    directory = struct.pack(">IHHHH", 0x00010000, 1, 16, 0, 0)
+    directory += b"name" + struct.pack(">III", 0, 12 + 16, len(name_table))
+    return directory + name_table
+
+
+class _FilerError(RuntimeError):
+    """``TextStyle.fontFile`` / ``SetVariable("DIMBLK", ...)`` failing the way
+    ActiveX does: ``com_error (-2147352567, 'Exception occurred.', (0, None,
+    'Filer error', ...))`` — a generic error the caller cannot catch by type."""
+
+
 class _FakeStyle:
+    """An AcadDimStyle / AcadTextStyle: ``Name``, ``CopyFrom`` and — for a text
+    style — ``fontFile``, ``Width``, ``ObliqueAngle``, ``Height``. The
+    ``fontFile`` setter models what AutoCAD 2026 measured: a bare SHX name on
+    the support path is accepted and stored as given; a bare *TrueType* name
+    is refused with a Filer error even when the file exists on the support
+    path (``"arial.ttf"``, ``"isocpeur.ttf"``); a full path to an existing
+    file is accepted; a file nobody has is refused. A refused write leaves
+    the previous value (``""`` on a fresh entry) — the stub state the
+    backend must never leave behind."""
+
+    support_folder: Path | None = None  # set by the com_backend fixture
+    installed_faces: dict[str, str] = FAKE_INSTALLED_FACES  # typeface -> file stem
+
     def __init__(self, name, calls):
         self.Name = name
         self._calls = calls
-        self.fontFile = "txt.shx"
+        self._font = "txt.shx"
         self.Width = 1.0
         self.ObliqueAngle = 0.0
         self.Height = 0.0
+        self.deleted = False
         self.saved: dict | None = None  # the DIM* values this style holds, once saved
+
+    @property
+    def fontFile(self):
+        return self._font
+
+    @fontFile.setter
+    def fontFile(self, value):
+        self._calls.append(("fontFile", self.Name, value))
+        path = Path(value)
+        if path.is_absolute():
+            accepted = path.is_file()
+        elif path.suffix.lower() in (".ttf", ".ttc", ".otf"):
+            accepted = False  # a bare TrueType name: Filer error, measured
+        else:
+            folder = _FakeStyle.support_folder
+            accepted = folder is not None and (folder / value).is_file()
+        if not accepted:
+            raise _FilerError("(-2147352567, 'Exception occurred.', (0, None, 'Filer error'))")
+        self._font = value
+
+    def SetFont(self, typeface, bold, italic, charset, pitch):
+        # AcadTextStyle.SetFont: a typeface Windows has installed is accepted
+        # and fontFile reads back as its file name (measured: SetFont("Arial")
+        # -> 'arial.ttf'); anything else is 'Invalid input'.
+        self._calls.append(("SetFont", self.Name, typeface, bold, italic, charset, pitch))
+        stem = self.installed_faces.get(typeface)
+        if stem is None:
+            raise _FilerError("(-2147352567, 'Exception occurred.', (0, None, 'Invalid input'))")
+        self._font = stem + ("bd" if bold else "") + ("i" if italic else "") + ".ttf"
 
     def CopyFrom(self, source):
         # AcadDimStyle.CopyFrom(document) saves the document's current
@@ -486,12 +569,21 @@ class _FakeStyle:
         self._calls.append(("CopyFrom", self.Name, source))
         self.saved = dict(source.variables)
 
+    def Delete(self):
+        # IAcadObject.Delete: the owning collection drops the entry.
+        self._calls.append(("Delete", self.Name))
+        self.deleted = True
+
 
 class _FakeCollection:
     def __init__(self, kind, calls, *names):
         self._kind = kind
         self._calls = calls
-        self.entries = [_FakeStyle(name, calls) for name in names]
+        self._all = [_FakeStyle(name, calls) for name in names]
+
+    @property
+    def entries(self):
+        return [style for style in self._all if not style.deleted]
 
     @property
     def Count(self):
@@ -503,11 +595,30 @@ class _FakeCollection:
     def Add(self, name):
         self._calls.append((f"{self._kind}.Add", name))
         style = _FakeStyle(name, self._calls)
-        self.entries.append(style)
+        self._all.append(style)
         return style
 
 
+class _FakeBlocks:
+    """``doc.Blocks``: Count / Item / Name over the block definitions."""
+
+    def __init__(self, *names):
+        self.entries = [types.SimpleNamespace(Name=name) for name in names]
+
+    @property
+    def Count(self):
+        return len(self.entries)
+
+    def Item(self, index):
+        return self.entries[index]
+
+
 class _FakeBlock:
+    """A layout's ``Block``: ``IAcadBlock.Item`` is declared ``IAcadEntity*``,
+    so each member comes back narrowed to the entity base (see
+    ``_NarrowedToIAcadEntity``) — ``StyleName`` is a dimension member and is
+    unreachable until un-narrowed."""
+
     def __init__(self, *entities):
         self.entities = list(entities)
 
@@ -516,7 +627,7 @@ class _FakeBlock:
         return len(self.entities)
 
     def Item(self, index):
-        return self.entities[index]
+        return _NarrowedToIAcadEntity(self.entities[index])
 
 
 class _FakeLayouts:
@@ -597,6 +708,51 @@ class _NarrowedToIAcadObject:
             "'<win32com.gen_py.AutoCAD 2025 Type Library.IAcadObject instance>' "
             f"object has no attribute {key!r}"
         )
+
+
+class _NarrowedToIAcadEntity(_NarrowedToIAcadObject):
+    """What pywin32 hands back for ``IAcadBlock.Item`` with a makepy cache:
+    the gen_py ``IAcadEntity`` class — IAcadObject's members plus the entity
+    base's — and nothing of the runtime class. On a dimension, ``StyleName``
+    raises ``AttributeError: 'IAcadEntity' object has no attribute
+    'StyleName'`` (measured live on AutoCAD 2026)."""
+
+    IACADENTITY_MEMBERS = frozenset(
+        {
+            "Color",
+            "EntityTransparency",
+            "Hyperlinks",
+            "Layer",
+            "Linetype",
+            "LinetypeScale",
+            "Lineweight",
+            "Material",
+            "PlotStyleName",
+            "TrueColor",
+            "Visible",
+            "ArrayPolar",
+            "ArrayRectangular",
+            "Copy",
+            "GetBoundingBox",
+            "Highlight",
+            "IntersectWith",
+            "Mirror",
+            "Mirror3D",
+            "Move",
+            "Rotate",
+            "Rotate3D",
+            "ScaleEntity",
+            "TransformBy",
+            "Update",
+        }
+    )
+
+    def __getattr__(self, key):
+        if key in self.IACADENTITY_MEMBERS:
+            return getattr(self._oleobj_, key)
+        if key in self.IACADOBJECT_MEMBERS:
+            return getattr(self._oleobj_, key)
+        raise AttributeError(f"'IAcadEntity' object has no attribute {key!r}")
 
 
 class _FakeDictionary:
@@ -692,6 +848,7 @@ class _FakeDocument:
             ObjectName="AcDbAlignedDimension", StyleName="Standard", Handle="2C"
         )
         self.Layouts = _FakeLayouts(_FakeBlock(dim, line), _FakeBlock(sheet_dim))
+        self.Blocks = _FakeBlocks("*Model_Space", "*Paper_Space", "MyArrow")
         self.Dictionaries = _FakeDictionaries(
             self.calls,
             {"ACAD_MLEADERSTYLE": _FakeDictionary(self.calls, "Standard", "Annotative")},
@@ -708,6 +865,11 @@ class _FakeDocument:
 
     def SetVariable(self, name, value):
         self.calls.append(("SetVariable", name, value))
+        if name in ("DIMBLK", "DIMBLK1", "DIMBLK2") and value and not value.startswith("_"):
+            # AutoCAD refuses a user arrowhead naming no block, mid-write
+            # (measured: DISP_E_EXCEPTION from SetVariable("DIMBLK", ...)).
+            if value.lower() not in {b.Name.lower() for b in self.Blocks.entries}:
+                raise _FilerError("(-2147352567, 'Exception occurred.', (0, None, 'Filer error'))")
         self.variables[name] = value
 
     @property
@@ -736,17 +898,28 @@ class _FakeDocument:
 
 
 @pytest.fixture
-def com_backend(monkeypatch):
+def com_backend(monkeypatch, tmp_path):
     pytest.importorskip("win32com.client", reason="pywin32 not installed")
     from backends import com_backend as module
 
+    # The fake seat's only font folder: the four presets plus txt.shx, as
+    # empty files. The host's Windows Fonts folder is deliberately out of
+    # reach so the tests measure the backend's resolution, not the machine.
+    support = tmp_path / "Fonts"
+    support.mkdir()
+    for font in FAKE_SHX_FONTS:
+        (support / font).write_bytes(b"")
+    for font, (family, subfamily) in FAKE_TTF_FONTS.items():
+        (support / font).write_bytes(minimal_sfnt(family, subfamily))
+    monkeypatch.setattr(_FakeStyle, "support_folder", support)
     document = _FakeDocument()
     app = types.SimpleNamespace(
-        Preferences=types.SimpleNamespace(Files=types.SimpleNamespace(SupportPath=""))
+        Preferences=types.SimpleNamespace(Files=types.SimpleNamespace(SupportPath=str(support)))
     )
     monkeypatch.setattr(module, "_acad_doc", lambda: document)
     monkeypatch.setattr(module, "_acad_app", lambda: app)
     monkeypatch.setattr(module, "_regen", lambda: None)
+    monkeypatch.setattr(module, "_com_font_folders", lambda: [support])
     backend = module.ComBackend()
 
     async def _run_inline(func, *args, **kwargs):
@@ -762,10 +935,10 @@ async def test_com_create_sets_variables_then_copies_from_the_document(com_backe
     assert result["ok"] is True and result["current"] is False
     assert result["textstyle_created"] is True
     names = [call[0] for call in document.calls]
-    assert names[:2] == ["TextStyles.Add", "DimStyles.Add"], (
+    assert names.index("TextStyles.Add") < names.index("DimStyles.Add"), (
         "the text style exists before DIMTXSTY names it"
     )
-    assert document.calls[2] == ("ActiveDimStyle", "ISO-25")
+    assert document.calls[names.index("DimStyles.Add") + 1] == ("ActiveDimStyle", "ISO-25")
     sets = [call for call in document.calls if call[0] == "SetVariable"]
     assert len(sets) == 17
     assert ("SetVariable", "DIMDSEP", ",") in sets, "DIMDSEP is a string on ActiveX"
@@ -865,8 +1038,8 @@ async def test_com_textstyle_create_sets_font_width_oblique_height(com_backend):
         0.0,
     )
     assert document.ActiveTextStyle.Name == "ISOCP"
-    odd = await backend.textstyle_create("ODD", "acadmcp-missing-font.ttf", 3.5, 0.8, 15.0)
-    assert odd["font_resolved"] is False
+    odd = await backend.textstyle_create("ODD", "romans.shx", 3.5, 0.8, 15.0)
+    assert odd["font_resolved"] is True
     assert document.TextStyles.entries[-1].ObliqueAngle == pytest.approx(0.2617993878), "radians"
     rows = await backend.textstyle_list()
     assert [(r["name"], r["current"]) for r in rows] == [
@@ -1087,3 +1260,251 @@ async def test_textstyle_and_mleaderstyle_tools_round_trip(backend):
     assert (await server.mleaderstyle_list(ctx=ctx))["count"] == 2
     with pytest.raises(ValueError, match="preset"):
         await server.mleaderstyle_create(name="X", preset="din", ctx=ctx)
+
+
+# ── live engine: the four Task 11 review findings ────────────────────────────
+
+
+def _com_names(collection):
+    return [entry.Name for entry in collection.entries]
+
+
+async def test_com_textstyle_create_writes_truetype_by_typeface_and_shx_by_name(com_backend):
+    """Measured on AutoCAD 2026: `fontFile = "arial.ttf"` raises 'Filer error'
+    (bundled presets included) and a full path stores the machine path in the
+    STYLE record, while `SetFont("Arial", ...)` stores the clean `arial.ttf`.
+    The fake refuses a bare TrueType name the same way, so a backend that
+    still wrote one could not pass this."""
+    backend, document = com_backend
+    arial = await backend.textstyle_create("ARIAL", "arial")
+    assert arial == {
+        "ok": True,
+        "name": "ARIAL",
+        "font": "arial.ttf",
+        "font_resolved": True,
+        "current": False,
+    }
+    eur = await backend.textstyle_create("ISOCPEUR", "isocpeur.ttf")
+    bold = await backend.textstyle_create("HEAD", "arialbd.ttf", height=5.0)
+    shx = await backend.textstyle_create("ISOCP", "ISOCP")
+    assert eur["font"] == "isocpeur.ttf" and bold["font"] == "arialbd.ttf"
+    font_writes = [c for c in document.calls if c[0] in ("fontFile", "SetFont")]
+    assert font_writes == [
+        ("SetFont", "ARIAL", "Arial", False, False, 0, 0),
+        ("SetFont", "ISOCPEUR", "ISOCPEUR", False, False, 0, 0),
+        ("SetFont", "HEAD", "Arial", True, False, 0, 0),
+        ("fontFile", "ISOCP", "isocp.shx"),
+    ], "TrueType by typeface (bold from the subfamily), SHX by the name given"
+    rows = {row["name"]: row["font"] for row in await backend.textstyle_list()}
+    assert rows == {
+        "ARIAL": "arial.ttf",
+        "ISOCPEUR": "isocpeur.ttf",
+        "HEAD": "arialbd.ttf",
+        "ISOCP": "isocp.shx",
+        "Standard": "txt.shx",
+    }, "what the STYLE records carry: file names, never a machine path"
+    assert shx["font_resolved"] is True
+
+
+async def test_com_textstyle_create_refuses_an_unlocatable_font_before_add(com_backend):
+    """Before this fix `TextStyles.Add` ran first, `fontFile` then raised, and
+    the table kept the name with an empty font — so a retry with a good font
+    was refused 'already exists'. The refusal now precedes the Add, nothing is
+    written, and the retry succeeds."""
+    backend, document = com_backend
+    with pytest.raises(ValueError, match=r"font: font file 'nosuchfont\.shx' is not on") as info:
+        await backend.textstyle_create("PROBE", "nosuchfont.shx")
+    assert "before any write" in str(info.value) and "isocp.shx" in str(info.value)
+    with pytest.raises(ValueError, match="font"):
+        await backend.textstyle_create("PROBE", r"C:\nosuch\folder\arial.ttf")
+    assert document.calls == [], "nothing reached ActiveX"
+    assert _com_names(document.TextStyles) == ["Standard"]
+    retry = await backend.textstyle_create("PROBE", "romans.shx")
+    assert retry["ok"] is True and document.TextStyles.entries[-1].fontFile == "romans.shx"
+
+
+async def test_com_textstyle_create_removes_its_entry_when_the_write_still_fails(com_backend):
+    """A TrueType file that exists but whose face Windows has not installed
+    is the one refusal `SetFont` can still raise after the Add ('Invalid
+    input'). The error propagates — never a silent stub — and the entry the
+    backend added is deleted, so the name is free again."""
+    backend, document = com_backend
+    with pytest.raises(_FilerError, match="Invalid input"):
+        await backend.textstyle_create("ORPHAN", "orphan.ttf")
+    assert _com_names(document.TextStyles) == ["Standard"]
+    assert ("Delete", "ORPHAN") in document.calls
+    again = await backend.textstyle_create("ORPHAN", "arial.ttf")
+    assert again["ok"] is True, "the failed create left no 'already exists' behind"
+    garbage = _FakeStyle.support_folder / "broken.ttf"
+    garbage.write_bytes(b"not an sfnt at all")
+    with pytest.raises(
+        ValueError, match=r"font: font file 'broken\.ttf' .* not a readable TrueType"
+    ):
+        await backend.textstyle_create("BROKEN", "broken.ttf")
+    assert _com_names(document.TextStyles) == ["Standard", "ORPHAN"], (
+        "an unreadable TrueType file is refused before the Add"
+    )
+
+
+async def test_com_dimstyle_create_creates_the_truetype_presets_for_dimtxsty(com_backend):
+    """Finding 2: `DIMTXSTY: ARIAL` used to raise on the live engine and leave
+    an ARIAL entry with no font, so the *second* call reported ok with a
+    dimension style whose text style had no font. Every preset is created
+    through the same typeface route now, first time, and a preset whose file
+    the seat lacks is refused by DIMTXSTY before any write."""
+    backend, document = com_backend
+    result = await backend.dimstyle_create(
+        "ANSI-AR", resolve_dimstyle("ansi", {"DIMTXSTY": "ARIAL"})
+    )
+    assert result["ok"] is True and result["textstyle_created"] is True
+    assert result["values"]["DIMTXSTY"] == "ARIAL"
+    arial = document.TextStyles.entries[-1]
+    assert (arial.Name, arial.fontFile) == ("ARIAL", "arial.ttf")
+    assert ("SetFont", "ARIAL", "Arial", False, False, 0, 0) in document.calls
+    eur = await backend.mleaderstyle_create(
+        "LDR", resolve_mleaderstyle("iso", {"text_style": "ISOCPEUR"})
+    )
+    assert eur["textstyle_created"] is True and eur["values"]["text_style"] == "ISOCPEUR"
+    assert document.TextStyles.entries[-1].fontFile == "isocpeur.ttf"
+
+    (_FakeStyle.support_folder / "romans.shx").unlink()
+    document.calls.clear()
+    with pytest.raises(ValueError, match=r"DIMTXSTY: font file 'romans\.shx' is not on"):
+        await backend.dimstyle_create("X", resolve_dimstyle("iso-25", {"DIMTXSTY": "ROMANS"}))
+    assert document.calls == [] and _com_names(document.DimStyles) == ["Standard", "ANSI-AR"]
+    assert "ROMANS" not in _com_names(document.TextStyles), "no stub text style either"
+
+
+async def test_com_dimstyle_create_refuses_a_missing_arrowhead_block_before_any_write(com_backend):
+    """Finding 3: `SetVariable("DIMBLK", "NOSUCHBLOCK")` raises mid-write on
+    the live engine, after Add and ActiveDimStyle — the half-made style was
+    left as the operator's current style. Refused first now, as headlessly."""
+    backend, document = com_backend
+    with pytest.raises(ValueError, match=r"DIMBLK: block 'NOSUCHBLOCK' does not exist"):
+        await backend.dimstyle_create("BAD", resolve_dimstyle("iso-25", {"DIMBLK": "NOSUCHBLOCK"}))
+    with pytest.raises(ValueError, match="DIMBLK2"):
+        await backend.dimstyle_create("BAD", {"DIMSAH": 1, "DIMBLK2": "Nope"})
+    assert document.calls == [] and _com_names(document.DimStyles) == ["Standard"]
+    assert document.ActiveDimStyle.Name == "Standard"
+    ok = await backend.dimstyle_create(
+        "ARROWS", resolve_dimstyle("iso-25", {"DIMBLK": "myarrow", "DIMBLK1": "_oblique"})
+    )
+    assert ok["values"]["DIMBLK"] == "MyArrow", "the block table's own spelling, as headlessly"
+    assert ("SetVariable", "DIMBLK", "MyArrow") in document.calls
+    assert ("SetVariable", "DIMBLK1", "_OBLIQUE") in document.calls, "a built-in needs no block"
+
+
+async def test_com_dimstyle_create_rolls_back_a_write_that_fails_after_add(
+    com_backend, monkeypatch
+):
+    """Whatever ActiveX refuses after DimStyles.Add (here: one SetVariable),
+    the drawing is left as it was found — previous style current with its
+    saved values, no half-made dimension style, no preset text style the
+    call created for it — and the error is the caller's, not swallowed."""
+    backend, document = com_backend
+    real_set = document.SetVariable
+
+    def failing_set(name, value):
+        if name == "DIMSCALE":
+            raise _FilerError("(-2147352567, 'Exception occurred.', (0, None, 'Filer error'))")
+        real_set(name, value)
+
+    monkeypatch.setattr(document, "SetVariable", failing_set)
+    with pytest.raises(_FilerError):
+        await backend.dimstyle_create("HALF", resolve_dimstyle("iso-25", None), set_current=True)
+    assert document.ActiveDimStyle.Name == "Standard"
+    assert document.variables == CURRENT_DIMVARS, "Restore discarded the unsaved overrides"
+    assert _com_names(document.DimStyles) == ["Standard"]
+    assert _com_names(document.TextStyles) == ["Standard"], "the ISOCP it created is gone too"
+    tail = [c for c in document.calls if c[0] in ("ActiveDimStyle", "Delete")]
+    assert tail == [
+        ("ActiveDimStyle", "HALF"),
+        ("ActiveDimStyle", "Standard"),
+        ("Delete", "HALF"),
+        ("Delete", "ISOCP"),
+    ]
+
+
+async def test_com_dimstyle_modify_refuses_a_missing_arrowhead_and_restores_on_failure(
+    com_backend, monkeypatch
+):
+    backend, document = com_backend
+    await backend.dimstyle_create("ISO-25", resolve_dimstyle("iso-25", None))
+    document.calls.clear()
+    with pytest.raises(ValueError, match=r"DIMBLK1: block 'Nope' does not exist"):
+        await backend.dimstyle_modify("ISO-25", {"DIMBLK1": "Nope"})
+    assert document.calls == [], "refused before the style was even made current"
+    spelled = await backend.dimstyle_modify("ISO-25", {"DIMBLK": "MYARROW"})
+    assert spelled["changed"] == {"DIMBLK": ["", "MyArrow"]}
+
+    real_set = document.SetVariable
+
+    def failing_set(name, value):
+        if name == "DIMTXT":
+            raise _FilerError("(-2147352567, 'Exception occurred.', (0, None, 'Filer error'))")
+        real_set(name, value)
+
+    monkeypatch.setattr(document, "SetVariable", failing_set)
+    document.calls.clear()
+    with pytest.raises(_FilerError):
+        await backend.dimstyle_modify("ISO-25", {"DIMDEC": 4, "DIMTXT": 9.0})
+    assert document.ActiveDimStyle.Name == "Standard"
+    assert document.variables["DIMDEC"] == 2, "Restore discarded the DIMDEC override"
+    assert [c[0] for c in document.calls] == ["ActiveDimStyle", "SetVariable", "ActiveDimStyle"], (
+        "DIMDEC was written, DIMTXT refused, the previous style restored; no CopyFrom"
+    )
+
+
+async def test_com_dimensions_using_style_reads_through_the_iacadentity_narrowing(com_backend):
+    """Finding 4: `IAcadBlock.Item` is declared `IAcadEntity*`, so with a
+    makepy cache `.StyleName` on a dimension raises AttributeError, and the
+    old blanket `except` reported `[]` for a style a dimension used. The fake
+    narrows the same way; the walker un-narrows and swallows nothing."""
+    from backends.com_backend import _com_dimensions_using
+
+    backend, document = com_backend
+    narrowed = document.Layouts.Item(0).Block.Item(0)
+    assert narrowed.ObjectName == "AcDbRotatedDimension" and narrowed.Handle == "2A"
+    with pytest.raises(AttributeError, match="'IAcadEntity' object has no attribute 'StyleName'"):
+        getattr(narrowed, "StyleName")  # noqa: B009 — the read itself is what raises
+    assert _com_dimensions_using(document, "iso-25") == ["2A"]
+    assert _com_dimensions_using(document, "Standard") == ["2C"]
+    assert _com_dimensions_using(document, "NOPE") == []
+
+    class _BrokenDimension:
+        ObjectName = "AcDbAlignedDimension"
+        Handle = "2D"
+
+        @property
+        def StyleName(self):
+            raise RuntimeError("RPC_E_CALL_REJECTED")
+
+    document.Layouts.Item(1).Block.entities.append(_BrokenDimension())
+    with pytest.raises(RuntimeError, match="RPC_E_CALL_REJECTED"):
+        _com_dimensions_using(document, "Standard")
+
+
+async def test_truetype_face_reads_family_and_subfamily(tmp_path):
+    import struct
+
+    from backends.com_backend import _com_font_path, _truetype_face
+
+    regular = tmp_path / "r.ttf"
+    regular.write_bytes(minimal_sfnt("Segoe UI Semibold", "Regular"))
+    assert _truetype_face(regular) == ("Segoe UI Semibold", False, False)
+    bold_italic = tmp_path / "bi.ttf"
+    bold_italic.write_bytes(minimal_sfnt("Arial", "Bold Italic"))
+    assert _truetype_face(bold_italic) == ("Arial", True, True)
+    collection = tmp_path / "c.ttc"
+    inner = bytearray(minimal_sfnt("Cambria", "Regular"))
+    struct.pack_into(">I", inner, 12 + 8, 16 + 12 + 16)  # table offsets are file-absolute
+    collection.write_bytes(b"ttcf" + struct.pack(">HHII", 1, 0, 1, 16) + inner)
+    assert _truetype_face(collection) == ("Cambria", False, False)
+    (tmp_path / "junk.ttf").write_bytes(b"\x00\x01\x00\x00" + b"\xff" * 40)
+    assert _truetype_face(tmp_path / "junk.ttf") is None
+    assert _truetype_face(tmp_path / "missing.ttf") is None
+    windows_arial = Path(r"C:\Windows\Fonts\arial.ttf")
+    if windows_arial.is_file():
+        assert _truetype_face(windows_arial) == ("Arial", False, False)
+    assert _com_font_path(str(regular)) == regular
+    assert _com_font_path(str(tmp_path / "missing.ttf")) is None
