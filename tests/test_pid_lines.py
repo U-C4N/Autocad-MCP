@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from engineering.pid.lines import (
@@ -176,3 +178,41 @@ def test_route_refuses_non_axis_port_directions_with_a_value_error():
     # Equivalent angles and engine float drift still resolve to the axis.
     assert route((0, 0), -360.0, (50, 0), 540.0) == [(0.0, 0.0), (50.0, 0.0)]
     assert route((0, 0), 1e-9, (50, 0), 180.0 - 1e-9) == [(0.0, 0.0), (50.0, 0.0)]
+
+
+# ── Track A hardening (track E wave 0, Task 7): bulge flattening ─────────────
+
+
+@pytest.mark.parametrize("bulge", [1.0, -1.0, 0.5, -0.3, 2.0, 0.2])
+def test_flatten_bulges_matches_ezdxf_flattening(bulge):
+    """Pinned against ezdxf's own arc flattening: same vertex count, same points."""
+    from ezdxf.math import ConstructionArc, Vec2, bulge_to_arc
+
+    from engineering.pid.lines import FLATTEN_SAGITTA, flatten_bulges
+
+    a, b = (0.0, 0.0), (10.0, 0.0)
+    mine = flatten_bulges([a, b], [bulge])
+    centre, start_rad, end_rad, radius = bulge_to_arc(Vec2(a), Vec2(b), bulge)
+    arc = ConstructionArc(
+        center=centre,
+        radius=radius,
+        start_angle=math.degrees(start_rad),
+        end_angle=math.degrees(end_rad),
+    )
+    reference = [(p.x, p.y) for p in arc.flattening(FLATTEN_SAGITTA)]
+    assert len(mine) == len(reference)
+    assert mine[0] == a and mine[-1] == b
+    assert all(math.hypot(p[0] - centre.x, p[1] - centre.y) == pytest.approx(radius) for p in mine)
+    assert mine[len(mine) // 2] == pytest.approx(reference[len(reference) // 2])
+
+
+def test_flatten_bulges_passes_straight_edges_through_and_pads_short_bulge_lists():
+    from engineering.pid.lines import flatten_bulges
+
+    pts = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)]
+    assert flatten_bulges(pts, []) == pts
+    assert flatten_bulges(pts, [0.0, 0.0, 0.0]) == pts
+    flat = flatten_bulges(pts, [0.0, 1.0])
+    assert flat[0] == (0.0, 0.0) and flat[1] == (10.0, 0.0) and flat[-1] == (10.0, 10.0)
+    assert len(flat) > 3, "the second edge became a semicircle of chords"
+    assert flatten_bulges([(1.0, 1.0)], [1.0]) == [(1.0, 1.0)]

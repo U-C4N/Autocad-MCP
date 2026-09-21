@@ -424,3 +424,72 @@ async def test_dry_run_plans_the_same_bubble_exit_as_the_real_run(backend):
     drawn = await run_spec(backend, spec)
     edge = drawn["graph"]["edges"][0]
     assert edge["line_number"] is None, "signal lines from a spec are unnumbered too"
+
+
+# ── Track A hardening (track E wave 0, Task 7) ───────────────────────────────
+
+
+async def test_foreign_line_payloads_are_tolerated_not_raised(backend):
+    """A hand-edited payload with a non-dict ``from``, a ``None`` ``to`` and a
+    bool ``seq`` used to escape as ``TypeError: string indices must be
+    integers``; reader results never raise."""
+    poly = await backend.entity_create_polyline([[0, 0], [10, 0]], layer="PROCESS-PIPING-MAIN")
+    await write_payload(
+        backend,
+        poly.handle,
+        {"v": 1, "kind": "line", "seq": True, "from": "garbage", "to": None, "number": 7},
+    )
+    other = await backend.entity_create_polyline([[0, 5], [10, 5]], layer="PROCESS-PIPING-MAIN")
+    await write_payload(
+        backend,
+        other.handle,
+        {"v": 1, "kind": "line", "seq": "9", "from": {"handle": 3, "port": "x"}, "to": 4},
+    )
+    result = await draw_line(
+        backend, {"x": 0, "y": 50}, {"x": 50, "y": 50}, size="100", service="P"
+    )
+    assert result["line_number"] == "100-P-1", "neither True nor '9' counts as a sequence number"
+    assert result["port_reuse"] == []
+
+
+def test_payload_helpers_accept_only_well_formed_values():
+    from engineering.pid.drawlines import payload_port_refs, payload_seq
+
+    good = {"from": {"handle": "2A", "port": "discharge"}, "to": {"handle": "2B", "port": None}}
+    assert payload_port_refs(good) == [("2A", "discharge")]
+    assert payload_port_refs("garbage") == [] and payload_port_refs(None) == []
+    assert payload_port_refs({"from": "x", "to": 5}) == []
+    assert payload_seq({"seq": 7}) == 7
+    assert payload_seq({"seq": True}) is None and payload_seq({"seq": "9"}) is None
+    assert payload_seq({"seq": 7.0}) is None and payload_seq(None) is None
+
+
+async def test_crossings_follow_a_bulged_line_not_its_chord(backend):
+    """A foreign P&ID line with a semicircular jump (bulge -1 from (0,0) to
+    (100,0) bows to +Y, apex (50,50)): a vertical utility line at x=30 from
+    y=20 to y=60 crosses the arc once at y≈45.8 and its chord never."""
+    msp = backend._msp()
+    msp.add_lwpolyline(
+        [(0, 0, 0, 0, -1.0), (100, 0, 0, 0, 0)],
+        format="xyseb",
+        dxfattribs={"layer": "PROCESS-PIPING-MAIN"},
+    )
+    backend._mark_dirty()
+    lines = await existing_pid_lines(backend)
+    assert lines[0]["vertices"] == [(0.0, 0.0), (100.0, 0.0)]
+    assert lines[0]["bulges"] == [-1.0, 0.0]
+    result = await draw_line(backend, {"x": 30, "y": 20}, {"x": 30, "y": 60}, line_class="utility")
+    assert result["crossings"] == 1
+    below = await draw_line(backend, {"x": 70, "y": -20}, {"x": 70, "y": -60}, line_class="utility")
+    assert below["crossings"] == 0, "the chord side of the arc is empty"
+
+
+async def test_com_existing_lines_carry_bulges(monkeypatch):
+    payload = line_payload("process_major", "100-P-7", "100", "P", None, None, 7, None, None)
+    poly = _com_pid_polyline("3E", (0.0, 0.0, 100.0, 0.0), payload)
+    poly.Length = 157.0796  # a semicircle: longer than the 100 mm chord walk
+    poly.GetBulge = lambda index: -1.0 if index == 0 else 0.0
+    backend = _fake_com(monkeypatch, [poly])
+    lines = await existing_pid_lines(backend)
+    assert lines[0]["vertices"] == [(0.0, 0.0), (100.0, 0.0)]
+    assert lines[0]["bulges"] == [-1.0, 0.0]

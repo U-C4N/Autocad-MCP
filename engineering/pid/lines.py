@@ -238,6 +238,53 @@ def marker_positions(vertices, min_len: float = 15.0) -> list[tuple[float, float
     return out
 
 
+#: Max chord deviation (mm) when a bulged polyline edge is flattened for the
+#: crossing test — a tenth of the thinnest ISO 128 lineweight.
+FLATTEN_SAGITTA = 0.05
+
+
+def flatten_bulges(points, bulges, sagitta: float = FLATTEN_SAGITTA) -> list[Point]:
+    """The polyline as straight segments, every bulged edge replaced by chords
+    that deviate from the arc by at most ``sagitta``.
+
+    Same arc arithmetic as ``engineering/measure.py`` (sweep ``4·atan(bulge)``,
+    radius ``chord / 2·sin(|sweep|/2)``) and ``graph._point_segment_distance``
+    (centre on the chord's left normal, ``radius - sagitta`` carrying it across
+    the chord past a semicircle). Checked against ``ezdxf.math.bulge_to_arc``
+    + ``ConstructionArc.flattening`` in ``tests/test_pid_lines.py``: identical
+    vertex count and positions to 1e-12 for bulges 0.2 … 2.0 of either sign.
+    A straight edge (bulge 0) is passed through; ``bulges`` shorter than the
+    edge count is padded with zeros.
+    """
+    pts = [(float(x), float(y)) for x, y in points]
+    if len(pts) < 2:
+        return pts
+    out: list[Point] = []
+    for i, (a, b) in enumerate(zip(pts, pts[1:], strict=False)):
+        out.append(a)
+        bulge = float(bulges[i]) if i < len(bulges) and bulges[i] else 0.0
+        chord = _dist(a, b)
+        if abs(bulge) < 1e-12 or chord < 1e-12:
+            continue
+        theta = 4.0 * math.atan(bulge)  # signed sweep, radians
+        radius = chord / (2.0 * math.sin(abs(theta) / 2.0))
+        sag = abs(bulge) * chord / 2.0
+        nx, ny = -(b[1] - a[1]) / chord, (b[0] - a[0]) / chord  # left of a→b
+        offset = (radius - sag) * (1.0 if bulge > 0 else -1.0)
+        cx = (a[0] + b[0]) / 2.0 + offset * nx
+        cy = (a[1] + b[1]) / 2.0 + offset * ny
+        start = math.atan2(a[1] - cy, a[0] - cx)
+        if sagitta >= radius:
+            segments = 1
+        else:
+            segments = max(1, math.ceil(abs(theta) / (2.0 * math.acos(1.0 - sagitta / radius))))
+        for k in range(1, segments):
+            angle = start + theta * k / segments
+            out.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+    out.append(pts[-1])
+    return out
+
+
 def _orient(a: Point, b: Point, c: Point) -> float:
     return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
 
