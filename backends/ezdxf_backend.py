@@ -1513,6 +1513,16 @@ class EzdxfBackend(AutoCADBackend):
         the geometry that viewport shows, and geometry outside the window is
         correctly left out. What is genuinely missing is the viewport *border*,
         which the headless renderer does not draw.
+
+        ``layout=None`` and ``layout="Model"`` both mean model space, as the
+        tool advertises and as the COM engine plots. This used to route them
+        through ``_msp()``, which follows the *current* tab, so with a sheet
+        current the "Model" PDF was that sheet's paper-space content — a wrong
+        page with no refusal. Measured: circle in model space, 390 x 270
+        rectangle on an A3 sheet, sheet current — the Model row's /MediaBox
+        was 176.1 x 121.9 mm (the rectangle's aspect) instead of the circle's
+        121.9 x 121.9. The target is now ``doc.modelspace()`` whichever tab
+        is current.
         """
 
         def _sync():
@@ -1523,7 +1533,7 @@ class EzdxfBackend(AutoCADBackend):
                     return {"ok": False, "error": f"Layout not found: {layout}"}
                 target = doc.layouts.get(resolved)
             else:
-                target = self._msp()
+                target = doc.modelspace()
             try:
                 from ezdxf.addons.drawing import Frontend, RenderContext
                 from ezdxf.addons.drawing.matplotlib import MatplotlibBackend

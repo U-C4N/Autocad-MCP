@@ -102,14 +102,33 @@ async def test_a_fresh_drawing_plots_its_one_default_sheet_at_the_dxf_default_si
     assert row["path"].endswith("Layout1.pdf") and row["paper"] == "ISO_A3"
 
 
-async def test_model_is_named_to_the_engine_even_when_a_sheet_is_current(backend, tmp_path):
-    """The Model row must be model space whichever tab is current. On COM the
-    export used to plot ``ActiveLayout`` for ``layout=None``, so with a sheet
-    current the "Model" PDF was that sheet again; batch_plot now names the
-    layout for every row, Model included."""
-    pytest.importorskip("matplotlib", reason="rendering needs the [pdf] extra")
-    await _two_sheets(backend)
+async def _model_circle_and_sheet_rectangle(backend):
+    """Distinct geometry per space, told apart by the PDF's aspect ratio: a
+    circle in model space (a square page) and a 390 x 270 rectangle on the A3
+    sheet (a landscape page)."""
+    await backend.entity_create_circle(50, 50, 25)
+    await backend.layout_rename("Layout1", "A3")
+    await backend.page_setup_apply("A3", resolve_page_setup("ISO_A3", "landscape"))
     await backend.layout_set_current("A3")
+    await backend.entity_create_polyline([[10, 10], [400, 10], [400, 280], [10, 280]], closed=True)
+
+
+def _aspect(mediabox_mm):
+    width, height = mediabox_mm
+    return width / height
+
+
+async def test_the_model_row_is_model_space_even_when_a_sheet_is_current(backend, tmp_path):
+    """The Model row must be model space whichever tab is current — proven by
+    content, not by the row's shape. The headless export used to route the
+    model target through ``_msp()`` (the *current* tab), so with a sheet
+    current the "Model" PDF was that sheet's paper-space content: measured
+    176.1 x 121.9 mm (the rectangle's aspect) against 121.9 x 121.9 (the
+    circle) with Model current. COM had the mirror defect (``ActiveLayout``
+    for ``layout=None``). batch_plot names the layout for every row, Model
+    included, and the engine honours the name."""
+    pytest.importorskip("matplotlib", reason="rendering needs the [pdf] extra")
+    await _model_circle_and_sheet_rectangle(backend)
     seen: list[str | None] = []
     original = backend.drawing_export_pdf
 
@@ -118,10 +137,39 @@ async def test_model_is_named_to_the_engine_even_when_a_sheet_is_current(backend
         return await original(path, layout=layout)
 
     backend.drawing_export_pdf = _recording
-    result = await batch_plot(backend, ["Model", "A3"], str(tmp_path))
+    with_sheet_current = await batch_plot(backend, ["Model", "A3"], str(tmp_path / "sheet"))
     assert seen == ["Model", "A3"]
-    assert result["ok"] and result["sheets"][0]["paper"] is None
-    assert result["sheets"][1]["paper"] == "ISO_A3"
+    await backend.layout_set_current("Model")
+    with_model_current = await batch_plot(backend, ["Model"], str(tmp_path / "model"))
+
+    model_row = with_sheet_current["sheets"][0]
+    assert with_sheet_current["ok"] and model_row["paper"] is None
+    assert model_row["mediabox_mm"] == pytest.approx(
+        with_model_current["sheets"][0]["mediabox_mm"], abs=0.05
+    ), "the Model row changed with the current tab"
+    assert _aspect(model_row["mediabox_mm"]) == pytest.approx(1.0, abs=0.02), (
+        "the Model row is the circle (square page), not the sheet's rectangle"
+    )
+    a3_row = with_sheet_current["sheets"][1]
+    assert a3_row["paper"] == "ISO_A3"
+    assert _aspect(a3_row["mediabox_mm"]) == pytest.approx(420 / 297, abs=0.02)
+
+
+async def test_export_pdf_without_a_layout_is_model_space_even_when_a_sheet_is_current(
+    backend, tmp_path
+):
+    """``drawing_export_pdf(path)`` advertises model space as its default; a
+    current sheet must not turn it into that sheet."""
+    pytest.importorskip("matplotlib", reason="rendering needs the [pdf] extra")
+    from engineering.standards.plot import read_mediabox
+
+    await _model_circle_and_sheet_rectangle(backend)
+    default = tmp_path / "default.pdf"
+    named = tmp_path / "named.pdf"
+    assert (await backend.drawing_export_pdf(str(default)))["ok"]
+    assert (await backend.drawing_export_pdf(str(named), layout="Model"))["ok"]
+    assert read_mediabox(str(default)) == pytest.approx(read_mediabox(str(named)), abs=0.05)
+    assert _aspect(read_mediabox(str(default))) == pytest.approx(1.0, abs=0.02)
 
 
 async def test_a_sheet_the_engine_cannot_plot_is_a_failed_row_not_a_lost_batch(backend, tmp_path):

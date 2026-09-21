@@ -37,7 +37,10 @@ async def batch_plot(
 
     ``layouts=None`` plots every paper-space layout; ``Model`` is plotted only
     when named, and is passed to the engine by name so the model row is model
-    space whichever tab is current. A sheet the engine cannot plot, or reports
+    space whichever tab is current — both engines honour the name (COM plots
+    the Model tab; ezdxf renders ``doc.modelspace()``, not the current tab;
+    ``tests/test_batch_plot.py`` proves it by content on the headless engine).
+    A sheet the engine cannot plot, or reports
     plotted without a file, is a per-row ``ok: False`` with its ``error``; the
     rows before it stay. Refuses (``ValueError``, before any PDF is written): an empty
     list, a layout that does not exist, a pattern with a path separator, and
