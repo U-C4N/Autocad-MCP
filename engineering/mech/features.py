@@ -121,6 +121,111 @@ def mirror_about_x(prims: Iterable[Prim]) -> tuple[Prim, ...]:
     return tuple(out)
 
 
+# -- cutting-line chords -----------------------------------------------------
+#
+# A section plane meets a feature along a *chord*, not along the feature's
+# bounding box. The difference is not cosmetic: a plane 4.9 mm off the centre
+# of a 10 mm hole cuts a 1.990 mm chord, and the box would punch the whole
+# 10 mm out of the cut face - a wrong hatched area and a wrong drawn outline at
+# the same time. Every function here returns parameters measured along ``unit``
+# from ``p1``, on the infinite line; the caller clips them to its own leg.
+
+
+def _box_around(center, radius: float) -> tuple[float, float, float, float]:
+    """The axis-aligned box of a circle - what ``removal_box`` reports, and
+    exactly why a cut face may not be built from it (see ``cut_spans``)."""
+    x, y = float(center[0]), float(center[1])
+    return (x - radius, y - radius, x + radius, y + radius)
+
+
+def _merge_spans(spans) -> tuple[tuple[float, float], ...]:
+    """Sorted, non-overlapping spans. A union, so a shape built from several
+    pieces (a slot is two circles and a rectangle) reports one interval."""
+    items = sorted((float(a), float(b)) for a, b in spans if float(b) - float(a) > _EPS)
+    out: list[list[float]] = []
+    for a, b in items:
+        if out and a <= out[-1][1] + _EPS:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return tuple((a, b) for a, b in out)
+
+
+def _box_chord(box, p1, unit) -> tuple[tuple[float, float], ...]:
+    """The exact chord of an axis-aligned rectangle (a slab clip, not a corner
+    projection: projecting the four corners onto the line reports the box's
+    whole shadow, which is only the chord when the line is parallel to a side)."""
+    if box is None:
+        return ()
+    low, high = -math.inf, math.inf
+    for axis in (0, 1):
+        direction = float(unit[axis])
+        lo, hi = float(box[axis]), float(box[axis + 2])
+        origin = float(p1[axis])
+        if abs(direction) < 1e-12:
+            if origin < lo - _EPS or origin > hi + _EPS:
+                return ()
+            continue
+        a, b = (lo - origin) / direction, (hi - origin) / direction
+        if a > b:
+            a, b = b, a
+        low, high = max(low, a), min(high, b)
+    return ((low, high),) if high - low > _EPS else ()
+
+
+def _circle_chord(center, radius, p1, unit) -> tuple[tuple[float, float], ...]:
+    """``2*sqrt(r**2 - d**2)`` about the foot of the perpendicular - exact, and
+    empty when the line only grazes the circle."""
+    dx, dy = float(center[0]) - float(p1[0]), float(center[1]) - float(p1[1])
+    along = dx * unit[0] + dy * unit[1]
+    off = -dx * unit[1] + dy * unit[0]
+    inside = float(radius) * float(radius) - off * off
+    if inside <= _EPS:
+        return ()
+    half = math.sqrt(inside)
+    return ((along - half, along + half),)
+
+
+def _rotated_box_chord(center, half_u, half_v, angle_deg, p1, unit):
+    """The exact chord of a rectangle rotated about its own centre: the line is
+    taken into the rectangle's frame and slab-clipped there."""
+    theta = math.radians(float(angle_deg))
+    cos, sin = math.cos(theta), math.sin(theta)
+    dx, dy = float(p1[0]) - float(center[0]), float(p1[1]) - float(center[1])
+    origin = (dx * cos + dy * sin, -dx * sin + dy * cos)
+    direction = (unit[0] * cos + unit[1] * sin, -unit[0] * sin + unit[1] * cos)
+    return _box_chord((-half_u, -half_v, half_u, half_v), origin, direction)
+
+
+def _polygon_chord(points, p1, unit, *, what: str = "the removed outline"):
+    """The intervals of the line that lie inside a simple polygon.
+
+    Crossings are paired in order, exact for a polygon the line crosses
+    transversally. A line through a vertex gives an odd count and is refused
+    rather than paired wrong - the same rule the outline itself follows.
+    """
+    ts: list[float] = []
+    count = len(points)
+    for index in range(count):
+        ax, ay = points[index]
+        bx, by = points[(index + 1) % count]
+        ex, ey = bx - ax, by - ay
+        denominator = ex * unit[1] - ey * unit[0]
+        if abs(denominator) < 1e-12:
+            continue
+        s = ((p1[0] - ax) * unit[1] - (p1[1] - ay) * unit[0]) / denominator
+        if -1e-9 <= s <= 1.0 + 1e-9:
+            px, py = ax + s * ex, ay + s * ey
+            ts.append((px - p1[0]) * unit[0] + (py - p1[1]) * unit[1])
+    ts = sorted({round(t, 9) for t in ts})
+    if len(ts) % 2 != 0:
+        raise ValueError(
+            f"section: the cutting plane grazes a vertex of {what}, so its crossings cannot "
+            "be paired. Move the plane off the vertex rather than accept a guessed cut face."
+        )
+    return tuple((ts[i], ts[i + 1]) for i in range(0, len(ts), 2))
+
+
 def _number(value: Any, path: str, *, positive: bool = True) -> float:
     try:
         number = float(value)
@@ -287,6 +392,38 @@ class _Base:
         return ()
 
     def removal_box(self, part) -> tuple[float, float, float, float] | None:
+        return None
+
+    def cut_spans(self, part, p1, unit) -> tuple[tuple[float, float], ...]:
+        """Where a cutting line lies inside the material this feature removes.
+
+        Parameters along ``unit`` measured from ``p1``, in the front view's own
+        plane. The default is the exact chord of ``removal_box``, which is the
+        truth for a feature whose removal really is a rectangle. A feature
+        whose removal is a circle or an obround **must** override this: the
+        chord of a hole shrinks to nothing as the plane leaves its centre,
+        while its bounding box stays the full diameter wide, so a box-based cut
+        face shows an 8 mm gap through solid material where the plane merely
+        grazes the hole.
+        """
+        return _box_chord(self.removal_box(part), p1, unit)
+
+    def cross_section(self, part, station: float) -> dict | None:
+        """This feature's shape in a **transverse** cut face at ``station``.
+
+        ``{"start_deg", "end_deg", "path", "radius"}`` - the outer boundary of
+        the cut face keeps its arc from ``start_deg`` counter-clockwise to
+        ``end_deg`` (the material that survives the feature) and is closed by
+        ``path``, a polyline running from the point at ``start_deg`` to the
+        point at ``end_deg``, which the engine walks backwards to close the
+        loop. ``radius`` is the outside radius the record was built on, so the
+        engine can refuse to graft it onto a face of another size rather than
+        draw a notch that does not reach the surface.
+
+        ``None`` means the feature has no transverse projection here. If the
+        plane really passes through it, the honesty rule reports it instead of
+        hatching over it.
+        """
         return None
 
     def radial_edit(self, part) -> tuple[dict, ...]:
@@ -559,6 +696,27 @@ class Keyway(_Base):
                 f"depth {table['depth_shaft']} mm is not smaller than the radius {radius} mm."
             )
 
+    def _notch(self, part) -> dict:
+        """The notch the slot cuts out of the round section, once.
+
+        The end view draws it and a transverse cut face closes on it, so both
+        come out of this one calculation and cannot disagree. ``Arc`` is CCW
+        from start to end, so the shaft that SURVIVES the slot runs from the
+        left notch wall the long way round to the right one; emitting
+        (right -> left) would draw the ~31 degree cap over the opening instead
+        of the ~329 degrees of material.
+        """
+        _xa, _xb, radius, width, depth = self._span(part)
+        half = width / 2.0
+        top = math.sqrt(max(radius * radius - half * half, 0.0))
+        floor = radius - depth
+        return {
+            "radius": radius,
+            "start_deg": math.degrees(math.atan2(top, -half)) % 360.0,
+            "end_deg": math.degrees(math.atan2(top, half)) % 360.0,
+            "path": ((-half, top), (-half, floor), (half, floor), (half, top)),
+        }
+
     def prims(self, part, view: str, ctx: dict) -> tuple[Prim, ...]:
         part = _require_revolved(part, "Keyway")
         xa, xb, radius, width, depth = self._span(part)
@@ -570,22 +728,21 @@ class Keyway(_Base):
                 Line((xb, floor), (xb, radius), "visible"),
             )
         if view == "side":
-            half = width / 2.0
-            top = math.sqrt(max(radius * radius - half * half, 0.0))
-            floor = radius - depth
-            right = math.degrees(math.atan2(top, half)) % 360.0
-            left = math.degrees(math.atan2(top, -half)) % 360.0
-            # `Arc` is CCW from start to end, so the shaft that SURVIVES the slot
-            # runs from the left notch wall the long way round to the right one.
-            # Emitting (right -> left) would draw the ~31 degree cap over the
-            # opening instead of the ~329 degrees of material.
+            notch = self._notch(part)
+            path = notch["path"]
             return (
-                Arc((0.0, 0.0), radius, left, right, "visible"),
-                Line((-half, top), (-half, floor), "visible"),
-                Line((-half, floor), (half, floor), "visible"),
-                Line((half, floor), (half, top), "visible"),
+                Arc((0.0, 0.0), radius, notch["start_deg"], notch["end_deg"], "visible"),
+                *(Line(path[index], path[index + 1], "visible") for index in range(len(path) - 1)),
             )
         return ()
+
+    def cross_section(self, part, station: float) -> dict | None:
+        """The notch, when the transverse plane falls inside the slot's length."""
+        part = _require_revolved(part, "Keyway")
+        xa, xb, _radius, _width, _depth = self._span(part)
+        if not xa - _EPS <= float(station) <= xb + _EPS:
+            return None
+        return self._notch(part)
 
     def removal_box(self, part):
         xa, xb, radius, _, depth = self._span(part)
@@ -1543,10 +1700,26 @@ class Hole(_Base):
         return ()
 
     def removal_box(self, part):
-        x, y = float(self.x), float(self.y)
+        return _box_around(self._centre(), self._outer_radius())
+
+    def _centre(self) -> tuple[float, float]:
+        return (float(self.x), float(self.y))
+
+    def _outer_radius(self) -> float:
+        """The widest circle the plane can meet: the drill, or a counterbore or
+        countersink that is wider than it."""
         extras = [float(v) / 2.0 for v in (self.cbore_d, self.csink_d) if v is not None]
-        outer = max([float(self.diameter) / 2.0, *extras])
-        return (x - outer, y - outer, x + outer, y + outer)
+        return max([float(self.diameter) / 2.0, *extras])
+
+    def cut_spans(self, part, p1, unit):
+        """The true chord of the drilled circle, not the square that bounds it.
+
+        On an 80x50x8 plate with a 10 mm hole at (40, 25): a plane at y=29.9
+        grazes the hole and cuts a 1.990 mm chord, leaving 624.08 mm2 of cut
+        face. The bounding box reports 10 mm at every offset and hatches
+        560 mm2 - a 64 mm2 error, with an 8 mm gap drawn through solid metal.
+        """
+        return _circle_chord(self._centre(), self._outer_radius(), p1, unit)
 
     def dims(self, part, view: str, ctx: dict) -> tuple[DimIntent, ...]:
         if view != "front":
@@ -1659,6 +1832,22 @@ class Slot(_Base):
         ys = (c1[1] - half, c1[1] + half, c2[1] - half, c2[1] + half)
         return (min(xs), min(ys), max(xs), max(ys))
 
+    def cut_spans(self, part, p1, unit):
+        """The true chord of the obround: the union of its two end circles and
+        the rectangle between them. The bounding box of an angled slot is far
+        wider than the slot itself, so the box would erase material the slot
+        never touches."""
+        (c1, c2, half) = self._ends()
+        middle = ((c1[0] + c2[0]) / 2.0, (c1[1] + c2[1]) / 2.0)
+        run = math.dist(c1, c2)
+        return _merge_spans(
+            [
+                *_circle_chord(c1, half, p1, unit),
+                *_circle_chord(c2, half, p1, unit),
+                *_rotated_box_chord(middle, run / 2.0, half, float(self.angle), p1, unit),
+            ]
+        )
+
     def dims(self, part, view: str, ctx: dict) -> tuple[DimIntent, ...]:
         if view != "front":
             return ()
@@ -1739,6 +1928,16 @@ class Pocket(_Base):
                 Line((u1, floor), (u1, face), "hidden"),
             )
         return ()
+
+    def cut_spans(self, part, p1, unit):
+        """The chord of the pocket's own outline, not of the box around it: a
+        pocket is only rectangular when its outline is."""
+        return _polygon_chord(
+            tuple((float(x), float(y)) for x, y in self.outline),
+            p1,
+            unit,
+            what=f"pocket {self.id!r}",
+        )
 
     def removal_box(self, part):
         xs = [float(x) for x, _ in self.outline]

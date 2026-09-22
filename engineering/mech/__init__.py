@@ -83,6 +83,7 @@ from .views import (
     normalise_plane,
     outline_prims,
     radial_profile,
+    section_profile_prims,
     section_view,
     silhouette_prims,
 )
@@ -155,6 +156,7 @@ __all__ = [
     "radial_profile",
     "rotate",
     "scale",
+    "section_profile_prims",
     "section_view",
     "segment_bounds",
     "silhouette_prims",

@@ -29,8 +29,6 @@ from engineering.mech.features import mirror_about_x
 from engineering.mech.part import (
     PrismaticPart,
     RevolvedPart,
-    inner_radius_at,
-    outer_radius_at,
     outline_bbox,
     part_length,
     part_max_diameter,
@@ -259,24 +257,18 @@ def _emit_path(points: list[Pt], edits: list[dict], role: str, *, closed: bool =
     return tuple(prims), used
 
 
-def silhouette_prims(part: RevolvedPart) -> tuple[tuple[Prim, ...], tuple[dict, ...]]:
-    """The mirrored half-outline (end faces included), the bore, and any unplaced edit."""
-    bands = radial_profile(part)
+def _corner_edits(part: RevolvedPart) -> list[dict]:
+    """Every feature's silhouette corner substitution, tagged with its owner."""
     edits: list[dict] = []
     for feature in part.features:
         edit = feature.corner_edit(part)
         if edit is not None:
             edits.append({**edit, "owner": feature.id})
+    return edits
 
-    upper, used = _emit_path(_outer_path(bands), edits, "visible")
-    prims: list[Prim] = list(upper) + list(mirror_about_x(upper))
 
-    for run in _bore_path(bands):
-        bore, _ = _emit_path(run, [], "hidden")
-        prims.extend(bore)
-        prims.extend(mirror_about_x(bore))
-
-    unplaced = tuple(
+def _unplaced(edits: list[dict], used: set[str]) -> tuple[dict, ...]:
+    return tuple(
         {
             "feature": edit["owner"],
             "reason": (
@@ -287,7 +279,54 @@ def silhouette_prims(part: RevolvedPart) -> tuple[tuple[Prim, ...], tuple[dict, 
         for edit in edits
         if edit["owner"] not in used
     )
-    return tuple(prims), unplaced
+
+
+def silhouette_prims(part: RevolvedPart) -> tuple[tuple[Prim, ...], tuple[dict, ...]]:
+    """The mirrored half-outline (end faces included), the bore, and any unplaced edit."""
+    bands = radial_profile(part)
+    edits = _corner_edits(part)
+
+    upper, used = _emit_path(_outer_path(bands), edits, "visible")
+    prims: list[Prim] = list(upper) + list(mirror_about_x(upper))
+
+    for run in _bore_path(bands):
+        bore, _ = _emit_path(run, [], "hidden")
+        prims.extend(bore)
+        prims.extend(mirror_about_x(bore))
+
+    return tuple(prims), _unplaced(edits, used)
+
+
+def section_profile_prims(
+    part: RevolvedPart, *, half: bool = False
+) -> tuple[tuple[Prim, ...], tuple[dict, ...]]:
+    """The longitudinal **cut** outline of a revolved part.
+
+    Every edge of this outline lies in the cutting plane, so every edge is a
+    continuous line: ISO 128-50 bounds a surface lying in the cutting plane
+    with a continuous wide line, and ISO 128-3 leaves hidden detail out of a
+    sectional view altogether. The bore wall is the case that matters - the
+    un-cut silhouette draws it dashed because material hides it, but in a
+    section it *is* the cut face's own boundary, and drawing the hatch loop and
+    a dashed line on the same coordinates is the one thing a section must not
+    do. ``half=True`` keeps the dashed bore on the -Y half, which is the half a
+    half section does not cut.
+    """
+    bands = radial_profile(part)
+    edits = _corner_edits(part)
+
+    upper, used = _emit_path(_outer_path(bands), edits, "visible")
+    prims: list[Prim] = list(upper) + list(mirror_about_x(upper))
+
+    for run in _bore_path(bands):
+        bore, _ = _emit_path(run, [], "visible")
+        prims.extend(bore)
+        mirrored = mirror_about_x(bore)
+        if half:
+            mirrored = tuple(prim._replace(role="hidden") for prim in mirrored)
+        prims.extend(mirrored)
+
+    return tuple(prims), _unplaced(edits, used)
 
 
 def outline_prims(part: PrismaticPart) -> tuple[tuple[Prim, ...], tuple[dict, ...]]:
@@ -720,6 +759,54 @@ def _inner_path(bands: tuple[Band, ...]) -> list[Pt]:
     return points
 
 
+def _arc_loop_points(
+    radius: float, start_deg: float, end_deg: float, *, center: Pt = (0.0, 0.0)
+) -> tuple[Pt, ...]:
+    """An arc as points, at the same 2 degree chord ``CIRCLE_SEGMENTS`` states.
+
+    Endpoints are exact, so a loop built from an arc plus a polyline closes on
+    the polyline's own corners.
+    """
+    sweep = (float(end_deg) - float(start_deg)) % 360.0
+    if sweep <= _EPS:
+        sweep = 360.0
+    count = max(1, math.ceil(sweep / (360.0 / CIRCLE_SEGMENTS) - 1e-9))
+    out: list[Pt] = []
+    for step in range(count + 1):
+        angle = math.radians(float(start_deg) + sweep * step / count)
+        out.append((center[0] + radius * math.cos(angle), center[1] + radius * math.sin(angle)))
+    return tuple(out)
+
+
+def _flatten_path(prims) -> tuple[Pt, ...]:
+    """A contiguous run of ``Line``/``Arc`` primitives as a point path.
+
+    This is what makes the drawn outline and the hatched loop **one**
+    calculation rather than two that agree by inspection: the loop is the
+    emitted outline, flattened, so a chamfer or a fillet that substitutes a
+    silhouette corner substitutes it in the cut face too.
+    """
+    points: list[Pt] = []
+
+    def push(point: Pt) -> None:
+        pt = (float(point[0]), float(point[1]))
+        if not points or math.dist(points[-1], pt) > _EPS:
+            points.append(pt)
+
+    for prim in prims:
+        if isinstance(prim, Line):
+            push(prim.p1)
+            push(prim.p2)
+        elif isinstance(prim, Arc):
+            for point in _arc_loop_points(
+                prim.radius, prim.start_deg, prim.end_deg, center=prim.center
+            ):
+                push(point)
+        else:  # pragma: no cover - only an outline path is ever flattened
+            raise TypeError(f"_flatten_path: {type(prim).__name__} is not a path primitive.")
+    return tuple(points)
+
+
 def _circle_loop(radius: float, *, reverse: bool = False) -> tuple[Pt, ...]:
     steps = range(CIRCLE_SEGMENTS - 1, -1, -1) if reverse else range(CIRCLE_SEGMENTS)
     return tuple(
@@ -779,17 +866,6 @@ def _chords(outline, p1: Pt, unit: Pt) -> list[tuple[float, float]]:
     return [(ts[i], ts[i + 1]) for i in range(0, len(ts), 2)]
 
 
-def _box_span(box, p1: Pt, unit: Pt, normal: Pt):
-    xs = (box[0], box[2])
-    ys = (box[1], box[3])
-    corners = [(x, y) for x in xs for y in ys]
-    distances = [(x - p1[0]) * normal[0] + (y - p1[1]) * normal[1] for x, y in corners]
-    if min(distances) > 1e-9 or max(distances) < -1e-9:
-        return None
-    spans = [(x - p1[0]) * unit[0] + (y - p1[1]) * unit[1] for x, y in corners]
-    return (min(spans), max(spans))
-
-
 def _plane_legs(plane: dict) -> list[tuple[Pt, Pt]]:
     """The cutting legs of an offset plane.
 
@@ -815,7 +891,6 @@ def _prismatic_cut(part: PrismaticPart, plane: dict, style: str):
         if length < 1e-9:
             continue
         unit = ((end[0] - start[0]) / length, (end[1] - start[1]) / length)
-        normal = (-unit[1], unit[0])
         intervals = _chords(part.outline, start, unit)
         intervals = [(a, b) for a, b in intervals if b > -1e-9 and a < length + 1e-9]
         intervals = [(max(a, 0.0), min(b, length)) for a, b in intervals]
@@ -823,19 +898,20 @@ def _prismatic_cut(part: PrismaticPart, plane: dict, style: str):
 
         pockets: list[tuple[tuple[float, float], float, bool]] = []
         for feature in part.features:
-            box = feature.removal_box(part)
-            if box is None:
-                continue
-            span = _box_span(box, start, unit, normal)
-            if span is None:
-                continue
-            span = (max(span[0], 0.0), min(span[1], length))
-            if span[1] - span[0] <= 1e-9:
-                continue
-            if isinstance(feature, _PocketType):
-                pockets.append((span, thickness - float(feature.depth), feature.no_section_hatch))
-            else:
-                intervals = _subtract(intervals, span)
+            # the feature's own chord, never the box around it: a box punches
+            # the full width of a hole or an angled slot into the cut face
+            # wherever the plane passes, which is a wrong hatched area and a
+            # wrong drawn outline at the same time.
+            for span in feature.cut_spans(part, start, unit):
+                span = (max(span[0], 0.0), min(span[1], length))
+                if span[1] - span[0] <= 1e-9:
+                    continue
+                if isinstance(feature, _PocketType):
+                    pockets.append(
+                        (span, thickness - float(feature.depth), feature.no_section_hatch)
+                    )
+                else:
+                    intervals = _subtract(intervals, span)
 
         for pocket_span, floor, unhatched in pockets:
             intervals = _subtract(intervals, pocket_span)
@@ -854,6 +930,131 @@ def _prismatic_cut(part: PrismaticPart, plane: dict, style: str):
     return rectangles
 
 
+def _band_at(bands: tuple[Band, ...], station: float) -> Band | None:
+    for band in bands:
+        if band.x0 - _TOL <= station <= band.x1 + _TOL:
+            return band
+    return None
+
+
+def _represented_by_the_profile(feature, part, station: float) -> bool:
+    """True when the radial profile already carries this feature at ``station``.
+
+    A groove, an undercut, an axial bore or an ISO 6410 internal thread edits
+    the profile, and the transverse cut face is read off that profile - so the
+    feature is in the face already and must not be reported missing from it.
+    """
+    for edit in feature.radial_edit(part):
+        if float(edit["x0"]) - _TOL <= station <= float(edit["x1"]) + _TOL:
+            return True
+    return False
+
+
+def _transverse_face(part: RevolvedPart, station: float) -> dict:
+    """One transverse cut face: its boundary primitives, its loops, its omissions.
+
+    The radii come from ``radial_profile``, the same one calculation the
+    silhouette and the longitudinal cut face come out of, so a groove or an
+    internal thread at that station is in the face without being asked for.
+    A feature that is *not* axisymmetric is asked for its own ``cross_section``
+    notch; one that the plane really passes through and that has no such record
+    is reported rather than hatched over - a keyed shaft whose cross section
+    came out as a plain hatched disc is exactly the drawing the honesty rule
+    exists to prevent.
+    """
+    bands = radial_profile(part)
+    band = _band_at(bands, station)
+    if band is None:
+        raise ValueError(
+            f"section: the plane at x={station:g} is outside {part.name!r} "
+            f"(0 .. {part_length(part):g} mm)."
+        )
+    span = band.x1 - band.x0
+    fraction = 0.0 if span <= _EPS else (station - band.x0) / span
+    r_out = band.r_out0 + fraction * (band.r_out1 - band.r_out0)
+    r_in = band.r_in
+
+    notch: dict | None = None
+    omitted: list[dict] = []
+    for feature in part.features:
+        record = feature.cross_section(part, station)
+        if record is not None:
+            if notch is not None:
+                omitted.append(
+                    {
+                        "feature": feature.id,
+                        "reason": (
+                            "the cut face already carries another feature's notch; this "
+                            "engine cuts one notch per transverse face"
+                        ),
+                    }
+                )
+                continue
+            measured = float(record["radius"])
+            if abs(measured - r_out) > _TOL:
+                omitted.append(
+                    {
+                        "feature": feature.id,
+                        "reason": (
+                            f"its notch was measured on a {2.0 * measured:g} mm surface but "
+                            f"the cut face at x={station:g} is {2.0 * r_out:g} mm, so the "
+                            "notch would not reach it"
+                        ),
+                    }
+                )
+                continue
+            notch = record
+            continue
+        if _represented_by_the_profile(feature, part, station):
+            continue
+        box = feature.removal_box(part)
+        if box is not None and float(box[0]) - _TOL <= station <= float(box[2]) + _TOL:
+            omitted.append(
+                {
+                    "feature": feature.id,
+                    "reason": (
+                        f"the cutting plane at x={station:g} passes through it, but a "
+                        f"{type(feature).__name__} has no transverse cut-face projection"
+                    ),
+                }
+            )
+        else:
+            omitted.append(
+                {
+                    "feature": feature.id,
+                    "reason": f"it is not on the cutting plane at x={station:g}",
+                }
+            )
+
+    if notch is None:
+        loops: list[tuple[tuple[Pt, ...], bool]] = [(_circle_loop(r_out), True)]
+        prims: list[Prim] = [Circle((0.0, 0.0), r_out, "visible")]
+    else:
+        path = tuple((float(x), float(y)) for x, y in notch["path"])
+        start, end = float(notch["start_deg"]), float(notch["end_deg"])
+        # the material arc plus the notch walls: one boundary, and the loop is
+        # that same boundary sampled, so the hatch cannot cover the notch. The
+        # arc ends where the path ends, so the path is walked backwards to
+        # close the loop, and both of its endpoints are already on the arc.
+        closing = tuple(reversed(path))[1:-1]
+        loops = [(_arc_loop_points(r_out, start, end) + closing, True)]
+        prims = [Arc((0.0, 0.0), r_out, start, end, "visible")]
+        prims.extend(
+            Line(path[index], path[index + 1], "visible") for index in range(len(path) - 1)
+        )
+    if r_in > _EPS:
+        loops.append((_circle_loop(r_in, reverse=True), True))
+        prims.append(Circle((0.0, 0.0), r_in, "visible"))
+
+    return {
+        "r_out": r_out,
+        "r_in": r_in,
+        "loops": tuple(loops),
+        "prims": tuple(prims),
+        "omitted": tuple(omitted),
+    }
+
+
 def cut_loops(part, plane: dict, *, style: str = "full"):
     """The closed cut-face loops, each flagged with whether it is hatched."""
     plane = normalise_plane(plane)
@@ -869,7 +1070,10 @@ def cut_loops(part, plane: dict, *, style: str = "full"):
                     "section: an offset plane has no meaning along a revolved part's axis; "
                     "use style='full' (or a transverse plane for a cross section)."
                 )
-            upper = tuple(_outer_path(bands)) + tuple(reversed(_inner_path(bands)))
+            # the loop is the *emitted* outline flattened, so a chamfer or a
+            # fillet is cut out of the hatched area exactly where it is drawn
+            outline, _used = _emit_path(_outer_path(bands), _corner_edits(part), "visible")
+            upper = _flatten_path(outline) + tuple(reversed(_inner_path(bands)))
             loops = [(upper, True)]
             if name != "half":
                 loops.append((tuple((x, -y) for x, y in upper), True))
@@ -879,13 +1083,7 @@ def cut_loops(part, plane: dict, *, style: str = "full"):
                 "section: a half section is defined on a longitudinal plane through the axis; "
                 "a transverse plane takes style='full' or 'revolved'."
             )
-        station = plane["p1"][0]
-        r_out = outer_radius_at(part, station)
-        r_in = inner_radius_at(part, station)
-        loops = [(_circle_loop(r_out), True)]
-        if r_in > _EPS:
-            loops.append((_circle_loop(r_in, reverse=True), True))
-        return tuple(loops)
+        return _transverse_face(part, plane["p1"][0])["loops"]
 
     if name in ("half", "revolved"):
         raise ValueError(
@@ -920,7 +1118,7 @@ def section_view(
     dims: list[DimIntent] = []
 
     if isinstance(part, RevolvedPart) and _is_longitudinal(plane):
-        body, unplaced = silhouette_prims(part)
+        body, unplaced = section_profile_prims(part, half=name == "half")
         prims.extend(body)
         prims.extend(_axis_prims(part))
         omitted.extend(unplaced)
@@ -932,13 +1130,10 @@ def section_view(
             dims.extend(feature.dims(part, "front", ctx))
     elif isinstance(part, RevolvedPart):
         role = "phantom" if name == "revolved" else "visible"
-        station = plane["p1"][0]
-        r_out = outer_radius_at(part, station)
-        r_in = inner_radius_at(part, station)
-        prims.append(Circle((0.0, 0.0), r_out, role))
-        if r_in > _EPS:
-            prims.append(Circle((0.0, 0.0), r_in, role))
-        over = r_out * (1.0 + AXIS_OVERRUN)
+        face = _transverse_face(part, plane["p1"][0])
+        prims.extend(prim._replace(role=role) for prim in face["prims"])
+        omitted.extend(face["omitted"])
+        over = face["r_out"] * (1.0 + AXIS_OVERRUN)
         prims.append(Line((-over, 0.0), (over, 0.0), "center"))
         prims.append(Line((0.0, -over), (0.0, over), "center"))
     else:
