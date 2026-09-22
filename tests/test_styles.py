@@ -982,6 +982,18 @@ class _FakeDocument:
         self._active_text = style
 
 
+class _FakeApplication:
+    def __init__(self, support):
+        self.Preferences = types.SimpleNamespace(
+            Files=types.SimpleNamespace(SupportPath=str(support))
+        )
+
+    def __getattr__(self, name):
+        if name in ("GetVariable", "SetVariable"):
+            raise AttributeError(f"AutoCAD.Application.{name}")
+        raise AttributeError(name)
+
+
 @pytest.fixture
 def com_backend(monkeypatch, tmp_path):
     pytest.importorskip("win32com.client", reason="pywin32 not installed")
@@ -998,11 +1010,12 @@ def com_backend(monkeypatch, tmp_path):
         (support / font).write_bytes(minimal_sfnt(family, subfamily))
     monkeypatch.setattr(_FakeStyle, "support_folder", support)
     document = _FakeDocument()
-    app = types.SimpleNamespace(
-        Preferences=types.SimpleNamespace(Files=types.SimpleNamespace(SupportPath=str(support))),
-        GetVariable=document.GetVariable,
-        SetVariable=document.SetVariable,
-    )
+    # The Application carries Preferences and nothing that reads or writes a
+    # system variable: ``hasattr(app, "GetVariable") is False`` on AutoCAD
+    # 2026 (measured 2026-09-22). GetVariable / SetVariable are members of
+    # ``_FakeDocument`` only, so a backend path that still goes through the
+    # Application fails here the way it fails live.
+    app = _FakeApplication(support)
     monkeypatch.setattr(module, "_acad_doc", lambda: document)
     monkeypatch.setattr(module, "_acad_app", lambda: app)
     monkeypatch.setattr(module, "_regen", lambda: None)
@@ -1708,14 +1721,60 @@ async def test_com_apply_standard_creates_both_styles_and_sets_units(com_backend
     document.variables.update(
         {"INSUNITS": 1, "LUNITS": 4, "AUNITS": 0, "LTSCALE": 1.0, "DIMSCALE": 1.0}
     )
+    _record_reads(document)
     result = await apply_standard(backend, "iso", layers=False)
     assert result["dimstyle"]["created"] is True and result["textstyle"]["created"] is True
     assert result["settings"]["changed"] == {"INSUNITS": [1, 4], "LUNITS": [4, 2]}
     names = [call[0] for call in document.calls]
-    assert names[0] == "TextStyles.Add" and "DimStyles.Add" in names
+    assert names[:5] == ["GetVariable"] * 5, "every unit variable is read on the document first"
+    assert [c[1] for c in document.calls[:5]] == [
+        "INSUNITS",
+        "LUNITS",
+        "AUNITS",
+        "LTSCALE",
+        "DIMSCALE",
+    ]
+    assert names[5] == "TextStyles.Add" and "DimStyles.Add" in names
     assert ("ActiveTextStyle", "ISOCP") in document.calls
     assert document.ActiveDimStyle.Name == "ISO-25"
     assert document.variables["DIMDSEP"] == "," and document.variables["INSUNITS"] == 4
+
+
+def _record_reads(document):
+    """Log ``GetVariable`` into ``document.calls`` too, so a test can see the
+    reads' place among the writes (the fake logs writes only)."""
+    real_get = document.GetVariable
+
+    def _get(name):
+        document.calls.append(("GetVariable", name))
+        return real_get(name)
+
+    document.GetVariable = _get
+
+
+async def test_com_apply_standard_refuses_before_writing_when_a_sysvar_read_fails(com_backend):
+    """Regression: the units loop ran *after* both styles were created, and its
+    INSUNITS read went through ``AcadApplication.GetVariable`` -- a member the
+    Application does not have -- so on a live seat the call failed with ISO-25
+    and ISOCP already written and current. Every variable the call will write
+    is read first; a read the document refuses is a refusal before any write."""
+    from engineering.standards.apply import apply_standard
+
+    backend, document = com_backend
+    document.variables.update({"INSUNITS": 4, "LUNITS": 2, "AUNITS": 0})  # no LTSCALE
+    _record_reads(document)
+    with pytest.raises(RuntimeError, match="LTSCALE"):
+        await apply_standard(backend, "iso", layers=False)
+    writes = [c for c in document.calls if c[0] != "GetVariable"]
+    assert writes == [], "nothing was created, made current or set"
+    assert [e.Name for e in document.TextStyles.entries] == ["Standard"]
+    assert [e.Name for e in document.DimStyles.entries] == ["Standard"]
+    # ``units=False`` writes no variable, so it reads none and needs none.
+    result = await apply_standard(backend, "iso", layers=False, units=False)
+    assert result["dimstyle"]["created"] is True and result["settings"] == {
+        "changed": {},
+        "applied": False,
+    }
 
 
 # ── profile decision ────────────────────────────────────────────────────────

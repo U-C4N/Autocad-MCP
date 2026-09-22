@@ -73,29 +73,58 @@ async def test_set_variable_coerces_string_to_sysvar_int_type(monkeypatch):
 # ── R23 / N6 — run_lisp guard + value capture ───────────────────────────────
 
 
+class _App:
+    """The ActiveX Application has no sysvar members (measured, AutoCAD 2026:
+    ``hasattr(app, "GetVariable") is False``); CMDACTIVE and USERS1 are read
+    on the document, so this fake refuses the old call shape outright."""
+
+    def __getattr__(self, name):
+        raise AttributeError(f"AutoCAD.Application.{name}")
+
+
 async def test_run_lisp_refuses_when_cmdactive(monkeypatch):
-    app = MagicMock()
-    app.GetVariable.side_effect = lambda n: 1 if n == "CMDACTIVE" else 0
-    monkeypatch.setattr(cb, "_acad_app", lambda: app)
-    monkeypatch.setattr(cb, "_acad_doc", lambda: _Doc())
-
-    b = _backend_no_executor()
-    with pytest.raises(RuntimeError):
-        await b.system_run_lisp("(+ 1 2)")
-
-
-async def test_run_lisp_captures_value_from_users1(monkeypatch):
-    app = MagicMock()
-    app.GetVariable.side_effect = lambda n: {"CMDACTIVE": 0, "USERS1": "3"}.get(n, 0)
     doc = _Doc()
-    monkeypatch.setattr(cb, "_acad_app", lambda: app)
+    doc.SetVariable("CMDACTIVE", 1)
+    monkeypatch.setattr(cb, "_acad_app", lambda: _App())
     monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
 
     b = _backend_no_executor()
+    with pytest.raises(RuntimeError, match="CMDACTIVE"):
+        await b.system_run_lisp("(+ 1 2)")
+    assert doc.sent == [], "nothing reached AutoCAD"
+
+
+async def test_run_lisp_captures_value_from_users1(monkeypatch):
+    doc = _Doc()
+    monkeypatch.setattr(cb, "_acad_app", lambda: _App())
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
+
+    def _send(cmd):
+        doc.sent.append(cmd)
+        if "USERS1" in cmd:
+            doc._vars["USERS1"] = "3"  # what (setvar "USERS1" ...) leaves behind
+
+    doc.SendCommand = _send
+    b = _backend_no_executor()
     out = await b.system_run_lisp("(+ 1 2)")
 
-    assert out["result"] == "3"  # captured, not the bogus "nil"
+    assert out["result"] == "3"  # captured from the document, not the bogus "nil"
     assert any("USERS1" in c for c in doc.sent)  # value stashed out-of-band
+
+
+async def test_run_command_reads_cmdactive_on_the_document(monkeypatch):
+    doc = _Doc()
+    monkeypatch.setattr(cb, "_acad_app", lambda: _App())
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
+
+    b = _backend_no_executor()
+    out = await b.system_run_command("_ZOOM E")
+    assert out == {"ok": True, "command": "_ZOOM E"} and doc.sent == ["_ZOOM E\n"]
+
+    doc.SetVariable("CMDACTIVE", 1)
+    with pytest.raises(RuntimeError, match="CMDACTIVE=1"):
+        await b.system_run_command("_ZOOM E")
+    assert doc.sent == ["_ZOOM E\n"], "a busy seat gets nothing new"
 
 
 # ── R16 — transaction flag cleared even on error ────────────────────────────

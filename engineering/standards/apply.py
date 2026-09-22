@@ -62,10 +62,28 @@ async def apply_standard(
     Every item reports whether it was created or already present; ``settings``
     reports only the variables that moved. An existing style of the standard's
     name is used as it is — ``dimstyle_modify`` changes one on purpose.
+
+    Every system variable the call will write is read *before* the first
+    style is created, so a read the engine refuses is a refusal with nothing
+    written. (The units loop used to run after both styles; on the live
+    engine its INSUNITS read went through a member the ActiveX Application
+    does not have, so the call failed with ISO-25 and ISOCP already created
+    and current.)
     """
     key, row = resolve_standard(standard)
     if not isinstance(layers, bool) or not isinstance(units, bool):
         raise TypeError("layers and units must be booleans")
+
+    current: dict[str, Any] = {}
+    if units:
+        for var, _value in STANDARD_SYSVARS:
+            try:
+                current[var] = await backend.system_get_variable(var)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"apply_standard: could not read {var} before writing "
+                    f"({exc}); nothing was changed"
+                ) from exc
 
     text_names = {entry["name"].lower() for entry in await backend.textstyle_list()}
     textstyle_created = row["textstyle"].lower() not in text_names
@@ -86,7 +104,7 @@ async def apply_standard(
     changed: dict[str, list] = {}
     if units:
         for var, value in STANDARD_SYSVARS:
-            old = await backend.system_get_variable(var)
+            old = current[var]
             if _same(old, value):
                 continue
             await backend.system_set_variable(var, value)

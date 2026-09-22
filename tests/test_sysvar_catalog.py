@@ -369,7 +369,7 @@ async def test_set_variable_tool_refuses_before_a_live_backend_is_called(monkeyp
 
     calls: list[tuple] = []
 
-    class _App:
+    class _Doc:  # the sysvar host is AcadDocument; the Application has no such members
         def GetVariable(self, name):
             calls.append(("GetVariable", name))
             return 2
@@ -377,7 +377,7 @@ async def test_set_variable_tool_refuses_before_a_live_backend_is_called(monkeyp
         def SetVariable(self, name, value):
             calls.append(("SetVariable", name, value))
 
-    monkeypatch.setattr(module, "_acad_app", lambda: _App())
+    monkeypatch.setattr(module, "_acad_doc", lambda: _Doc())
     backend = module.ComBackend()
 
     async def _run_inline(func, *args, **kwargs):

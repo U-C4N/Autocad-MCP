@@ -4,13 +4,16 @@
 each have exactly ONE caller, both of them the COM-only free-text escape hatch
 into SendCommand. The policy is scoped to the CHANNEL." That premise was false.
 
-`_ensure_linetype_loaded` builds ``_-LINETYPE _LOAD {name} {lin_file}`` and
-hands it to `doc.SendCommand`, and it is reached from the ``linetype=``
+`_ensure_linetype_loaded` built ``_-LINETYPE _LOAD {name} {lin_file}`` and
+handed it to `doc.SendCommand`, and it is reached from the ``linetype=``
 argument of every COM entity-creation and layer tool — plus
-`ComBackend.linetype_load`, which interpolates a caller-supplied *file path*
+`ComBackend.linetype_load`, which interpolated a caller-supplied *file path*
 as well. SendCommand treats a newline and ``;`` as segment separators, so a
 linetype name carrying either injects further AutoCAD commands, and the 36-verb
-denylist and `DANGEROUS_COMMANDS_ENABLED` never see that channel at all.
+denylist and `DANGEROUS_COMMANDS_ENABLED` never see that channel at all. (Both
+loaders now call the ActiveX ``Linetypes.Load`` member, which takes the name
+as data; the guard stays in front of it, since a name the DXF rule refuses was
+never a loadable linetype.)
 
 The guard here is the DXF symbol-name rule rather than a bespoke blocklist:
 AutoCAD already forbids these characters in a table name, so anything this

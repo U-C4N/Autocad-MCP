@@ -365,11 +365,13 @@ def sanitize_lisp(expression: str) -> str:
 #
 # The scoped-to-the-CHANNEL argument above assumed `sanitize_command` and
 # `sanitize_lisp` were the only routes into SendCommand. They were not.
-# `_ensure_linetype_loaded` builds `_-LINETYPE _LOAD {name} {file}` from a
-# caller's `linetype=` argument, and `ComBackend.linetype_load` adds a
+# `_ensure_linetype_loaded` built `_-LINETYPE _LOAD {name} {file}` from a
+# caller's `linetype=` argument, and `ComBackend.linetype_load` added a
 # caller-supplied path. SendCommand takes a whole macro and treats a newline
 # and `;` as segment separators, so either string could append commands that
-# the 36-verb denylist never sees.
+# the 36-verb denylist never sees. (v1.6 moved both loaders to the ActiveX
+# `Linetypes.Load` member, which takes the name as data; the guard stays,
+# because a name this rule refuses was never a loadable linetype either.)
 #
 # The guard is the DXF symbol-name rule rather than a second blocklist. AutoCAD
 # already forbids these characters in a table name, so nothing this rejects was

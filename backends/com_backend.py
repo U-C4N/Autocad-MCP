@@ -365,41 +365,74 @@ def _summaryinfo_error_is(exc: BaseException, scode: int, description: str) -> b
     return code == scode or desc.strip().casefold() == description.casefold()
 
 
+def _com_error_description(exc: BaseException) -> str:
+    """The English excepinfo description of a `com_error`, else ``str(exc)``.
+
+    The HRESULT text is localised (``'Özel durum oluştu.'`` on a Turkish
+    seat) while the excepinfo description is AutoCAD's own English message
+    (``'Undefined linetype'``, ``'File system error'``), so the latter is
+    what a caller can act on.
+    """
+    info = exc.args[2] if len(exc.args) > 2 else None
+    if isinstance(info, tuple) and len(info) > 2 and info[2]:
+        return str(info[2]).strip()
+    return str(exc)
+
+
+def _default_lin_file(doc) -> str:
+    """``acadiso.lin`` on a metric seat, ``acad.lin`` on an imperial one.
+
+    MEASUREMENT is a document system variable: ``GetVariable`` is a member
+    of AcadDocument and the Application has none (measured on AutoCAD 2026,
+    ``hasattr(app, "GetVariable") is False``). Read through the Application
+    inside a try/except this always failed and every seat was "metric"; a
+    read the document itself refuses is an error now, not a silent default.
+    """
+    return "acadiso.lin" if int(doc.GetVariable("MEASUREMENT")) == 1 else "acad.lin"
+
+
+def _load_linetype(doc, name: str, lin_file: str) -> None:
+    """``Linetypes.Load(name, file)`` — the ActiveX member for the job.
+
+    The previous route, ``SendCommand("_-LINETYPE _LOAD <name> <file>\\n\\n")``
+    behind FILEDIA=0, was measured on AutoCAD 2026 (2026-09-22, scratch
+    document): with FILEDIA=0 the macro loads nothing and leaves ``-LINETYPE``
+    at ``Enter an option [?/Create/Load/Set]:`` — the whole seat then rejects
+    every COM call (RPC_E_CALL_REJECTED) until someone presses ESC — and with
+    FILEDIA=1 it opens the modal "Select Linetype File" dialog. ``Load``
+    returns at once, touches no system variable, and raises a `com_error`
+    whose excepinfo names the cause: ``'Undefined linetype'`` for a name the
+    file does not carry, ``'File system error'`` for a file that is not on
+    the support path, ``'Duplicate record name'`` for one already loaded
+    (the callers check the table first, so that one is not reached).
+    """
+    try:
+        doc.Linetypes.Load(name, lin_file)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to load linetype '{name}' from '{lin_file}': "
+            f"{_com_error_description(exc)}. Check the linetype name spelling "
+            "and that the .lin file is on AutoCAD's support path."
+        ) from exc
+
+
 def _ensure_linetype_loaded(name: str) -> None:
-    """If `name` is not already loaded, load it via -LINETYPE behind FILEDIA=0.
+    """If `name` is not already loaded, load it with ``Linetypes.Load``.
 
     Called by attribute setters so users can write `linetype="CENTER"` without
     having to remember to load it first. Must run on the COM thread.
     """
     if not name or name.lower() in _BUILTIN_LINETYPES:
         return
-    # Before any COM call: this name is about to be interpolated into a
-    # SendCommand macro, where a newline or ';' would start a second command.
+    # Before any COM call: a linetype is a symbol-table name, and the DXF
+    # rule refuses what AutoCAD could never load (and what a SendCommand
+    # macro would have executed as a second command).
     name = sanitize_symbol_name(name, kind="linetype")
     doc = _acad_doc()
     existing = {doc.Linetypes.Item(i).Name.lower() for i in range(doc.Linetypes.Count)}
     if name.lower() in existing:
         return
-    app = _acad_app()
-    try:
-        measurement = int(app.GetVariable("MEASUREMENT"))
-    except Exception as exc:
-        log.debug("MEASUREMENT read failed, defaulting to acadiso: %s", exc)
-        measurement = 1
-    lin_file = "acadiso.lin" if measurement == 1 else "acad.lin"
-    try:
-        old_filedia = int(app.GetVariable("FILEDIA"))
-    except Exception as exc:
-        log.debug("FILEDIA read failed, assuming 1: %s", exc)
-        old_filedia = 1
-    try:
-        app.SetVariable("FILEDIA", 0)
-        doc.SendCommand(f"_-LINETYPE _LOAD {name} {lin_file}\n\n")
-    finally:
-        try:
-            app.SetVariable("FILEDIA", old_filedia)
-        except Exception as exc:
-            log.debug("FILEDIA restore failed: %s", exc)
+    _load_linetype(doc, name, _default_lin_file(doc))
 
 
 def _apply_entity_attrs(entity, layer: str | None, color: int | None, linetype: str | None):
@@ -1605,10 +1638,13 @@ class ComBackend(AutoCADBackend):
             block_count = doc.Blocks.Count
 
             unit_map = {0: "Unitless", 1: "Inches", 2: "Feet", 4: "mm", 5: "cm", 6: "m"}
+            # INSUNITS is read on the document (the Application has no
+            # GetVariable). ``Unknown`` is the honest default for an optional
+            # read the document refuses, or a code the map does not carry.
             try:
-                units = unit_map.get(int(app.GetVariable("INSUNITS")), "Unknown")
+                units = unit_map.get(int(doc.GetVariable("INSUNITS")), "Unknown")
             except Exception as exc:
-                log.debug("INSUNITS variable read failed: %s", exc)
+                log.debug("doc.GetVariable(INSUNITS) failed, reporting Unknown: %s", exc)
                 units = "Unknown"
 
             return DrawingInfo(
@@ -4000,20 +4036,25 @@ class ComBackend(AutoCADBackend):
 
         def _sync():
             doc = _acad_doc()
-            app = _acad_app()
+            # AUDITCTL is a document sysvar (the Application has no
+            # GetVariable / SetVariable). The read is optional only for a host
+            # that does not expose the variable at all; then nothing is set
+            # and nothing needs restoring.
             try:
-                previous = app.GetVariable("AUDITCTL")
-            except Exception:  # not every AutoCAD-compatible host exposes it
+                previous = doc.GetVariable("AUDITCTL")
+            except Exception as exc:  # not every AutoCAD-compatible host exposes it
+                log.debug("doc.GetVariable(AUDITCTL) failed; AUDIT runs unlogged: %s", exc)
                 previous = None
-            app.SetVariable("AUDITCTL", 1)
+            if previous is not None:
+                doc.SetVariable("AUDITCTL", 1)
             try:
                 doc.SendCommand("_AUDIT Y\n")
             finally:
                 if previous is not None:
                     try:
-                        app.SetVariable("AUDITCTL", previous)
+                        doc.SetVariable("AUDITCTL", previous)
                     except Exception:
-                        log.debug("could not restore AUDITCTL", exc_info=True)
+                        log.debug("could not restore AUDITCTL on the document", exc_info=True)
 
             # Only report a log we can actually see. SendCommand queues, so at
             # this point AUDIT has very likely not run yet and the .adt does not
@@ -5079,11 +5120,11 @@ class ComBackend(AutoCADBackend):
         # imperial drawings need acad.lin. We pick automatically from MEASUREMENT
         # if the caller didn't specify a file.
         #
-        # Both arguments end up inside a SendCommand macro, so both are checked
-        # before the COM thread is entered: the name against the DXF
-        # symbol-table rule, the path against the same allowlist every other
-        # file-taking tool uses. This was the one path-taking tool that reached
-        # the filesystem with neither.
+        # Both arguments are checked before the COM thread is entered: the
+        # name against the DXF symbol-table rule, the path against the same
+        # allowlist every other file-taking tool uses. This was the one
+        # path-taking tool that reached the filesystem with neither (and,
+        # until v1.6, both went into a SendCommand macro).
         safe_name = sanitize_symbol_name(name, kind="linetype")
         safe_file = None
         if file is not None:
@@ -5091,38 +5132,17 @@ class ComBackend(AutoCADBackend):
             safe_file = sanitize_macro_argument(str(resolved), kind="linetype file")
 
         def _sync():
-            app = _acad_app()
             doc = _acad_doc()
 
             existing = {doc.Linetypes.Item(i).Name.lower() for i in range(doc.Linetypes.Count)}
             if safe_name.lower() in existing:
                 return {"ok": True, "name": safe_name, "already_loaded": True}
 
-            if safe_file is None:
-                try:
-                    measurement = int(app.GetVariable("MEASUREMENT"))
-                except Exception as exc:
-                    log.debug("MEASUREMENT read failed, defaulting to acadiso: %s", exc)
-                    measurement = 1
-                lin_file = "acadiso.lin" if measurement == 1 else "acad.lin"
-            else:
-                lin_file = safe_file
-
-            try:
-                old_filedia = int(app.GetVariable("FILEDIA"))
-            except Exception as exc:
-                log.debug("FILEDIA read failed, assuming 1: %s", exc)
-                old_filedia = 1
-            try:
-                app.SetVariable("FILEDIA", 0)
-                # Double newline: first ends the file name, second exits
-                # -LINETYPE's [?/Create/Load/Set] option menu.
-                doc.SendCommand(f"_-LINETYPE _LOAD {safe_name} {lin_file}\n\n")
-            finally:
-                try:
-                    app.SetVariable("FILEDIA", old_filedia)
-                except Exception as exc:
-                    log.debug("FILEDIA restore failed: %s", exc)
+            # The default file follows MEASUREMENT, read on the document; the
+            # load itself is ``Linetypes.Load`` (see _load_linetype for why
+            # the -LINETYPE macro behind FILEDIA=0 is gone).
+            lin_file = _default_lin_file(doc) if safe_file is None else safe_file
+            _load_linetype(doc, safe_name, lin_file)
 
             after = {doc.Linetypes.Item(i).Name.lower() for i in range(doc.Linetypes.Count)}
             if safe_name.lower() not in after:
@@ -6412,13 +6432,10 @@ class ComBackend(AutoCADBackend):
         # otherwise SendCommand returns but AutoCAD stays at a prompt and the
         # next COM call deadlocks. Example: "_-LINETYPE _LOAD CENTER acad.lin\n\n"
         def _sync():
-            app = _acad_app()
             doc = _acad_doc()
-            try:
-                cmd_active = int(app.GetVariable("CMDACTIVE"))
-            except Exception as exc:
-                log.debug("CMDACTIVE read failed, proceeding anyway: %s", exc)
-                cmd_active = 0
+            # CMDACTIVE is read on the document (the Application has no
+            # GetVariable); through the Application this guard never fired.
+            cmd_active = int(doc.GetVariable("CMDACTIVE"))
             if cmd_active:
                 raise RuntimeError(
                     "AutoCAD has an active command or prompt (CMDACTIVE="
@@ -6432,28 +6449,25 @@ class ComBackend(AutoCADBackend):
 
     async def system_run_lisp(self, expression) -> dict:
         def _sync():
-            app = _acad_app()
             doc = _acad_doc()
             # R23: refuse to send while a command/prompt is active (raw SendCommand
-            # of a prompting form would deadlock the single STA thread).
-            try:
-                if int(app.GetVariable("CMDACTIVE")):
-                    raise RuntimeError(
-                        "AutoCAD has an active command/prompt (CMDACTIVE). "
-                        "Press ESC in AutoCAD and retry."
-                    )
-            except RuntimeError:
-                raise
-            except Exception as exc:
-                log.debug("CMDACTIVE read failed, proceeding: %s", exc)
+            # of a prompting form would deadlock the single STA thread). CMDACTIVE
+            # is a document sysvar; read through the Application (which has no
+            # GetVariable) this guard never fired.
+            if int(doc.GetVariable("CMDACTIVE")):
+                raise RuntimeError(
+                    "AutoCAD has an active command/prompt (CMDACTIVE). "
+                    "Press ESC in AutoCAD and retry."
+                )
             # N6: SendCommand is void-returning, so the value can't be read from its
             # return. Stash it in USERS1 and read it back after the form completes
             # (CMDACTIVE-polled by _safe_send_command).
             wrapped = f'(vl-load-com)(setvar "USERS1" (vl-princ-to-string (progn {expression})))'
             self._safe_send_command(doc, wrapped)
             try:
-                result = app.GetVariable("USERS1")
-            except Exception:
+                result = doc.GetVariable("USERS1")
+            except Exception as exc:  # optional read: the expression already ran
+                log.debug("doc.GetVariable(USERS1) failed, reporting nil: %s", exc)
                 result = None
             return {
                 "ok": True,

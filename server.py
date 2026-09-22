@@ -3044,10 +3044,13 @@ async def linetype_load(
     """Load a single linetype safely.
 
     Use this instead of `system_run_command('_-LINETYPE _LOAD ...')` — that
-    raw form can deadlock on the FILEDIA file-picker dialog and on the
-    -LINETYPE option-menu prompt. This tool sets FILEDIA=0 around the call,
+    raw form deadlocks on the FILEDIA file-picker dialog and on the
+    -LINETYPE option-menu prompt (measured on AutoCAD 2026: it loads nothing
+    either way). This tool loads through the ActiveX `Linetypes.Load` member,
     picks the right .lin file from MEASUREMENT, and verifies the linetype
-    actually loaded.
+    actually loaded. Refuses a name that is not a valid symbol name, a file
+    outside the allowed paths, and reports a name the file does not carry
+    or a file AutoCAD cannot find as an error naming both.
     """
     return await _backend(ctx).linetype_load(name, file)
 
@@ -7300,9 +7303,10 @@ async def drawing_apply_standard(
     Every item reports `created` or already present; `settings.changed`
     names only the variables that moved, so a second call reports nothing.
     An existing ISO-25 / ANSI style is reused as it is, not reset — use
-    `dimstyle_modify` to change one. Refuses an unknown standard before any
-    write; the underlying style refusals (`dimstyle_create`,
-    `textstyle_create`) apply unchanged. In the `lean` profile (Task 13).
+    `dimstyle_modify` to change one. Refuses an unknown standard, or a units
+    variable it cannot read back, before any write; the underlying style
+    refusals (`dimstyle_create`, `textstyle_create`) apply unchanged. In the
+    `lean` profile (Task 13).
     """
     from engineering.standards.apply import apply_standard
 

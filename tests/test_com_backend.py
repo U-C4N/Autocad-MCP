@@ -785,3 +785,286 @@ def test_com_geometry_bbox_is_marked_approximate_when_a_rotated_member_cannot_be
         rotation=math.radians(30.0),
     )
     assert _com_geometry_bbox(ent)["approximate"] is True
+
+
+# ---------------------------------------------------------------------------
+# System variables live on AcadDocument, never on AcadApplication
+# ---------------------------------------------------------------------------
+#
+# Measured on AutoCAD 2026 (25.1s, 2026-09-22, scratch Documents.Add()):
+# ``hasattr(app, "GetVariable") is False``, ``hasattr(app, "SetVariable") is
+# False``, ``doc.GetVariable("INSUNITS") -> 4``, ``doc.GetVariable("MEASUREMENT")
+# -> 1``, ``doc.SetVariable("FILEDIA", 0)`` takes and ``doc.GetVariable`` reads
+# it back. Fifteen call sites went through the Application inside a
+# ``try/except ... log.debug``, so on a live seat they silently degraded:
+# every seat was "metric", ``drawing_info`` reported ``Unknown`` units, AUDIT
+# ran with the operator's AUDITCTL. The fakes below model the measured shape
+# only — an application with *no* sysvar members — so the old call shape
+# cannot pass.
+#
+# Linetype loading, measured the same day: ``SendCommand("_-LINETYPE _LOAD
+# CENTER acadiso.lin\n\n")`` loads nothing with FILEDIA=0 and leaves the
+# command at ``Enter an option [?/Create/Load/Set]:`` (LASTPROMPT), which
+# makes the seat reject every COM call until ESC; with FILEDIA=1 it opens the
+# modal "Select Linetype File" dialog. ``doc.Linetypes.Load("CENTER",
+# "acadiso.lin")`` returns None and the table grows; a second call raises
+# 'Duplicate record name', an unknown name 'Undefined linetype', a missing
+# file 'File system error' (excepinfo descriptions). So the loaders call
+# ``Linetypes.Load`` and touch no FILEDIA at all.
+
+
+class _StrictApp:
+    """The ActiveX Application: ``Version``, ``Documents``, ``ActiveDocument``
+    and nothing that reads or writes a system variable."""
+
+    Version = "25.1s (LMS Tech)"
+
+    def __init__(self, doc):
+        self.ActiveDocument = doc
+        self.Documents = SimpleNamespace(Count=1)
+
+    def __getattr__(self, name):
+        if name in ("GetVariable", "SetVariable"):
+            raise AttributeError(f"AutoCAD.Application.{name}")
+        raise AttributeError(name)
+
+
+class _SysvarDoc:
+    """An AcadDocument that records every sysvar read and write."""
+
+    def __init__(self, **variables):
+        self.variables = {"CMDACTIVE": 0, "FILEDIA": 1, "MEASUREMENT": 1, "AUDITCTL": 0}
+        self.variables.update(variables)
+        self.calls: list[tuple] = []
+        self.sent: list[str] = []
+        self.Name = "Drawing1.dwg"
+        self.FullName = ""
+        self.Saved = True
+        self.Database = SimpleNamespace(Extmin=(0.0, 0.0, 0.0), Extmax=(10.0, 20.0, 0.0))
+        self.ModelSpace = SimpleNamespace(Count=3)
+        self.ActiveLayout = SimpleNamespace(Block=self.ModelSpace)
+        self.Layers = SimpleNamespace(Count=2)
+        self.Blocks = SimpleNamespace(Count=2)
+        self.Linetypes = _RecordingLinetypes(self.calls)
+
+    def GetVariable(self, name):
+        self.calls.append(("GetVariable", name))
+        return self.variables[name]
+
+    def SetVariable(self, name, value):
+        self.calls.append(("SetVariable", name, value))
+        self.variables[name] = value
+
+    def SendCommand(self, cmd):
+        self.calls.append(("SendCommand", cmd, self.variables["FILEDIA"]))
+        self.sent.append(cmd)
+
+
+def _com_error(description: str, scode: int):
+    """A pywin32 ``com_error`` shaped like AutoCAD's: localised HRESULT text,
+    English excepinfo description at index 2 of ``args[2]``."""
+    pywintypes = pytest.importorskip("pywintypes")
+    return pywintypes.com_error(
+        -2147352567,
+        "Özel durum oluştu.",
+        (0, "AutoCAD.Application", description, "OLE_ERR.CHM", scode, scode),
+        None,
+    )
+
+
+class _RecordingLinetypes:
+    """``doc.Linetypes`` with the measured ``Load`` failures; the .lin files
+    it knows carry CENTER / HIDDEN / PHANTOM only."""
+
+    FILES = {"acadiso.lin", "acad.lin", "C:\\lin\\custom.lin"}
+    KNOWN = {"center", "hidden", "phantom"}
+
+    def __init__(self, calls):
+        self.names = ["ByLayer", "ByBlock", "Continuous"]
+        self._calls = calls
+
+    @property
+    def Count(self):
+        return len(self.names)
+
+    def Item(self, index):
+        return SimpleNamespace(Name=self.names[index])
+
+    def Load(self, name, file):
+        self._calls.append(("Linetypes.Load", name, file))
+        if file not in self.FILES:
+            raise _com_error("File system error", -2145386425)
+        if name.lower() in {n.lower() for n in self.names}:
+            raise _com_error("Duplicate record name", -2145386405)
+        if name.lower() not in self.KNOWN:
+            raise _com_error("Undefined linetype", -2145386359)
+        self.names.append(name.upper())
+
+
+@pytest.fixture
+def sysvar_seat(monkeypatch):
+    """``(backend, doc)``: a ComBackend whose ``_acad_doc`` is a recording
+    document and whose ``_acad_app`` refuses every sysvar member."""
+    import backends.com_backend as cb
+
+    doc = _SysvarDoc()
+    app = _StrictApp(doc)
+    monkeypatch.setattr(cb, "_acad_app", lambda: app)
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
+    backend = ComBackend()
+
+    async def _run_inline(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(backend, "_run", _run_inline)
+    return backend, doc
+
+
+def test_ensure_linetype_loaded_reads_measurement_on_the_document_and_calls_load(sysvar_seat):
+    import backends.com_backend as cb
+
+    _, doc = sysvar_seat
+    cb._ensure_linetype_loaded("CENTER")
+    assert doc.calls == [
+        ("GetVariable", "MEASUREMENT"),
+        ("Linetypes.Load", "CENTER", "acadiso.lin"),
+    ], "MEASUREMENT (on the document) picks the .lin; Linetypes.Load does the loading"
+    assert "CENTER" in doc.Linetypes.names
+    assert doc.sent == [], "no -LINETYPE macro: nothing goes through SendCommand"
+    assert doc.variables["FILEDIA"] == 1 and not [c for c in doc.calls if c[0] == "SetVariable"], (
+        "Linetypes.Load needs no FILEDIA, so the operator's setting is never touched"
+    )
+    doc.calls.clear()
+    cb._ensure_linetype_loaded("center")
+    assert doc.calls == [], "already loaded (any case): no read, no load"
+
+
+def test_ensure_linetype_loaded_picks_acad_lin_from_the_documents_measurement(sysvar_seat):
+    import backends.com_backend as cb
+
+    _, doc = sysvar_seat
+    doc.variables["MEASUREMENT"] = 0  # imperial seat
+    cb._ensure_linetype_loaded("HIDDEN")
+    assert doc.calls[-1] == ("Linetypes.Load", "HIDDEN", "acad.lin")
+
+
+def test_ensure_linetype_loaded_refuses_when_the_document_cannot_say_its_measurement(sysvar_seat):
+    """The old path defaulted a failed MEASUREMENT read to metric; that read
+    never worked (wrong object), so every seat was metric. A read the
+    document refuses is an error, and nothing is loaded from a guessed file."""
+    import backends.com_backend as cb
+
+    _, doc = sysvar_seat
+    del doc.variables["MEASUREMENT"]
+    with pytest.raises(KeyError):
+        cb._ensure_linetype_loaded("PHANTOM")
+    assert not [c for c in doc.calls if c[0] == "Linetypes.Load"]
+
+
+def test_ensure_linetype_loaded_names_the_linetype_and_file_when_load_fails(sysvar_seat):
+    import backends.com_backend as cb
+
+    _, doc = sysvar_seat
+    with pytest.raises(RuntimeError, match=r"'NOSUCH' from 'acadiso.lin': Undefined linetype"):
+        cb._ensure_linetype_loaded("NOSUCH")
+    assert "NOSUCH" not in doc.Linetypes.names
+
+
+@pytest.mark.asyncio
+async def test_linetype_load_reads_measurement_on_the_document_and_calls_load(sysvar_seat):
+    backend, doc = sysvar_seat
+    result = await backend.linetype_load("CENTER")
+    assert result == {"ok": True, "name": "CENTER", "file": "acadiso.lin"}
+    assert doc.calls == [
+        ("GetVariable", "MEASUREMENT"),
+        ("Linetypes.Load", "CENTER", "acadiso.lin"),
+    ]
+    assert doc.sent == [] and doc.variables["FILEDIA"] == 1
+    again = await backend.linetype_load("center")
+    assert again == {"ok": True, "name": "center", "already_loaded": True}
+
+
+@pytest.mark.asyncio
+async def test_linetype_load_with_an_explicit_file_reads_no_measurement(sysvar_seat, monkeypatch):
+    import backends.com_backend as cb
+
+    backend, doc = sysvar_seat
+    monkeypatch.setattr(cb, "validate_path", lambda p: p)  # the allowlist is tested elsewhere
+    result = await backend.linetype_load("HIDDEN", "C:\\lin\\custom.lin")
+    assert result == {"ok": True, "name": "HIDDEN", "file": "C:\\lin\\custom.lin"}
+    assert doc.calls == [("Linetypes.Load", "HIDDEN", "C:\\lin\\custom.lin")]
+
+
+@pytest.mark.asyncio
+async def test_linetype_load_reports_an_unknown_name_and_a_missing_file_by_name(
+    sysvar_seat, monkeypatch
+):
+    import backends.com_backend as cb
+
+    backend, doc = sysvar_seat
+    with pytest.raises(RuntimeError, match=r"'NOSUCH' from 'acadiso.lin': Undefined linetype"):
+        await backend.linetype_load("NOSUCH")
+    monkeypatch.setattr(cb, "validate_path", lambda p: p)
+    with pytest.raises(RuntimeError, match=r"'CENTER' from 'C:\\lin\\nope.lin': File system error"):
+        await backend.linetype_load("CENTER", "C:\\lin\\nope.lin")
+    assert doc.Linetypes.names == ["ByLayer", "ByBlock", "Continuous"]
+
+
+@pytest.mark.asyncio
+async def test_linetype_load_reports_a_load_that_returned_but_did_not_take(sysvar_seat):
+    backend, doc = sysvar_seat
+    doc.Linetypes.Load = lambda name, file: doc.calls.append(("Linetypes.Load", name, file))
+    with pytest.raises(RuntimeError, match="Failed to load linetype 'CENTER' from 'acadiso.lin'"):
+        await backend.linetype_load("CENTER")
+
+
+@pytest.mark.asyncio
+async def test_drawing_info_reports_the_documents_insunits(sysvar_seat):
+    backend, doc = sysvar_seat
+    doc.variables["INSUNITS"] = 4
+    info = await backend.drawing_info()
+    assert info.units == "mm"
+    assert ("GetVariable", "INSUNITS") in doc.calls
+    assert info.version == "25.1s (LMS Tech)" and info.backend == "com"
+    doc.variables["INSUNITS"] = 1
+    assert (await backend.drawing_info()).units == "Inches"
+
+
+@pytest.mark.asyncio
+async def test_drawing_info_units_are_unknown_only_when_the_document_cannot_say(sysvar_seat):
+    """An INSUNITS code outside the map is ``Unknown``; a read the document
+    refuses is ``Unknown`` too, but that is the document's failure, never the
+    Application's missing member."""
+    backend, doc = sysvar_seat
+    doc.variables["INSUNITS"] = 14  # microinches: not in the map
+    assert (await backend.drawing_info()).units == "Unknown"
+    del doc.variables["INSUNITS"]
+    assert (await backend.drawing_info()).units == "Unknown"
+
+
+@pytest.mark.asyncio
+async def test_drawing_audit_sets_auditctl_on_the_document_and_restores_it(sysvar_seat):
+    backend, doc = sysvar_seat
+    result = await backend.drawing_audit()
+    assert result["ok"] is True and result["repaired"] is None
+    assert doc.calls == [
+        ("GetVariable", "AUDITCTL"),
+        ("SetVariable", "AUDITCTL", 1),
+        ("SendCommand", "_AUDIT Y\n", 1),
+        ("SetVariable", "AUDITCTL", 0),
+    ], "AUDIT runs with the log on and the operator's AUDITCTL comes back"
+    assert doc.variables["AUDITCTL"] == 0
+
+
+@pytest.mark.asyncio
+async def test_drawing_audit_restores_auditctl_when_the_command_raises(sysvar_seat):
+    backend, doc = sysvar_seat
+
+    def _boom(cmd):
+        raise RuntimeError("SendCommand rejected")
+
+    doc.SendCommand = _boom
+    with pytest.raises(RuntimeError, match="rejected"):
+        await backend.drawing_audit()
+    assert doc.variables["AUDITCTL"] == 0
+    assert doc.calls[-1] == ("SetVariable", "AUDITCTL", 0)
