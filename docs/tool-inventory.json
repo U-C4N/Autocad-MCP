@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 176,
+    "tools": 179,
     "resources": 8,
     "prompts": 5,
     "groups": 21
@@ -14,7 +14,7 @@
     "blocks": 9,
     "corner_ops": 4,
     "dimensions": 5,
-    "drawing": 11,
+    "drawing": 13,
     "engineering": 10,
     "entity_creation": 18,
     "entity_modification": 16,
@@ -25,7 +25,7 @@
     "premium": 12,
     "solids": 5,
     "styles": 10,
-    "system": 7,
+    "system": 8,
     "templates": 2,
     "transactions": 3,
     "validation": 1,
@@ -700,6 +700,34 @@
       "annotations": {
         "title": "Drawing: Preflight",
         "readOnlyHint": true
+      }
+    },
+    {
+      "name": "drawing_properties_get",
+      "group": "drawing",
+      "cost": "read",
+      "summary": "Read the drawing's title, subject, author, keywords, comments and custom properties.",
+      "tags": [
+        "drawing",
+        "settings"
+      ],
+      "annotations": {
+        "title": "Drawing Properties (read)",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "drawing_properties_set",
+      "group": "drawing",
+      "cost": "safe",
+      "summary": "Set the drawing's summary fields and add, change or delete custom properties.",
+      "tags": [
+        "drawing",
+        "settings"
+      ],
+      "annotations": {
+        "title": "Drawing Properties (write)",
+        "readOnlyHint": false
       }
     },
     {
@@ -2195,6 +2223,20 @@
       ],
       "annotations": {
         "title": "Server Status",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "system_variable_describe",
+      "group": "system",
+      "cost": "read",
+      "summary": "Explain a system variable: type, range, default, where it is saved, which engine honours it.",
+      "tags": [
+        "settings",
+        "system"
+      ],
+      "annotations": {
+        "title": "Describe System Variable",
         "readOnlyHint": true
       }
     },

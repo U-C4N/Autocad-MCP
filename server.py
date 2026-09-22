@@ -5096,7 +5096,22 @@ async def system_set_variable(
     value: Annotated[Any, "New variable value"],
     ctx: Context = None,
 ) -> dict:
-    """Set an AutoCAD system variable (e.g. DIMSCALE, LTSCALE, MEASUREMENT)."""
+    """Set an AutoCAD system variable (e.g. DIMSCALE, LTSCALE, MEASUREMENT).
+
+    Refusals, before anything is written: a value outside the catalogued
+    range or enum of a known variable, or a write to a read-only variable
+    (DIMSTYLE, CANNOSCALEVALUE, DWGNAME, …), is refused with the catalogue's
+    message — `system_variable_describe(name)` shows the range. A variable the
+    catalogue does not know is passed through unchanged. The headless engine
+    additionally refuses registry-saved variables (`capability:
+    registry_sysvar`) because a file has nowhere to keep them, and names that
+    ezdxf has no header slot for (a `ValueError` naming the variable).
+    """
+    from engineering.standards.sysvars import check_sysvar_value
+
+    message = check_sysvar_value(name, value)
+    if message:
+        raise ToolError(f"system_set_variable refused: {message}")
     return await _backend(ctx).system_set_variable(name, value)
 
 
@@ -5122,8 +5137,13 @@ async def drawing_settings(
                 "units (mm/cm/m/inch/feet), linear_precision, angular_precision, ltscale, "
                 "dimscale, dim_text_height, dim_arrow_size, dim_decimals, "
                 'decimal_separator ("." or ","), zero_suppression, text_size, point_mode, '
-                "point_size, osmode, fillet_radius. "
-                'Example: {"units": "mm", "dimscale": 1.0, "dim_text_height": 3.5}.'
+                "point_size, osmode, fillet_radius, limits ([[xmin,ymin],[xmax,ymax]]), "
+                "grid (bool), grid_spacing, snap (bool), snap_spacing, ortho (bool), "
+                "polar (bool), polar_angle (degrees), psltscale (bool), annotation_scale "
+                '("1:50"), linear_units (decimal|engineering|architectural|fractional|'
+                "scientific), angular_units (degrees|dms|grads|radians|surveyor), "
+                "dimstyle, textstyle (current style names). "
+                'Example: {"units": "mm", "limits": [[0, 0], [420, 297]], "grid": true}.'
             ),
         ),
     ] = None,
@@ -5132,14 +5152,31 @@ async def drawing_settings(
     """Read or change common AutoCAD drawing settings by friendly name.
 
     A convenience facade over the system variables (INSUNITS, LUPREC, LTSCALE,
-    DIMSCALE, DIMTXT, DIMASZ, DIMDEC, DIMDSEP, DIMZIN, TEXTSIZE, OSMODE, …) so
-    the user can say "set units to mm and dimension text to 3.5" without
-    memorising sysvar names. Call with no argument to get a full snapshot of the
-    current settings.
+    DIMSCALE, DIMTXT, DIMASZ, DIMDEC, DIMDSEP, DIMZIN, TEXTSIZE, OSMODE, LIMMIN/
+    LIMMAX, GRIDMODE/GRIDUNIT, SNAPMODE/SNAPUNIT, ORTHOMODE, AUTOSNAP/POLARANG,
+    PSLTSCALE, CANNOSCALE, LUNITS, AUNITS, DIMSTYLE, TEXTSTYLE) so the user can
+    say "set units to mm, limits to A3 and the grid on" without memorising
+    sysvar names. Call with no argument for a full snapshot; a write returns
+    `applied`, `changed` ({key: [old, new]} — only what moved) and `errors`.
 
     `dim_text_height` / `dim_arrow_size` / `dim_decimals` / `decimal_separator`
     / `zero_suppression` shape the *dimension* — `text_size` is TEXTSIZE, the
     height of a standalone TEXT entity, and does not touch dimensions.
+
+    Refusals, per key, nothing else rolled back: an unknown key; a value outside
+    its range (grid/snap spacing > 0, polar_angle 0–360, precision 0–8, …); a
+    malformed `limits` or `annotation_scale`; `osmode` / `polar` / `polar_angle`
+    on the headless engine (`capability: registry_sysvar` — AutoCAD keeps them in
+    the registry, a file cannot, and a headless snapshot reports them as `None`);
+    `dimstyle` / `textstyle` when the backend has no styles contract. On the
+    live engine `annotation_scale` must name a scale in the drawing's scale list
+    (SCALELISTEDIT) and AutoCAD refuses the write on a
+    paper-space layout with no active viewport; the headless engine adds the
+    scale, seeding AutoCAD's default list first when the drawing has none,
+    and refuses it on an R12 file (no OBJECTS section, so the value would
+    vanish at save — save as R2000 or newer first; limits/grid/ortho survive).
+    Headlessly, grid/snap are stored on the active VPORT and the annotation
+    scale in the variable dictionary — the places AutoCAD reads them from.
     """
     if settings:
         await ctx.info(f"Applying drawing settings: {', '.join(settings)}")
@@ -7191,6 +7228,147 @@ async def drawing_apply_standard(
 
     await ctx.info(f"Applying the {standard} drafting standard")
     return await apply_standard(_backend(ctx), standard, layers, units)
+
+
+# ---------------------------------------------------------------------------
+# ── SECTION 20: Environment (3 tools) ───────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Group C (settings) opens this section with `system_variable_describe` and,
+# in Task 16, the two `drawing_properties_*` tools; group V's merge extends the
+# header count to the full environment surface (documents, layer states,
+# named views, UCS, launch, preferences, interactive prompts).
+
+
+@cad_tool(
+    summary="Explain a system variable: type, range, default, where it is saved, which engine honours it.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Describe System Variable", "readOnlyHint": True},
+    tags={"system", "settings"},
+)
+async def system_variable_describe(
+    name: Annotated[
+        str | None, "System variable name, e.g. LTSCALE (case-insensitive, '$' optional)"
+    ] = None,
+    search: Annotated[
+        str | None, "Free text matched against names and meanings, e.g. 'decimal separator'"
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """What an AutoCAD system variable means, from an authored catalogue of 90.
+
+    With `name`: `{known, name, type, range|enum, default, meaning, saved_in
+    (drawing|registry|not_saved), engines: {ezdxf, com}, friendly_key,
+    read_only}` plus `current` when the active backend can read it (omitted,
+    with `current_unavailable`, when it cannot — no document open, or a
+    registry variable headlessly). An unknown name is never an error: `known:
+    false` and the nearest catalogue names come back. With `search`: every row
+    whose name or meaning contains all the words. With neither: the index of
+    names. `friendly_key` names the `drawing_settings` key that wraps the
+    variable, which is the preferred way to set it; `engines.ezdxf: false`
+    means the headless engine refuses a write (registry-saved, or no header
+    slot in ezdxf).
+    """
+    from engineering.standards.sysvars import SYSVAR_CATALOG, describe_sysvar, search_sysvars
+
+    if name:
+        row = describe_sysvar(name)
+        backend = ctx.lifespan_context.get("backend") if ctx is not None else None
+        if row["known"] and backend is not None:
+            try:
+                row["current"] = await backend.system_get_variable(row["name"])
+            except Exception as exc:  # no document, or the engine cannot hold it
+                row["current_unavailable"] = str(exc)
+        return row
+    if search:
+        return {"query": search, "matches": search_sysvars(search)}
+    return {
+        "count": len(SYSVAR_CATALOG),
+        "names": sorted(SYSVAR_CATALOG),
+        "hint": "pass name=<VARIABLE> for one row or search=<words> to filter",
+    }
+
+
+@cad_tool(
+    summary="Read the drawing's title, subject, author, keywords, comments and custom properties.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Drawing Properties (read)", "readOnlyHint": True},
+    tags={"drawing", "settings"},
+)
+async def drawing_properties_get(ctx: Context = None) -> dict:
+    """The DWGPROPS dialog as data: `summary` (title, subject, author, keywords,
+    comments), `summary_available`, and `custom` ({key: value}).
+
+    On the live engine the summary comes from the document's SummaryInfo. The
+    headless engine cannot read that stream, so the five summary fields are
+    `null` with `summary_available: false` — not empty strings, which would
+    claim the drawing has no title. Custom properties (`$CUSTOMPROPERTYTAG` /
+    `$CUSTOMPROPERTY` header pairs) are read on both engines.
+    """
+    return await _backend(ctx).drawing_properties_get()
+
+
+@cad_tool(
+    summary="Set the drawing's summary fields and add, change or delete custom properties.",
+    cost="safe",
+)
+@mcp.tool(
+    annotations={"title": "Drawing Properties (write)", "readOnlyHint": False},
+    tags={"drawing", "settings"},
+)
+async def drawing_properties_set(
+    title: Annotated[str | None, "SummaryInfo Title"] = None,
+    subject: Annotated[str | None, "SummaryInfo Subject"] = None,
+    author: Annotated[str | None, "SummaryInfo Author"] = None,
+    keywords: Annotated[str | None, "SummaryInfo Keywords"] = None,
+    comments: Annotated[str | None, "SummaryInfo Comments"] = None,
+    custom: Annotated[
+        dict | None,
+        "Custom properties to write: {key: text}; a null value deletes the key. "
+        "Keys not mentioned are left alone.",
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """Write DWGPROPS fields. Only the arguments given are touched; returns
+    `summary_written`, `custom_written` and `custom_deleted` (a key that was
+    never there is not reported deleted).
+
+    Refusals, before anything is written: a summary field on the headless
+    engine (`capability: dwgprops` — SummaryInfo lives in the DWG, a DXF has
+    no slot for it; custom properties still work headlessly), a non-string
+    value (`TypeError` naming the field or key — nothing is coerced with
+    `str()`), an empty custom key, a custom key to *write* that AutoCAD's
+    AddCustomInfo would reject mid-write (measured on AutoCAD 2026: leading or
+    trailing whitespace, or any of the thirteen characters
+    `" * , / : ; < = > ? \\ ` |` anywhere in the key; internal spaces, tabs
+    and unicode are fine — `ValueError` naming the key, on both engines; a
+    delete is exempt because RemoveCustomByKey never validates syntax, so a
+    key that reached the drawing another way stays removable), two keys in
+    one request that AutoCAD would call the same key (its key compare is a
+    simple per-character case compare: `Project`/`PROJECT` and `Grün`/`GRÜN`
+    are one key, `Straße`/`STRASSE` are two), a line break in a custom key or
+    value (it corrupts the DXF on save), and headlessly a document older than
+    R2004 (`ValueError` — ezdxf only writes the custom-property header pairs
+    for AC1018+, so they would vanish at save; save as R2004 or newer first).
+    A key is matched to the drawing by that same rule on both engines and
+    keeps its stored spelling when updated. On the live engine an exact
+    spelling is changed with SetCustomByKey; otherwise AutoCAD decides —
+    AddCustomInfo, and on its 'Duplicate key' SetCustomByKey; a delete is
+    RemoveCustomByKey, and its 'Key not found' is reported as not deleted.
+    """
+    summary = {
+        "title": title,
+        "subject": subject,
+        "author": author,
+        "keywords": keywords,
+        "comments": comments,
+    }
+    touched = [k for k, v in summary.items() if v is not None] + sorted(custom or {})
+    await ctx.info(f"Setting drawing properties: {', '.join(touched) or 'nothing'}")
+    return await _backend(ctx).drawing_properties_set(summary, custom)
 
 
 # ---------------------------------------------------------------------------

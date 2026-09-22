@@ -39,6 +39,13 @@ from .base import (
     normalize_lineweight,
     shoelace_area,
 )
+from .contracts.settings import (
+    SUMMARY_FIELDS,
+    custom_key_fold,
+    parse_scale,
+    scale_value,
+    validate_drawing_properties,
+)
 from .quarantine import (
     AbandonedCall,
     DocumentQuarantineError,
@@ -58,6 +65,54 @@ __all__ = [
 #: always the most recent; older entries exist so a support transcript shows a
 #: document that has been abandoned on repeatedly rather than once.
 _MAX_ABANDONED_RECORDS = 10
+
+#: System variables that AutoCAD does not keep in the HEADER section. Grid and
+#: snap belong to the active VPORT table entry (DXF codes 76 / 15 / 75 / 14);
+#: measured 2026-09-16: `doc.header["$GRIDMODE"] = 1` raises `DXFKeyError`.
+_VPORT_SYSVARS: dict[str, tuple[str, str]] = {
+    "GRIDMODE": ("grid_on", "flag"),
+    "SNAPMODE": ("snap_on", "flag"),
+    "GRIDUNIT": ("grid_spacing", "point"),
+    "SNAPUNIT": ("snap_spacing", "point"),
+}
+
+#: Registry-saved or never-saved (AutoCAD System Variables reference, "Saved
+#: in" column). A file has nowhere to keep them, so the headless engine refuses
+#: a write with `capability: registry_sysvar` instead of storing a value that
+#: would vanish, and reads report `None` rather than the value ezdxf's document
+#: template happens to hold in memory; `engineering.standards.sysvars` pins this
+#: set to its catalogue. OSMODE / ATTREQ / ATTDIA are the trap: ezdxf accepts
+#: `doc.header["$OSMODE"]` (an R12 header variable, `maxdxf="AC1009"` in
+#: `HEADER_VAR_MAP`) but never exports it for R2000+ - measured 2026-09-17: a
+#: write of 4134 to a fresh AC1024 document read back `None` after save + open.
+_UNSAVED_SYSVARS: frozenset[str] = frozenset(
+    {
+        "AUTOSNAP",
+        "POLARANG",
+        "POLARMODE",
+        "OSMODE",
+        "ATTREQ",
+        "ATTDIA",
+        "SAVETIME",
+        "FILEDIA",
+        "XREFCTL",
+        "PROXYSHOW",
+        "CMDECHO",
+        "HIGHLIGHT",
+        "HPNAME",
+        "HPSCALE",
+        "HPANG",
+        "DWGNAME",
+        "DWGPREFIX",
+    }
+)
+
+#: Header variables the DXF file stores in degrees (group code 50) while the
+#: sysvar boundary speaks radians - the unit ActiveX `GetVariable` and AutoLISP
+#: `getvar` use, so both engines report the same number. Measured on AutoCAD
+#: 2026 (2026-09-17): `SETVAR ANGBASE 90` reads back 1.5707963267948966 over
+#: COM and the DXF AutoCAD saves carries `$ANGBASE = 90.0`.
+_HEADER_DEGREE_SYSVARS: frozenset[str] = frozenset({"ANGBASE"})
 
 log = logging.getLogger(__name__)
 
@@ -1361,6 +1416,13 @@ class EzdxfBackend(AutoCADBackend):
                     False, reason="acis_generation_requires_live_autocad"
                 ),
                 "lisp": FeatureCapability(False, reason="live_com_only"),
+                "registry_sysvar": FeatureCapability(
+                    False, reason="registry_saved_variables_have_no_home_in_a_file"
+                ),
+                "dwgprops": FeatureCapability(
+                    False,
+                    reason="summary_fields_need_live_autocad;custom_properties_need_r2004_or_newer",
+                ),
             },
         )
 
@@ -6247,14 +6309,77 @@ class EzdxfBackend(AutoCADBackend):
     async def system_get_variable(self, name) -> Any:
         def _sync():
             doc = self._require_doc()
-            return doc.header.get(f"${name.upper()}", None)
+            key = str(name).upper()
+            if key in _VPORT_SYSVARS:
+                attr, shape = _VPORT_SYSVARS[key]
+                raw = getattr(self._active_vport(doc).dxf, attr)
+                if shape == "point":
+                    return (float(raw[0]), float(raw[1]))
+                return int(raw)
+            if key == "CANNOSCALE":
+                return self._dictionary_variable(doc, "CANNOSCALE", "1:1")
+            if key == "CANNOSCALEVALUE":
+                return scale_value(self._dictionary_variable(doc, "CANNOSCALE", "1:1"))
+            if key in _UNSAVED_SYSVARS:
+                return None  # a file holds no value; the template's memory is not one
+            raw = doc.header.get(f"${key}", None)
+            if key in _HEADER_DEGREE_SYSVARS and raw is not None:
+                return math.radians(float(raw))
+            return raw
 
         return await self._async(_sync)
 
     async def system_set_variable(self, name, value) -> dict:
+        from ezdxf.lldxf.const import DXFKeyError
+
         def _sync():
             doc = self._require_doc()
-            doc.header[f"${name.upper()}"] = value
+            key = str(name).upper()
+            if key in _UNSAVED_SYSVARS:
+                raise UnsupportedCapabilityError(
+                    "registry_sysvar",
+                    f"system_set_variable: {key} is saved in the AutoCAD registry (or not "
+                    "saved at all), never in the drawing, so the headless ezdxf backend has "
+                    "nowhere to keep it. Set it on the live COM backend.",
+                )
+            if key in _VPORT_SYSVARS:
+                attr, shape = _VPORT_SYSVARS[key]
+                vport = self._active_vport(doc)
+                if shape == "point":
+                    x, y = float(value[0]), float(value[1])
+                    if x <= 0 or y <= 0:
+                        raise ValueError(f"{key}: spacing must be greater than 0, got {value!r}")
+                    vport.dxf.set(attr, (x, y))
+                else:
+                    vport.dxf.set(attr, 1 if int(value) else 0)
+            elif key == "CANNOSCALE":
+                self._set_annotation_scale(doc, value)
+            elif key == "CANNOSCALEVALUE":
+                raise ValueError(
+                    "CANNOSCALEVALUE is read-only; set CANNOSCALE (e.g. '1:50') instead."
+                )
+            else:
+                stored = value
+                if key in _HEADER_DEGREE_SYSVARS:
+                    stored = math.degrees(float(value))
+                try:
+                    doc.header[f"${key}"] = stored
+                except DXFKeyError as exc:
+                    # Keeps the pinned "$$DIMTXT" text (tests/test_dimension_header_vars.py)
+                    # while saying why the write is refused rather than dropped.
+                    raise ValueError(
+                        f"system_set_variable: {exc} ezdxf has no header slot for it, so the "
+                        "value would be dropped at save; system_variable_describe(name) says "
+                        "where the variable lives."
+                    ) from exc
+                if key in ("LIMMIN", "LIMMAX"):
+                    # Measured: `Drawing.update_limits()` copies the model-space
+                    # LAYOUT's limits into the header on every write(), so a
+                    # header-only value is overwritten at save. The layout is
+                    # the source of truth; keep both in step.
+                    doc.modelspace().dxf_layout.dxf.set(
+                        key.lower(), (float(value[0]), float(value[1]))
+                    )
             self._mark_dirty()
             return {"ok": True, "variable": name, "value": value}
 
@@ -6786,5 +6911,249 @@ class EzdxfBackend(AutoCADBackend):
             )
             self._mark_dirty()
             return _entity_info_dxf(xline)
+
+        return await self._async(_sync)
+
+    # ── settings (track E, group C) ───────────────────────────────────────────
+    #
+    # Where the variables the `drawing_settings` facade reaches actually live
+    # in a DXF file when they are not header variables.
+
+    @staticmethod
+    def _active_vport(doc):
+        """The `*Active` VPORT entry — grid and snap state live on it.
+
+        Owned here (group C). Group V's named views use the same entry and
+        carry a worktree-only copy that the merge agent deletes; this
+        definition is the one that ships.
+        """
+        entries = doc.viewports.get("*Active")
+        if not entries:
+            entries = [doc.viewports.new("*Active")]
+        return entries[0]
+
+    @staticmethod
+    def _variable_dictionary(doc, create: bool):
+        """`AcDbVariableDictionary` under the root dictionary (CANNOSCALE lives there)."""
+        vardict = doc.rootdict.get("AcDbVariableDictionary")
+        if vardict is None and create:
+            vardict = doc.rootdict.add_new_dict("AcDbVariableDictionary")
+        return vardict
+
+    def _dictionary_variable(self, doc, key: str, default: str) -> str:
+        vardict = self._variable_dictionary(doc, create=False)
+        if vardict is None:
+            return default
+        entry = vardict.get(key)
+        return default if entry is None else str(entry.dxf.value)
+
+    @staticmethod
+    def _scale_entry_name(entry) -> str | None:
+        """The name a SCALE object carries in its AcDbScale group 300.
+
+        The dictionary *key* is not the name: AutoCAD saves ACAD_SCALELIST
+        keyed `A0`, `A1`, … and only group 300 says `1:50`. ezdxf loads SCALE
+        as `DXFTagStorage`, so the tag is read from the stored subclass.
+        """
+        xtags = getattr(entry, "xtags", None)
+        if xtags is None:
+            return None
+        for subclass in xtags.subclasses:
+            if subclass and subclass[0].code == 100 and subclass[0].value == "AcDbScale":
+                for tag in subclass:
+                    if tag.code == 300:
+                        return str(tag.value)
+        return None
+
+    # AutoCAD's default metric ACAD_SCALELIST, in its own order (measured:
+    # AutoCAD 2026, MEASUREMENT 1, `Documents.Add()` saved as DXF — 17 SCALE
+    # objects keyed A0 … A9, B0 … B6). An imperial seat (MEASUREMENT 0) adds the
+    # architectural fractions on top; those are not seeded — every ratio here
+    # is valid in either unit system, and AutoCAD's SCALELISTEDIT can add more.
+    _DEFAULT_SCALE_LIST: tuple[str, ...] = (
+        "1:1",
+        "1:2",
+        "1:4",
+        "1:5",
+        "1:8",
+        "1:10",
+        "1:16",
+        "1:20",
+        "1:30",
+        "1:40",
+        "1:50",
+        "1:100",
+        "2:1",
+        "4:1",
+        "8:1",
+        "10:1",
+        "100:1",
+    )
+
+    @staticmethod
+    def _scale_list_key(index: int) -> str:
+        """The dictionary key AutoCAD gives the ``index``-th SCALE: A0 … A9, B0 …"""
+        return f"{chr(ord('A') + index // 10)}{index % 10}"
+
+    @classmethod
+    def _add_scale_object(cls, doc, scales, name: str, paper: float, drawing: float) -> None:
+        """Author one SCALE object and file it under the next free AutoCAD-style key.
+
+        ezdxf has no SCALE entity class, so the object is authored as raw tags
+        and loaded through the factory (a `DXFTagStorage` that exports
+        verbatim). Measured: it round-trips, ezdxf registers the CLASS, and
+        `doc.audit()` is clean after reopen.
+        """
+        from ezdxf.entities import factory
+        from ezdxf.lldxf.extendedtags import ExtendedTags
+
+        existing_keys = set(scales.keys())
+        index = 0
+        while cls._scale_list_key(index) in existing_keys:
+            index += 1
+        handle = doc.entitydb.next_handle()
+        unit = 1 if paper == drawing else 0
+        text = (
+            f"  0\nSCALE\n  5\n{handle}\n330\n{scales.dxf.handle}\n100\nAcDbScale\n"
+            f" 70\n0\n300\n{name}\n140\n{paper}\n141\n{drawing}\n290\n{unit}\n"
+        )
+        entry = factory.load(ExtendedTags.from_text(text), doc)
+        doc.entitydb.add(entry)
+        doc.objects.add_object(entry)
+        scales.add(cls._scale_list_key(index), entry)
+
+    @classmethod
+    def _ensure_scale_entry(cls, doc, name: str, paper: float, drawing: float) -> bool:
+        """Add `name` to ACAD_SCALELIST unless present; True when added.
+
+        Presence is decided by the SCALE objects' group-300 names, never by
+        the dictionary key — an AutoCAD-authored drawing keys the list `A0`,
+        `A1`, … and only group 300 says `1:50`; matching on the key appended a
+        duplicate `1:50` to every one of them.
+
+        An ezdxf-authored drawing has **no** ACAD_SCALELIST entries at all.
+        AutoCAD repopulates its default list only when the dictionary is
+        empty, so appending the one requested scale to an empty list shipped a
+        file whose scale list *was* that one entry — measured (AutoCAD 2026):
+        `SetVariable("CANNOSCALE", "1:1")` then fails with `Error setting
+        system variable` and the annotation scale cannot be changed in the
+        UI. An empty list is therefore seeded with AutoCAD's own default list
+        first, so the saved file offers what a fresh AutoCAD drawing offers.
+        AutoCAD only honours a CANNOSCALE that names an entry of this list.
+        """
+        scales = doc.rootdict.get("ACAD_SCALELIST")
+        if scales is None:
+            scales = doc.rootdict.add_new_dict("ACAD_SCALELIST")
+        if len(scales) == 0:
+            for default in cls._DEFAULT_SCALE_LIST:
+                _, default_paper, default_drawing = parse_scale(default)
+                cls._add_scale_object(doc, scales, default, default_paper, default_drawing)
+        for _key, entry in scales.items():
+            if cls._scale_entry_name(entry) == name:
+                return False
+        cls._add_scale_object(doc, scales, name, paper, drawing)
+        return True
+
+    def _set_annotation_scale(self, doc, value: Any) -> str:
+        name, paper, drawing = parse_scale(value)  # refused before any write
+        if self._is_r12():
+            # Measured: an R12 (AC1009) file has no OBJECTS section, so ezdxf
+            # exports neither AcDbVariableDictionary/DICTIONARYVAR nor the
+            # SCALE objects. The in-memory write "succeeded" and reloaded as
+            # 1:1 -- the header-only-write-that-vanishes class again. Refused
+            # here, before either dictionary is created, so a refused call
+            # leaves the root dictionary as it found it.
+            raise ValueError(
+                "CANNOSCALE: R12 has no OBJECTS section, so the annotation scale "
+                "(AcDbVariableDictionary and ACAD_SCALELIST) would be lost on save. "
+                "Save as R2000 or newer first."
+            )
+        self._ensure_scale_entry(doc, name, paper, drawing)
+        vardict = self._variable_dictionary(doc, create=True)
+        entry = vardict.get("CANNOSCALE")
+        if entry is None:
+            vardict.add_dict_var("CANNOSCALE", name)
+        else:
+            entry.dxf.value = name
+        return name
+
+    async def drawing_properties_get(self) -> dict:
+        def _sync():
+            doc = self._require_doc()
+            return {
+                "summary": {field: None for field in SUMMARY_FIELDS},
+                "summary_available": False,
+                "custom": {tag: value for tag, value in doc.header.custom_vars},
+                "backend": "ezdxf",
+            }
+
+        return await self._async(_sync)
+
+    async def drawing_properties_set(
+        self, summary: dict | None = None, custom: dict | None = None
+    ) -> dict:
+        written, to_write, to_delete = validate_drawing_properties(summary, custom)
+        if written:
+            # The five summary fields live in the DWG SummaryInfo stream, which
+            # a DXF has no slot for; refuse before the custom keys are touched.
+            raise UnsupportedCapabilityError(
+                "dwgprops",
+                "drawing_properties_set: the summary fields (title, subject, author, keywords, "
+                "comments) live in the DWG SummaryInfo, which the headless ezdxf backend cannot "
+                f"write (asked for {sorted(written)}). Custom properties work on both engines; "
+                "set the summary on the live COM backend.",
+            )
+
+        def _sync():
+            doc = self._require_doc()
+            if (to_write or to_delete) and doc.dxfversion < "AC1018":
+                # Measured: ezdxf emits $CUSTOMPROPERTYTAG / $CUSTOMPROPERTY only
+                # after $LASTSAVEDBY, a header variable that does not exist
+                # before R2004 (its own CustomVars docstring says so). On an
+                # R12 or R2000 document the in-memory write "succeeded",
+                # drawing_properties_get echoed it back, and drawing_save_as
+                # (version kept) wrote nothing -- the header-only write that
+                # vanishes on save, the class f3ff703 removed for CANNOSCALE.
+                # Refused here, before custom_vars is touched.
+                raise ValueError(
+                    f"custom properties: this document is DXF {doc.dxfversion} "
+                    f"({doc.acad_release}), and $CUSTOMPROPERTYTAG / $CUSTOMPROPERTY "
+                    "header pairs are only written for R2004 (AC1018) or newer, so "
+                    f"{sorted(to_write) + sorted(to_delete)} would be lost on save. "
+                    "Save as R2004 or newer first."
+                )
+            custom_vars = doc.header.custom_vars
+            # AutoCAD compares custom keys with a simple per-character case
+            # compare (measured on 2026: SetCustomByKey("PROJECT") updates an
+            # existing "Project" and keeps that spelling, a second AddCustomInfo
+            # is 'Duplicate key' -- but 'Straße' and 'STRASSE' are two keys,
+            # which str.casefold() would merge), and ezdxf's CustomVars are
+            # plain case-sensitive tuples, so the match is done here with
+            # custom_key_fold: an existing tag is updated in place under its
+            # stored spelling, never duplicated under a second one.
+            props = custom_vars.properties
+            for key, value in to_write.items():
+                folded = custom_key_fold(key)
+                hits = [i for i, (tag, _v) in enumerate(props) if custom_key_fold(tag) == folded]
+                if hits:
+                    props[hits[0]] = (props[hits[0]][0], value)
+                else:
+                    custom_vars.append(key, value)
+            deleted = []
+            for key in to_delete:
+                folded = custom_key_fold(key)
+                kept = [(tag, v) for tag, v in props if custom_key_fold(tag) != folded]
+                if len(kept) != len(props):
+                    props[:] = kept
+                    deleted.append(key)
+            if to_write or deleted:
+                self._mark_dirty()
+            return {
+                "ok": True,
+                "summary_written": [],
+                "custom_written": sorted(to_write),
+                "custom_deleted": deleted,
+                "backend": "ezdxf",
+            }
 
         return await self._async(_sync)

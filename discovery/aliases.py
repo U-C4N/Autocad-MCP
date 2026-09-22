@@ -76,6 +76,8 @@ class ToolAliases:
 #       list / create / modify / set-current; this server splits each into
 #       discrete style tools (track E), so the command is a correct
 #       destination for every one of them.
+#   DWGPROPS -- one dialog, three tabs: General (drawing_info), Summary and
+#       Custom (drawing_properties_get / drawing_properties_set).
 #
 # Every other AutoCAD command must map to exactly one tool.
 SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
@@ -83,6 +85,7 @@ SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
         "ARRAY",
         "BLOCK",
         "DIMSTYLE",
+        "DWGPROPS",
         "ERASE",
         "INSERT",
         "LAYER",
@@ -462,6 +465,28 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "drawing intent",
         ),
     ),
+    "drawing_properties_get": ToolAliases(
+        acad=("DWGPROPS",),
+        synonyms=(
+            "drawing properties",
+            "document properties",
+            "summary info",
+            "title subject author keywords",
+            "custom properties",
+            "who made this drawing",
+        ),
+    ),
+    "drawing_properties_set": ToolAliases(
+        acad=("DWGPROPS",),
+        synonyms=(
+            "set the drawing title",
+            "set author and keywords",
+            "add a custom property",
+            "project number in the file properties",
+            "edit summary info",
+            "delete a custom property",
+        ),
+    ),
     "drawing_preflight": ToolAliases(
         synonyms=(
             "preflight",
@@ -507,7 +532,20 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
         ),
     ),
     "drawing_settings": ToolAliases(
-        acad=("UNITS", "DDUNITS", "OSNAP", "DSETTINGS", "LTSCALE", "DIMSCALE"),
+        acad=(
+            "UNITS",
+            "DDUNITS",
+            "OSNAP",
+            "DSETTINGS",
+            "LTSCALE",
+            "DIMSCALE",
+            "LIMITS",
+            "GRID",
+            "SNAP",
+            "ORTHO",
+            "PSLTSCALE",
+            "CANNOSCALE",
+        ),
         synonyms=(
             "drawing units",
             "millimetres or inches",
@@ -515,6 +553,16 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "dimension scale",
             "linetype scale",
             "object snap settings",
+            "drawing limits",
+            "turn the grid on",
+            "grid spacing",
+            "snap spacing",
+            "ortho mode",
+            "polar tracking",
+            "annotation scale",
+            "architectural units",
+            "current dimension style",
+            "current text style",
         ),
     ),
     "drawing_undo": ToolAliases(
@@ -1297,6 +1345,18 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "is autocad connected",
             "backend status",
             "health check",
+        ),
+    ),
+    "system_variable_describe": ToolAliases(
+        acad=("SETVAR", "SYSVARMONITOR", "SYSVDLG"),
+        synonyms=(
+            "sysvar",
+            "what does ltscale do",
+            "explain a system variable",
+            "system variable reference",
+            "which variables are saved in the drawing",
+            "valid range of a system variable",
+            "list system variables",
         ),
     ),
     # ── Transactions ────────────────────────────────────────────────────────

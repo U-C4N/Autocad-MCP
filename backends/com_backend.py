@@ -37,6 +37,7 @@ from .base import (
     rad2deg,
     shoelace_area,
 )
+from .contracts.settings import SUMMARY_FIELDS, validate_drawing_properties
 
 log = logging.getLogger(__name__)
 
@@ -259,6 +260,30 @@ def _require_block_defined(doc, name):
 
 
 _BUILTIN_LINETYPES = {"continuous", "bylayer", "byblock"}
+
+#: `drawing_properties_*` field → `IAcadSummaryInfo` property.
+_SUMMARY_ATTRS = {field: field.capitalize() for field in SUMMARY_FIELDS}
+
+#: `IAcadSummaryInfo` failure codes, as the `scode` in a `com_error`'s
+#: excepinfo (measured on AutoCAD 2026; the description next to them is
+#: English while the HRESULT text is localised, so the code is matched first).
+_SUMMARYINFO_DUPLICATE_KEY = -2145386475  # AddCustomInfo: 'Duplicate key'
+_SUMMARYINFO_KEY_NOT_FOUND = -2145386476  # Set/RemoveCustomByKey: 'Key not found'
+
+
+def _summaryinfo_error_is(exc: BaseException, scode: int, description: str) -> bool:
+    """True when `exc` is the `IAcadSummaryInfo` failure `scode` / `description`.
+
+    `com_error.args[2]` is the excepinfo tuple ``(wCode, source, description,
+    helpfile, helpcontext, scode)``; a missing or foreign excepinfo is never a
+    match, so an unrelated COM failure keeps propagating.
+    """
+    info = exc.args[2] if len(exc.args) > 2 else None
+    if not isinstance(info, tuple):
+        return False
+    code = info[5] if len(info) > 5 else None
+    desc = str(info[2] or "") if len(info) > 2 else ""
+    return code == scode or desc.strip().casefold() == description.casefold()
 
 
 def _ensure_linetype_loaded(name: str) -> None:
@@ -1327,6 +1352,8 @@ class ComBackend(AutoCADBackend):
                 "viewport_render": FeatureCapability(True, "native"),
                 "solid_3d": _solid_3d_capability(),
                 "lisp": FeatureCapability(True, "sanitized"),
+                "registry_sysvar": FeatureCapability(True, "native"),
+                "dwgprops": FeatureCapability(True, "native"),
             },
         )
 
@@ -4942,30 +4969,47 @@ class ComBackend(AutoCADBackend):
         return await self._run(_sync)
 
     async def system_get_variable(self, name) -> Any:
+        # GetVariable / SetVariable are members of AcadDocument, not of
+        # AcadApplication: `AutoCAD.Application.GetVariable` raises
+        # AttributeError on a live seat before anything reaches AutoCAD.
         def _sync():
-            app = _acad_app()
-            return app.GetVariable(name)
+            doc = _acad_doc()
+            return doc.GetVariable(name)
 
         return await self._run(_sync)
 
     async def system_set_variable(self, name, value) -> dict:
         def _sync():
-            app = _acad_app()
+            doc = _acad_doc()  # the sysvar host is the document (see system_get_variable)
             # Coerce to the sysvar's actual type (NEW-com-set-variable-coercion):
             # AutoCAD rejects e.g. a string "0" for the integer OSMODE. Probe the
             # current value's type and convert to match; pass through on failure.
             coerced = value
+            # `payload` is what SetVariable receives. It differs from `coerced`
+            # only for point variables, whose VARIANT wrapper must never reach
+            # the returned dict: pydantic cannot serialise
+            # win32com.client.VARIANT, so the tool would report failure *after*
+            # AutoCAD had already applied the write.
+            payload = value
             try:
-                current = app.GetVariable(name)
+                current = doc.GetVariable(name)
                 if isinstance(current, bool):
                     coerced = bool(int(value)) if isinstance(value, str) else bool(value)
                 elif isinstance(current, int):
                     coerced = int(float(value)) if isinstance(value, str) else int(value)
                 elif isinstance(current, float):
                     coerced = float(value)
+                elif isinstance(current, (tuple, list)):
+                    # 2D/3D point variables (LIMMIN, GRIDUNIT, SNAPUNIT, ...) travel
+                    # as VARIANT double arrays of the length AutoCAD itself reports;
+                    # a bare Python tuple is marshalled as VT_VARIANT and rejected.
+                    coords = [float(v) for v in value]
+                    coords += [0.0] * (len(current) - len(coords))
+                    coerced = coords[: len(current)]
+                payload = _av(coerced) if isinstance(current, (tuple, list)) else coerced
             except Exception as exc:
                 log.debug("set_variable type probe for %s failed: %s", name, exc)
-            app.SetVariable(name, coerced)
+            doc.SetVariable(name, payload)
             return {"ok": True, "variable": name, "value": coerced}
 
         return await self._run(_sync)
@@ -5512,5 +5556,82 @@ class ComBackend(AutoCADBackend):
             _apply_entity_attrs(xline, layer, None, None)
             _regen()
             return _entity_info(xline)
+
+        return await self._run(_sync)
+
+    # ── settings (track E, group C) ───────────────────────────────────────────
+
+    async def drawing_properties_get(self) -> dict:
+        def _sync():
+            info = _acad_doc().SummaryInfo
+            summary = {
+                field: str(getattr(info, attr) or "") for field, attr in _SUMMARY_ATTRS.items()
+            }
+            custom: dict[str, str] = {}
+            for index in range(int(info.NumCustomInfo())):
+                key, value = info.GetCustomByIndex(index)
+                custom[str(key)] = str(value)
+            return {
+                "summary": summary,
+                "summary_available": True,
+                "custom": custom,
+                "backend": "com",
+            }
+
+        return await self._run(_sync)
+
+    async def drawing_properties_set(
+        self, summary: dict | None = None, custom: dict | None = None
+    ) -> dict:
+        # Validated before any ActiveX call: a bad field or value raises here
+        # and SummaryInfo is never touched.
+        written, to_write, to_delete = validate_drawing_properties(summary, custom)
+
+        def _sync():
+            info = _acad_doc().SummaryInfo
+            # AutoCAD matches custom keys by its own simple per-character case
+            # compare (measured on 2026: AddCustomInfo("PROJECT") over an
+            # existing "Project" is 'Duplicate key', yet "Straße" and
+            # "STRASSE" are two keys -- Python's casefold() merges them, and a
+            # routing built on it sent "STRASSE" to SetCustomByKey, which
+            # failed 'Key not found' after the summary fields and the earlier
+            # keys were already applied). So only an exact spelling is routed
+            # from here; for everything else AutoCAD decides: AddCustomInfo's
+            # 'Duplicate key' means the key is there under another spelling
+            # and it is set instead, RemoveCustomByKey's 'Key not found' means
+            # it is not there and the delete is reported as not done. No
+            # routing guess can then half-write.
+            existing: set[str] = set()
+            for index in range(int(info.NumCustomInfo())):
+                key, _value = info.GetCustomByIndex(index)
+                existing.add(str(key))
+            for field, value in written.items():
+                setattr(info, _SUMMARY_ATTRS[field], value)
+            for key, value in to_write.items():
+                if key in existing:
+                    info.SetCustomByKey(key, value)
+                    continue
+                try:
+                    info.AddCustomInfo(key, value)
+                except _COM_ERROR as exc:
+                    if not _summaryinfo_error_is(exc, _SUMMARYINFO_DUPLICATE_KEY, "Duplicate key"):
+                        raise
+                    info.SetCustomByKey(key, value)
+            deleted = []
+            for key in to_delete:
+                try:
+                    info.RemoveCustomByKey(key)
+                except _COM_ERROR as exc:
+                    if not _summaryinfo_error_is(exc, _SUMMARYINFO_KEY_NOT_FOUND, "Key not found"):
+                        raise
+                    continue
+                deleted.append(key)
+            return {
+                "ok": True,
+                "summary_written": sorted(written),
+                "custom_written": sorted(to_write),
+                "custom_deleted": deleted,
+                "backend": "com",
+            }
 
         return await self._run(_sync)
