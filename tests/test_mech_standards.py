@@ -89,6 +89,19 @@ def test_a_source_that_does_not_name_its_table_is_refused():
         register("TEST 4", {1: {"a": 1}}, Coverage(1.0, 1.0), "made up")
 
 
+def test_a_table_may_register_its_structure_before_its_rows_are_transcribed():
+    """DIN 509, DIN 471/472, DIN 332-1 and ISO 3601-2 ship exactly this way."""
+    register("TEST 5", {}, Coverage(0.0, 0.0), SOURCE)
+    assert "TEST 5" in standards()
+    with pytest.raises(ValueError, match="TEST 5"):
+        lookup("TEST 5", 12)
+
+
+def test_a_rows_argument_that_is_not_a_dict_is_refused():
+    with pytest.raises(ValueError, match="rows dict"):
+        register("TEST 6", [{"d": 1.0}], Coverage(1.0, 1.0), SOURCE)
+
+
 def test_registering_the_same_standard_twice_is_refused():
     with pytest.raises(ValueError, match="already registered"):
         register("TEST 1", {10: {"d": 10.0}}, Coverage(10.0, 10.0), SOURCE)
