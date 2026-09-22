@@ -372,6 +372,38 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "kose kaynagi",
         ),
     ),
+    "centre_marks": ToolAliases(
+        acad=("CENTERMARK", "CENTERLINE", "DIMCENTER"),
+        synonyms=(
+            "centre mark",
+            "center mark",
+            "centre line",
+            "center line of a hole",
+            "cross at the centre",
+            "eksen cizgisi",
+            "merkez isareti",
+        ),
+    ),
+    "section_line": ToolAliases(
+        acad=("SECTIONPLANE",),
+        synonyms=(
+            "cutting plane line",
+            "section line",
+            "section a-a",
+            "where to cut the part",
+            "view direction arrows",
+            "kesit cizgisi",
+        ),
+    ),
+    "hatch_material": ToolAliases(
+        synonyms=(
+            "material hatch",
+            "hatch as cast iron",
+            "section hatching for steel",
+            "hatch pattern for a material",
+            "malzeme taramasi",
+        ),
+    ),
     # ── Dimensions ──────────────────────────────────────────────────────────
     "dimension_aligned": ToolAliases(
         acad=("DIMALIGNED", "DAL"),

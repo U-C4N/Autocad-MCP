@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 206,
+    "tools": 209,
     "resources": 8,
     "prompts": 5,
     "groups": 23
@@ -15,7 +15,7 @@
     "corner_ops": 4,
     "dimensions": 5,
     "drawing": 11,
-    "engineering": 12,
+    "engineering": 15,
     "entity_creation": 18,
     "entity_modification": 16,
     "entity_query": 9,
@@ -341,6 +341,20 @@
         "title": "Batch: Run Tools",
         "readOnlyHint": false,
         "destructiveHint": true
+      }
+    },
+    {
+      "name": "centre_marks",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Draw ISO 128-23 centre marks or centre lines on circles, read from the drawing.",
+      "tags": [
+        "engineering",
+        "mech"
+      ],
+      "annotations": {
+        "title": "Centre Marks (ISO 128-23)",
+        "destructiveHint": false
       }
     },
     {
@@ -1593,6 +1607,20 @@
       }
     },
     {
+      "name": "hatch_material",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Hatch a region with the ISO 128-50 section pattern for a named material.",
+      "tags": [
+        "engineering",
+        "mech"
+      ],
+      "annotations": {
+        "title": "Material Hatch (ISO 128-50)",
+        "destructiveHint": false
+      }
+    },
+    {
       "name": "hatch_set_gradient",
       "group": "entity_creation",
       "cost": "mutate",
@@ -2210,6 +2238,20 @@
       "annotations": {
         "title": "Point: Tangent from external point",
         "readOnlyHint": true
+      }
+    },
+    {
+      "name": "section_line",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Draw an ISO 128-40 cutting-plane line and return the plane the section view uses.",
+      "tags": [
+        "engineering",
+        "mech"
+      ],
+      "annotations": {
+        "title": "Section Line (ISO 128-40)",
+        "destructiveHint": false
       }
     },
     {
