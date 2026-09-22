@@ -467,7 +467,11 @@ def test_payload_helpers_accept_only_well_formed_values():
 async def test_crossings_follow_a_bulged_line_not_its_chord(backend):
     """A foreign P&ID line with a semicircular jump (bulge -1 from (0,0) to
     (100,0) bows to +Y, apex (50,50)): a vertical utility line at x=30 from
-    y=20 to y=60 crosses the arc once at y≈45.8 and its chord never."""
+    y=20 to y=60 crosses the arc once at y≈45.8 and its chord never — and so
+    does one at x=50, straight through the apex. The apex is the axis of
+    symmetry, where a flattened semicircle (an even chord count) puts a
+    vertex; a vertex hit is a junction to ``segments_cross``, so a chord
+    chain reported 0 there. The arc is tested exactly, not flattened."""
     msp = backend._msp()
     msp.add_lwpolyline(
         [(0, 0, 0, 0, -1.0), (100, 0, 0, 0, 0)],
@@ -480,8 +484,37 @@ async def test_crossings_follow_a_bulged_line_not_its_chord(backend):
     assert lines[0]["bulges"] == [-1.0, 0.0]
     result = await draw_line(backend, {"x": 30, "y": 20}, {"x": 30, "y": 60}, line_class="utility")
     assert result["crossings"] == 1
+    apex = await draw_line(backend, {"x": 50, "y": 20}, {"x": 50, "y": 60}, line_class="utility")
+    assert apex["crossings"] == 1, "through the apex — the flattened vertex — is still one crossing"
     below = await draw_line(backend, {"x": 70, "y": -20}, {"x": 70, "y": -60}, line_class="utility")
     assert below["crossings"] == 0, "the chord side of the arc is empty"
+
+
+@pytest.mark.parametrize("extrusion", [(0, 0, 1), (0, 0, -1)])
+async def test_crossings_count_a_line_through_a_jump_apex(backend, extrusion):
+    """The jump a P&ID draws where two lines cross: (45,0)→(55,0) bulge -1, a
+    5 mm semicircle with its apex at (50,5). A line at x=50 meets the apex
+    exactly (36 chords of r=50, 12 of r=5: always even, always a vertex on
+    the axis) and is one crossing, the same as at x=50.3 or x=49 — on a
+    mirrored frame (extrusion -Z, WCS x negated) too."""
+    msp = backend._msp()
+    msp.add_lwpolyline(
+        [(0, 0, 0, 0, 0), (45, 0, 0, 0, -1.0), (55, 0, 0, 0, 0), (100, 0, 0, 0, 0)],
+        format="xyseb",
+        dxfattribs={"layer": "PROCESS-PIPING-MAIN", "extrusion": extrusion},
+    )
+    backend._mark_dirty()
+    sign = extrusion[2]
+    for x in (50.0, 50.3, 49.0):
+        drawn = await draw_line(
+            backend, {"x": sign * x, "y": -20}, {"x": sign * x, "y": 20}, line_class="utility"
+        )
+        assert drawn["crossings"] == 1, f"x={sign * x}"
+        await backend.entity_delete(drawn["handle"])
+    beside = await draw_line(
+        backend, {"x": sign * 60, "y": 2}, {"x": sign * 60, "y": 20}, line_class="utility"
+    )
+    assert beside["crossings"] == 0, "clear of the jump and above the straight run"
 
 
 async def test_com_existing_lines_carry_bulges(monkeypatch):

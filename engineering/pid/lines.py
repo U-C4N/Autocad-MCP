@@ -238,23 +238,50 @@ def marker_positions(vertices, min_len: float = 15.0) -> list[tuple[float, float
     return out
 
 
-#: Max chord deviation (mm) when a bulged polyline edge is flattened for the
-#: crossing test — a tenth of the thinnest ISO 128 lineweight.
+#: Max chord deviation (mm) when a bulged polyline edge is flattened into
+#: chords (``flatten_bulges``) — a tenth of the thinnest ISO 128 lineweight.
+#: The crossing count does **not** flatten: it tests the exact arc.
 FLATTEN_SAGITTA = 0.05
+
+
+def _arc_of_bulge(a: Point, b: Point, bulge: float) -> tuple[float, float, float, float, float]:
+    """``(cx, cy, radius, start, theta)`` of the arc a→b with the DXF bulge
+    ``tan(sweep/4)``: ``theta`` is the signed sweep in radians (positive
+    counter-clockwise) and ``start`` the angle of ``a`` about the centre.
+
+    Same arithmetic as ``engineering/measure.py`` (sweep ``4·atan(bulge)``,
+    radius ``chord / 2·sin(|sweep|/2)``) and ``graph._point_segment_distance``
+    (centre on the chord's left normal, ``radius - sagitta`` carrying it across
+    the chord past a semicircle). The caller guarantees a non-zero bulge and a
+    non-degenerate chord.
+    """
+    chord = _dist(a, b)
+    theta = 4.0 * math.atan(bulge)  # signed sweep, radians
+    radius = chord / (2.0 * math.sin(abs(theta) / 2.0))
+    sag = abs(bulge) * chord / 2.0
+    nx, ny = -(b[1] - a[1]) / chord, (b[0] - a[0]) / chord  # left of a→b
+    offset = (radius - sag) * (1.0 if bulge > 0 else -1.0)
+    cx = (a[0] + b[0]) / 2.0 + offset * nx
+    cy = (a[1] + b[1]) / 2.0 + offset * ny
+    start = math.atan2(a[1] - cy, a[0] - cx)
+    return cx, cy, radius, start, theta
 
 
 def flatten_bulges(points, bulges, sagitta: float = FLATTEN_SAGITTA) -> list[Point]:
     """The polyline as straight segments, every bulged edge replaced by chords
     that deviate from the arc by at most ``sagitta``.
 
-    Same arc arithmetic as ``engineering/measure.py`` (sweep ``4·atan(bulge)``,
-    radius ``chord / 2·sin(|sweep|/2)``) and ``graph._point_segment_distance``
-    (centre on the chord's left normal, ``radius - sagitta`` carrying it across
-    the chord past a semicircle). Checked against ``ezdxf.math.bulge_to_arc``
-    + ``ConstructionArc.flattening`` in ``tests/test_pid_lines.py``: identical
-    vertex count and positions to 1e-12 for bulges 0.2 … 2.0 of either sign.
-    A straight edge (bulge 0) is passed through; ``bulges`` shorter than the
-    edge count is padded with zeros.
+    Arc arithmetic from ``_arc_of_bulge``. Checked against
+    ``ezdxf.math.bulge_to_arc`` + ``ConstructionArc.flattening`` in
+    ``tests/test_pid_lines.py``: identical vertex count and positions to 1e-12
+    for bulges 0.2 … 2.0 of either sign. A straight edge (bulge 0) is passed
+    through; ``bulges`` shorter than the edge count is padded with zeros.
+
+    Not used by the crossing count: a flattened chain has artificial vertices,
+    and ``segments_cross`` treats a hit on any vertex as a junction — a
+    semicircle flattens to an even chord count, so a line through its apex
+    (the axis of symmetry, exactly where a P&ID line meets a crossing jump)
+    would be dropped by both chords. ``count_crossings`` tests the exact arc.
     """
     pts = [(float(x), float(y)) for x, y in points]
     if len(pts) < 2:
@@ -263,17 +290,9 @@ def flatten_bulges(points, bulges, sagitta: float = FLATTEN_SAGITTA) -> list[Poi
     for i, (a, b) in enumerate(zip(pts, pts[1:], strict=False)):
         out.append(a)
         bulge = float(bulges[i]) if i < len(bulges) and bulges[i] else 0.0
-        chord = _dist(a, b)
-        if abs(bulge) < 1e-12 or chord < 1e-12:
+        if abs(bulge) < 1e-12 or _dist(a, b) < 1e-12:
             continue
-        theta = 4.0 * math.atan(bulge)  # signed sweep, radians
-        radius = chord / (2.0 * math.sin(abs(theta) / 2.0))
-        sag = abs(bulge) * chord / 2.0
-        nx, ny = -(b[1] - a[1]) / chord, (b[0] - a[0]) / chord  # left of a→b
-        offset = (radius - sag) * (1.0 if bulge > 0 else -1.0)
-        cx = (a[0] + b[0]) / 2.0 + offset * nx
-        cy = (a[1] + b[1]) / 2.0 + offset * ny
-        start = math.atan2(a[1] - cy, a[0] - cx)
+        cx, cy, radius, start, theta = _arc_of_bulge(a, b, bulge)
         if sagitta >= radius:
             segments = 1
         else:
@@ -296,15 +315,67 @@ def segments_cross(p1, p2, q1, q2) -> bool:
     return d1 * d2 < -_EPS and d3 * d4 < -_EPS
 
 
-def count_crossings(vertices, others) -> int:
+def segment_arc_crossings(p1, p2, a, b, bulge: float) -> int:
+    """Proper crossings (0, 1 or 2) of the straight segment p1→p2 with the
+    exact arc a→b of DXF ``bulge``; a zero bulge is the chord test.
+
+    The same junction rule as ``segments_cross``: a hit within ``_EPS`` (mm)
+    of either end of the segment or of the arc is a T-touch or a shared
+    vertex, not a crossing, and a tangent (the line reaches no deeper than
+    ``_EPS`` into the circle) touches without crossing. Only the arc's own
+    two ends are junction points — nothing along the sweep is a vertex.
+    """
+    if abs(bulge) < 1e-12 or _dist(a, b) < 1e-12:
+        return 1 if segments_cross(p1, p2, a, b) else 0
+    cx, cy, radius, start, theta = _arc_of_bulge(a, b, bulge)
+    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+    length_sq = dx * dx + dy * dy
+    if length_sq < 1e-24:
+        return 0
+    length = math.sqrt(length_sq)
+    fx, fy = p1[0] - cx, p1[1] - cy
+    # |p1 + t·d − c|² = r²  →  A t² + B t + C = 0 with A = |d|²
+    coeff_b = 2.0 * (fx * dx + fy * dy)
+    coeff_c = fx * fx + fy * fy - radius * radius
+    disc = coeff_b * coeff_b - 4.0 * length_sq * coeff_c
+    if disc <= 0.0:
+        return 0
+    root = math.sqrt(disc)
+    if root / (2.0 * length) <= _EPS:
+        return 0  # tangent: the half-chord inside the circle is nothing
+    sweep = abs(theta)
+    sign = 1.0 if theta > 0 else -1.0
+    count = 0
+    for numerator in (-coeff_b - root, -coeff_b + root):
+        t = numerator / (2.0 * length_sq)
+        if t * length <= _EPS or (1.0 - t) * length <= _EPS:
+            continue  # the segment ends on the arc: a T-touch
+        x, y = p1[0] + t * dx, p1[1] + t * dy
+        along = (sign * (math.atan2(y - cy, x - cx) - start)) % (2.0 * math.pi)
+        if along * radius <= _EPS or abs(sweep - along) * radius <= _EPS:
+            continue  # the arc's own end: the polyline's vertex, a junction
+        if along > sweep:
+            continue  # on the circle but outside the arc
+        count += 1
+    return count
+
+
+def count_crossings(vertices, others, bulges=None) -> int:
+    """Proper crossings of the straight chain ``vertices`` with every chain in
+    ``others``. ``bulges[i]`` is the per-vertex DXF bulge list of ``others[i]``
+    (the arc leaving each vertex; short lists are zero-padded, ``None`` means
+    every chain is straight): a bulged edge is tested as its exact arc, never
+    as its chord or as flattened chords.
+    """
     pts = [(float(x), float(y)) for x, y in vertices]
     count = 0
-    for a, b in zip(pts, pts[1:], strict=False):
-        for other in others:
-            opts = [(float(x), float(y)) for x, y in other]
-            for c, d in zip(opts, opts[1:], strict=False):
-                if segments_cross(a, b, c, d):
-                    count += 1
+    for index, other in enumerate(others):
+        opts = [(float(x), float(y)) for x, y in other]
+        obulges = list(bulges[index]) if bulges is not None and index < len(bulges) else []
+        for a, b in zip(pts, pts[1:], strict=False):
+            for j, (c, d) in enumerate(zip(opts, opts[1:], strict=False)):
+                bulge = float(obulges[j]) if j < len(obulges) and obulges[j] else 0.0
+                count += segment_arc_crossings(a, b, c, d, bulge)
     return count
 
 

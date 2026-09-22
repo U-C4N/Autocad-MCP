@@ -13,7 +13,6 @@ from .lines import (
     PID_LINE_LAYERS,
     aim_points,
     count_crossings,
-    flatten_bulges,
     format_line_number,
     label_placement,
     marker_positions,
@@ -238,7 +237,9 @@ async def draw_line(
 
     existing = await existing_pid_lines(backend)
     crossings = count_crossings(
-        path, [flatten_bulges(ln["vertices"], ln["bulges"]) for ln in existing]
+        path,
+        [ln["vertices"] for ln in existing],
+        bulges=[ln["bulges"] for ln in existing],
     )
     used: set[tuple[str, str]] = set()
     max_seq = 0
