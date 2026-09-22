@@ -41,7 +41,7 @@ from engineering.mech.features import (
     mirror_about_x,
 )
 from engineering.mech.part import PrismaticPart, RevolvedPart, Segment, build_part
-from engineering.mech.primitives import Arc, Circle, Line, Poly, Text
+from engineering.mech.primitives import Arc, Circle, Line, Poly, Text, bbox
 
 CTX: dict = {"side": "right", "scale": 1.0, "projection": "first"}
 
@@ -167,6 +167,43 @@ def test_a_chamfer_bigger_than_the_step_is_refused_by_name():
         feature.validate(shaft(feature))
 
 
+def test_a_chamfer_whose_axial_leg_outruns_its_segment_is_refused_by_name():
+    """The radial guard only bites near 45 deg; a shallow lead-in slips past it.
+
+    The end segment of `shaft()` is 15 mm long at r = 10. A 30 mm chamfer at
+    10 deg takes only 5.29 mm off the radius, so `radial >= radius` is happy,
+    and the old part-length bound (75 mm) was happy too - yet `before` landed
+    at x = 45, two segments away, anchored at a radius that segment does not
+    have.
+    """
+    feature = Chamfer(id="c1", at="end", size=30.0, angle=10.0)
+    with pytest.raises(ValueError) as excinfo:
+        feature.validate(shaft(feature))
+    message = str(excinfo.value)
+    assert "30" in message and "15" in message and "segment 2" in message
+
+
+def test_a_shallow_chamfer_that_fits_inside_its_segment_is_still_accepted():
+    """The new bound refuses only what leaves the segment; 14 < 15 mm stays."""
+    feature = Chamfer(id="c1", at="end", size=14.0, angle=10.0)
+    part = shaft(feature)
+    feature.validate(part)
+    edit = feature.corner_edit(part)
+    assert edit["before"][0] == pytest.approx(61.0)
+    assert edit["before"][0] >= 60.0  # inside segment 2, which spans x 60..75
+
+
+def test_a_chamfer_at_a_step_is_bounded_by_the_segment_it_cuts_into():
+    """`shaft()` steps UP at x = 20, so the chamfer cuts into segment 1 (40 mm).
+
+    A 45 mm leg outruns that segment even though the part is 75 mm long.
+    """
+    feature = Chamfer(id="c1", at="step:0", size=45.0, angle=5.0)
+    with pytest.raises(ValueError) as excinfo:
+        feature.validate(shaft(feature))
+    assert "segment 1" in str(excinfo.value) and "40" in str(excinfo.value)
+
+
 def test_a_fillet_at_a_step_up_emits_a_tangent_arc_in_the_lower_right_quadrant():
     feature = Fillet(id="f1", at="step:0", radius=2.0)
     part = shaft(feature)
@@ -216,6 +253,16 @@ def test_a_keyway_takes_its_width_and_depth_from_din_6885():
 
 
 def test_a_keyway_end_view_breaks_the_circle_and_draws_the_notch():
+    """The arc is the shaft that SURVIVES the slot, not the cap over its mouth.
+
+    `Arc` is CCW start -> end, so the sweep has to be the long way round: it
+    leaves the left notch wall, goes over the bottom of the shaft and arrives
+    at the right one. Emitting the two angles the other way round draws a short
+    chord-like cap straight across the keyway opening - geometrically a legal
+    arc, which is why only the sweep and the endpoints catch it. Measured on
+    AutoCAD 2026: the 30.93 deg arc is 8.098 mm long, the 329.07 deg one is
+    86.150 mm, and the full r=15 circle is 94.248 mm.
+    """
     feature = Keyway(id="kw", segment=1, length=25.0)
     part = shaft(feature)
     prims = feature.prims(part, "side", CTX)
@@ -225,6 +272,22 @@ def test_a_keyway_end_view_breaks_the_circle_and_draws_the_notch():
     width = keyway_dimensions(30.0)["width"]
     assert lines[1].p1[0] == pytest.approx(-width / 2.0)
     assert lines[1].p2[0] == pytest.approx(width / 2.0)
+
+    arc = arcs[0]
+    radius = 15.0
+    half = width / 2.0
+    top = math.sqrt(radius * radius - half * half)
+    # start at the LEFT wall, end at the RIGHT one: everything but the opening.
+    assert arc.radius == pytest.approx(radius)
+    assert arc.start_deg == pytest.approx(math.degrees(math.atan2(top, -half)))
+    assert arc.end_deg == pytest.approx(math.degrees(math.atan2(top, half)))
+    sweep = (arc.end_deg - arc.start_deg) % 360.0
+    assert sweep == pytest.approx(329.068, abs=1e-3)
+    assert math.radians(sweep) * radius == pytest.approx(86.150, abs=1e-3)
+    # and the end view therefore spans the whole shaft, not just the notch:
+    # full width and full depth, topped by the notch walls because the slot has
+    # taken the crown of the circle away.
+    assert bbox(prims) == pytest.approx((-radius, -radius, radius, top))
 
 
 def test_a_keyway_longer_than_its_segment_is_refused_by_name():
@@ -468,9 +531,61 @@ def test_a_hole_draws_a_circle_in_true_shape_and_hidden_lines_in_the_side_view()
     assert sum(1 for p in front if isinstance(p, Line) and p.role == "center") == 2
     side = feature.prims(part, "side", CTX)
     assert {p.role for p in side} == {"hidden"}
-    assert side[0].p1 == (20.0, 0.0) and side[0].p2 == (20.0, 8.0)
+    # a through hole runs the whole thickness, drawn from the machined face down
+    assert side[0].p1 == (20.0, 8.0) and side[0].p2 == (20.0, 0.0)
     top = feature.prims(part, "top", CTX)
-    assert top[0].p1 == (15.0, 0.0)
+    assert top[0].p1 == (15.0, 8.0)
+
+
+def test_a_blind_hole_and_a_pocket_are_cut_from_the_same_face():
+    """Both enter at v = thickness - the face the front view looks at.
+
+    Nothing downstream can catch a disagreement here: two blind features cut
+    from opposite faces of the same plate are each a legal drawing on their
+    own, `omission()` returns None for both, and the validator sees only
+    hidden lines inside the material. So it has to be pinned at the source.
+    """
+    hole = Hole(id="h1", x=20.0, y=25.0, diameter=6.0, depth=5.0)
+    pocket = Pocket(
+        id="p1",
+        outline=((40.0, 10.0), (70.0, 10.0), (70.0, 40.0), (40.0, 40.0)),
+        depth=5.0,
+    )
+    part = plate(hole, pocket)
+    hole.validate(part)
+    pocket.validate(part)
+    for view in ("side", "top"):
+        entry = {round(p.p1[1], 9) for p in hole.prims(part, view, CTX)} | {
+            round(p.p2[1], 9) for p in hole.prims(part, view, CTX)
+        }
+        pocket_entry = {round(p.p1[1], 9) for p in pocket.prims(part, view, CTX)} | {
+            round(p.p2[1], 9) for p in pocket.prims(part, view, CTX)
+        }
+        # the same two v values: the face at 8.0 and a floor 5 mm below it
+        assert entry == {8.0, 3.0}
+        assert pocket_entry == {8.0, 3.0}
+    (left, right, floor) = hole.prims(part, "side", CTX)
+    assert left.p1 == (22.0, 8.0) and left.p2 == (22.0, 3.0)
+    assert right.p1 == (28.0, 8.0) and right.p2 == (28.0, 3.0)
+    assert floor.p1 == (22.0, 3.0) and floor.p2 == (28.0, 3.0)
+
+
+def test_a_counterbore_is_stepped_down_from_the_machined_face_too():
+    feature = Hole(id="h1", x=20.0, y=25.0, diameter=6.0, cbore_d=12.0, cbore_depth=3.0)
+    part = plate(feature)
+    feature.validate(part)
+    # the side view runs u = part Y, so the hole sits at u = 25 and the
+    # counterbore walls at 25 +/- 6.
+    side = feature.prims(part, "side", CTX)
+    cbore = [p for p in side if {19.0, 31.0} & {p.p1[0], p.p2[0]}]
+    assert len(cbore) == 3
+    assert {round(p.p1[1], 9) for p in cbore} | {round(p.p2[1], 9) for p in cbore} == {8.0, 5.0}
+    # and the bore itself still runs the full thickness from that same face
+    bore = [p for p in side if {22.0, 28.0} & {p.p1[0], p.p2[0]}]
+    assert [(p.p1, p.p2) for p in bore] == [
+        ((22.0, 8.0), (22.0, 0.0)),
+        ((28.0, 8.0), (28.0, 0.0)),
+    ]
 
 
 def test_a_hole_outside_the_outline_is_refused_by_name():

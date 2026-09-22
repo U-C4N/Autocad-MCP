@@ -202,6 +202,23 @@ def _anchor(feature, part: RevolvedPart) -> tuple[float, float, int]:
     return (x, left, -1) if left >= right else (x, right, +1)
 
 
+def _anchor_segment(feature, part: RevolvedPart) -> int:
+    """Index of the segment a chamfer at ``feature.at`` actually cuts into.
+
+    ``_anchor`` gives the corner and the direction into the material; the leg
+    runs that way, so at a step it belongs to whichever of the two adjacent
+    segments carries the larger radius.
+    """
+    kind, index = _parse_at(feature.at, part)
+    if kind == "start":
+        return 0
+    if kind == "end":
+        return len(part.segments) - 1
+    left = _radius_right_end(part, index)
+    right = _radius_left_end(part, index + 1)
+    return index if left >= right else index + 1
+
+
 def _shoulder(feature, part: RevolvedPart) -> tuple[float, float, int]:
     """(x, radius of the SMALLER cylinder, direction into it) for a relief groove."""
     kind, index = _parse_at(feature.at, part)
@@ -342,15 +359,22 @@ class Chamfer(_Base):
         angle = _number(self.angle, "angle")
         if not 0.0 < angle < 90.0:
             raise ValueError(f"angle: a chamfer angle is between 0 and 90 degrees, got {angle}.")
-        x, radius, _ = _anchor(self, part)
+        x, radius, direction = _anchor(self, part)
         axial, radial = self._legs()
         if radial >= radius:
             raise ValueError(
                 f"size {self.size} at {self.at!r} cuts {radial:.3f} mm off a {radius:.3f} mm "
                 "radius: the chamfer is larger than the material it sits on."
             )
-        if axial > part_length(part):
-            raise ValueError(f"size {self.size} is longer than the part ({part_length(part)} mm).")
+        index = _anchor_segment(self, part)
+        segment_length = part.segments[index].length
+        if axial > segment_length + _EPS:
+            far = x + direction * segment_length
+            raise ValueError(
+                f"size {self.size} at {self.at!r} runs {axial:g} mm along the axis, past "
+                f"segment {index}'s {segment_length:g} mm: the chamfer would cross the step "
+                f"at x={far:g} and be anchored at a radius that segment does not have."
+            )
         del x
 
     def corner_edit(self, part) -> dict:
@@ -549,10 +573,14 @@ class Keyway(_Base):
             half = width / 2.0
             top = math.sqrt(max(radius * radius - half * half, 0.0))
             floor = radius - depth
-            start = math.degrees(math.atan2(top, half)) % 360.0
-            end = math.degrees(math.atan2(top, -half)) % 360.0
+            right = math.degrees(math.atan2(top, half)) % 360.0
+            left = math.degrees(math.atan2(top, -half)) % 360.0
+            # `Arc` is CCW from start to end, so the shaft that SURVIVES the slot
+            # runs from the left notch wall the long way round to the right one.
+            # Emitting (right -> left) would draw the ~31 degree cap over the
+            # opening instead of the ~329 degrees of material.
             return (
-                Arc((0.0, 0.0), radius, start, end, "visible"),
+                Arc((0.0, 0.0), radius, left, right, "visible"),
                 Line((-half, top), (-half, floor), "visible"),
                 Line((-half, floor), (half, floor), "visible"),
                 Line((half, floor), (half, top), "visible"),
@@ -1417,12 +1445,24 @@ class GearTeeth(_Base):
 #   "front" : the outline's own XY
 #   "side"  : u = part Y, v = z in [0, thickness]   (looking along -X)
 #   "top"   : u = part X, v = z in [0, thickness]   (looking along -Y)
+#
+# THE MACHINED FACE IS v = thickness. The front view looks at the outline from
+# +Z, so the face it shows -- the face a feature placed by its (x, y) is cut
+# from -- is the top of the side and top views, and every blind feature hangs
+# down from there toward v = 0. Hole, Pocket and anything added later must
+# agree on this: a drawing whose pocket is milled from one face and whose blind
+# hole is drilled from the other is silently wrong, and no validator can tell.
 
 
 @_register
 @dataclass(frozen=True, kw_only=True)
 class Hole(_Base):
-    """A hole in a prismatic part, optionally counterbored, countersunk or tapped."""
+    """A hole in a prismatic part, optionally counterbored, countersunk or tapped.
+
+    Drilled from the machined face (``v = thickness``, the one the front view
+    looks at), so a blind hole hangs down from there and a counterbore steps
+    down from the same face -- the convention ``Pocket`` follows too.
+    """
 
     KIND: ClassVar[str] = "hole"
     x: float
@@ -1484,19 +1524,21 @@ class Hole(_Base):
             return tuple(prims)
         if view in ("side", "top"):
             u = y if view == "side" else x
+            face = part.thickness
             depth = part.thickness if self.depth is None else float(self.depth)
+            floor = face - depth
             prims = [
-                Line((u - half, 0.0), (u - half, depth), "hidden"),
-                Line((u + half, 0.0), (u + half, depth), "hidden"),
+                Line((u - half, face), (u - half, floor), "hidden"),
+                Line((u + half, face), (u + half, floor), "hidden"),
             ]
             if self.depth is not None:
-                prims.append(Line((u - half, depth), (u + half, depth), "hidden"))
+                prims.append(Line((u - half, floor), (u + half, floor), "hidden"))
             if self.cbore_d is not None:
                 cb = float(self.cbore_d) / 2.0
-                cd = float(self.cbore_depth)
-                prims.append(Line((u - cb, 0.0), (u - cb, cd), "hidden"))
-                prims.append(Line((u + cb, 0.0), (u + cb, cd), "hidden"))
-                prims.append(Line((u - cb, cd), (u + cb, cd), "hidden"))
+                cf = face - float(self.cbore_depth)
+                prims.append(Line((u - cb, face), (u - cb, cf), "hidden"))
+                prims.append(Line((u + cb, face), (u + cb, cf), "hidden"))
+                prims.append(Line((u - cb, cf), (u + cb, cf), "hidden"))
             return tuple(prims)
         return ()
 
@@ -1647,7 +1689,11 @@ class Slot(_Base):
 @_register
 @dataclass(frozen=True, kw_only=True)
 class Pocket(_Base):
-    """A milled pocket. ``no_section_hatch`` marks a rib or web (ISO 128-3)."""
+    """A milled pocket. ``no_section_hatch`` marks a rib or web (ISO 128-3).
+
+    Milled from the machined face (``v = thickness``), the same face ``Hole``
+    drills from.
+    """
 
     KIND: ClassVar[str] = "pocket"
     outline: tuple[tuple[float, float], ...]
@@ -1685,11 +1731,12 @@ class Pocket(_Base):
         if view in ("side", "top"):
             box = self.removal_box(part)
             u0, u1 = (box[1], box[3]) if view == "side" else (box[0], box[2])
-            floor = part.thickness - float(self.depth)
+            face = part.thickness
+            floor = face - float(self.depth)
             return (
-                Line((u0, part.thickness), (u0, floor), "hidden"),
+                Line((u0, face), (u0, floor), "hidden"),
                 Line((u0, floor), (u1, floor), "hidden"),
-                Line((u1, floor), (u1, part.thickness), "hidden"),
+                Line((u1, floor), (u1, face), "hidden"),
             )
         return ()
 
