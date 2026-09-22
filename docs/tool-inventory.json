@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 204,
+    "tools": 206,
     "resources": 8,
     "prompts": 5,
     "groups": 23
@@ -15,7 +15,7 @@
     "corner_ops": 4,
     "dimensions": 5,
     "drawing": 11,
-    "engineering": 10,
+    "engineering": 12,
     "entity_creation": 18,
     "entity_modification": 16,
     "entity_query": 9,
@@ -2269,6 +2269,20 @@
       }
     },
     {
+      "name": "sheet_frame",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Draw an ISO 5457 sheet frame with the zone grid and centring marks.",
+      "tags": [
+        "engineering",
+        "sheet"
+      ],
+      "annotations": {
+        "title": "Sheet: ISO 5457 Frame",
+        "destructiveHint": false
+      }
+    },
+    {
       "name": "solid_boolean",
       "group": "solids",
       "cost": "destructive",
@@ -2595,6 +2609,20 @@
       "annotations": {
         "title": "Styles: Set Current Text Style",
         "readOnlyHint": false
+      }
+    },
+    {
+      "name": "titleblock_apply",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Stamp an ISO 7200 title block (and frame) on any sheet from A4 to A0.",
+      "tags": [
+        "engineering",
+        "sheet"
+      ],
+      "annotations": {
+        "title": "Sheet: ISO 7200 Title Block",
+        "destructiveHint": false
       }
     },
     {

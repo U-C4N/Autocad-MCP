@@ -8124,6 +8124,178 @@ async def drawing_properties_set(
 
 
 # ---------------------------------------------------------------------------
+# ── SECTION 24: Sheet & Delivery (2 tools) ──────────────────────────────────
+# ---------------------------------------------------------------------------
+
+
+@cad_tool(
+    summary="Draw an ISO 5457 sheet frame with the zone grid and centring marks.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Sheet: ISO 5457 Frame", "destructiveHint": False},
+    tags={"engineering", "sheet"},
+)
+async def sheet_frame(
+    size: Annotated[
+        str, Field(default="A3", description="ISO 216 sheet: A4, A3, A2, A1 or A0.")
+    ] = "A3",
+    orientation: Annotated[
+        str, Field(default="landscape", description="'landscape' or 'portrait'.")
+    ] = "landscape",
+    zones: Annotated[
+        bool,
+        Field(
+            default=True,
+            description="Draw the ISO 5457 grid reference system: letters down the vertical "
+            "edges from the top, numbers along the horizontal edges from the left.",
+        ),
+    ] = True,
+    marks: Annotated[
+        bool,
+        Field(
+            default=True,
+            description="Draw the four centring marks and the eight corner trimming rectangles.",
+        ),
+    ] = True,
+    origin_x: Annotated[
+        float, Field(default=0.0, description="X of the sheet's lower-left corner (WCS).")
+    ] = 0.0,
+    origin_y: Annotated[
+        float, Field(default=0.0, description="Y of the sheet's lower-left corner (WCS).")
+    ] = 0.0,
+    layout: Annotated[
+        str,
+        Field(
+            default="",
+            description="Paper-space layout to draw the sheet on (create it with "
+            "layout_create). Empty draws in the current space.",
+        ),
+    ] = "",
+    ctx: Context = None,
+) -> dict:
+    """ISO 5457 drawing frame for A4-A0: a 20 mm filing margin, 10 mm on the
+    other three edges, the grid reference system and the centring/trimming marks.
+
+    Borders, rules and marks land on TITLEBLOCK; the zone lettering on TEXT.
+    Refusals, all before the first entity is drawn: a size outside A4-A0 is
+    refused by name and the five covered sizes are listed; an orientation that
+    is neither 'landscape' nor 'portrait'; a `layout` that does not exist. The
+    zone divisions drawn are equal -- ISO 5457's shorter corner fields are not
+    implemented -- while the division counts are the standard's.
+    """
+    from engineering.sheet.frames import draw_sheet_frame
+
+    await ctx.info(f"Sheet frame {size} {orientation}")
+    return await draw_sheet_frame(
+        _backend(ctx),
+        size,
+        orientation=orientation,
+        zones=zones,
+        marks=marks,
+        origin=(origin_x, origin_y),
+        layout=layout or None,
+    )
+
+
+@cad_tool(
+    summary="Stamp an ISO 7200 title block (and frame) on any sheet from A4 to A0.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Sheet: ISO 7200 Title Block", "destructiveHint": False},
+    tags={"engineering", "sheet"},
+)
+async def titleblock_apply(
+    title: Annotated[str, Field(description="Drawing title (verbatim, no transformation).")],
+    drawing_no: Annotated[str, Field(description="Identification number, e.g. 'AM-2026-001'.")],
+    size: Annotated[
+        str, Field(default="A3", description="ISO 216 sheet: A4, A3, A2, A1 or A0.")
+    ] = "A3",
+    orientation: Annotated[
+        str, Field(default="landscape", description="'landscape' or 'portrait'.")
+    ] = "landscape",
+    projection: Annotated[
+        str,
+        Field(
+            default="first",
+            description="Projection-angle symbol: 'first' (ISO/European, the default), "
+            "'third' (ANSI), or '' for no symbol.",
+        ),
+    ] = "first",
+    part_no: Annotated[str, Field(default="")] = "",
+    material: Annotated[str, Field(default="")] = "",
+    scale: Annotated[str, Field(default="1:1")] = "1:1",
+    units: Annotated[str, Field(default="mm")] = "mm",
+    drawn_by: Annotated[str, Field(default="")] = "",
+    checked_by: Annotated[str, Field(default="")] = "",
+    date: Annotated[str, Field(default="")] = "",
+    sheet: Annotated[str, Field(default="1/1")] = "1/1",
+    revision: Annotated[str, Field(default="A")] = "A",
+    company: Annotated[str, Field(default="Anka-Makine")] = "Anka-Makine",
+    frame: Annotated[
+        bool, Field(default=True, description="Also draw the ISO 5457 frame around the block.")
+    ] = True,
+    zones: Annotated[
+        bool, Field(default=False, description="Add the zone grid to that frame.")
+    ] = False,
+    marks: Annotated[
+        bool, Field(default=False, description="Add the centring and trimming marks.")
+    ] = False,
+    origin_x: Annotated[float, Field(default=0.0)] = 0.0,
+    origin_y: Annotated[float, Field(default=0.0)] = 0.0,
+    layout: Annotated[
+        str,
+        Field(
+            default="",
+            description="Paper-space layout to draw the sheet on; empty draws in the "
+            "current space.",
+        ),
+    ] = "",
+    ctx: Context = None,
+) -> dict:
+    """ISO 7200 title block, 180 mm wide, in the lower-right corner of any
+    A4-A0 sheet. The title text is used verbatim.
+
+    Carries the ISO 128-30 projection-angle symbol: 'first' draws the cone on
+    the left and the concentric circles on the right, 'third' is its mirror.
+    Refusals, all before the first entity: an unknown size (the five covered
+    sizes are listed), an unknown orientation, a projection that is not
+    'first'/'third'/'', a `layout` that does not exist. `titleblock_apply_iso_a3`
+    is this tool with size='A3' and no symbol, kept so no caller breaks.
+    """
+    from engineering.sheet.titleblock import TitleBlockMetadata, apply_titleblock
+
+    await ctx.info(f"Title block {size} {orientation}: {title}")
+    metadata = TitleBlockMetadata(
+        title=title,
+        drawing_no=drawing_no,
+        part_no=part_no,
+        material=material,
+        scale=scale,
+        units=units,
+        drawn_by=drawn_by,
+        checked_by=checked_by,
+        date=date,
+        sheet=sheet,
+        revision=revision,
+        company=company,
+    )
+    return await apply_titleblock(
+        _backend(ctx),
+        size=size,
+        metadata=metadata,
+        origin=(origin_x, origin_y),
+        orientation=orientation,
+        projection=projection or None,
+        frame=frame,
+        zones=zones,
+        marks=marks,
+        layout=layout or None,
+    )
+
+
+# ---------------------------------------------------------------------------
 # ── RESOURCES ───────────────────────────────────────────────────────────────
 # ---------------------------------------------------------------------------
 

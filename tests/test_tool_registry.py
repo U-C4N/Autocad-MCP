@@ -495,7 +495,7 @@ async def test_tool_groups_is_byte_identical_to_the_source_declared_grouping():
 
 
 async def test_tool_group_sizes_are_unchanged():
-    """Frozen snapshot of the surface (204 tools, 23 groups).
+    """Frozen snapshot of the surface (206 tools, 23 groups).
 
     Taken before @cad_tool landed at 131 tools; `batch` moved 2 -> 3 when
     v1.5.0's `cad_batch` joined `entity_batch_create`/`entity_batch_modify`, and
@@ -527,7 +527,14 @@ async def test_tool_group_sizes_are_unchanged():
     merge task tagged them, the four groups had filed those 28 tools under
     `layouts` / `templates` / `drawing` / `layers` / `view` / `system` by
     their secondary tags; those counts returned to their pre-track-E values
-    when the section tags landed.) Every other number here has been unchanged
+    when the section tags landed.)
+    `engineering` moved 10 -> 12 when v1.6's SECTION 24 opened with
+    `sheet_frame` and `titleblock_apply` (the ISO 5457 frame and the ISO 7200
+    title block for every size A4-A0). Both are tagged `engineering` and
+    `sheet`, and `sheet` is not in `_GROUP_TAG_PRIORITY`, so they file under
+    `engineering` beside `titleblock_apply_iso_a3` rather than opening a
+    24th group.
+    Every other number here has been unchanged
     since the snapshot was taken.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
@@ -538,7 +545,7 @@ async def test_tool_group_sizes_are_unchanged():
         "corner_ops": 4,
         "dimensions": 5,
         "drawing": 11,
-        "engineering": 10,
+        "engineering": 12,
         "entity_creation": 18,
         "entity_modification": 16,
         "entity_query": 9,
@@ -556,4 +563,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 204
+    assert sum(sizes.values()) == 206
