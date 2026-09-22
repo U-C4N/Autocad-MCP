@@ -100,6 +100,14 @@ def test_a_thread_without_a_size_or_a_pitch_is_refused():
         feature_prims("thread", {"d": 14.0, "length": 30.0, "size": "M14"})
 
 
+def test_a_size_that_does_not_match_d_is_refused():
+    """Otherwise the returned dims report M20's pitch on M8 geometry, citing ISO 261."""
+    with pytest.raises(ValueError, match=r"params\['size'\]='M20' is a 20.0 mm thread"):
+        feature_spec("thread", {"d": 8.0, "length": 20.0, "size": "M20"})
+    matching = feature_spec("thread", {"d": 8.0, "length": 20.0, "size": "M8"})
+    assert matching["dims"]["pitch"] == 1.25  # ISO 261 coarse pitch of M8
+
+
 def test_ring_groove_is_drawn_from_the_registry_row():
     prims = feature_prims("ring_groove", {"d": 30.0, "kind": "shaft", "standard": "TEST 471"})
     assert len(prims) == 6

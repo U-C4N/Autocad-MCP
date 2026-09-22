@@ -8282,7 +8282,9 @@ async def std_feature_draw(
         dict,
         Field(
             description=(
-                "thread: {d, length, size|pitch, internal}; undercut: {d, form: E|F}; "
+                "thread: {d, length, size|pitch, internal} (a size must name d's own "
+                "thread - 'M20' with d=8 is refused, not drawn); "
+                "undercut: {d, form: E|F}; "
                 "ring_groove: {d, kind: shaft|bore}; centre_hole: {size, form: A|B}; "
                 "oring_groove: {d, cord, kind: shaft|bore}"
             )

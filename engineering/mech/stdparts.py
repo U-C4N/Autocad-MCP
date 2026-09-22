@@ -49,6 +49,7 @@ from engineering.mech.standards.fasteners import (
     across_corners,
     hex_head,
     hex_nut,
+    nominal_diameter,
     sizes,
     socket_head,
     thread_length,
@@ -69,6 +70,12 @@ DEFAULT_VIEW = "side"
 
 #: ISO 6410 draws the minor diameter of a thread at 0.8 x the major diameter.
 THREAD_MINOR_RATIO = 0.8
+
+#: Hexagon orientation shared by the two views of one fastener: vertices at 12
+#: and 6 o'clock, so the plan is ``e`` tall across the vertical and the
+#: elevation - which draws the head ``e`` tall with its silhouette edges at
+#: ``+/- e / 4`` - is the projection of that same hexagon.
+HEX_START_DEG = 30.0
 
 SOURCE_ISO_6410 = (
     "ISO 6410-1:1993 - technical drawings, screw threads and threaded parts, general conventions"
@@ -143,7 +150,16 @@ def _poly(points, closed: bool = True, layer: str = LAYER_VISIBLE) -> dict:
     }
 
 
-def _hex_points(radius: float, start_deg: float = 0.0):
+def _hex_points(radius: float, start_deg: float = HEX_START_DEG):
+    """The six corners of a hexagon of across-corners radius ``radius``.
+
+    The default ``start_deg`` puts vertices at 12 and 6 o'clock, so the plan's
+    vertical extent is ``2 * radius = e`` and the two remaining vertex pairs sit
+    at ``+/- radius / 2``. That is exactly the silhouette the elevation builders
+    draw (full height ``e``, chamfer lines at ``+/- e / 4``), which is what keeps
+    the two views of one fastener in projection. Do not change it without
+    changing the elevation to match.
+    """
     return [
         (
             radius * math.cos(math.radians(start_deg + 60.0 * i)),
@@ -743,6 +759,15 @@ def _thread_feature(params: dict):
     internal = bool(params.get("internal", False))
     size = params.get("size")
     if size:
+        nominal = nominal_diameter(size)
+        if abs(nominal - d) > 1e-9:
+            raise ValueError(
+                f"thread: params['size']={size!r} is a {nominal} mm thread but "
+                f"params['d']={d}. The geometry is drawn from d and the pitch is read "
+                "from the ISO 261 table for size, so a mismatch would report one "
+                "thread's pitch on another thread's geometry; give the size that "
+                "matches d, or give params['pitch'] instead."
+            )
         pitch = thread_pitch(size)
     elif "pitch" in params:
         pitch = _positive(params, "pitch", "thread")

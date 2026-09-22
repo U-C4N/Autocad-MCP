@@ -159,6 +159,55 @@ def test_hex_top_view_uses_the_three_quarter_minor_arc():
     assert ents[3]["layer"] == "CENTER" and ents[4]["layer"] == "CENTER"
 
 
+def _hexagon(spec: dict) -> list[list[float]]:
+    return next(e for e in spec["entities"] if e["type"] == "polyline")["points"]
+
+
+def _height(points) -> float:
+    return max(y for _, y in points) - min(y for _, y in points)
+
+
+def _width(points) -> float:
+    return max(x for x, _ in points) - min(x for x, _ in points)
+
+
+def test_the_hexagon_has_vertices_at_twelve_and_six_oclock():
+    """The orientation the elevation is drawn as the projection of."""
+    points = _hexagon(block_spec("ISO 4014 - M12x60", "top"))
+    assert [pytest.approx(v, abs=1e-9) for v in points[0]] == [
+        R12 * math.sqrt(3.0) / 2.0,
+        R12 / 2.0,
+    ]
+    assert [pytest.approx(v, abs=1e-9) for v in points[1]] == [0.0, R12]
+    assert _height(points) == pytest.approx(2.0 * R12)  # across corners e
+    assert _width(points) == pytest.approx(18.0)  # across flats s
+
+
+@pytest.mark.parametrize(
+    "designation", ["ISO 4014 - M12x60", "ISO 4017 - M12x60", "ISO 4032 - M12"]
+)
+def test_the_two_views_of_one_fastener_agree_on_the_silhouette_height(designation):
+    """Plan and elevation of the same part must measure the same across the vertical.
+
+    Place the two blocks in projection and a disagreement here is a wrong
+    workshop drawing: the head would read 20.78 mm in the elevation and 18 mm in
+    the plan. The elevation's outline polyline spans the full head height, and
+    the plan's hexagon must span the same.
+    """
+    elevation = _height(_hexagon(block_spec(designation, "side")))
+    assert elevation == pytest.approx(2.0 * R12)
+    assert _height(_hexagon(block_spec(designation, "top"))) == pytest.approx(elevation)
+
+
+def test_the_socket_head_views_agree_on_the_head_diameter():
+    """The socket screw's silhouette is dk in both views; its hexagon is the key socket."""
+    elevation = _height(_hexagon(block_spec("ISO 4762 - M12x60", "side")))
+    plan = block_spec("ISO 4762 - M12x60", "top")["entities"]
+    assert plan[0]["type"] == "circle" and 2.0 * plan[0]["r"] == pytest.approx(elevation)
+    socket = plan[1]["points"]
+    assert _height(socket) > _width(socket)  # same orientation as every other hexagon here
+
+
 def test_hex_nut_side_view_shows_the_thread_as_hidden_lines():
     spec = block_spec("ISO 4032 - M12", "side")
     ents = spec["entities"]
