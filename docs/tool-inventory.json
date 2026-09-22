@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 206,
+    "tools": 210,
     "resources": 8,
     "prompts": 5,
     "groups": 23
@@ -15,7 +15,7 @@
     "corner_ops": 4,
     "dimensions": 5,
     "drawing": 11,
-    "engineering": 12,
+    "engineering": 16,
     "entity_creation": 18,
     "entity_modification": 16,
     "entity_query": 9,
@@ -179,6 +179,20 @@
       }
     },
     {
+      "name": "balloon_add",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Add an ISO 6433 balloon linked to its item row.",
+      "tags": [
+        "engineering",
+        "sheet"
+      ],
+      "annotations": {
+        "title": "Sheet: Add Balloon",
+        "destructiveHint": false
+      }
+    },
+    {
       "name": "batch_plot",
       "group": "page_setup",
       "cost": "mutate",
@@ -301,6 +315,35 @@
       "annotations": {
         "title": "Set Block Attributes",
         "readOnlyHint": false
+      }
+    },
+    {
+      "name": "bom_extract",
+      "group": "engineering",
+      "cost": "read",
+      "summary": "Read the bill of materials out of the drawing's block references.",
+      "tags": [
+        "engineering",
+        "query",
+        "sheet"
+      ],
+      "annotations": {
+        "title": "Sheet: Extract Bill of Materials",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "bom_table",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Draw the parts list as a real TABLE above the title block.",
+      "tags": [
+        "engineering",
+        "sheet"
+      ],
+      "annotations": {
+        "title": "Sheet: Draw Parts List",
+        "destructiveHint": false
       }
     },
     {
@@ -2210,6 +2253,20 @@
       "annotations": {
         "title": "Point: Tangent from external point",
         "readOnlyHint": true
+      }
+    },
+    {
+      "name": "revision_add",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Append a revision row, with optional revision clouds and triangular tags.",
+      "tags": [
+        "engineering",
+        "sheet"
+      ],
+      "annotations": {
+        "title": "Sheet: Add Revision",
+        "destructiveHint": false
       }
     },
     {

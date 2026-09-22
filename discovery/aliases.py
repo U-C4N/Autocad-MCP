@@ -91,6 +91,11 @@ class ToolAliases:
 #   OPTIONS -- one dialog both reads and writes a preference; the server
 #       splits read (system_preferences_get) and write (system_preferences_set),
 #       the SETVAR precedent.
+#   REVCLOUD -- one command draws a bare cloud (entity_create_revcloud) or a
+#       revision cloud that also files a revision row (revision_add); a
+#       drafter typing it could mean either.
+#   TABLE -- one command makes an empty table (entity_create_table) or the
+#       ISO 7573 parts list (bom_table); both are correct destinations.
 #
 # Every other AutoCAD command must map to exactly one tool.
 SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
@@ -112,9 +117,11 @@ SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
         "PLINE",
         "PLOT",
         "QSELECT",
+        "REVCLOUD",
         "SAVEAS",
         "SETVAR",
         "STYLE",
+        "TABLE",
         "UCS",
         "VIEW",
         "ZOOM",
@@ -962,6 +969,62 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "third angle symbol",
             "antet",
             "baslik blogu",
+        ),
+    ),
+    "revision_add": ToolAliases(
+        acad=("REVCLOUD",),
+        synonyms=(
+            "revision",
+            "revision block",
+            "revision cloud",
+            "revision table",
+            "change note",
+            "engineering change",
+            "as built change",
+            "revizyon",
+            "degisiklik",
+        ),
+    ),
+    "bom_extract": ToolAliases(
+        synonyms=(
+            "bill of materials",
+            # Deliberately NOT "parts list" or "count the parts": the bare
+            # "parts list" query belongs to the tool that DRAWS one
+            # (entity_create_table / bom_table), and every extra "parts"/"list"
+            # token here moved this reader above it on plain BM25 mass.
+            "read the bom",
+            "bom",
+            "item list",
+            "what is on this drawing",
+            "iso 7573",
+            "parca listesi",
+            "malzeme listesi",
+        ),
+    ),
+    "bom_table": ToolAliases(
+        acad=("TABLE",),
+        synonyms=(
+            # Every phrase here names a TABLE. The bare "parts list" query is
+            # `entity_create_table`'s (the generic table that a parts list is
+            # one use of); this tool answers when the drafter asks for the
+            # ISO 7573 one by name.
+            "bom table",
+            "item list table",
+            "materials table",
+            "iso 7573 table",
+            "parca listesi tablosu",
+        ),
+    ),
+    "balloon_add": ToolAliases(
+        synonyms=(
+            "balloon",
+            "item reference",
+            "item number",
+            "position number",
+            "iso 6433",
+            "number the items",
+            "balon",
+            "pozisyon numarasi",
         ),
     ),
     # ── Layers & linetypes ──────────────────────────────────────────────────

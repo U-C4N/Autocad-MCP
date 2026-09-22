@@ -8124,7 +8124,7 @@ async def drawing_properties_set(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 24: Sheet & Delivery (2 tools) ──────────────────────────────────
+# ── SECTION 24: Sheet & Delivery (6 tools) ──────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -8291,6 +8291,260 @@ async def titleblock_apply(
         frame=frame,
         zones=zones,
         marks=marks,
+        layout=layout or None,
+    )
+
+
+@cad_tool(
+    summary="Append a revision row, with optional revision clouds and triangular tags.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Sheet: Add Revision", "destructiveHint": False},
+    tags={"engineering", "sheet"},
+)
+async def revision_add(
+    rev: Annotated[
+        str, Field(description="Revision code: one to three capitals or digits (A, B, 01).")
+    ],
+    description: Annotated[str, Field(description="What changed, verbatim.")],
+    date: Annotated[str, Field(default="", description="Issue date, verbatim.")] = "",
+    by: Annotated[str, Field(default="", description="Who issued it.")] = "",
+    clouds: Annotated[
+        list[list[float]] | None,
+        Field(
+            default=None,
+            description="Regions to cloud, each [x0, y0, x1, y1] in WCS. Refused before "
+            "anything is written on an engine without the revcloud capability.",
+        ),
+    ] = None,
+    tags: Annotated[
+        list[list[float]] | None,
+        Field(default=None, description="Points [x, y] to put a triangular revision tag at."),
+    ] = None,
+    size: Annotated[
+        str, Field(default="A3", description="Sheet the block is placed on: A4-A0.")
+    ] = "A3",
+    orientation: Annotated[str, Field(default="landscape")] = "landscape",
+    origin_x: Annotated[float, Field(default=0.0)] = 0.0,
+    origin_y: Annotated[float, Field(default=0.0)] = 0.0,
+    cloud_segment: Annotated[
+        float, Field(default=8.0, gt=0, description="Revision-cloud arc segment length (mm).")
+    ] = 8.0,
+    layout: Annotated[str, Field(default="")] = "",
+    ctx: Context = None,
+) -> dict:
+    """Append one row to the revision block, creating the block on first use.
+
+    Idempotent per revision code: a code the drawing already carries returns
+    `created=false` and draws nothing, so re-running a revision pass cannot
+    stack duplicates. The block defaults to the upper-right corner of the
+    drawing frame, growing downwards, so it does not collide with the ISO 7573
+    parts list above the title block. Refusals, all before the first entity: a
+    malformed code, a cloud region that is not [x0, y0, x1, y1], and any
+    request for clouds on a backend whose `revcloud` capability is false (the
+    COM engine — REVCLOUD has no ActiveX member) — that one carries
+    `capability: "revcloud"`.
+    """
+    from engineering.sheet.revision import add_revision
+
+    await ctx.info(f"Revision {rev}: {description}")
+    return await add_revision(
+        _backend(ctx),
+        rev=rev,
+        description=description,
+        date=date,
+        by=by,
+        clouds=clouds or (),
+        tags=tags or (),
+        size=size,
+        orientation=orientation,
+        origin=(origin_x, origin_y),
+        cloud_segment=cloud_segment,
+        layout=layout or None,
+    )
+
+
+@cad_tool(
+    summary="Read the bill of materials out of the drawing's block references.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Sheet: Extract Bill of Materials", "readOnlyHint": True},
+    tags={"engineering", "sheet", "query"},
+)
+async def bom_extract(
+    layer: Annotated[
+        str, Field(default="", description="Only read INSERTs on this layer; empty reads all.")
+    ] = "",
+    group_by: Annotated[
+        str,
+        Field(
+            default="designation",
+            description="Field to group identical parts by: designation, standard, material, "
+            "or '' for one row per insert.",
+        ),
+    ] = "designation",
+    columns: Annotated[
+        list[str] | None,
+        Field(
+            default=None,
+            description="Columns to return; default item, qty, designation, standard, material.",
+        ),
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """Walk the INSERTs and return the ISO 7573 item rows. Never modifies the
+    drawing. `bom_table` is what draws them.
+
+    Each row's source is reported: `xdata` when the ACADMCP_MECH payload
+    supplied it (what `std_part_insert` writes), `attributes` when the block's
+    own ATTRIBs did. A block with neither a payload nor a DESIGNATION attribute
+    is skipped rather than guessed at, and `skipped` counts them. Refusals: an
+    unknown column or group_by field, named with the list of the ones there are.
+    """
+    from engineering.sheet.bom import extract_records, rows_from_records
+
+    backend = _backend(ctx)
+    records = await extract_records(backend, layer=layer or None)
+    rows = rows_from_records(records, columns=columns, group_by=group_by or None)
+    return {
+        "ok": True,
+        "standard": "ISO 7573",
+        "rows": [dict(row) | {"handles": list(row["handles"])} for row in rows],
+        "records": len(records),
+        "group_by": group_by or None,
+    }
+
+
+@cad_tool(summary="Draw the parts list as a real TABLE above the title block.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Sheet: Draw Parts List", "destructiveHint": False},
+    tags={"engineering", "sheet"},
+)
+async def bom_table(
+    rows: Annotated[
+        list[dict] | None,
+        Field(
+            default=None,
+            description="Rows to draw; omit to extract them from the drawing first.",
+        ),
+    ] = None,
+    size: Annotated[str, Field(default="A3", description="Sheet the list is placed on.")] = "A3",
+    orientation: Annotated[str, Field(default="landscape")] = "landscape",
+    origin_x: Annotated[float, Field(default=0.0)] = 0.0,
+    origin_y: Annotated[float, Field(default=0.0)] = 0.0,
+    at_x: Annotated[
+        float | None,
+        Field(default=None, description="Override the anchor X; default is the title block's."),
+    ] = None,
+    at_y: Annotated[float | None, Field(default=None)] = None,
+    direction: Annotated[
+        str,
+        Field(
+            default="up",
+            description="'up' (ISO 7573 on a drawing: heading at the bottom, items ascending) "
+            "or 'down'.",
+        ),
+    ] = "up",
+    columns: Annotated[list[str] | None, Field(default=None)] = None,
+    row_height: Annotated[float, Field(default=7.0, gt=0)] = 7.0,
+    layout: Annotated[str, Field(default="")] = "",
+    ctx: Context = None,
+) -> dict:
+    """Draw the ISO 7573 item list as a real TABLE entity, 180 mm wide (the
+    title-block width), growing upwards from directly above the title block.
+
+    With `direction="up"` the heading row sits against the title block and item
+    1 is the row above it, so the list extends upwards as parts are added —
+    which is what ISO 7573 asks for on a drawing. Pass `rows` to draw a list
+    you already have, or omit it and the tool runs `bom_extract` first.
+    `representation` reports what was drawn: `native` (a real ACAD_TABLE on the
+    live engine) or `composite` (rules and MTEXT headlessly, whose `handle` is
+    the first child). Refusals: no rows to draw, an unknown column, an unknown
+    direction, a `layout` that does not exist.
+    """
+    from engineering.sheet.bom import (
+        draw_bom_table,
+        extract_records,
+        rows_from_records,
+    )
+    from engineering.sheet.titleblock import TB_HEIGHT, titleblock_origin
+
+    backend = _backend(ctx)
+    if rows is None:
+        rows = list(rows_from_records(await extract_records(backend), columns=columns))
+    tb_x, tb_y = titleblock_origin(size, orientation=orientation)
+    anchor = (
+        origin_x + tb_x if at_x is None else at_x,
+        origin_y + tb_y + TB_HEIGHT if at_y is None else at_y,
+    )
+    await ctx.info(f"Parts list: {len(rows)} rows at {anchor}")
+    return await draw_bom_table(
+        backend,
+        rows,
+        at=anchor,
+        direction=direction,
+        columns=columns,
+        row_height=row_height,
+        layout=layout or None,
+    )
+
+
+@cad_tool(summary="Add an ISO 6433 balloon linked to its item row.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Sheet: Add Balloon", "destructiveHint": False},
+    tags={"engineering", "sheet"},
+)
+async def balloon_add(
+    item: Annotated[
+        int, Field(ge=1, description="Item reference number, as bom_extract numbers it.")
+    ],
+    x: Annotated[float, Field(description="Balloon centre X (WCS).")],
+    y: Annotated[float, Field(description="Balloon centre Y (WCS).")],
+    leader_x: Annotated[float, Field(description="X of the dot on the item.")],
+    leader_y: Annotated[float, Field(description="Y of the dot on the item.")],
+    targets: Annotated[
+        list[str] | None,
+        Field(
+            default=None,
+            description="Handles of the INSERTs this item is; the link a rerun renumbers by.",
+        ),
+    ] = None,
+    radius: Annotated[
+        float,
+        Field(
+            default=4.0,
+            gt=0,
+            description="Balloon radius (mm). The numeral is 1.4x this, so a sheet "
+            "dimensioned at 3.5 mm wants 5.0 to satisfy ISO 6433.",
+        ),
+    ] = 4.0,
+    layer: Annotated[str, Field(default="DIM")] = "DIM",
+    layout: Annotated[str, Field(default="")] = "",
+    ctx: Context = None,
+) -> dict:
+    """One ISO 6433 item reference: a numbered balloon, a leader, and a dot on
+    the item.
+
+    The balloon carries an ACADMCP_MECH payload naming its targets, so running
+    the balloon pass again after the bill of materials is regrouped *renumbers*
+    the existing balloon (`renumbered: true`) instead of drawing a second one.
+    Refusals, all before the first entity: an item number below 1, a leader
+    target inside the balloon, and an item number already used by another
+    balloon for different targets — named with that balloon's handle.
+    """
+    from engineering.sheet.bom import add_balloon
+
+    await ctx.info(f"Balloon {item} at ({x}, {y})")
+    return await add_balloon(
+        _backend(ctx),
+        item=item,
+        at=(x, y),
+        leader_to=(leader_x, leader_y),
+        targets=tuple(targets or ()),
+        radius=radius,
+        layer=layer,
         layout=layout or None,
     )
 
