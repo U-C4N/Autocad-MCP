@@ -95,7 +95,7 @@ fail on their own:
 | Task | Category | Verified against |
 |---|---|---|
 | `pid_roundtrip` | pid | the example spec drawn through `pid_from_spec`'s code, then read back by the graph builder, which never sees the spec: 5 nodes, 4 edges, 0 dangling ends, `confidence_min` 1.0, zero critique issues, an instrument index of exactly `FIC-101` wired to `FCV-101`, and the two authored line numbers back on the two process lines while the two unnumbered lines carry sequence-built numbers from XDATA |
-| `page_setup_truth` | pagesetup | `page_setup_apply("Layout1", ISO_A3 landscape 1:1)` then `batch_plot`; the PDF's own `/MediaBox` must parse to 420 × 297 mm (±0.5), the page-setup list must say `ISO_A3` / `landscape` / `[420, 297]`, and the ctb must be a known one |
+| `page_setup_truth` | pagesetup | `page_setup_apply("Layout1", ANSI_B landscape 1:1)` then `batch_plot` — the PDF's own `/MediaBox` must parse to 432 × 279 mm (±0.5), a size no fresh document has; then `page_setup_apply("Layout1", ISO_A3 landscape 1:1)` and `batch_plot` again — 420 × 297, the setter's `changed.size_mm` must read `[[432, 279], [420, 297]]`, the page-setup list must say `ISO_A3` / `landscape` / `[420, 297]`, and the ctb must be a known one. A setter that writes nothing fails at the first PDF (`tests/test_benchmark_v4.py` stubs it to prove that) |
 
 The competitor reports carry no result for either, for the same reason they
 carry none for the v3 five. `--matrix v3` reproduces the v1.5 set exactly.

@@ -67,3 +67,58 @@ async def test_page_setup_truth_passes_headlessly(tmp_path):
     assert passed, metrics
     assert abs(metrics["mediabox_mm"][0] - 420.0) < 0.5
     assert abs(metrics["mediabox_mm"][1] - 297.0) < 0.5
+    # The stage that makes the task falsifiable: the sheet was ANSI B first.
+    assert abs(metrics["mediabox_mm_before"][0] - 432.0) < 0.5
+    assert abs(metrics["mediabox_mm_before"][1] - 279.0) < 0.5
+    assert metrics["size_mm_changed"] == [[432.0, 279.0], [420.0, 297.0]]
+
+
+async def _noop_page_setup_apply(self, layout, setup):
+    """A setter that writes nothing and claims success."""
+    return {
+        "ok": True,
+        "layout": layout,
+        "applied": dict(setup),
+        "changed": {},
+        "warnings": [],
+        "plot_style_known": True,
+        "viewports_kept": True,
+        "backend": "ezdxf",
+    }
+
+
+@pytest.mark.asyncio
+async def test_page_setup_truth_fails_when_the_setter_writes_nothing(tmp_path, monkeypatch):
+    """A fresh Layout1 is already ISO A3 landscape (ezdxf's R2018 default: 420 x 297,
+    rotation 0), so a task that only reads A3 back from the PDF cannot tell a
+    working setter from a stub. Both gate rows must fail with the stub."""
+    pytest.importorskip("matplotlib", reason="rendering needs the [pdf] extra")
+    from backends.ezdxf_backend import EzdxfBackend
+    from benchmarks import correctness_suite
+    from benchmarks.adapters.autocad_mcp_pro import AutoCADMCPProAdapter
+
+    monkeypatch.setattr(EzdxfBackend, "page_setup_apply", _noop_page_setup_apply)
+
+    assert await correctness_suite.settings_pdf_mediabox_a3() is False
+
+    adapter = AutoCADMCPProAdapter(backend="ezdxf")
+    await adapter.setup(tmp_path)
+    try:
+        await adapter._reset()
+        passed, metrics, _artifacts = await adapter._task_page_setup_truth()
+    finally:
+        await adapter.cleanup()
+    assert passed is False, metrics
+    # The stub's own evidence: the "ANSI B" PDF is still the default A3 sheet.
+    assert abs(metrics["mediabox_mm_before"][0] - 420.0) < 0.5
+    assert metrics["size_mm_changed"] is None
+
+
+@pytest.mark.asyncio
+async def test_correctness_check_settings_pdf_mediabox_a3_passes():
+    """The A/B gate row itself, run once here: ANSI B plotted at 432 x 279,
+    then ISO A3 at 420 x 297, each read from its own PDF."""
+    pytest.importorskip("matplotlib", reason="rendering needs the [pdf] extra")
+    from benchmarks import correctness_suite
+
+    assert await correctness_suite.settings_pdf_mediabox_a3() is True

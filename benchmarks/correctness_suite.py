@@ -376,17 +376,45 @@ async def settings_layer_state_roundtrip():
     )
 
 
+def _sheet_near(size_mm, width_mm: float, height_mm: float) -> bool:
+    """Within the spec's ±0.5 mm: COM measures ANSI B as 431.8 × 279.4."""
+    try:
+        w, h = (float(v) for v in size_mm)
+    except (TypeError, ValueError):
+        return False
+    return abs(w - width_mm) < 0.5 and abs(h - height_mm) < 0.5
+
+
 async def settings_pdf_mediabox_a3():
-    """Page setup evidence is the PDF's own /MediaBox (spec §8.3)."""
+    """Page setup evidence is the PDF's own /MediaBox (spec §8.3).
+
+    A fresh document's Layout1 is already ISO A3 landscape, so an A3-only
+    read-back would pass with the setter stubbed out. The sheet is therefore
+    moved to ANSI B first — 432 × 279, a size no fresh document has (spec §9
+    names it) — and that PDF is read; then ISO A3 is applied and read again.
+    The A3 apply must also report the layout moved from B to A3, so the PDF
+    and the setter's own diff have to agree on where the sheet was.
+    """
     from engineering.standards.papers import resolve_page_setup
     from engineering.standards.plot import batch_plot
 
     b = await _b()
-    await b.page_setup_apply("Layout1", resolve_page_setup("ISO_A3"))
+    await b.page_setup_apply("Layout1", resolve_page_setup("ANSI_B"))
     out_dir = tempfile.mkdtemp()
-    report = await batch_plot(b, ["Layout1"], out_dir, "{drawing}-{layout}.pdf")
-    width_mm, height_mm = report["sheets"][0]["mediabox_mm"]
-    return abs(width_mm - 420.0) < 0.5 and abs(height_mm - 297.0) < 0.5
+    report_b = await batch_plot(b, ["Layout1"], out_dir, "{drawing}-{layout}-ansi_b.pdf")
+    width_b, height_b = report_b["sheets"][0]["mediabox_mm"]
+    applied = await b.page_setup_apply("Layout1", resolve_page_setup("ISO_A3"))
+    report_a3 = await batch_plot(b, ["Layout1"], out_dir, "{drawing}-{layout}-iso_a3.pdf")
+    width_a3, height_a3 = report_a3["sheets"][0]["mediabox_mm"]
+    moved = applied["changed"].get("size_mm") or [[0.0, 0.0], [0.0, 0.0]]
+    return (
+        abs(width_b - 432.0) < 0.5
+        and abs(height_b - 279.0) < 0.5
+        and _sheet_near(moved[0], 432.0, 279.0)
+        and _sheet_near(moved[1], 420.0, 297.0)
+        and abs(width_a3 - 420.0) < 0.5
+        and abs(height_a3 - 297.0) < 0.5
+    )
 
 
 CHECKS = {

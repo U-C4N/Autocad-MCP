@@ -27,7 +27,7 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 
 </div>
 
-> **v1.5 release snapshot:** 204 tools · 8 resources · 5 prompt templates · 3282 collected tests.
+> **v1.5 release snapshot:** 204 tools · 8 resources · 5 prompt templates · 3284 collected tests.
 > 204 is the **registered** count; a default install advertises 199 over `tools/list`,
 > because `ENABLE_3D` is unset. `system_about` is the runtime authority.
 
@@ -176,7 +176,7 @@ An earlier matrix scored this server 10/10, which carried no information: every 
 | `selection_filter` | window 1, crossing 2, bounding box 3, polygon 1 |
 | `measure_from_handle` | 139.2699 against the 100.0 a vertex shoelace gives |
 | `pid_roundtrip` | the example sheet drawn by `pid_from_spec`, read back by `pid_graph`, which never sees the spec: 5 nodes, 4 edges, 0 dangling, `confidence_min` 1.0, `FIC-101` wired to `FCV-101` |
-| `page_setup_truth` | ISO A3 landscape applied to Layout1, plotted through `batch_plot`, and the sheet read back from the PDF's `/MediaBox`: 420 × 297 mm, not the setter's return value |
+| `page_setup_truth` | ANSI B then ISO A3 landscape applied to Layout1, each plotted through `batch_plot` and read back from its PDF's `/MediaBox`: 432 × 279 then 420 × 297 mm, not the setter's return value (a fresh layout is already A3, so the B sheet is what a no-op setter cannot fake) |
 
 ### Headless performance
 

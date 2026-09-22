@@ -438,10 +438,29 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
         setter's ``applied`` block is what we asked for, the page-setup list is
         what the LAYOUT now says, and the PDF is what a printer would get. All
         three have to agree with ISO 216's 420 × 297.
+
+        A fresh document's Layout1 is already A3 landscape, so that read-back
+        alone would pass with the setter stubbed out. The task first moves the
+        sheet to ANSI B — 432 × 279, a size no fresh document has — and reads
+        that PDF, then applies A3 and requires the setter to report the layout
+        moved from B to A3. The stub fails at the first PDF.
         """
         from engineering.standards.papers import resolve_page_setup
         from engineering.standards.plot import batch_plot
 
+        out_dir = self.artifact_dir / "page_setup_truth"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # Stage 1: a non-default sheet, proven by its PDF.
+        await self.backend.page_setup_apply(
+            "Layout1",
+            resolve_page_setup("ANSI_B", orientation="landscape", scale="1:1"),
+        )
+        before = await batch_plot(
+            self.backend, ["Layout1"], str(out_dir), "{drawing}-{layout}-ansi_b.pdf"
+        )
+        row_before = before["sheets"][0]
+        width_before, height_before = (float(v) for v in row_before["mediabox_mm"])
+        # Stage 2: the sheet under test.
         setup = resolve_page_setup(
             "ISO_A3",
             orientation="landscape",
@@ -450,15 +469,29 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
         )
         applied = await self.backend.page_setup_apply("Layout1", setup)
         listed = (await self.backend.page_setup_list("Layout1"))[0]
-        out_dir = self.artifact_dir / "page_setup_truth"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        report = await batch_plot(self.backend, ["Layout1"], str(out_dir), "{drawing}-{layout}.pdf")
+        report = await batch_plot(
+            self.backend, ["Layout1"], str(out_dir), "{drawing}-{layout}-iso_a3.pdf"
+        )
         row = report["sheets"][0]
         width_mm, height_mm = (float(v) for v in row["mediabox_mm"])
         size_listed = tuple(float(v) for v in listed["size_mm"])
+        size_changed = applied["changed"].get("size_mm")
+        # ±0.5 mm, the spec's own tolerance: the live engine measures ANSI B
+        # as 431.8 × 279.4 (11 × 17 in), the headless one as 432 × 279.
+        moved = size_changed or [[0.0, 0.0], [0.0, 0.0]]
+        moved_from_b = (
+            abs(float(moved[0][0]) - 432.0) < 0.5 and abs(float(moved[0][1]) - 279.0) < 0.5
+        )
+        moved_to_a3 = (
+            abs(float(moved[1][0]) - 420.0) < 0.5 and abs(float(moved[1][1]) - 297.0) < 0.5
+        )
         passed = (
-            applied["ok"] is True
+            abs(width_before - 432.0) < 0.5
+            and abs(height_before - 279.0) < 0.5
+            and applied["ok"] is True
             and applied["plot_style_known"] is True
+            and moved_from_b
+            and moved_to_a3
             and listed["paper"] == "ISO_A3"
             and listed["orientation"] == "landscape"
             and size_listed == (420.0, 297.0)
@@ -473,10 +506,12 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
                 "orientation": listed["orientation"],
                 "size_mm_listed": list(size_listed),
                 "mediabox_mm": [width_mm, height_mm],
+                "mediabox_mm_before": [width_before, height_before],
+                "size_mm_changed": size_changed,
                 "pdf_bytes": row["bytes"],
                 "plot_style_known": applied["plot_style_known"],
             },
-            [str(row["path"])],
+            [str(row_before["path"]), str(row["path"])],
         )
 
     async def _task_auditable_delivery(self):

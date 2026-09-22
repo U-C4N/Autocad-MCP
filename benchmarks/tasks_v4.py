@@ -7,7 +7,9 @@ and the instrument index are each derived independently of the drawing code.
 ``page_setup_truth`` (track E) applies an ISO A3 landscape page setup to a
 layout, plots it through ``batch_plot`` and reads the sheet size back from
 the PDF's own ``/MediaBox`` — the setup is verified by the file, not by the
-setter's return value.
+setter's return value. A fresh Layout1 is already A3 landscape, so the task
+moves the sheet to ANSI B (432 × 279) and reads that PDF first; a setter that
+writes nothing fails there, not at the A3 read-back.
 
 The published competitor reports were never asked either question; the chart
 shows ``not_run`` for them, not zero.
