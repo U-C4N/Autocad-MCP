@@ -8124,6 +8124,187 @@ async def drawing_properties_set(
 
 
 # ---------------------------------------------------------------------------
+# ── SECTION 23: Mechanical Annotation (2 tools) ─────────────────────────────
+# ---------------------------------------------------------------------------
+# ISO annotation symbols composed from LINE / ARC / CIRCLE / LWPOLYLINE / TEXT,
+# so the same symbol lands on COM and ezdxf. The standards tables live in
+# engineering/mech/annotate.py with their sources; a value outside a
+# transcribed table is refused there, before the first entity is written.
+
+
+@cad_tool(
+    summary="Draw an ISO 21920-1 surface-texture symbol: Ra/Rz, process, lay, allowance.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Surface Texture Symbol (ISO 21920-1)", "destructiveHint": False},
+    tags={"engineering", "mech"},
+)
+async def surface_texture(
+    x: Annotated[float, "Symbol apex X (WCS) — the point the leader attaches to."],
+    y: Annotated[float, "Symbol apex Y (WCS)."],
+    ra: Annotated[
+        float | None, Field(default=None, description="Ra value in µm, written as 'Ra 3.2'.")
+    ] = None,
+    rz: Annotated[
+        float | None, Field(default=None, description="Rz value in µm, written as 'Rz 12.5'.")
+    ] = None,
+    machining: Annotated[
+        str,
+        Field(
+            default="any",
+            description=(
+                "any (basic vee) | required (bar across the vee, material removal "
+                "required) | prohibited (circle in the vee, material removal not allowed)."
+            ),
+        ),
+    ] = "any",
+    process: Annotated[
+        str | None, "Manufacturing method, treatment or coating, e.g. 'milled'."
+    ] = None,
+    lay: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description=(
+                "Direction of lay: parallel, perpendicular, crossed, multidirectional, "
+                "circular, radial, particulate."
+            ),
+        ),
+    ] = None,
+    allowance: Annotated[
+        float | None, "Machining allowance in mm, written below the extension line."
+    ] = None,
+    all_around: Annotated[bool, "Circle at the kink: the requirement applies all around."] = False,
+    leader_to: Annotated[
+        list[float] | None, "[x, y] on the surface; draws a leader with an arrowhead there."
+    ] = None,
+    height: Annotated[
+        float,
+        Field(
+            default=3.5,
+            gt=0,
+            description="Text height (mm). ISO 1302 tabulates 2.5, 3.5, 5, 7, 10, 14, 20.",
+        ),
+    ] = 3.5,
+    rotation: Annotated[float, "Rotate the whole symbol about its apex (degrees CCW)."] = 0.0,
+    standard: Annotated[
+        str, "ISO 21920-1 (default) or ISO 1302 for drawings issued under the older designation."
+    ] = "ISO 21920-1",
+    layer: Annotated[
+        str | None, "Override the role layers (DIM for geometry, TEXT for text)."
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """Draw the 60° surface-texture vee with its annotation in the standard positions.
+
+    Refusals, all before the first entity reaches the drawing: a text height
+    outside the seven ISO 1302 rows (2.5/3.5/5/7/10/14/20 mm — never
+    interpolated), a `lay` that is not one of the seven ISO 1302 directions of
+    lay, a `machining` outside any/required/prohibited, and a `standard` other
+    than ISO 21920-1 or ISO 1302.
+    """
+    from engineering.mech.annotate import draw_surface_texture
+
+    await ctx.debug(f"Surface texture symbol at ({x}, {y})")
+    return await draw_surface_texture(
+        _backend(ctx),
+        at=(x, y),
+        leader_to=tuple(leader_to) if leader_to else None,
+        ra=ra,
+        rz=rz,
+        process=process,
+        lay=lay,
+        machining=machining,
+        all_around=all_around,
+        allowance=allowance,
+        height=height,
+        standard=standard,
+        rotation=rotation,
+        layer=layer,
+    )
+
+
+@cad_tool(
+    summary="Draw an ISO 2553 weld symbol: reference line, identification line, size and pitch.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Weld Symbol (ISO 2553)", "destructiveHint": False},
+    tags={"engineering", "mech"},
+)
+async def weld_symbol(
+    x: Annotated[float, "Kink X (WCS) — where the arrow line meets the reference line."],
+    y: Annotated[float, "Kink Y (WCS)."],
+    kind: Annotated[str, "Elementary symbol: square | v | bevel | u | j | fillet."] = "fillet",
+    size: Annotated[
+        float | str | None,
+        Field(
+            default=None,
+            description=(
+                "Written before the symbol. A number on a fillet takes the ISO 2553 "
+                "design-throat prefix (5 → 'a5'); pass a string for leg length ('z7')."
+            ),
+        ),
+    ] = None,
+    length: Annotated[float | None, "Weld length (mm), written after the symbol."] = None,
+    pitch: Annotated[
+        float | None, "Pitch (mm) of an intermittent weld, written in brackets after the length."
+    ] = None,
+    side: Annotated[
+        str,
+        Field(
+            default="arrow",
+            description=(
+                "arrow (symbol on the reference line) | other (on the dashed "
+                "identification line) | both (symmetrical; the identification line is "
+                "omitted, per ISO 2553:2019)."
+            ),
+        ),
+    ] = "arrow",
+    field_weld: Annotated[bool, "Flag at the kink: weld made on site."] = False,
+    all_around: Annotated[bool, "Circle at the kink: weld all around."] = False,
+    process: Annotated[str | None, "Tail reference, e.g. an ISO 4063 process number."] = None,
+    leader_to: Annotated[
+        list[float] | None, "[x, y] on the joint; draws a leader with an arrowhead there."
+    ] = None,
+    height: Annotated[float, Field(default=3.5, gt=0, description="Text height (mm).")] = 3.5,
+    rotation: Annotated[float, "Rotate the whole annotation about the kink (degrees CCW)."] = 0.0,
+    layer: Annotated[
+        str | None, "Override the role layers (DIM for geometry, TEXT for text)."
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """Draw an ISO 2553 weld annotation: reference line, identification line, symbol, dimensions.
+
+    Refusals, all before the first entity reaches the drawing: a `kind` outside
+    the six elementary symbols transcribed here (square, v, bevel, u, j,
+    fillet — the rest of the ISO 2553 table is deliberately not shipped rather
+    than guessed), a `side` outside arrow/other/both, a non-positive `height`,
+    and a `pitch` given without a `length`.
+    """
+    from engineering.mech.annotate import draw_weld_symbol
+
+    await ctx.debug(f"Weld symbol {kind} at ({x}, {y})")
+    return await draw_weld_symbol(
+        _backend(ctx),
+        at=(x, y),
+        kind=kind,
+        leader_to=tuple(leader_to) if leader_to else None,
+        size=size,
+        length=length,
+        pitch=pitch,
+        side=side,
+        field_weld=field_weld,
+        all_around=all_around,
+        process=process,
+        height=height,
+        rotation=rotation,
+        layer=layer,
+    )
+
+
+# ---------------------------------------------------------------------------
 # ── RESOURCES ───────────────────────────────────────────────────────────────
 # ---------------------------------------------------------------------------
 

@@ -495,7 +495,7 @@ async def test_tool_groups_is_byte_identical_to_the_source_declared_grouping():
 
 
 async def test_tool_group_sizes_are_unchanged():
-    """Frozen snapshot of the surface (204 tools, 23 groups).
+    """Frozen snapshot of the surface (206 tools, 23 groups).
 
     Taken before @cad_tool landed at 131 tools; `batch` moved 2 -> 3 when
     v1.5.0's `cad_batch` joined `entity_batch_create`/`entity_batch_modify`, and
@@ -529,6 +529,11 @@ async def test_tool_group_sizes_are_unchanged():
     their secondary tags; those counts returned to their pre-track-E values
     when the section tags landed.) Every other number here has been unchanged
     since the snapshot was taken.
+
+    `engineering` moved 10 -> 12 when v1.6's SECTION 23 opened with
+    `surface_texture` / `weld_symbol`; both are tagged `engineering` and `mech`,
+    and `mech` is not in `_GROUP_TAG_PRIORITY`, so they file under
+    `engineering` rather than opening a group of their own.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
@@ -538,7 +543,7 @@ async def test_tool_group_sizes_are_unchanged():
         "corner_ops": 4,
         "dimensions": 5,
         "drawing": 11,
-        "engineering": 10,
+        "engineering": 12,
         "entity_creation": 18,
         "entity_modification": 16,
         "entity_query": 9,
@@ -556,4 +561,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 204
+    assert sum(sizes.values()) == 206

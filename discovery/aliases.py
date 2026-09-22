@@ -345,6 +345,33 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "true position",
         ),
     ),
+    # ── Mechanical annotation (ISO 21920-1 / ISO 2553) ──────────────────────
+    "surface_texture": ToolAliases(
+        synonyms=(
+            "surface finish",
+            "surface roughness",
+            "surface texture symbol",
+            "roughness symbol",
+            "ra value",
+            "rz value",
+            "machining symbol",
+            "yuzey puruzlulugu",
+            "yuzey isleme sembolu",
+        ),
+    ),
+    "weld_symbol": ToolAliases(
+        synonyms=(
+            "weld symbol",
+            "welding symbol",
+            "fillet weld",
+            "butt weld",
+            "weld callout",
+            "field weld",
+            "weld all around",
+            "kaynak sembolu",
+            "kose kaynagi",
+        ),
+    ),
     # ── Dimensions ──────────────────────────────────────────────────────────
     "dimension_aligned": ToolAliases(
         acad=("DIMALIGNED", "DAL"),

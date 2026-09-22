@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 204,
+    "tools": 206,
     "resources": 8,
     "prompts": 5,
     "groups": 23
@@ -15,7 +15,7 @@
     "corner_ops": 4,
     "dimensions": 5,
     "drawing": 11,
-    "engineering": 10,
+    "engineering": 12,
     "entity_creation": 18,
     "entity_modification": 16,
     "entity_query": 9,
@@ -2334,6 +2334,20 @@
       }
     },
     {
+      "name": "surface_texture",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Draw an ISO 21920-1 surface-texture symbol: Ra/Rz, process, lay, allowance.",
+      "tags": [
+        "engineering",
+        "mech"
+      ],
+      "annotations": {
+        "title": "Surface Texture Symbol (ISO 21920-1)",
+        "destructiveHint": false
+      }
+    },
+    {
       "name": "system_about",
       "group": "system",
       "cost": "read",
@@ -2901,6 +2915,20 @@
       ],
       "annotations": {
         "title": "Set Viewport Scale",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "weld_symbol",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Draw an ISO 2553 weld symbol: reference line, identification line, size and pitch.",
+      "tags": [
+        "engineering",
+        "mech"
+      ],
+      "annotations": {
+        "title": "Weld Symbol (ISO 2553)",
         "destructiveHint": false
       }
     }
