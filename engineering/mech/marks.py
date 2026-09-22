@@ -18,9 +18,23 @@ principles of presentation - Basic conventions for cuts and sections": a
 long-dash-dotted line that is *wide* at its ends and at every change of
 direction, an arrow at each end pointing in the direction of viewing, and the
 same capital letter at both ends. Line width is a layer property here, so the
-wide ends are emitted on the `visible` role (GEOMETRY, 0.50 mm) and the thin
-middle on the `center` role (CENTER, 0.25 mm) - the ISO appearance, expressed
-in the role vocabulary this repository already has.
+wide ends are emitted on the `visible` role and the thin middle on the
+`center` role - the wide/narrow contrast, expressed in the role vocabulary
+this repository already has.
+
+The two widths are not numbers this module picks: they are whatever
+`engineering.layers.ENGINEERING_LAYERS` gives GEOMETRY and CENTER. MEASURED
+on a drawing `drawing_new` bootstrapped:
+
+    GEOMETRY is 0.50 mm, CENTER is 0.18 mm, a ratio of 2.78:1.
+
+That measured pair is what is stated here - not the standard's own
+wide:narrow ratio, which this module does not transcribe.
+A ratio quoted from memory beside a measured one is exactly the invented
+number the SOURCE blocks above refuse to ship, and an earlier revision of
+this block did ship one (it said CENTER was 0.25 mm and the pair 2:1; both
+were wrong). `tests/test_mech_marks.py` now pins these three figures to
+`ENGINEERING_LAYERS`, so the sentence cannot drift from the layer set again.
 
 DECLARED, not transcribed: ISO 128-40 says the ends are thickened and that
 arrows are placed there; it does not dimension them. The end-segment length,
@@ -44,6 +58,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 __all__ = [
     "CENTRE_STYLES",
+    "HATCH_FLATTEN_SAGITTA",
     "SECTION_STYLES",
     "centre_mark_prims",
     "draw_centre_marks",
@@ -64,6 +79,17 @@ END_SEGMENT_FACTOR = 2.0  # wide segment at each end
 ARROW_SHAFT_FACTOR = 2.0  # arrow shaft length, perpendicular to the plane
 ARROW_HEAD_FACTOR = 0.8  # arrowhead length (half-width is 0.35 of it, as elsewhere)
 LABEL_OFFSET_FACTOR = 0.7  # gap between the arrow tail and the label
+
+# DECLARED, not transcribed: the largest gap (drawing units) left between a
+# curved boundary edge and the chords that stand in for it.
+# `entity_create_hatch` takes a vertex list on both engines, so an arc edge
+# has to reach it as vertices; what must not happen - and did - is dropping
+# the curve and hatching the chord. MEASURED on the r=20 semicircular cut
+# face in `tests/test_mech_marks.py`: 0.01 spaces that arc into 50 chords and
+# hatches 1027.905195 of its real 1028.318531, an error of 0.413 (0.040%),
+# against the 628.3 (61%) an earlier revision silently lost. The payload says
+# `accuracy: "flatten_tolerance"` rather than claiming the area is exact.
+HATCH_FLATTEN_SAGITTA = 0.01
 
 
 def centre_mark_prims(
@@ -335,6 +361,89 @@ async def draw_section_line(
     return result
 
 
+def _polygon_area(points: list[tuple[float, float]]) -> float:
+    """The shoelace area of a closed straight-edged polygon.
+
+    Legitimate here and nowhere else in this module: it is applied to the
+    vertex list actually written into the HATCH, every edge of which really is
+    a straight line, so it measures what was drawn rather than approximating
+    what was meant. The curved input is handled by `_flatten_bulge` *before*
+    this sees it, and the residual is reported, never swallowed.
+    """
+    total = 0.0
+    count = len(points)
+    for index in range(count):
+        x1, y1 = points[index]
+        x2, y2 = points[(index + 1) % count]
+        total += x1 * y2 - x2 * y1
+    return abs(total) / 2.0
+
+
+def _flatten_bulge(
+    p1: tuple[float, float],
+    p2: tuple[float, float],
+    bulge: float,
+    tolerance: float = HATCH_FLATTEN_SAGITTA,
+) -> list[tuple[float, float]]:
+    """The interior vertices standing in for one bulged polyline segment.
+
+    DXF stores a circular arc between two LWPOLYLINE vertices as a *bulge*:
+    tan(theta/4) of the arc's included angle, positive counter-clockwise. The
+    points returned lie strictly between `p1` and `p2`, spaced so no chord
+    departs from the arc by more than `tolerance`; an empty list means the
+    segment is already straight.
+    """
+    b = float(bulge)
+    if not math.isfinite(b) or abs(b) <= 1e-12:
+        return []
+    x1, y1 = float(p1[0]), float(p1[1])
+    x2, y2 = float(p2[0]), float(p2[1])
+    chord = math.hypot(x2 - x1, y2 - y1)
+    if chord <= 1e-12:
+        return []
+    theta = 4.0 * math.atan(b)
+    half = theta / 2.0
+    radius = (chord / 2.0) / abs(math.sin(half))
+    # Centre: off the chord's midpoint along its left normal, signed by the
+    # sweep, so a negative bulge puts it on the other side without a branch.
+    ux, uy = (x2 - x1) / chord, (y2 - y1) / chord
+    offset = -(chord / 2.0) / math.tan(half)
+    cx = (x1 + x2) / 2.0 + (-uy) * offset
+    cy = (y1 + y2) / 2.0 + ux * offset
+    tol = min(float(tolerance), radius)
+    step = 2.0 * math.acos(max(-1.0, min(1.0, 1.0 - tol / radius)))
+    count = max(2, math.ceil(abs(theta) / step)) if step > 1e-12 else 2
+    start = math.atan2(y1 - cy, x1 - cx)
+    return [
+        (
+            cx + radius * math.cos(start + theta * index / count),
+            cy + radius * math.sin(start + theta * index / count),
+        )
+        for index in range(1, count)
+    ]
+
+
+async def _discard_traced_loop(backend: AutoCADBackend, handle: str | None) -> bool:
+    """Delete the outline `boundary_from_entities` drew, reporting whether it went.
+
+    `boundary_from_entities` does not merely compute a loop, it *writes* one:
+    an LWPOLYLINE on the current layer. `hatch_material` asked for a hatch, not
+    an outline, so leaving it behind drops a stray polyline on layer 0 that the
+    caller cannot find - and that `drawing_critique` / `drawing_finalize` then
+    score against the drawing under the layer-discipline rule. The boolean is
+    put in the result rather than assumed, so a delete that failed is visible.
+    """
+    if not handle:
+        return False
+    try:
+        result = await backend.entity_delete(handle)
+    except Exception:
+        return False
+    if isinstance(result, dict):
+        return bool(result.get("ok", True))
+    return True
+
+
 async def draw_material_hatch(
     backend: AutoCADBackend,
     *,
@@ -350,6 +459,24 @@ async def draw_material_hatch(
     `hatch_for` owns the map and its refusal, so an unknown material name is
     rejected here before anything is drawn. `scale` multiplies the material's
     own pattern scale; `angle` replaces the material's own angle when given.
+
+    With `handles` the loop is chained by `boundary_from_entities`, and both of
+    that call's side effects are dealt with here rather than left to the
+    caller. Its traced LWPOLYLINE carries `points` **and** a parallel `bulges`
+    list; reading only `points` hatches the chord of every arc edge, which on a
+    semicircular cut face leaves 61% of the face unhatched while reporting
+    success. Each bulged segment is therefore expanded into chords no further
+    than `HATCH_FLATTEN_SAGITTA` from the real arc, and the payload states its
+    own accuracy the way `analysis_measure_entity` does: `accuracy` is
+    `"exact"` or `"flatten_tolerance"`, `area` is the polygon actually written
+    and `boundary_area` the exact area of the chained loop, so the two can be
+    compared instead of trusted. The traced outline itself is deleted - it was
+    scaffolding, and an orphan polyline on layer 0 is scored against the
+    drawing - and `traced` reports its handle and whether it went.
+
+    Refused: a loop that encloses no area, and a traced loop that flattens to
+    fewer than three vertices. Both used to write a HATCH of area 0.0 and
+    return `ok`.
     """
     from engineering.mech.annotate import ensure_annotation_layers
     from engineering.mech.primitives import ROLE_LAYER as _ROLE_LAYER
@@ -365,16 +492,58 @@ async def draw_material_hatch(
     if boundary is not None and handles:
         raise ValueError("hatch_material takes boundary or handles, not both.")
 
+    traced_report: dict | None = None
+    boundary_area: float | None = None
+    curved_edges = 0
     if boundary is not None:
-        points = [[float(p[0]), float(p[1])] for p in boundary]
+        points = [(float(p[0]), float(p[1])) for p in boundary]
         if len(points) < 3:
             raise ValueError(f"a hatch boundary needs at least three points; got {len(points)}.")
     else:
         loop = await backend.boundary_from_entities(list(handles or []))
         if not loop.get("ok"):
             raise ValueError(f"hatch_material could not close a loop: {loop.get('error')}")
-        traced = await backend.entity_get(loop["handle"])
-        points = [[float(p[0]), float(p[1])] for p in traced.properties["points"]]
+        traced_handle = loop.get("handle")
+        if loop.get("area") is not None:
+            boundary_area = float(loop["area"])
+        try:
+            traced = await backend.entity_get(traced_handle)
+            vertices = [(float(p[0]), float(p[1])) for p in traced.properties["points"]]
+            bulges = [float(b) for b in (traced.properties.get("bulges") or ())]
+        finally:
+            # In `finally:` so a drawing is never left with the scaffolding of
+            # a call that raised while reading it.
+            traced_report = {
+                "handle": traced_handle,
+                "removed": await _discard_traced_loop(backend, traced_handle),
+            }
+        points = []
+        for index, vertex in enumerate(vertices):
+            points.append(vertex)
+            bulge = bulges[index] if index < len(bulges) else 0.0
+            arc = _flatten_bulge(vertex, vertices[(index + 1) % len(vertices)], bulge)
+            if arc:
+                curved_edges += 1
+                points.extend(arc)
+        if len(points) < 3:
+            raise ValueError(
+                f"the chained loop flattens to {len(points)} vertices, which encloses nothing; "
+                "a hatch boundary needs at least three."
+            )
+
+    area = _polygon_area(points)
+    if area <= 1e-9:
+        raise ValueError(
+            f"the hatch boundary encloses no area (measured {area:g}); a zero-area HATCH "
+            "fills nothing while reporting success."
+        )
+    # The traced loop knows its own exact area, arcs and all. If the polygon
+    # written here does not match it, something was straightened - say so by
+    # name instead of reporting an area that is not the cut face's.
+    if boundary_area is None or abs(area - boundary_area) <= max(1e-9, 1e-9 * abs(boundary_area)):
+        accuracy, flatten_tolerance = "exact", None
+    else:
+        accuracy, flatten_tolerance = "flatten_tolerance", HATCH_FLATTEN_SAGITTA
 
     pattern_scale = float(spec["scale"]) * factor
     pattern_angle = float(spec["angle"]) if angle is None else float(angle)
@@ -389,7 +558,7 @@ async def draw_material_hatch(
     created = await ensure_annotation_layers(backend, [target])
     info = await backend.entity_create_hatch(
         spec["pattern"],
-        points,
+        [[x, y] for x, y in points],
         pattern_scale,
         pattern_angle,
         target,
@@ -402,6 +571,12 @@ async def draw_material_hatch(
         "scale": pattern_scale,
         "angle": pattern_angle,
         "points": len(points),
+        "area": round(area, 6),
+        "boundary_area": boundary_area,
+        "accuracy": accuracy,
+        "flatten_tolerance": flatten_tolerance,
+        "curved_edges": curved_edges,
         "layer": target,
         "layers_created": list(created),
+        "traced": traced_report,
     }

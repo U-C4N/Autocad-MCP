@@ -8445,10 +8445,20 @@ async def hatch_material(
     is drawn), neither `boundary` nor `handles` (or both), a boundary with
     fewer than three points, and a non-positive `scale`. With `handles` the
     loop is chained by `boundary_from_entities`, which the COM engine refuses
-    (capability `boundary_trace`) — pass `boundary` on a live seat, or run
+    (capability `boundary_trace`) - pass `boundary` on a live seat, or run
     headlessly. The HATCH layer is created first when the drawing lacks it:
     ActiveX refuses an entity on an absent layer and would otherwise leave the
     hatch orphaned on layer 0.
+
+    The payload states its own accuracy, as `analysis_measure_entity` does:
+    `area` is the polygon actually hatched, `boundary_area` the exact area of
+    the chained loop, and `accuracy` is `"exact"` or `"flatten_tolerance"` -
+    an arc edge reaches `entity_create_hatch` as chords, so a curved cut face
+    is hatched to within `HATCH_FLATTEN_SAGITTA` of itself rather than being
+    replaced by its chord polygon. With `handles`, the outline
+    `boundary_from_entities` draws is scaffolding and is deleted; `traced`
+    reports its handle and whether the delete succeeded. A loop enclosing no
+    area is refused instead of writing a HATCH of area 0.0.
     """
     from engineering.mech.marks import draw_material_hatch
 
