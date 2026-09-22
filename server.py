@@ -690,6 +690,7 @@ async def _registered_tool_count() -> int | None:
 # entity/drawing tags. Tools whose tags match none fall into "other".
 _GROUP_TAG_PRIORITY = (
     "pid",
+    "mech",
     "style",
     "pagesetup",
     "environment",
@@ -718,6 +719,7 @@ _GROUP_TAG_PRIORITY = (
 # Map the winning tag to a human-readable group label for the breakdown.
 _GROUP_TAG_LABELS = {
     "pid": "pid",
+    "mech": "mech",
     "style": "styles",
     "pagesetup": "page_setup",
     "environment": "environment",
@@ -960,7 +962,7 @@ SOLID_TOOL_NAMES = frozenset(
 # mechanically should not pay for the P&ID surface, and a client that never
 # talks to a live seat should not pay for the environment surface. Styles and
 # page setup (SECTION 18/19) are drafting essentials and stay in core.
-TOOL_PACK_NAMES = ("core", "pid", "settings")
+TOOL_PACK_NAMES = ("core", "pid", "settings", "mech")
 PACK_TOOL_NAMES: dict[str, frozenset[str]] = {
     "pid": frozenset(
         {
@@ -1000,6 +1002,14 @@ PACK_TOOL_NAMES: dict[str, frozenset[str]] = {
             "user_pick_point",
             "user_select",
             "system_prompt_message",
+        }
+    ),
+    # SECTION 22 - the standard-parts catalogue (tracks B+G).
+    "mech": frozenset(
+        {
+            "std_part_list",
+            "std_part_insert",
+            "std_feature_draw",
         }
     ),
 }
@@ -8121,6 +8131,197 @@ async def drawing_properties_set(
     touched = [k for k, v in summary.items() if v is not None] + sorted(custom or {})
     await ctx.info(f"Setting drawing properties: {', '.join(touched) or 'nothing'}")
     return await _backend(ctx).drawing_properties_set(summary, custom)
+
+
+# ---------------------------------------------------------------------------
+# ── SECTION 22: Standard Parts (3 tools) ────────────────────────────────────
+# ---------------------------------------------------------------------------
+
+
+@cad_tool(
+    summary="Search the standard-parts catalogue: ISO bolts, nuts, washers, cap screws, bearings.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Standard Parts: Catalogue", "readOnlyHint": True},
+    tags={"mech", "query"},
+)
+async def std_part_list(
+    query: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description=(
+                "Free text matched against designation, standard, size and family - "
+                "'M12', 'ISO 4014', '6205', 'washer'"
+            ),
+        ),
+    ] = None,
+    standard: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="One of ISO 4014, ISO 4017, ISO 4032, ISO 7089, ISO 4762, ISO 15",
+        ),
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """Catalogue rows with the dimensions a drawing needs, and their provenance.
+
+    Every row is transcribed from the named standard's own table and carries
+    its `source`. Coverage is deliberately narrow: ISO 261 first-choice sizes
+    only (M5-M36, M3-M24 for ISO 4762) and ISO 15 bore numbers 00-10 in the
+    600x / 620x / 630x series. A size outside a table is refused by name by
+    `std_part_insert` with the nearest entries, never interpolated. An unknown
+    `standard` is refused with the list of catalogue standards.
+    """
+    from engineering.mech.stdparts import FAMILY_STANDARDS, catalogue
+
+    rows = catalogue(query, standard)
+    return {"count": len(rows), "standards": list(FAMILY_STANDARDS), "parts": list(rows)}
+
+
+@cad_tool(
+    summary=(
+        "Insert an ISO standard part - hex bolt, nut, washer, cap screw or ball bearing "
+        "- as a tagged block."
+    ),
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Standard Parts: Insert", "readOnlyHint": False},
+    tags={"mech", "create"},
+)
+async def std_part_insert(
+    designation: Annotated[
+        str,
+        Field(
+            description=(
+                "'ISO 4014 - M12x60', 'ISO 4032 - M12', 'ISO 7089 - M12', "
+                "'ISO 4762 - M8x30', 'ISO 15 - 6205' (a bare '6205' also works)"
+            )
+        ),
+    ],
+    x: Annotated[float, Field(description="Insertion X (WCS)")],
+    y: Annotated[float, Field(description="Insertion Y (WCS)")],
+    view: Annotated[
+        str,
+        Field(
+            default="side",
+            description=(
+                "Fasteners: side | top. Bearings: simplified (ISO 8826-1) | detailed "
+                "(ISO 8826-2). The default 'side' falls back to the family's first view."
+            ),
+        ),
+    ] = "side",
+    rotation: Annotated[
+        float,
+        Field(default=0.0, description="Degrees CCW; 0 puts the part's axis along +X"),
+    ] = 0.0,
+    layer: Annotated[
+        str,
+        Field(
+            default="GEOMETRY",
+            description=(
+                "Layer for the INSERT; the block's own primitives keep GEOMETRY / CENTER / HIDDEN"
+            ),
+        ),
+    ] = "GEOMETRY",
+    material: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Property class or material for the MAT attribute and the XDATA, e.g. '8.8'",
+        ),
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """Define the part's block once, insert it, and write its `std_part` XDATA.
+
+    The block carries DESIG / STD / SIZE / MAT attributes and an ACADMCP_MECH
+    payload, so a parts list is a read of the drawing rather than a naming
+    convention. Refusals, all before any write: a designation outside the
+    transcribed tables (named, with the nearest catalogue entries - nothing is
+    drawn approximately), a malformed designation, a missing or stray nominal
+    length, a view the family does not have, an attribute tag the block does
+    not carry, and a non-finite coordinate or rotation.
+    """
+    from engineering.mech.stdparts import insert_std_part
+
+    await ctx.info(f"standard part {designation} ({view}) at ({x}, {y})")
+    return await insert_std_part(
+        _backend(ctx),
+        designation,
+        at=(x, y),
+        view=view,
+        rotation=rotation,
+        layer=layer,
+        material=material,
+    )
+
+
+@cad_tool(
+    summary=(
+        "Draw a standard feature - thread, undercut, ring or O-ring groove, centre hole "
+        "- onto existing geometry."
+    ),
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Standard Parts: Draw Feature", "readOnlyHint": False},
+    tags={"mech", "create"},
+)
+async def std_feature_draw(
+    kind: Annotated[
+        str,
+        Field(description="thread | undercut | ring_groove | centre_hole | oring_groove"),
+    ],
+    x: Annotated[float, Field(description="Feature origin X (WCS): a point on the axis")],
+    y: Annotated[float, Field(description="Feature origin Y (WCS): a point on the axis")],
+    params: Annotated[
+        dict,
+        Field(
+            description=(
+                "thread: {d, length, size|pitch, internal}; undercut: {d, form: E|F}; "
+                "ring_groove: {d, kind: shaft|bore}; centre_hole: {size, form: A|B}; "
+                "oring_groove: {d, cord, kind: shaft|bore}"
+            )
+        ),
+    ],
+    rotation: Annotated[
+        float,
+        Field(
+            default=0.0,
+            description="Degrees CCW applied to the local +X (along the axis, into the feature)",
+        ),
+    ] = 0.0,
+    layer: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Override the visible primitives' layer; CENTER and HIDDEN keep theirs",
+        ),
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """Add a standard feature to geometry that already exists - a foreign drawing being finished.
+
+    Local frame: `(x, y)` is on the axis, +X runs along the axis in the
+    direction the feature extends and +Y is radially outward. The thread is the
+    ISO 6410 representation (minor diameter at 0.8 x major, thread-length limit
+    to the major) and its pitch comes from ISO 261 via `size` or from an
+    explicit `pitch` - it is never guessed. Every other kind takes its
+    dimensions from the registered standards table and is refused by name when
+    that table is absent, when the size is outside its coverage, or when the row
+    lacks a dimension the feature needs: no value is interpolated and no profile
+    is reconstructed. DIN 332 form R is refused - only forms A and B are drawn.
+    """
+    from engineering.mech.stdparts import draw_std_feature
+
+    await ctx.info(f"standard feature {kind} at ({x}, {y})")
+    return await draw_std_feature(
+        _backend(ctx), kind, (x, y), params, rotation=rotation, layer=layer
+    )
 
 
 # ---------------------------------------------------------------------------
