@@ -1027,6 +1027,66 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "pozisyon numarasi",
         ),
     ),
+    "xref_attach": ToolAliases(
+        acad=("XATTACH",),
+        synonyms=(
+            "attach an xref",
+            "external reference",
+            "xref",
+            "reference another drawing",
+            "overlay a drawing",
+            "harici referans",
+        ),
+    ),
+    "xref_manage": ToolAliases(
+        acad=("XREF", "XBIND"),
+        synonyms=(
+            "list the xrefs",
+            "reload an xref",
+            "bind an xref",
+            "detach an xref",
+            "repath an xref",
+            "xref manager",
+            "broken xref path",
+        ),
+    ),
+    "image_attach": ToolAliases(
+        acad=("IMAGEATTACH",),
+        synonyms=(
+            "attach an image",
+            "raster underlay",
+            "insert a png",
+            "background image",
+            "scanned drawing",
+            "resim ekle",
+        ),
+    ),
+    "data_extract": ToolAliases(
+        acad=("DATAEXTRACTION", "EATTEXT"),
+        synonyms=(
+            # Not the bare phrase "parts list": that is the golden query for
+            # `entity_create_table`, and a file writer must not outrank the
+            # tool that draws the thing. This one is asked for by its
+            # destination -- a file -- which is what distinguishes it.
+            "export the bill of materials",
+            "extract attributes",
+            "bom to csv",
+            "bom to excel",
+            "data extraction",
+            "excele aktar",
+        ),
+    ),
+    "drawing_export_dwg": ToolAliases(
+        acad=("SAVEAS",),
+        synonyms=(
+            "export dwg",
+            "save as dwg",
+            "write a dwg",
+            "autocad 2018 format",
+            "downgrade to r2000",
+            "dwg olarak kaydet",
+        ),
+    ),
     # ── Layers & linetypes ──────────────────────────────────────────────────
     "layer_create": ToolAliases(
         acad=("LAYER", "LA"),

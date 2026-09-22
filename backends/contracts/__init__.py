@@ -24,6 +24,7 @@ from backends.contracts.layouts import LayoutContract
 from backends.contracts.linetypes import LinetypeContract
 from backends.contracts.pagesetup import PageSetupContract
 from backends.contracts.premium import PremiumContract
+from backends.contracts.refs import RefsContract
 from backends.contracts.settings import SettingsContract
 from backends.contracts.solids import SolidContract
 from backends.contracts.styles import StylesContract
@@ -48,6 +49,7 @@ __all__ = [
     "LinetypeContract",
     "PageSetupContract",
     "PremiumContract",
+    "RefsContract",
     "SettingsContract",
     "SolidContract",
     "StylesContract",

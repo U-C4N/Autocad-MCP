@@ -202,6 +202,39 @@ def _refuse_dwg(operation: str, path: str) -> UnsupportedCapabilityError:
     )
 
 
+def _odafc_available() -> bool:
+    """Is the ODA File Converter on this machine right now?
+
+    Re-evaluated per call, the way the matplotlib check behind
+    ``viewport_render`` is: installing the converter must change the answer
+    without editing the map.
+    """
+    try:
+        from ezdxf.addons import odafc
+
+        return bool(odafc.is_installed())
+    except Exception:  # noqa: BLE001 - an import failure is simply "not installed"
+        return False
+
+
+def _image_pixels(path: str) -> tuple[int, int]:
+    """Pixel size of a raster, so the placed image keeps the file's aspect."""
+    try:
+        from PIL import Image
+    except ImportError as exc:  # pragma: no cover - Pillow ships with [pdf]
+        raise ValueError(
+            "image_attach needs Pillow to read the image's pixel size; "
+            'install it with: pip install -e ".[pdf]"'
+        ) from exc
+    try:
+        with Image.open(path) as image:
+            return int(image.width), int(image.height)
+    except Exception as exc:
+        raise ValueError(
+            f"image_attach: {path} is not an image this server can read ({exc})"
+        ) from exc
+
+
 def _audit_entry(entry) -> dict:
     """Flatten an ezdxf ``ErrorEntry`` into something a client can read.
 
@@ -1676,6 +1709,30 @@ class EzdxfBackend(AutoCADBackend):
                 "interactive_prompt": FeatureCapability(
                     False, reason="no_operator_to_prompt_headlessly"
                 ),
+                # Track G keys. `dwg_write` is a runtime re-evaluation, not a
+                # hardcoded False: installing the converter must change the
+                # answer without editing this map, exactly as `viewport_render`
+                # follows matplotlib.
+                "dwg_write": (
+                    FeatureCapability(True, "odafc", reason="oda_file_converter_installed")
+                    if _odafc_available()
+                    else FeatureCapability(
+                        False,
+                        reason=(
+                            "requires_oda_file_converter:"
+                            "https://www.opendesign.com/guestfiles/oda_file_converter"
+                        ),
+                    )
+                ),
+                "xref_live": FeatureCapability(
+                    False,
+                    reason="reload_and_bind_need_a_live_seat;list_detach_path_are_headless",
+                ),
+                "xlsx_write": (
+                    FeatureCapability(True, "openpyxl")
+                    if find_spec("openpyxl") is not None
+                    else FeatureCapability(False, reason="optional_dependency_missing:openpyxl")
+                ),
             },
         )
 
@@ -2321,6 +2378,199 @@ class EzdxfBackend(AutoCADBackend):
 
     async def drawing_export_dxf(self, path: str) -> dict:
         return await self.drawing_save_as(path, "dxf")
+
+    # ── external references, rasters and DWG (v1.6 track G) ──────────────────
+
+    async def xref_attach(self, path, at, scale=1.0, rotation=0.0, kind="attach") -> dict:
+        from backends.contracts.refs import XREF_KINDS
+
+        if kind not in XREF_KINDS:
+            raise ValueError(f"xref kind must be one of {XREF_KINDS}, got {kind!r}")
+        source = Path(path)
+        if not source.is_file():
+            raise ValueError(f"xref_attach: {path} does not exist")
+        x, y = float(at[0]), float(at[1])
+        for label, value in (("at.x", x), ("at.y", y), ("scale", scale), ("rotation", rotation)):
+            if not math.isfinite(float(value)):
+                raise ValueError(f"xref_attach: {label} must be finite, got {value!r}")
+        if float(scale) <= 0:
+            raise ValueError(f"xref_attach: scale must be positive, got {scale!r}")
+        name = source.stem.upper()
+
+        def _sync():
+            from ezdxf import xref
+
+            doc = self._require_doc()
+            if name in doc.blocks:
+                raise ValueError(
+                    f"xref_attach: the drawing already holds a block named {name!r}; "
+                    "detach it first with xref_manage(action='detach')"
+                )
+            insert = xref.attach(
+                doc,
+                block_name=name,
+                filename=str(source),
+                insert=(x, y),
+                scale=float(scale),
+                rotation=float(rotation),
+                overlay=(kind == "overlay"),
+            )
+            self._mark_dirty()
+            return {
+                "ok": True,
+                "name": name,
+                "path": str(source),
+                "kind": kind,
+                "handle": insert.dxf.handle,
+                "at": [x, y],
+                "scale": float(scale),
+                "rotation": float(rotation),
+                "backend": self.name,
+            }
+
+        return await self._async(_sync)
+
+    async def xref_manage(self, name, action, new_path=None) -> dict:
+        from backends.contracts.refs import XREF_ACTIONS
+
+        if action not in XREF_ACTIONS:
+            raise ValueError(f"xref action must be one of {XREF_ACTIONS}, got {action!r}")
+        if action in ("reload", "bind"):
+            raise UnsupportedCapabilityError(
+                "xref_live",
+                f"xref_manage(action={action!r}): the {self.name} backend has no live xref "
+                "manager. list, detach and path work headlessly; reload and bind need the "
+                "com backend (a running AutoCAD seat).",
+            )
+        if action == "path" and not (new_path or "").strip():
+            raise ValueError("xref_manage(action='path') needs new_path")
+
+        def _sync():
+            from ezdxf.lldxf import const
+
+            doc = self._require_doc()
+            # Measured on ezdxf 1.4.4: `xref.attach` leaves an attachment's
+            # block flags at 20 and an overlay's at 24, so the question "is
+            # this an xref" is the *pair* of bits. Masking BLK_XREF alone
+            # misses every overlay.
+            xref_mask = const.BLK_XREF | const.BLK_XREF_OVERLAY
+
+            def _rows():
+                rows = []
+                for block in doc.blocks:
+                    flags = int(block.block.dxf.flags)
+                    if not flags & xref_mask:
+                        continue
+                    rows.append(
+                        {
+                            "name": block.name,
+                            "path": str(block.block.dxf.xref_path or ""),
+                            "kind": "overlay" if flags & const.BLK_XREF_OVERLAY else "attach",
+                            "inserts": sum(
+                                1
+                                for entity in doc.modelspace()
+                                if entity.dxftype() == "INSERT" and entity.dxf.name == block.name
+                            ),
+                        }
+                    )
+                rows.sort(key=lambda row: row["name"])
+                return rows
+
+            if action == "list":
+                return {"ok": True, "xrefs": _rows(), "backend": self.name}
+
+            key = str(name).strip()
+            row = next((r for r in _rows() if r["name"] == key), None)
+            if row is None:
+                raise ValueError(
+                    f"xref_manage: {key!r} is not an external reference in this drawing "
+                    f"(have: {', '.join(r['name'] for r in _rows()) or 'none'})"
+                )
+            if action == "path":
+                doc.blocks.get(key).block.dxf.xref_path = str(new_path)
+                self._mark_dirty()
+                return {"ok": True, "name": key, "path": str(new_path), "backend": self.name}
+
+            victims = [
+                entity
+                for entity in doc.modelspace()
+                if entity.dxftype() == "INSERT" and entity.dxf.name == key
+            ]
+            for entity in victims:
+                doc.modelspace().delete_entity(entity)
+            doc.blocks.delete_block(key, safe=False)
+            self._mark_dirty()
+            return {
+                "ok": True,
+                "name": key,
+                "inserts_removed": len(victims),
+                "backend": self.name,
+            }
+
+        return await self._async(_sync)
+
+    async def image_attach(self, path, at, scale=1.0, rotation=0.0) -> dict:
+        source = Path(path)
+        if not source.is_file():
+            raise ValueError(f"image_attach: {path} does not exist")
+        x, y = float(at[0]), float(at[1])
+        for label, value in (("at.x", x), ("at.y", y), ("scale", scale), ("rotation", rotation)):
+            if not math.isfinite(float(value)):
+                raise ValueError(f"image_attach: {label} must be finite, got {value!r}")
+        if float(scale) <= 0:
+            raise ValueError(f"image_attach: scale must be positive, got {scale!r}")
+        px, py = _image_pixels(str(source))
+        width, height = px * float(scale), py * float(scale)
+
+        def _sync():
+            doc = self._require_doc()
+            image_def = doc.add_image_def(str(source), size_in_pixel=(px, py))
+            image = self._msp().add_image(image_def, (x, y), (width, height), float(rotation))
+            self._mark_dirty()
+            return {
+                "ok": True,
+                "path": str(source),
+                "handle": image.dxf.handle,
+                "at": [x, y],
+                "scale": float(scale),
+                "rotation": float(rotation),
+                "pixels": [px, py],
+                "size_mm": [width, height],
+                "backend": self.name,
+            }
+
+        return await self._async(_sync)
+
+    async def drawing_export_dwg(self, path, version="R2018") -> dict:
+        from backends.contracts.refs import DWG_VERSIONS
+
+        if version not in DWG_VERSIONS:
+            raise ValueError(f"DWG version must be one of {DWG_VERSIONS}, got {version!r}")
+        if not _odafc_available():
+            raise UnsupportedCapabilityError(
+                "dwg_write",
+                f"drawing_export_dwg: the {self.name} backend writes DWG only through the "
+                "ODA File Converter, which is not installed here. Install it from "
+                "https://www.opendesign.com/guestfiles/oda_file_converter and this call "
+                "starts working, or export from the com backend (a running AutoCAD seat). "
+                "drawing_export_dxf writes a DXF that AutoCAD opens unchanged.",
+            )
+
+        def _sync():
+            from ezdxf.addons import odafc
+
+            doc = self._require_doc()
+            self._refuse_path_held_elsewhere("drawing_export_dwg", path)
+            odafc.export_dwg(doc, path, version=version, replace=True)
+            return {
+                "ok": True,
+                "path": path,
+                "version": version,
+                "bytes": Path(path).stat().st_size,
+                "backend": self.name,
+            }
+
+        return await self._async(_sync)
 
     async def drawing_export_pdf(self, path: str, layout: str | None = None) -> dict:
         """Export to PDF via ezdxf's matplotlib backend.

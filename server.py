@@ -8124,7 +8124,7 @@ async def drawing_properties_set(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 24: Sheet & Delivery (6 tools) ──────────────────────────────────
+# ── SECTION 24: Sheet & Delivery (11 tools) ─────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -8572,6 +8572,181 @@ async def balloon_add(
         layer=layer,
         layout=layout or None,
     )
+
+
+@cad_tool(
+    summary="Attach a DWG/DXF as an external reference (attachment or overlay).", cost="mutate"
+)
+@mcp.tool(
+    annotations={"title": "Sheet: Attach Xref", "destructiveHint": False},
+    tags={"drawing", "block"},
+)
+async def xref_attach(
+    path: Annotated[str, Field(description="Full path of the drawing to reference.")],
+    x: Annotated[float, Field(default=0.0, description="Insertion X (WCS).")] = 0.0,
+    y: Annotated[float, Field(default=0.0, description="Insertion Y (WCS).")] = 0.0,
+    scale: Annotated[float, Field(default=1.0, gt=0, description="Uniform scale.")] = 1.0,
+    rotation: Annotated[
+        float, Field(default=0.0, description="Rotation in degrees, CCW from +X.")
+    ] = 0.0,
+    kind: Annotated[
+        str,
+        Field(
+            default="attach",
+            description="'attach' (the reference's own xrefs come with it) or 'overlay' "
+            "(they do not, so a circular reference cannot form).",
+        ),
+    ] = "attach",
+    ctx: Context = None,
+) -> dict:
+    """Attach an external reference and insert it once. Both engines.
+
+    The block takes the referenced file's stem as its name. Refusals, all
+    before anything is written: a `kind` that is not 'attach' or 'overlay', a
+    file that does not exist, a non-positive or non-finite scale, and a block
+    name the drawing already holds — detach it first with
+    `xref_manage(action='detach')`.
+    """
+    validated = validate_path(path)
+    await ctx.info(f"Xref {kind}: {validated}")
+    return await _backend(ctx).xref_attach(str(validated), (x, y), scale, rotation, kind)
+
+
+@cad_tool(summary="List, reload, bind, detach or repath an external reference.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Sheet: Manage Xrefs", "destructiveHint": True},
+    tags={"drawing", "block"},
+)
+async def xref_manage(
+    action: Annotated[
+        str,
+        Field(description="list | reload | bind | detach | path."),
+    ],
+    name: Annotated[str, Field(default="", description="Xref name; ignored by 'list'.")] = "",
+    new_path: Annotated[
+        str, Field(default="", description="Required by 'path': the reference's new location.")
+    ] = "",
+    ctx: Context = None,
+) -> dict:
+    """One operation on one external reference.
+
+    `list`, `detach` and `path` work on both engines. `reload` and `bind` need
+    a live AutoCAD seat's xref manager: headlessly they are refused with
+    `capability: "xref_live"` rather than pretended, and the refusal says which
+    engine does them. Other refusals: an action outside the five, an unknown
+    xref name, a 'path' action with no `new_path`. On the live engine a listed
+    row's `inserts` is null — ActiveX reports no per-xref insert count and this
+    server does not invent one.
+    """
+    await ctx.info(f"Xref {action} {name or '(all)'}")
+    validated = str(validate_path(new_path)) if new_path else None
+    return await _backend(ctx).xref_manage(name, action, validated)
+
+
+@cad_tool(summary="Attach a raster image (PNG/JPG) as an underlay.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Sheet: Attach Image", "destructiveHint": False},
+    tags={"drawing", "create"},
+)
+async def image_attach(
+    path: Annotated[str, Field(description="Full path of the raster image.")],
+    x: Annotated[float, Field(default=0.0, description="Insertion X (WCS).")] = 0.0,
+    y: Annotated[float, Field(default=0.0, description="Insertion Y (WCS).")] = 0.0,
+    scale: Annotated[
+        float,
+        Field(
+            default=1.0,
+            gt=0,
+            description="Drawing units per pixel: an 800x400 image at 0.1 is 80x40 mm.",
+        ),
+    ] = 1.0,
+    rotation: Annotated[float, Field(default=0.0, description="Rotation in degrees.")] = 0.0,
+    ctx: Context = None,
+) -> dict:
+    """Attach a raster underlay at the file's own aspect ratio. Both engines.
+
+    `scale` is drawing units per pixel, so the placed size is the image's pixel
+    size times `scale` and the payload reports both. Refusals, all before
+    anything is written: a file that does not exist, a file no image reader can
+    open (named), a non-positive or non-finite scale.
+    """
+    validated = validate_path(path)
+    await ctx.info(f"Image underlay: {validated}")
+    return await _backend(ctx).image_attach(str(validated), (x, y), scale, rotation)
+
+
+@cad_tool(
+    summary="Write the bill of materials to a CSV file, or to XLSX when openpyxl is present.",
+    cost="safe",
+)
+@mcp.tool(
+    annotations={"title": "Sheet: Extract Data", "destructiveHint": False},
+    tags={"engineering", "sheet", "query"},
+)
+async def data_extract(
+    path: Annotated[str, Field(description="File to write, ending .csv or .xlsx.")],
+    fmt: Annotated[
+        str,
+        Field(default="csv", description="'csv' (always available) or 'xlsx' (needs openpyxl)."),
+    ] = "csv",
+    layer: Annotated[
+        str, Field(default="", description="Only read INSERTs on this layer; empty reads all.")
+    ] = "",
+    group_by: Annotated[
+        str,
+        Field(default="designation", description="Group identical parts by this field, or ''."),
+    ] = "designation",
+    columns: Annotated[list[str] | None, Field(default=None)] = None,
+    ctx: Context = None,
+) -> dict:
+    """The same rows `bom_extract` returns, written to a file.
+
+    Refusals: a format that is not 'csv' or 'xlsx'; a drawing with nothing to
+    itemise (nothing is written); and `fmt='xlsx'` without openpyxl, which
+    carries `capability: "xlsx_write"` and names both the package to install
+    and the CSV route that always works.
+    """
+    from engineering.sheet.bom import extract_records, rows_from_records
+    from engineering.sheet.extract import write_rows
+
+    backend = _backend(ctx)
+    validated = validate_path(path, allow_write=True)
+    records = await extract_records(backend, layer=layer or None)
+    rows = rows_from_records(records, columns=columns, group_by=group_by or None)
+    await ctx.info(f"Data extract: {len(rows)} rows -> {validated}")
+    return write_rows(rows, str(validated), columns=columns, fmt=fmt)
+
+
+@cad_tool(summary="Write the drawing as a real DWG at a chosen AutoCAD version.", cost="safe")
+@mcp.tool(
+    annotations={"title": "Drawing: Export DWG", "destructiveHint": False},
+    tags={"drawing"},
+)
+async def drawing_export_dwg(
+    path: Annotated[str, Field(description="Full path of the .dwg to write.")],
+    version: Annotated[
+        str,
+        Field(
+            default="R2018",
+            description="R2000 | R2004 | R2007 | R2010 | R2013 | R2018.",
+        ),
+    ] = "R2018",
+    ctx: Context = None,
+) -> dict:
+    """Write a real DWG — not a DXF under a .dwg name.
+
+    On a live AutoCAD seat this is `Document.SaveAs` with the matching
+    AcSaveAsType, which (as AutoCAD's own SaveAs does) leaves the session bound
+    to the file it just wrote. Headlessly it needs the ODA File Converter; when
+    that is absent the call is refused with `capability: "dwg_write"` and the
+    refusal names the install route and `drawing_export_dxf`, which writes a
+    DXF AutoCAD opens unchanged. Check `system_capabilities` first: the ezdxf
+    flag is re-evaluated at call time, so installing the converter changes it
+    without a restart. An unknown version is refused by name with the six.
+    """
+    validated = validate_path(path, allow_write=True)
+    await ctx.info(f"DWG export {version}: {validated}")
+    return await _backend(ctx).drawing_export_dwg(str(validated), version)
 
 
 # ---------------------------------------------------------------------------

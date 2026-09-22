@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 210,
+    "tools": 215,
     "resources": 8,
     "prompts": 5,
     "groups": 23
@@ -11,12 +11,12 @@
   "groups": {
     "analysis": 12,
     "batch": 3,
-    "blocks": 9,
+    "blocks": 11,
     "corner_ops": 4,
     "dimensions": 5,
-    "drawing": 11,
-    "engineering": 16,
-    "entity_creation": 18,
+    "drawing": 12,
+    "engineering": 17,
+    "entity_creation": 19,
     "entity_modification": 16,
     "entity_query": 9,
     "environment": 22,
@@ -415,6 +415,21 @@
       }
     },
     {
+      "name": "data_extract",
+      "group": "engineering",
+      "cost": "safe",
+      "summary": "Write the bill of materials to a CSV file, or to XLSX when openpyxl is present.",
+      "tags": [
+        "engineering",
+        "query",
+        "sheet"
+      ],
+      "annotations": {
+        "title": "Sheet: Extract Data",
+        "destructiveHint": false
+      }
+    },
+    {
       "name": "datum_feature",
       "group": "engineering",
       "cost": "mutate",
@@ -695,6 +710,19 @@
       "annotations": {
         "title": "Drawing: Deliver Auditable Bundle",
         "destructiveHint": true
+      }
+    },
+    {
+      "name": "drawing_export_dwg",
+      "group": "drawing",
+      "cost": "safe",
+      "summary": "Write the drawing as a real DWG at a chosen AutoCAD version.",
+      "tags": [
+        "drawing"
+      ],
+      "annotations": {
+        "title": "Drawing: Export DWG",
+        "destructiveHint": false
       }
     },
     {
@@ -1646,6 +1674,20 @@
       ],
       "annotations": {
         "title": "Set Hatch Gradient",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "image_attach",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Attach a raster image (PNG/JPG) as an underlay.",
+      "tags": [
+        "create",
+        "drawing"
+      ],
+      "annotations": {
+        "title": "Sheet: Attach Image",
         "destructiveHint": false
       }
     },
@@ -2987,6 +3029,34 @@
       "annotations": {
         "title": "Set Viewport Scale",
         "destructiveHint": false
+      }
+    },
+    {
+      "name": "xref_attach",
+      "group": "blocks",
+      "cost": "mutate",
+      "summary": "Attach a DWG/DXF as an external reference (attachment or overlay).",
+      "tags": [
+        "block",
+        "drawing"
+      ],
+      "annotations": {
+        "title": "Sheet: Attach Xref",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "xref_manage",
+      "group": "blocks",
+      "cost": "mutate",
+      "summary": "List, reload, bind, detach or repath an external reference.",
+      "tags": [
+        "block",
+        "drawing"
+      ],
+      "annotations": {
+        "title": "Sheet: Manage Xrefs",
+        "destructiveHint": true
       }
     }
   ],

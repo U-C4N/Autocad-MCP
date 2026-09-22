@@ -15,6 +15,7 @@ from engineering.sheet.bom import (
     rows_from_records,
     table_prims,
 )
+from engineering.sheet.extract import EXTRACT_FORMATS, write_rows, xlsx_available
 from engineering.sheet.frames import (
     CENTRING_OVERSHOOT,
     EDGE_MARGIN,
@@ -50,6 +51,7 @@ __all__ = [
     "COLUMN_LABELS",
     "DEFAULT_COLUMNS",
     "EDGE_MARGIN",
+    "EXTRACT_FORMATS",
     "FILING_MARGIN",
     "LIST_WIDTH",
     "REVISION_COLUMNS",
@@ -80,5 +82,7 @@ __all__ = [
     "rows_from_records",
     "sheet_size",
     "table_prims",
+    "write_rows",
+    "xlsx_available",
     "zone_divisions",
 ]
