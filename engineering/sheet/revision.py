@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING
 
 from backends.xdata_specs import MAX_BYTES, app_size
 from engineering.mech.primitives import Line, Poly, Prim, Pt, Text
-from engineering.sheet.bom import LIST_WIDTH, ROW_HEIGHT, TEXT_HEIGHT
+from engineering.sheet.bom import LIST_WIDTH, ROW_HEIGHT, TEXT_HEIGHT, all_entities
 from engineering.sheet.frames import (
     SHEET_LAYER,
     draw_sheet_prims,
@@ -226,9 +226,16 @@ def revision_block_prims(rows, *, at: Pt, height: float = ROW_HEIGHT) -> tuple[P
 
 
 async def read_revisions(backend: AutoCADBackend):
-    """Every revision row this server wrote, from its ACADMCP_SHEET_REV payload."""
+    """Every revision row this server wrote in the CURRENT space, from its
+    ACADMCP_SHEET_REV payload.
+
+    Paged, not capped: `entity_list`'s 200-entity default made a lettered
+    drawing read back no revisions at all, which both broke the idempotency
+    guard and restarted `index = len(existing)` at 0 -- a second heading band
+    and a second row drawn exactly on top of the first.
+    """
     found: list[dict] = []
-    for entity in await backend.entity_list(type_filter="TEXT"):
+    for entity in await all_entities(backend, type_filter="TEXT"):
         try:
             raw = await backend.entity_get_xdata(entity.handle, REV_APP_ID)
             payload = rev_payload(raw.get("xdata", {}).get(REV_APP_ID, [])) or {}
@@ -272,6 +279,12 @@ async def add_revision(
     cannot stack duplicate rows. Refusals fire before the first entity: a
     malformed code, a cloud region that is not four finite numbers, and -- on
     an engine whose `revcloud` capability is false -- any request for clouds.
+
+    The idempotency guard reads the space the row is going ON. `read_revisions`
+    lists the current space, so reading it before `enter_layout` inspected
+    Model while the block lived on the layout, and every re-run of a
+    `layout=`-scoped revision pass stacked a second heading band and a second
+    row exactly on top of the first.
     """
     code = _check_rev(rev)
     regions = [[float(v) for v in region] for region in clouds]
@@ -291,37 +304,37 @@ async def add_revision(
                 "`clouds` to record the row, or draw the sheet on the ezdxf engine.",
             )
 
-    existing = await read_revisions(backend)
-    match = next((row for row in existing if row["rev"] == code), None)
-    if match is not None:
-        return {
-            "ok": True,
-            "created": False,
-            "rev": code,
-            "handle": match["handle"],
-            "row": len(existing),
-            "clouds": [],
-            "tags": [],
-            "layout": layout or "Model",
-        }
-
-    index = len(existing)
-    new_row = {"rev": code, "description": description, "date": date, "by": by}
-    metrics = frame_metrics(size, orientation=orientation)
-    _x0, _y0, x1, y1 = metrics["frame"]
-    anchor = (
-        (float(origin[0]) + x1 - LIST_WIDTH, float(origin[1]) + y1)
-        if at is None
-        else (float(at[0]), float(at[1]))
-    )
-    # Append-only: the heading band is drawn once, on the first revision, and
-    # every later revision adds exactly one band below the last. Nothing is
-    # redrawn, so a revision can never stack a second copy of the block.
-    head_prims = list(revision_heading_prims(at=anchor)) if index == 0 else []
-    row_prims = list(revision_row_prims(new_row, at=anchor, index=index))
-
     previous = await enter_layout(backend, layout, caller="revision_add")
     try:
+        existing = await read_revisions(backend)
+        match = next((row for row in existing if row["rev"] == code), None)
+        if match is not None:
+            return {
+                "ok": True,
+                "created": False,
+                "rev": code,
+                "handle": match["handle"],
+                "row": len(existing),
+                "clouds": [],
+                "tags": [],
+                "layout": layout or "Model",
+            }
+
+        index = len(existing)
+        new_row = {"rev": code, "description": description, "date": date, "by": by}
+        metrics = frame_metrics(size, orientation=orientation)
+        _x0, _y0, x1, y1 = metrics["frame"]
+        anchor = (
+            (float(origin[0]) + x1 - LIST_WIDTH, float(origin[1]) + y1)
+            if at is None
+            else (float(at[0]), float(at[1]))
+        )
+        # Append-only: the heading band is drawn once, on the first revision, and
+        # every later revision adds exactly one band below the last. Nothing is
+        # redrawn, so a revision can never stack a second copy of the block.
+        head_prims = list(revision_heading_prims(at=anchor)) if index == 0 else []
+        row_prims = list(revision_row_prims(new_row, at=anchor, index=index))
+
         block_handles = await draw_sheet_prims(backend, head_prims + row_prims)
         cloud_handles = []
         for region in regions:
@@ -340,44 +353,44 @@ async def add_revision(
         for point in points:
             drawn = await draw_sheet_prims(backend, revision_tag_prims(code, (point[0], point[1])))
             tag_handles.append({"at": [point[0], point[1]], "handles": drawn})
+
+        # The payload rides on the row band's first Text primitive, which is its
+        # REV cell -- `rev` is validated non-empty, so that cell is always drawn.
+        row_handles = block_handles[len(head_prims) :]
+        row_handle = next(
+            handle
+            for handle, prim in zip(row_handles, row_prims, strict=True)
+            if isinstance(prim, Text)
+        )
+        await backend.entity_set_xdata(
+            row_handle,
+            REV_APP_ID,
+            rev_values(
+                {
+                    "v": REV_PAYLOAD_VERSION,
+                    "rev": code,
+                    "description": description,
+                    "date": date,
+                    "by": by,
+                }
+            ),
+        )
+
+        return {
+            "ok": True,
+            "created": True,
+            "rev": code,
+            "handle": row_handle,
+            "row": index + 1,
+            "block_handles": block_handles,
+            "clouds": cloud_handles,
+            "tags": tag_handles,
+            "layout": layout or "Model",
+            "bbox": {
+                "min": [anchor[0], anchor[1] - ROW_HEIGHT * (index + 2)],
+                "max": [anchor[0] + LIST_WIDTH, anchor[1]],
+            },
+        }
     finally:
         if layout is not None:
             await backend.layout_set_current(previous)
-
-    # The payload rides on the row band's first Text primitive, which is its
-    # REV cell -- `rev` is validated non-empty, so that cell is always drawn.
-    row_handles = block_handles[len(head_prims) :]
-    row_handle = next(
-        handle
-        for handle, prim in zip(row_handles, row_prims, strict=True)
-        if isinstance(prim, Text)
-    )
-    await backend.entity_set_xdata(
-        row_handle,
-        REV_APP_ID,
-        rev_values(
-            {
-                "v": REV_PAYLOAD_VERSION,
-                "rev": code,
-                "description": description,
-                "date": date,
-                "by": by,
-            }
-        ),
-    )
-
-    return {
-        "ok": True,
-        "created": True,
-        "rev": code,
-        "handle": row_handle,
-        "row": index + 1,
-        "block_handles": block_handles,
-        "clouds": cloud_handles,
-        "tags": tag_handles,
-        "layout": layout or "Model",
-        "bbox": {
-            "min": [anchor[0], anchor[1] - ROW_HEIGHT * (index + 2)],
-            "max": [anchor[0] + LIST_WIDTH, anchor[1]],
-        },
-    }

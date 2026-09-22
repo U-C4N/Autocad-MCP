@@ -294,3 +294,96 @@ async def test_reusing_an_item_number_for_different_targets_is_refused(backend):
         await add_balloon(backend, item=1, at=(100.0, 40.0), leader_to=(60.0, 0.0), targets=(two,))
     assert "1" in str(excinfo.value)
     assert len(await backend.entity_list()) == before
+
+
+@pytest.mark.asyncio
+async def test_a_second_balloon_with_the_same_number_and_no_targets_is_refused(backend):
+    """`targets` is optional in the tool, so the clash test used to compare
+    `() != ()` -- False -- and never fire. Two balloons carrying item 1."""
+    first = await add_balloon(backend, item=1, at=(40.0, 40.0), leader_to=(0.0, 0.0))
+    before = len(await backend.entity_list())
+    with pytest.raises(ValueError) as excinfo:
+        await add_balloon(backend, item=1, at=(90.0, 40.0), leader_to=(60.0, 0.0))
+    assert first["handle"] in str(excinfo.value)
+    assert len(await backend.entity_list()) == before
+    assert [b["item"] for b in await read_balloons(backend)] == [1]
+
+
+@pytest.mark.asyncio
+async def test_the_balloon_guards_read_past_the_entity_list_page(backend):
+    """A routine hole pattern fills `entity_list`'s 200-entity default, which
+    used to make `read_balloons` return nothing and every guard pass."""
+    for index in range(200):
+        await backend.entity_create_circle(float(index) * 10.0, 0.0, 2.0)
+    await add_balloon(backend, item=1, at=(40.0, 400.0), leader_to=(0.0, 380.0), targets=("AAA",))
+    assert [b["item"] for b in await read_balloons(backend)] == [1]
+    again = await add_balloon(
+        backend, item=9, at=(40.0, 400.0), leader_to=(0.0, 380.0), targets=("AAA",)
+    )
+    assert again["renumbered"] is True, "the guard must see a balloon past the 200th circle"
+    with pytest.raises(ValueError):
+        await add_balloon(
+            backend, item=9, at=(200.0, 400.0), leader_to=(160.0, 380.0), targets=("BBB",)
+        )
+
+
+@pytest.mark.asyncio
+async def test_extract_reads_every_insert_not_the_first_page(backend):
+    """250 bolts must report QTY 250. The 200-entity `entity_list` default used
+    to print 200 into a real TABLE with nothing saying it had been cut."""
+    await backend.block_define("BOLT", [{"type": "circle", "cx": 0.0, "cy": 0.0, "r": 3.0}], [])
+    for index in range(250):
+        insert = await backend.block_insert("BOLT", float(index) * 10.0, 0.0)
+        await backend.entity_set_xdata(
+            insert.handle,
+            APP_ID,
+            to_values(
+                {
+                    "v": 1,
+                    "kind": "std_part",
+                    "designation": "ISO 4014 - M12x60",
+                    "standard": "ISO 4014",
+                    "size": "M12x60",
+                    "qty": 1,
+                    "material": "8.8",
+                }
+            ),
+        )
+    records = await extract_records(backend)
+    assert len(records) == 250
+    rows = rows_from_records(records)
+    assert [(r["designation"], r["qty"]) for r in rows] == [("ISO 4014 - M12x60", 250)]
+    # A cap is still honoured when one is asked for, explicitly.
+    assert len(await extract_records(backend, limit=17)) == 17
+    with pytest.raises(ValueError):
+        await extract_records(backend, limit=0)
+
+
+@pytest.mark.asyncio
+async def test_the_balloon_guards_read_the_layout_they_draw_on(backend):
+    """`read_balloons` follows the current space, so reading it before
+    `enter_layout` inspected Model while the balloons went on the layout."""
+    await backend.layout_create("SHEET1")
+    first = await add_balloon(
+        backend, item=1, at=(40.0, 40.0), leader_to=(0.0, 0.0), targets=("AAA",), layout="SHEET1"
+    )
+    again = await add_balloon(
+        backend, item=5, at=(40.0, 40.0), leader_to=(0.0, 0.0), targets=("AAA",), layout="SHEET1"
+    )
+    assert again["renumbered"] is True
+    assert again["handle"] == first["handle"]
+    with pytest.raises(ValueError):
+        await add_balloon(
+            backend,
+            item=5,
+            at=(90.0, 40.0),
+            leader_to=(60.0, 0.0),
+            targets=("BBB",),
+            layout="SHEET1",
+        )
+    assert (await backend.layout_list())["current"] == "Model", "the caller's tab must come back"
+    await backend.layout_set_current("SHEET1")
+    try:
+        assert len(await backend.entity_list(type_filter="CIRCLE", limit=10_000)) == 2
+    finally:
+        await backend.layout_set_current("Model")

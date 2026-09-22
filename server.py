@@ -8392,6 +8392,15 @@ async def bom_extract(
             description="Columns to return; default item, qty, designation, standard, material.",
         ),
     ] = None,
+    limit: Annotated[
+        int,
+        Field(
+            default=0,
+            ge=0,
+            description="Stop after this many item records; 0 (the default) reads the whole "
+            "drawing. `truncated` says whether the cap cut the list.",
+        ),
+    ] = 0,
     ctx: Context = None,
 ) -> dict:
     """Walk the INSERTs and return the ISO 7573 item rows. Never modifies the
@@ -8400,19 +8409,35 @@ async def bom_extract(
     Each row's source is reported: `xdata` when the ACADMCP_MECH payload
     supplied it (what `std_part_insert` writes), `attributes` when the block's
     own ATTRIBs did. A block with neither a payload nor a DESIGNATION attribute
-    is skipped rather than guessed at, and `skipped` counts them. Refusals: an
-    unknown column or group_by field, named with the list of the ones there are.
+    is skipped rather than guessed at, and `skipped` counts them.
+
+    The whole drawing is read by default — `entity_list`'s 200-entity page is
+    paged through, not taken as a cap, because an item list that stops at the
+    200th INSERT prints a wrong QTY rather than a shorter one. Pass `limit` to
+    cap it deliberately; `truncated` is then true if and only if the cap cut
+    the list. Refusals: an unknown column or group_by field, named with the
+    list of the ones there are.
     """
     from engineering.sheet.bom import extract_records, rows_from_records
 
     backend = _backend(ctx)
-    records = await extract_records(backend, layer=layer or None)
+    cap = int(limit) or None
+    # One record past the cap, so `truncated` is measured rather than guessed:
+    # exactly `cap` records on the drawing is not a truncation.
+    records = await extract_records(
+        backend, layer=layer or None, limit=None if cap is None else cap + 1
+    )
+    truncated = cap is not None and len(records) > cap
+    if truncated:
+        records = records[:cap]
     rows = rows_from_records(records, columns=columns, group_by=group_by or None)
     return {
         "ok": True,
         "standard": "ISO 7573",
         "rows": [dict(row) | {"handles": list(row["handles"])} for row in rows],
         "records": len(records),
+        "limit": cap,
+        "truncated": truncated,
         "group_by": group_by or None,
     }
 

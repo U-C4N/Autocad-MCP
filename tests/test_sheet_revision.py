@@ -146,3 +146,40 @@ async def test_clouds_are_refused_before_any_row_when_the_engine_has_no_revcloud
     assert excinfo.value.capability == "revcloud"
     assert len(await backend.entity_list()) == before
     assert (await read_revisions(backend)) == ()
+
+
+@pytest.mark.asyncio
+async def test_a_revision_on_a_layout_is_still_written_once_per_letter(backend):
+    """`read_revisions` follows the current space, so reading it before
+    `enter_layout` inspected Model while the block went on the layout -- and
+    every rerun stacked a second heading band on top of the first."""
+    await backend.layout_create("SHEET1")
+    first = await add_revision(backend, rev="B", description="bore 40H7", layout="SHEET1")
+    assert first["created"] is True
+    again = await add_revision(backend, rev="B", description="bore 40H7", layout="SHEET1")
+    assert again["created"] is False
+    assert again["handle"] == first["handle"]
+    assert (await backend.layout_list())["current"] == "Model", "the caller's tab must come back"
+    await backend.layout_set_current("SHEET1")
+    try:
+        texts = [e.properties["text"] for e in await backend.entity_list(type_filter="TEXT")]
+        assert texts == ["REV", "DESCRIPTION", "DATE", "BY", "B", "bore 40H7"]
+        rows = await read_revisions(backend)
+        assert [r["rev"] for r in rows] == ["B"]
+    finally:
+        await backend.layout_set_current("Model")
+
+
+@pytest.mark.asyncio
+async def test_revisions_are_read_past_the_entity_list_page(backend):
+    """200 notes fill `entity_list`'s default page. The idempotency guard used
+    to see no revisions at all, and `index = len(existing)` restarted at 0."""
+    for index in range(200):
+        await backend.entity_create_text(text=f"NOTE {index}", x=float(index), y=500.0, height=2.5)
+    first = await add_revision(backend, rev="A", description="first issue")
+    assert first["row"] == 1
+    assert (await add_revision(backend, rev="A", description="first issue"))["created"] is False
+    second = await add_revision(backend, rev="B", description="bore 40H7")
+    assert second["row"] == 2, "the second band must sit below the first, not on top of it"
+    assert second["bbox"]["min"][1] < first["bbox"]["min"][1]
+    assert [r["rev"] for r in await read_revisions(backend)] == ["A", "B"]

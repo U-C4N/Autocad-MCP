@@ -49,8 +49,10 @@ __all__ = [
     "DIRECTIONS",
     "LIST_STANDARDS",
     "LIST_WIDTH",
+    "PAGE_SIZE",
     "ROW_HEIGHT",
     "add_balloon",
+    "all_entities",
     "balloon_prims",
     "draw_bom_table",
     "extract_records",
@@ -102,6 +104,43 @@ COLUMN_SHARES: dict[str, float] = {
     "mass": 22.0,
     "remarks": 40.0,
 }
+
+
+#: How many entities one `entity_list` call asks for while paging. It is a page
+#: size, never a cap: `all_entities` keeps asking until a short page comes back.
+PAGE_SIZE = 1000
+
+
+async def all_entities(backend: AutoCADBackend, *, type_filter=None, layer=None):
+    """Every entity of a type in the CURRENT space -- not the first 200 of them.
+
+    `entity_list`'s `limit` defaults to 200 on both engines, so a single call is
+    a silent truncation on any real drawing: a parts list that stops at the
+    200th INSERT prints a wrong QTY, and a duplicate-balloon guard that only
+    sees the first 200 CIRCLEs is blind on a drawing whose hole pattern fills
+    them. Everything in this module that *counts* or *guards* reads through
+    here instead.
+
+    The loop stops on a short page, and also when a page brings nothing new --
+    a backend that ignored `offset` would otherwise hand back the same page for
+    ever. Handles are unique per drawing, so that guard cannot drop a real
+    entity.
+    """
+    found: list = []
+    seen: set[str] = set()
+    offset = 0
+    while True:
+        page = await backend.entity_list(
+            type_filter=type_filter, layer_filter=layer, limit=PAGE_SIZE, offset=offset
+        )
+        fresh = [entity for entity in page if entity.handle not in seen]
+        if not fresh:
+            return tuple(found)
+        seen.update(entity.handle for entity in fresh)
+        found.extend(fresh)
+        if len(page) < PAGE_SIZE:
+            return tuple(found)
+        offset += len(page)
 
 
 def _check_columns(columns) -> tuple[str, ...]:
@@ -304,7 +343,7 @@ def _from_attributes(attributes: dict) -> dict:
     return record
 
 
-async def extract_records(backend: AutoCADBackend, *, layer=None, limit: int = 200):
+async def extract_records(backend: AutoCADBackend, *, layer=None, limit: int | None = None):
     """Walk the INSERTs and return one parts-list record per block reference.
 
     Reads only: the entity listing, each INSERT's attributes and its
@@ -312,8 +351,17 @@ async def extract_records(backend: AutoCADBackend, *, layer=None, limit: int = 2
     is not ours. `source` is "xdata" when the payload supplied the row and
     "attributes" when the block's ATTRIBs did; a block with neither is skipped
     rather than guessed at.
+
+    `limit` is None by default and the whole drawing is read, by paging
+    `entity_list` rather than taking its 200-entity default: a parts list that
+    stops at the 200th INSERT does not print a shorter list, it prints a wrong
+    QTY, and nothing on the sheet says so. A caller that wants a cap passes one
+    and reads `len(records)` back against it -- `bom_extract` asks for one more
+    record than the cap so it can report `truncated` exactly.
     """
-    inserts = await backend.entity_list(type_filter="INSERT", layer_filter=layer, limit=limit)
+    if limit is not None and int(limit) <= 0:
+        raise ValueError(f"bom_extract: limit must be a positive number of records; got {limit!r}")
+    inserts = await all_entities(backend, type_filter="INSERT", layer=layer)
     records: list[dict] = []
     for entity in inserts:
         payload: dict = {}
@@ -353,6 +401,8 @@ async def extract_records(backend: AutoCADBackend, *, layer=None, limit: int = 2
                 "source": "xdata" if payload else "attributes",
             }
         )
+        if limit is not None and len(records) >= int(limit):
+            break
     return tuple(records)
 
 
@@ -415,9 +465,15 @@ async def draw_bom_table(
 
 
 async def read_balloons(backend: AutoCADBackend):
-    """Every ISO 6433 balloon this server drew, from its ACADMCP_MECH payload."""
+    """Every ISO 6433 balloon this server drew in the CURRENT space, from its
+    ACADMCP_MECH payload.
+
+    Paged, not capped: a drawing whose first 200 CIRCLEs are a hole pattern --
+    routine -- used to read back no balloons at all, which made every guard in
+    `add_balloon` silently pass.
+    """
     found: list[dict] = []
-    for entity in await backend.entity_list(type_filter="CIRCLE"):
+    for entity in await all_entities(backend, type_filter="CIRCLE"):
         try:
             raw = await backend.entity_get_xdata(entity.handle, APP_ID)
             payload = decode(raw.get("xdata", {}).get(APP_ID, [])) or {}
@@ -453,69 +509,79 @@ async def add_balloon(
     A balloon already pointing at the same targets is *renumbered* -- its
     numeral is edited and its payload rewritten -- so running the balloon pass
     again after the parts list is regrouped does not litter the sheet with
-    duplicates. An item number already used for a different set of targets is
-    refused before anything is drawn: ISO 129-1 and ISO 6433 both want one
+    duplicates. An item number already on the sheet is refused before anything
+    is drawn unless it is that renumber: ISO 129-1 and ISO 6433 both want one
     reference per item.
+
+    Both guards read the space the balloon is going ON. `read_balloons` lists
+    the current space, so reading it before `enter_layout` inspected Model
+    while the balloons lived on the layout -- and the layout is the sheet
+    workflow, so the guards were off exactly where they matter.
     """
     number = int(item)
     wanted = tuple(sorted(str(t) for t in targets))
     prims = balloon_prims(number, at, leader_to, radius=radius)  # validates first
-    existing = await read_balloons(backend)
-    for balloon in existing:
-        if tuple(sorted(balloon["targets"])) == wanted and wanted:
-            if balloon["text"]:
-                await backend.entity_edit_text(balloon["text"], text=str(number))
-            payload = {
-                "v": PAYLOAD_VERSION,
-                "kind": "balloon",
-                "item": number,
-                "targets": list(wanted),
-                "text": balloon["text"],
-            }
-            await backend.entity_set_xdata(balloon["handle"], APP_ID, to_values(payload))
-            return {
-                "ok": True,
-                "renumbered": True,
-                "item": number,
-                "handle": balloon["handle"],
-                "text": balloon["text"],
-                "targets": list(wanted),
-                "layout": layout or "Model",
-            }
-    clash = next(
-        (b for b in existing if b["item"] == number and tuple(sorted(b["targets"])) != wanted),
-        None,
-    )
-    if clash is not None:
-        raise ValueError(
-            f"item reference {number} is already used by balloon {clash['handle']} for "
-            f"targets {clash['targets']}; ISO 6433 gives each item one reference"
-        )
 
     previous = await enter_layout(backend, layout, caller="balloon_add")
     try:
+        existing = await read_balloons(backend)
+        for balloon in existing:
+            if wanted and tuple(sorted(balloon["targets"])) == wanted:
+                if balloon["text"]:
+                    await backend.entity_edit_text(balloon["text"], text=str(number))
+                payload = {
+                    "v": PAYLOAD_VERSION,
+                    "kind": "balloon",
+                    "item": number,
+                    "targets": list(wanted),
+                    "text": balloon["text"],
+                }
+                await backend.entity_set_xdata(balloon["handle"], APP_ID, to_values(payload))
+                return {
+                    "ok": True,
+                    "renumbered": True,
+                    "item": number,
+                    "handle": balloon["handle"],
+                    "text": balloon["text"],
+                    "targets": list(wanted),
+                    "layout": layout or "Model",
+                }
+        # Anything still carrying this number is a clash: the renumber arm above
+        # has already returned for the one balloon that stands for these
+        # targets. Comparing the target tuples here instead let two untargeted
+        # balloons -- `targets` is optional in the tool, so `() != ()` -- carry
+        # the same item number with no refusal at all.
+        clash = next((b for b in existing if b["item"] == number), None)
+        if clash is not None:
+            has_targets = f"targets {clash['targets']}" if clash["targets"] else "no targets"
+            raise ValueError(
+                f"item reference {number} is already used by balloon {clash['handle']} "
+                f"({has_targets}); ISO 6433 gives each item one reference. Pass that "
+                "balloon's targets to renumber it in place, or use a free number."
+            )
+
         handles = await draw_sheet_prims(
             backend, prims, layer_map={"visible": layer, "text": layer, "center": layer}
         )
+        payload = {
+            "v": PAYLOAD_VERSION,
+            "kind": "balloon",
+            "item": number,
+            "targets": list(wanted),
+            "text": handles[3],
+        }
+        await backend.entity_set_xdata(handles[0], APP_ID, to_values(payload))
+        return {
+            "ok": True,
+            "renumbered": False,
+            "item": number,
+            "handle": handles[0],
+            "leader": handles[1],
+            "dot": handles[2],
+            "text": handles[3],
+            "targets": list(wanted),
+            "layout": layout or "Model",
+        }
     finally:
         if layout is not None:
             await backend.layout_set_current(previous)
-    payload = {
-        "v": PAYLOAD_VERSION,
-        "kind": "balloon",
-        "item": number,
-        "targets": list(wanted),
-        "text": handles[3],
-    }
-    await backend.entity_set_xdata(handles[0], APP_ID, to_values(payload))
-    return {
-        "ok": True,
-        "renumbered": False,
-        "item": number,
-        "handle": handles[0],
-        "leader": handles[1],
-        "dot": handles[2],
-        "text": handles[3],
-        "targets": list(wanted),
-        "layout": layout or "Model",
-    }
