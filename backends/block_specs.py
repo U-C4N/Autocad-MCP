@@ -33,7 +33,10 @@ _POSITIVE = {"r", "height"}
 def _scalar(value, where: str, *, positive: bool = False) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(f"{where} must be a number, got {value!r}")
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError as exc:  # a 400-digit JSON integer is an int, not a float
+        raise TypeError(f"{where} must be finite") from exc
     if not math.isfinite(number):
         raise TypeError(f"{where} must be finite")
     if positive and number <= 0:
@@ -201,6 +204,68 @@ def validate_attdef_specs(attdefs) -> list[dict]:
                 "invisible": invisible,
             }
         )
+    return out
+
+
+def validate_base_point(base_x, base_y) -> tuple[float, float]:
+    """``block_define``'s base point as finite floats; ``TypeError`` names the key.
+
+    Only ``float()`` was applied before, so ``float("nan")`` was written into
+    the BLOCK record headlessly and would reach AutoCAD as a NaN VARIANT.
+    """
+    return (
+        _scalar(base_x, "block_define: 'base_x'"),
+        _scalar(base_y, "block_define: 'base_y'"),
+    )
+
+
+def referenced_layers(entities: list[dict]) -> list[str]:
+    """The distinct layers ``block_define``'s primitives reference, other than ``0``.
+
+    DXF and ActiveX layer tables are case-insensitive, so the set is keyed on
+    the folded name and keeps the first spelling seen: a request naming
+    ``Alpha`` and ``ALPHA`` wants *one* layer. Deduping case-sensitively let
+    ezdxf write ``ALPHA`` and then raise ``DXFTableEntryError`` on ``Alpha``
+    mid-call, and let COM report two layers created for one ``Layers.Add``
+    that took effect.
+    """
+    seen: dict[str, str] = {}
+    for spec in entities:
+        layer = spec["layer"]
+        if layer != "0" and layer.lower() not in seen:
+            seen[layer.lower()] = layer
+    return sorted(seen.values())
+
+
+def validate_attribute_values(attributes, where: str = "attributes") -> dict[str, str]:
+    """``{TAG: value}`` for ``block_insert`` / ``block_set_attributes`` as the
+    strings that will be written, refused before any write.
+
+    ``str(value)`` used to be applied to whatever arrived, so a JSON ``null``
+    became the text ``None``, ``true`` became ``True`` and an object became its
+    Python repr — silently, on both engines. A string is taken as is (one line,
+    the DXF rule ``_one_line`` enforces); an int or a finite float is written
+    with ``str`` (``101`` → ``"101"``, ``2.5`` → ``"2.5"``); ``bool``, ``None``,
+    lists and objects are refused by tag. ``None`` for the whole mapping means
+    "no attributes".
+    """
+    if attributes is None:
+        return {}
+    if not isinstance(attributes, dict):
+        raise TypeError(f"{where} must be an object of {{TAG: value}} pairs")
+    out: dict[str, str] = {}
+    for tag, value in attributes.items():
+        if not isinstance(tag, str) or not tag.strip():
+            raise TypeError(f"{where}: every tag must be a non-empty string")
+        label = f"{where}[{tag!r}]"
+        if isinstance(value, str):
+            out[tag] = _one_line(value, label)
+        elif isinstance(value, bool) or value is None or not isinstance(value, (int, float)):
+            raise TypeError(f"{label} must be a string or a number, got {type(value).__name__}")
+        else:
+            if isinstance(value, float) and not math.isfinite(value):
+                raise TypeError(f"{label} must be finite")
+            out[tag] = str(value)
     return out
 
 

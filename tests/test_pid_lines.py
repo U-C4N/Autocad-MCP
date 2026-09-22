@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from engineering.pid.lines import (
@@ -176,3 +178,107 @@ def test_route_refuses_non_axis_port_directions_with_a_value_error():
     # Equivalent angles and engine float drift still resolve to the axis.
     assert route((0, 0), -360.0, (50, 0), 540.0) == [(0.0, 0.0), (50.0, 0.0)]
     assert route((0, 0), 1e-9, (50, 0), 180.0 - 1e-9) == [(0.0, 0.0), (50.0, 0.0)]
+
+
+# ── Track A hardening (track E wave 0, Task 7): bulge flattening ─────────────
+
+
+@pytest.mark.parametrize("bulge", [1.0, -1.0, 0.5, -0.3, 2.0, 0.2])
+def test_flatten_bulges_matches_ezdxf_flattening(bulge):
+    """Pinned against ezdxf's own arc flattening: same vertex count, same points."""
+    from ezdxf.math import ConstructionArc, Vec2, bulge_to_arc
+
+    from engineering.pid.lines import FLATTEN_SAGITTA, flatten_bulges
+
+    a, b = (0.0, 0.0), (10.0, 0.0)
+    mine = flatten_bulges([a, b], [bulge])
+    centre, start_rad, end_rad, radius = bulge_to_arc(Vec2(a), Vec2(b), bulge)
+    arc = ConstructionArc(
+        center=centre,
+        radius=radius,
+        start_angle=math.degrees(start_rad),
+        end_angle=math.degrees(end_rad),
+    )
+    reference = [(p.x, p.y) for p in arc.flattening(FLATTEN_SAGITTA)]
+    assert len(mine) == len(reference)
+    assert mine[0] == a and mine[-1] == b
+    assert all(math.hypot(p[0] - centre.x, p[1] - centre.y) == pytest.approx(radius) for p in mine)
+    assert mine[len(mine) // 2] == pytest.approx(reference[len(reference) // 2])
+
+
+def test_crossings_test_the_exact_arc_so_a_flattened_vertex_hides_nothing():
+    """(45,0)→(55,0) bulge -1 is the r=5 jump; its apex (50,5) is a vertex of
+    the flattened chain (12 chords, even), so the chord chain drops a line at
+    x=50 from both neighbours. The exact arc counts it once — as it does at
+    x=50.3 — and keeps the junction rule everywhere it belongs."""
+    from engineering.pid.lines import count_crossings, flatten_bulges, segment_arc_crossings
+
+    jump, bulges = [(45.0, 0.0), (55.0, 0.0)], [-1.0, 0.0]
+    flat = flatten_bulges(jump, bulges)
+    assert (50.0, 5.0) in flat, "the apex is a flattened vertex — the case that was missed"
+    assert count_crossings([(50, -20), (50, 20)], [flat]) == 0, "chords: the hit is a vertex"
+    assert count_crossings([(50, -20), (50, 20)], [jump], bulges=[bulges]) == 1
+    assert count_crossings([(50.3, -20), (50.3, 20)], [jump], bulges=[bulges]) == 1
+    assert count_crossings([(50, 20), (50, 60)], [[(0, 0), (100, 0)]], bulges=[[-1.0, 0.0]]) == 1
+    # Junctions stay junctions: the segment ending on the arc, a line through
+    # the arc's own endpoint (the polyline's vertex), the empty chord side,
+    # and a tangent along the apex that touches without crossing.
+    assert segment_arc_crossings((50, 5), (50, 20), *jump, -1.0) == 0
+    assert segment_arc_crossings((45, -5), (45, 5), *jump, -1.0) == 0
+    assert segment_arc_crossings((50, -20), (50, -1), *jump, -1.0) == 0
+    assert segment_arc_crossings((40, 5), (60, 5), *jump, -1.0) == 0
+    assert segment_arc_crossings((40, 4.9), (60, 4.9), *jump, -1.0) == 2, "in and out again"
+    assert segment_arc_crossings((50, -20), (50, 20), *jump, 1.0) == 1, "bulge +1 bows to -Y"
+    assert segment_arc_crossings((50, -20), (50, 20), *jump, 0.0) == 1, "bulge 0 is the chord"
+    # A short or missing bulge list is zero-padded: straight edges as before.
+    assert count_crossings([(5, -5), (5, 5)], [[(0, 0), (10, 0), (10, 10)]], bulges=[[]]) == 1
+    assert count_crossings([(5, -5), (5, 5)], [[(0, 0), (10, 0)]], bulges=None) == 1
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_segment_arc_crossings_match_ezdxf_arc_line_intersection(seed):
+    """Pinned against ezdxf's own ``ConstructionArc.intersect_line`` (hits
+    strictly inside the segment) over random segments and bulges of either
+    sign, on both sides of a semicircle."""
+    import random
+
+    from ezdxf.math import ConstructionArc, ConstructionLine, Vec2, bulge_to_arc
+
+    from engineering.pid.lines import segment_arc_crossings
+
+    rng = random.Random(seed)
+    checked = 0
+    for _ in range(400):
+        a = (rng.uniform(-50, 50), rng.uniform(-50, 50))
+        b = (rng.uniform(-50, 50), rng.uniform(-50, 50))
+        if math.dist(a, b) < 1.0:
+            continue
+        magnitude = rng.choice([0.2, 0.5, 1.0, 1.5, 2.5, rng.uniform(0.05, 3.0)])
+        bulge = rng.choice([-1.0, 1.0]) * magnitude
+        p1 = (rng.uniform(-80, 80), rng.uniform(-80, 80))
+        p2 = (rng.uniform(-80, 80), rng.uniform(-80, 80))
+        centre, s_rad, e_rad, radius = bulge_to_arc(Vec2(a), Vec2(b), bulge)
+        arc = ConstructionArc(
+            center=centre,
+            radius=radius,
+            start_angle=math.degrees(s_rad),
+            end_angle=math.degrees(e_rad),
+        )
+        d = Vec2(p2) - Vec2(p1)
+        hits = arc.intersect_line(ConstructionLine(Vec2(p1), Vec2(p2)), abs_tol=1e-9)
+        expected = sum(1 for h in hits if 1e-6 < (h - Vec2(p1)).dot(d) / d.dot(d) < 1 - 1e-6)
+        assert segment_arc_crossings(p1, p2, a, b, bulge) == expected, (p1, p2, a, b, bulge)
+        checked += 1
+    assert checked > 350
+
+
+def test_flatten_bulges_passes_straight_edges_through_and_pads_short_bulge_lists():
+    from engineering.pid.lines import flatten_bulges
+
+    pts = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)]
+    assert flatten_bulges(pts, []) == pts
+    assert flatten_bulges(pts, [0.0, 0.0, 0.0]) == pts
+    flat = flatten_bulges(pts, [0.0, 1.0])
+    assert flat[0] == (0.0, 0.0) and flat[1] == (10.0, 0.0) and flat[-1] == (10.0, 10.0)
+    assert len(flat) > 3, "the second edge became a semicircle of chords"
+    assert flatten_bulges([(1.0, 1.0)], [1.0]) == [(1.0, 1.0)]

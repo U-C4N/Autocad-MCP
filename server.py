@@ -1656,7 +1656,14 @@ async def entity_create_block_ref(
     layer: Annotated[str | None, "Layer name"] = None,
     ctx: Context = None,
 ) -> dict:
-    """Insert a block reference (instance of an existing block definition)."""
+    """Insert a block reference (instance of an existing block definition).
+
+    Refused before any write, on both engines: a name that is not a block
+    definition in this drawing (`block 'X' is not defined` — check
+    `block_list`), a layout block (`*Model_Space` / `*Paper_Space`, a
+    reference cycle) and a non-string name. The same gate as `block_insert`;
+    this tool is the no-attributes form.
+    """
     await ctx.debug(f"Inserting block '{name}' at ({x},{y})")
     result = await _backend(ctx).entity_create_block_ref(
         name, x, y, scale_x, scale_y, rotation, layer
@@ -2410,7 +2417,9 @@ async def text_find_replace(
     never searched" are different answers. Block *definitions* are included, so
     the next insert does not reintroduce the old text. DIMENSION text is out of
     scope: its text field holds the `<>` override placeholder rather than the
-    measurement, so editing it would break the association.
+    measurement, so editing it would break the association. A multi-line
+    attribute is matched and rewritten as the whole value (`Line1\\PLine2`),
+    the same value `block_get_attributes` reports and `block_explode` bursts.
     """
     await ctx.info(f"Replacing {find!r} with {replace!r}{' (dry run)' if dry_run else ''}")
     return await _backend(ctx).text_find_replace(find, replace, layer or None, match_case, dry_run)
@@ -3002,7 +3011,15 @@ async def block_insert(
     layer: Annotated[str | None, "Layer name"] = None,
     ctx: Context = None,
 ) -> dict:
-    """Insert a block and optionally set attribute values."""
+    """Insert a block and optionally set attribute values.
+
+    Refused before any write, on both engines: an undefined or layout block
+    name, and an attribute value that is not text — a string is written as
+    is (one line), an int or finite float as its plain digits (`101` →
+    `"101"`), while `null`, booleans, lists and objects are refused naming
+    the tag (they used to be written as their Python repr). Values for tags
+    the block does not define are ignored.
+    """
     await ctx.info(f"Inserting block '{name}' at ({x},{y})")
     result = await _backend(ctx).block_insert(
         name, x, y, scale_x, scale_y, rotation, attributes, layer
@@ -3019,7 +3036,27 @@ async def block_explode(
     handle: Annotated[str, "Block reference (INSERT) entity handle"],
     ctx: Context = None,
 ) -> dict:
-    """Explode a block reference into its individual component entities."""
+    """Explode a block reference into its component entities, keeping its
+    attribute text (the Express Tools BURST rule, on both engines).
+
+    Every attached ATTRIB becomes a TEXT with the same value, placement,
+    height, rotation and layer (an invisible attribute becomes an invisible
+    TEXT; a multi-line attribute becomes an MTEXT carrying every line), and
+    a constant attribute (which has no ATTRIB) becomes a TEXT of its value
+    too; AutoCAD's plain EXPLODE would keep only the tag-name placeholders
+    and drop the values. Everything lands in the layout that owns the
+    reference (model space or its paper-space sheet), whichever tab is
+    current. Returns `inserted_handles` (the geometry), `attribute_texts`
+    (one TEXT or MTEXT handle per attribute), `exploded_handle` and
+    `backend`. Refused, with nothing written: a handle that is not a block
+    reference, a reference nested inside a block definition (explode the
+    outer reference instead), an external reference (bind it first), a
+    MINSERT grid, and -- headless only, capability `explode_opaque_members`
+    -- a block holding a member ezdxf cannot transform (an OLE2FRAME logo, a
+    VIEWPORT, a proxy entity without proxy graphics), named by member; the
+    live engine hands those to AutoCAD. Not undoable except through
+    `drawing_undo` / a transaction.
+    """
     await ctx.warning(f"Exploding block reference {handle}")
     return await _backend(ctx).block_explode(handle)
 
@@ -3033,7 +3070,11 @@ async def block_get_attributes(
     handle: Annotated[str, "Block reference (INSERT) entity handle"],
     ctx: Context = None,
 ) -> dict:
-    """Get all attribute values from a block reference as {TAG: value} dict."""
+    """Get all attribute values from a block reference as {TAG: value} dict.
+
+    A multi-line attribute reports its whole content with `\\P` between the
+    lines (AutoCAD's `TextString`), on both engines.
+    """
     return await _backend(ctx).block_get_attributes(handle)
 
 
@@ -3050,7 +3091,17 @@ async def block_set_attributes(
     attributes: Annotated[dict, "Attribute values to update: {TAG: new_value}"],
     ctx: Context = None,
 ) -> dict:
-    """Update attribute values in a block reference."""
+    """Update attribute values in a block reference.
+
+    Same value rule as `block_insert`: strings and numbers are written,
+    `null` / booleans / lists / objects are refused naming the tag before
+    anything changes. `updated_tags` lists the tags that exist on the
+    reference and were written; unknown tags are ignored.
+
+    A multi-line attribute takes `Line1\\PLine2` and keeps every line; the
+    value written is the one `block_get_attributes` reads back and
+    `block_explode` bursts, on both engines.
+    """
     return await _backend(ctx).block_set_attributes(handle, attributes)
 
 
@@ -3109,19 +3160,30 @@ async def block_define(
     overwrite: Annotated[
         bool, "Replace the contents of an existing definition of this name"
     ] = False,
+    create_layers: Annotated[
+        bool, "Create primitive layers that do not exist yet (default: refuse and name them)"
+    ] = False,
     ctx: Context = None,
 ) -> dict:
     """Create a block definition with attribute definitions from typed specs.
 
     The whole request is validated before anything is written: one malformed
-    entry refuses the call and leaves no definition behind. `overwrite=true`
-    replaces the *contents* of an existing block so its INSERTs keep pointing
-    at the name and show the new geometry; `replaced` reports it. Geometry
-    inside the block is ByBlock so the INSERT's layer supplies colour and
-    lineweight. Insert with `block_insert(attributes={TAG: value})`.
+    entry refuses the call and leaves no definition behind. Refusals: a
+    malformed primitive or ATTDEF (names `entities[i]`/`attdefs[i]` and the
+    key), a non-finite base point (names `base_x`/`base_y`), a name clash
+    without `overwrite`, an anonymous `*` name, and a primitive `layer` that
+    is not in the drawing's layer table (names the missing layers) unless
+    `create_layers=true`, which creates them and lists them in
+    `layers_created`. `overwrite=true` replaces the *contents* of an existing
+    block so its INSERTs keep pointing at the name and show the new geometry;
+    `replaced` reports it. Geometry inside the block is ByBlock so the
+    INSERT's layer supplies colour and lineweight. Insert with
+    `block_insert(attributes={TAG: value})`.
     """
     await ctx.info(f"Defining block '{name}' from {len(entities)} primitives")
-    return await _backend(ctx).block_define(name, entities, attdefs, base_x, base_y, overwrite)
+    return await _backend(ctx).block_define(
+        name, entities, attdefs, base_x, base_y, overwrite, create_layers
+    )
 
 
 @cad_tool(summary="Find every place a given block is inserted.", cost="read")
@@ -3926,7 +3988,8 @@ _BATCH_GUARANTEE_NOTES = {
         "whole document to a temporary DXF, so it scales with drawing size."
     ),
     "best_effort_undo": (
-        "Rollback ends the AutoCAD undo mark and sends '_UNDO B' to the command line. "
+        "Rollback ends the AutoCAD undo group and sends '_UNDO _B' (back to the UNDO "
+        "Mark transaction_begin set) to the command line. "
         "AutoCAD executes that asynchronously and does not confirm it landed, so this "
         "is best-effort, NOT atomic. The before/after fingerprint below is the only "
         "evidence available; treat a mismatch as 'the undo has not landed (yet)' and "
@@ -4932,7 +4995,8 @@ async def transaction_commit(ctx: Context = None) -> dict:
 async def transaction_rollback(ctx: Context = None) -> dict:
     """Rollback the current transaction to the point of transaction_begin.
 
-    COM: Undoes all operations back to the last undo mark.
+    COM: Undoes all operations back to the UNDO Mark transaction_begin set;
+    refused (`ok: false`) when no transaction is active.
     ezdxf: Restores the document from the saved DXF snapshot.
 
     WARNING: This is destructive – all changes since transaction_begin are lost.
@@ -6598,6 +6662,11 @@ async def pid_line_draw(
     (reported, never refused) and `port_reuse` names ports that already had a
     line (branching is legal). Signal classes get ISA-5.1 markers (`//`, `X`,
     `L`, `o`) as small blocks on segments >= 15 mm; electric is dashed by layer.
+    A signal line carries no pipe line number: it gets no auto-built number
+    and no label, and does not consume the process sequence — a verbatim
+    `line_number` is still written and labelled. With waypoints, a bubble's
+    exit leaves towards the first waypoint (and the entry arrives from the
+    last one); `crossings` follows existing arcs, not their chords.
     """
     from engineering.pid.drawlines import draw_line
 
@@ -6775,11 +6844,17 @@ async def pid_from_spec(
 ) -> dict:
     """Equipment, valves, instruments and connectors placed, then every line
     drawn port-to-port, inside one transaction: any bad item rolls the whole
-    sheet back and the error names it (`lines[2].to`). The response carries the
-    graph read back from the drawing and the P&ID critique issues, so the
-    caller sees dangling ends or duplicate tags in the same round trip.
-    `dry_run` returns the planned vertices and crossings without touching the
-    drawing.
+    sheet back and the error names it (`lines[2].to`); so does an interruption
+    (a client cancellation mid-run leaves no half-drawn sheet and no open
+    transaction on either engine — the live one goes back to the UNDO Mark
+    `transaction_begin` set, so it never waits at an AutoCAD prompt; should
+    that rollback itself fail, the failure is logged, the cancellation is what
+    the client sees, and the drawing must be checked before a retry).
+    A non-finite coordinate, rotation, scale or stub is refused
+    by path before anything is placed. The response carries the graph read
+    back from the drawing and the P&ID critique issues, so the caller sees
+    dangling ends or duplicate tags in the same round trip. `dry_run` returns
+    the planned vertices and crossings without touching the drawing.
     """
     from engineering.pid.spec import run_spec
 

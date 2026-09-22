@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import copy
+import logging
+import math
 from typing import TYPE_CHECKING
+
+import anyio
 
 from .critique import PID_FOCUSES, issues_for
 from .drawlines import draw_line
 from .graph import build_graph
 from .insert import place_symbol
-from .lines import AXIS, LINE_CLASSES, count_crossings, route, snap_axis
+from .lines import AXIS, LINE_CLASSES, aim_points, count_crossings, route, snap_axis
 from .symbols import resolve, transform_port
 
 if TYPE_CHECKING:
     from backends.base import AutoCADBackend
+
+log = logging.getLogger(__name__)
 
 EXAMPLE_SPEC: dict = {
     "sheet": {
@@ -135,9 +141,24 @@ _LINE_KEYS = {
 
 
 def _num(value, where: str) -> float:
+    """A finite number, or a ``ValueError`` naming the path.
+
+    ``float("nan")`` used to pass and be placed as an INSERT at ``[nan, 0]``;
+    the transaction committed and ``build_graph`` then crashed on the drawing
+    with no path in its message. Only in-process callers can deliver a
+    non-finite (the MCP pipeline coerces them first), but ``run_spec`` is a
+    public interface and its docstring promises nothing malformed reaches
+    the drawing.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{where} must be a number")
-    return float(value)
+    try:
+        number = float(value)
+    except OverflowError as exc:  # a 400-digit int is a number but not a float
+        raise ValueError(f"{where} must be a finite number") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"{where} must be a finite number")
+    return number
 
 
 def _ref(value, where: str, ids: set[str]) -> tuple[str, str | None]:
@@ -290,9 +311,9 @@ def _plan_lines(norm: dict) -> list[dict]:
             raise ValueError(f"{ref}: no port {port!r}; ports: {', '.join(entry['ports'])}")
         return entry["ports"][port]
 
-    def anchor(ep: dict, other: dict):
+    def anchor(ep: dict, aim):
         if ep["radius"] > 0:
-            axis = snap_axis(other["x"] - ep["x"], other["y"] - ep["y"])
+            axis = snap_axis(aim[0] - ep["x"], aim[1] - ep["y"])
             ux, uy = AXIS[axis]
             return (ep["x"] + ux * ep["radius"], ep["y"] + uy * ep["radius"]), axis
         return (ep["x"], ep["y"]), ep["direction_deg"]
@@ -301,11 +322,11 @@ def _plan_lines(norm: dict) -> list[dict]:
     for index, (where, line) in enumerate(_all_lines(norm)):
         try:
             start, end = endpoint(line["from"]), endpoint(line["to"])
-            s, sd = anchor(start, end)
-            e, ed = anchor(end, start)
-            vertices = route(
-                s, sd, e, ed, stub=float(line.get("stub", 5.0)), mode=line.get("route", "auto")
-            )
+            mode = line.get("route", "auto")
+            s_aim, e_aim = aim_points((start["x"], start["y"]), (end["x"], end["y"]), mode)
+            s, sd = anchor(start, s_aim)
+            e, ed = anchor(end, e_aim)
+            vertices = route(s, sd, e, ed, stub=float(line.get("stub", 5.0)), mode=mode)
         except ValueError as exc:
             raise ValueError(f"{where}: {exc}") from exc
         crossings = count_crossings(vertices, [p["vertices"] for p in planned])
@@ -422,8 +443,47 @@ async def run_spec(backend: AutoCADBackend, spec: dict, dry_run: bool = False) -
             except ValueError as exc:
                 raise ValueError(f"{where}: {exc}") from exc
             crossings_total += drawn["crossings"]
-    except Exception:
-        await backend.transaction_rollback()
+    except BaseException as exc:
+        # ``Exception`` alone let a client cancellation (``CancelledError`` is
+        # a ``BaseException``) leave the placed symbols in the drawing inside
+        # an open transaction — on COM with the undo mark still open, so every
+        # later ``pid_from_spec`` was refused until a manual rollback.
+        #
+        # The rollback is shielded because the MCP SDK cancels a request by
+        # cancelling an anyio scope, and anyio cancellation is level-triggered:
+        # ``task.cancel()`` is re-issued on every loop iteration while the task
+        # is still inside the cancelled scope. A bare ``await`` here would be
+        # cancelled at its first suspension, before the rollback body ran —
+        # measured through the real transport: five symbols left in an open
+        # transaction, and on COM the undo mark left open while the backend's
+        # flag already said "no transaction". A native ``Task.cancel()`` is
+        # delivered once and clears, so it was never the case that mattered.
+        #
+        # Once the rollback body runs after a cancellation it can also *fail*
+        # (the COM hard timeout, ``_safe_send_command``'s own deadline, an
+        # ezdxf quarantine refusal). That failure must not replace the
+        # cancellation: the SDK has already answered the cancelled request,
+        # and only a cancellation exception is suppressed by its handler — an
+        # ordinary error makes it respond a second time, which trips
+        # ``assert not self._completed`` in ``mcp.shared.session`` and kills
+        # the whole session (measured through the real transport). So after a
+        # cancellation the rollback error is logged and the cancellation is
+        # what propagates; after any other error the rollback error propagates
+        # as before, with the original chained as its context.
+        cancelled = isinstance(exc, anyio.get_cancelled_exc_class())
+        with anyio.CancelScope(shield=True):
+            try:
+                await backend.transaction_rollback()
+            except Exception as rollback_exc:
+                if not cancelled:
+                    raise
+                log.error(
+                    "pid_from_spec: rollback after a cancelled request failed (%s: %s); "
+                    "the sheet may be half-drawn - check system_status and "
+                    "transaction_rollback before retrying",
+                    type(rollback_exc).__name__,
+                    rollback_exc,
+                )
         raise
     await backend.transaction_commit()
     graph = await build_graph(backend)

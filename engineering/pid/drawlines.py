@@ -11,6 +11,7 @@ from .lines import (
     DEFAULT_NUMBER_FORMAT,
     LINE_CLASSES,
     PID_LINE_LAYERS,
+    aim_points,
     count_crossings,
     format_line_number,
     label_placement,
@@ -105,13 +106,57 @@ def _vertices(info) -> list[tuple[float, float]]:
     return [(float(p[0]), float(p[1])) for p in info.properties.get("points") or []]
 
 
+def _bulges(info, count: int) -> list[float]:
+    """Per-vertex bulges as the engine reports them (both engines put a
+    ``bulges`` list next to ``points``); straight when it reports none."""
+    raw = info.properties.get("bulges") or []
+    out = []
+    for value in raw[:count]:
+        try:
+            out.append(float(value or 0.0))
+        except (TypeError, ValueError):
+            out.append(0.0)
+    return out + [0.0] * (count - len(out))
+
+
+def payload_port_refs(payload) -> list[tuple[str, str]]:
+    """``(handle, port)`` for each well-formed ``from``/``to`` in a line payload.
+
+    A foreign or hand-edited payload can carry anything under those keys
+    (``"garbage"``, ``None``, a number); reading it used to raise
+    ``TypeError`` out of ``draw_line``. Reader results never raise: a
+    malformed end is simply not a reference.
+    """
+    refs = []
+    if not isinstance(payload, dict):
+        return refs
+    for key in ("from", "to"):
+        ref = payload.get(key)
+        if not isinstance(ref, dict):
+            continue
+        handle, port = ref.get("handle"), ref.get("port")
+        if isinstance(handle, str) and isinstance(port, str):
+            refs.append((handle, port))
+    return refs
+
+
+def payload_seq(payload) -> int | None:
+    """The payload's sequence number when it is a genuine int (``True`` is not)."""
+    if not isinstance(payload, dict):
+        return None
+    seq = payload.get("seq")
+    return seq if type(seq) is int else None
+
+
 async def existing_pid_lines(backend: AutoCADBackend) -> list[dict]:
     """Every LINE/polyline on a P&ID line layer, with its payload when it has one.
 
     Listed without a type filter: the two engines name a lightweight polyline
     differently (``_POLY_TYPES``), and a filter spelled for one of them is blind
     on the other — every auto-built number would restart at 1 and no crossing
-    or port reuse would ever be reported there.
+    or port reuse would ever be reported there. ``vertices`` are the raw
+    vertices; ``bulges`` (one per vertex, DXF convention) let the crossing test
+    follow an arc instead of its chord.
     """
     out = []
     offset = 0
@@ -123,17 +168,26 @@ async def existing_pid_lines(backend: AutoCADBackend) -> list[dict]:
             if info.layer.upper() not in PID_LINE_LAYERS:
                 continue
             payload = await read_payload(backend, info.handle) if info.type in _POLY_TYPES else None
-            out.append({"handle": info.handle, "vertices": _vertices(info), "payload": payload})
+            vertices = _vertices(info)
+            out.append(
+                {
+                    "handle": info.handle,
+                    "vertices": vertices,
+                    "bulges": _bulges(info, len(vertices)),
+                    "payload": payload,
+                }
+            )
         if len(page) < _PAGE:
             break
         offset += _PAGE
     return out
 
 
-def _anchor(endpoint: dict, other: dict) -> tuple[tuple[float, float], float | None]:
-    """Where the line actually starts/ends: on the circle for radial ports."""
+def _anchor(endpoint: dict, aim: tuple[float, float]) -> tuple[tuple[float, float], float | None]:
+    """Where the line actually starts/ends: on the circle for radial ports,
+    leaving along the axis towards ``aim`` (see ``aim_points``)."""
     if endpoint["radius"] > 0:
-        axis = snap_axis(other["x"] - endpoint["x"], other["y"] - endpoint["y"])
+        axis = snap_axis(aim[0] - endpoint["x"], aim[1] - endpoint["y"])
         ux, uy = AXIS[axis]
         return (
             endpoint["x"] + ux * endpoint["radius"],
@@ -176,38 +230,46 @@ async def draw_line(
     end = await resolve_endpoint(backend, to)
     if start["handle"] and start["handle"] == end["handle"] and start["port"] == end["port"]:
         raise ValueError("from and to are the same port")
-    s_point, s_dir = _anchor(start, end)
-    e_point, e_dir = _anchor(end, start)
+    s_aim, e_aim = aim_points((start["x"], start["y"]), (end["x"], end["y"]), route_mode)
+    s_point, s_dir = _anchor(start, s_aim)
+    e_point, e_dir = _anchor(end, e_aim)
     path = route(s_point, s_dir, e_point, e_dir, stub=stub, mode=route_mode)
 
     existing = await existing_pid_lines(backend)
-    crossings = count_crossings(path, [ln["vertices"] for ln in existing])
+    crossings = count_crossings(
+        path,
+        [ln["vertices"] for ln in existing],
+        bulges=[ln["bulges"] for ln in existing],
+    )
     used: set[tuple[str, str]] = set()
     max_seq = 0
     for ln in existing:
-        payload = ln["payload"] or {}
-        for key in ("from", "to"):
-            ref = payload.get(key)
-            if ref:
-                used.add((ref["handle"], ref["port"]))
-        if isinstance(payload.get("seq"), int):
-            max_seq = max(max_seq, payload["seq"])
+        used.update(payload_port_refs(ln["payload"]))
+        seq = payload_seq(ln["payload"])
+        if seq is not None:
+            max_seq = max(max_seq, seq)
     port_reuse = [
         {"handle": ep["handle"], "port": ep["port"]}
         for ep in (start, end)
         if ep["handle"] and (ep["handle"], ep["port"]) in used
     ]
-    seq = max_seq + 1
-    if line_number is None:
-        fmt = number_format or DEFAULT_NUMBER_FORMAT
-        fields = {
-            "size": size,
-            "service": service,
-            "seq": seq,
-            "spec": spec,
-            "insulation": insulation,
-        }
-        line_number = format_line_number(fmt, **fields) or None
+    if cls.kind == "signal":
+        # An ISA-5.1 signal line carries no pipe line number: no fabricated
+        # number, no label, and the process sequence is left alone. A
+        # verbatim ``line_number`` is still honoured (and labelled).
+        seq = None
+    else:
+        seq = max_seq + 1
+        if line_number is None:
+            fmt = number_format or DEFAULT_NUMBER_FORMAT
+            fields = {
+                "size": size,
+                "service": service,
+                "seq": seq,
+                "spec": spec,
+                "insulation": insulation,
+            }
+            line_number = format_line_number(fmt, **fields) or None
 
     await ensure_layer(backend, cls.layer)
     poly = await backend.entity_create_polyline(

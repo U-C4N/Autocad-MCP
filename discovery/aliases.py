@@ -220,13 +220,15 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
         ),
     ),
     "block_explode": ToolAliases(
-        acad=("EXPLODE",),
+        acad=("EXPLODE", "BURST"),
         synonyms=(
             "explode",
             "break a block apart",
             "ungroup",
             "split a block into entities",
             "flatten a symbol",
+            "burst a block",
+            "explode and keep the attribute text",
         ),
     ),
     "block_find_references": ToolAliases(
@@ -1382,6 +1384,8 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "line number",
             "connect the pump to the vessel",
             "pneumatic signal",
+            "unnumbered signal line",
+            "route a line through waypoints",
         ),
     ),
     "pid_graph": ToolAliases(

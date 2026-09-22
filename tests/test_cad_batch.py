@@ -33,7 +33,7 @@ the happy path is the easy half:
     classifier must recover the real cause from the ``__cause__`` chain and
     never from the message text.
   * **Atomicity honesty.** ezdxf rolls back by restoring a full DXF snapshot;
-    COM ends an undo mark and fires ``_UNDO B`` at AutoCAD without ever
+    COM ends an undo group and fires ``_UNDO _B`` at AutoCAD without ever
     confirming it landed. The payload must say which one it got, and must not
     claim a rollback it did not verify.
   * **dry_run.** Validates against each tool's real JSON Schema without
@@ -736,7 +736,7 @@ async def test_a_snapshot_backend_is_reported_as_a_snapshot_guarantee():
 
 
 async def test_an_undo_mark_backend_is_never_called_atomic():
-    """COM ends the undo mark and fires ``_UNDO B`` without confirming it landed."""
+    """COM ends the undo group and fires ``_UNDO _B`` without confirming it landed."""
     guarantee, note = server._batch_rollback_guarantee(_Caps("undo_mark"))
     assert guarantee == "best_effort_undo"
     lowered = note.lower()

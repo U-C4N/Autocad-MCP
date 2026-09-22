@@ -58,9 +58,19 @@ class BlockContract(ABC):
         base_x: float = 0.0,
         base_y: float = 0.0,
         overwrite: bool = False,
+        create_layers: bool = False,
     ) -> dict:
         """Create (or with ``overwrite`` replace the contents of) a block
         definition from typed primitive specs and ATTDEF specs — see
-        ``backends/block_specs.py`` for the spec vocabulary. Returns
-        ``{ok, name, entity_count, attdef_count, replaced, backend}``."""
+        ``backends/block_specs.py`` for the spec vocabulary.
+
+        Refusals, all before any write: a malformed spec (``TypeError`` naming
+        ``entities[i]``/``attdefs[i]`` and the key), a non-finite or non-numeric
+        ``base_x``/``base_y`` (``TypeError`` naming it), a name clash without
+        ``overwrite`` (``ValueError``), and a primitive ``layer`` that does not
+        exist in the drawing (``ValueError`` listing the missing names) unless
+        ``create_layers`` is true, in which case the missing layers are created
+        with the engine's defaults and listed in ``layers_created``. Returns
+        ``{ok, name, entity_count, attdef_count, replaced, layers_created,
+        backend}``."""
         ...

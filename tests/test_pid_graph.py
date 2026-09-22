@@ -289,6 +289,71 @@ async def test_line_number_and_tags_from_nearby_text(backend):
     assert edge["line_number"] == '6"-P-1234-CS1' and edge["number_source"] == "label"
 
 
+async def test_a_signal_line_next_to_a_pipe_label_never_adopts_the_pipes_number(backend):
+    """The label search is a fallback for a line with no record of its own.
+
+    A transmitter-to-controller run 12 mm above a labelled header (the
+    ordinary spacing on a dense sheet) is well inside ``label_search``; its
+    own payload says ``number: null`` and a signal line has no pipe line
+    number, so the reader must report None — not the header's number under
+    ``number_source="label"``.
+    """
+    proc = await draw_line(
+        backend, {"x": 20, "y": 100}, {"x": 200, "y": 100}, size="100", service="P"
+    )
+    assert proc["line_number"] == "100-P-1"
+    ft = await place_symbol(
+        backend, "instrument", 40, 112, tag="FT-1", type="dcs", location="primary"
+    )
+    fic = await place_symbol(
+        backend, "instrument", 180, 112, tag="FIC-1", type="dcs", location="primary"
+    )
+    sig = await draw_line(backend, {"handle": ft["handle"]}, {"handle": fic["handle"]}, "electric")
+    assert sig["line_number"] is None
+    graph = await build_graph(backend)
+    by_handle = {e["id"]: e for e in graph["edges"]}
+    pipe, signal = by_handle[proc["handle"]], by_handle[sig["handle"]]
+    assert (pipe["line_number"], pipe["number_source"]) == ("100-P-1", "xdata")
+    assert (signal["line_number"], signal["number_source"]) == (None, None)
+    assert signal["from"]["node"] == ft["handle"] and signal["to"]["node"] == fic["handle"]
+
+
+async def test_a_verbatim_number_on_a_signal_line_is_still_read_back(backend):
+    ft = await place_symbol(
+        backend, "instrument", 40, 112, tag="FT-1", type="dcs", location="primary"
+    )
+    fic = await place_symbol(
+        backend, "instrument", 180, 112, tag="FIC-1", type="dcs", location="primary"
+    )
+    sig = await draw_line(
+        backend,
+        {"handle": ft["handle"]},
+        {"handle": fic["handle"]},
+        "electric",
+        line_number="SIG-7",
+    )
+    graph = await build_graph(backend)
+    edge = next(e for e in graph["edges"] if e["id"] == sig["handle"])
+    assert (edge["line_number"], edge["number_source"]) == ("SIG-7", "xdata")
+
+
+async def test_a_foreign_signal_line_next_to_a_pipe_label_stays_unnumbered(backend):
+    """A layer-classified signal line (no payload) is a signal all the same:
+    LINE_NUMBER_RE is the pipe grammar, so a match near it is a neighbour's.
+    The pipe on the same sheet still takes its label."""
+    await backend.entity_create_line(0, 0, 100, 0, layer="PROCESS-PIPING-MAIN")
+    await backend.entity_create_text('6"-P-1234-CS1', 40, 2, 2.5, layer="PROCESS-LINE-TEXT")
+    await backend.entity_create_line(0, 6, 100, 6, layer="ELECTRICAL-LINE")
+    await backend.entity_create_line(0, 10, 100, 10, layer="INSTRUMENT-LINE-SIGNAL")
+    graph = await build_graph(backend)
+    by_class = {e["line_class"]: e for e in graph["edges"]}
+    assert set(by_class) == {"process_major", "electric", "signal_unknown"}
+    pipe = by_class["process_major"]
+    assert (pipe["line_number"], pipe["number_source"]) == ('6"-P-1234-CS1', "label")
+    for cls in ("electric", "signal_unknown"):
+        assert (by_class[cls]["line_number"], by_class[cls]["number_source"]) == (None, None), cls
+
+
 async def test_scope_all_walks_every_layout_and_restores_the_current_one(backend):
     await place_symbol(backend, "gate", 0, 0, tag="HV-1")
     await backend.layout_create("SHEET-2")

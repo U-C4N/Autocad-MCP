@@ -34,6 +34,7 @@ async def test_defines_geometry_and_attdefs(backend):
         "entity_count": 7,
         "attdef_count": 2,
         "replaced": False,
+        "layers_created": [],
         "backend": "ezdxf",
     }
     blk = backend._doc.blocks.get("PID_VALVE_TEST")

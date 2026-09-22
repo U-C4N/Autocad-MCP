@@ -193,6 +193,70 @@ def _msp():
         return doc.ModelSpace
 
 
+def _int_member(obj, name: str) -> int | None:
+    """``int(obj.<name>)`` or ``None`` when the member is absent or not a number."""
+    try:
+        return int(getattr(obj, name))
+    except Exception:
+        return None
+
+
+def _owner_layout_block(doc, ent, handle):
+    """The block table record that owns ``ent``, refused unless it is a layout.
+
+    ``Explode()`` places the members in the owner space, so anything this
+    method adds alongside them must go there too — never ``ActiveLayout``,
+    which is whatever tab the user happens to have open. An owner that is a
+    block definition means ``ent`` is a nested reference; exploding it in place
+    would redefine the block under every other reference, so it is refused
+    before any call is dispatched. An owner that cannot be read at all is
+    refused too rather than guessed.
+    """
+    try:
+        owner = doc.ObjectIdToObject(ent.OwnerID)
+        is_layout = bool(owner.IsLayout)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Entity {handle} has no resolvable owner layout ({exc}); refusing to "
+            "explode into a guessed space"
+        ) from exc
+    if not is_layout:
+        try:
+            name = str(owner.Name)
+        except Exception:
+            name = "?"
+        raise RuntimeError(
+            f"Entity {handle} is nested inside block definition {name!r}; explode the "
+            "outer reference instead (exploding here would redefine the block under "
+            "every other reference)"
+        )
+    return owner
+
+
+def _require_block_defined(doc, name):
+    """``doc.Blocks.Item(name)``, or a ``ValueError`` before ``InsertBlock`` runs.
+
+    ``InsertBlock`` with an unknown name raises a bare COM error after the call
+    has already been dispatched; refusing here names the block, costs one
+    ``Blocks.Item`` probe and matches the headless engine's message. A layout
+    block (``IsLayout``) cannot be inserted into itself — same refusal by name.
+    Shared by ``block_insert`` and ``entity_create_block_ref``.
+    """
+    if not isinstance(name, str) or not name.strip():
+        raise TypeError("block name must be a non-empty string")
+    try:
+        block = doc.Blocks.Item(name)
+    except Exception as exc:
+        raise ValueError(f"block {name!r} is not defined") from exc
+    try:
+        is_layout = bool(block.IsLayout)
+    except Exception:
+        is_layout = False
+    if is_layout:
+        raise ValueError(f"block {name!r} is a layout block and cannot be inserted")
+    return block
+
+
 _BUILTIN_LINETYPES = {"continuous", "bylayer", "byblock"}
 
 
@@ -794,6 +858,9 @@ class ComBackend(AutoCADBackend):
                     False, reason="window_capture_has_no_render_to_label"
                 ),
                 "measure_area_acis": FeatureCapability(True, "native"),
+                "explode_opaque_members": FeatureCapability(
+                    True, "native", reason="autocad_explode;ole_and_proxy_members_unverified_live"
+                ),
                 "ocs_normalized": FeatureCapability(
                     True,
                     "activex_wcs",
@@ -2479,6 +2546,7 @@ class ComBackend(AutoCADBackend):
         layer=None,
     ) -> EntityInfo:
         def _sync():
+            _require_block_defined(_acad_doc(), name)
             mspace = _msp()
             ref = mspace.InsertBlock(
                 _apoint(x, y),
@@ -3247,7 +3315,12 @@ class ComBackend(AutoCADBackend):
         attributes=None,
         layer=None,
     ) -> EntityInfo:
+        from backends.block_specs import validate_attribute_values
+
+        values = validate_attribute_values(attributes)
+
         def _sync():
+            _require_block_defined(_acad_doc(), name)
             mspace = _msp()
             ref = mspace.InsertBlock(
                 _apoint(x, y),
@@ -3259,25 +3332,392 @@ class ComBackend(AutoCADBackend):
             )
             if layer:
                 ref.Layer = layer
-            if attributes:
+            if values:
                 try:
                     attrs = ref.GetAttributes()
                     for attr in attrs:
                         tag = attr.TagString
-                        if tag in attributes:
-                            attr.TextString = str(attributes[tag])
+                        if tag in values:
+                            attr.TextString = values[tag]
                 except Exception as exc:
                     log.debug("Block insert: GetAttributes or attribute setting failed: %s", exc)
             return _entity_info(ref)
 
         return await self._run(_sync)
 
+    #: ActiveX twins of the headless ``_ATTRIB_TO_TEXT`` carry, written onto
+    #: the TEXT in this order and *before* ``Rotation``: ``Normal`` is the
+    #: frame ``Rotation`` is measured in, ``Thickness`` rides on the frame,
+    #: and the style members are frame-independent. ``Alignment`` /
+    #: ``TextAlignmentPoint`` (halign/valign + align_point) and ``Color`` are
+    #: handled apart because ActiveX orders them against the insertion point.
+    _ATTRIB_FRAME_MEMBERS = (
+        "Normal",
+        "Thickness",
+        "StyleName",
+        "ObliqueAngle",
+        "ScaleFactor",
+        "Backward",
+        "UpsideDown",
+    )
+    _ATTRIB_TEXT_MEMBERS = _ATTRIB_FRAME_MEMBERS + ("Alignment", "TextAlignmentPoint", "Color")
+
+    @classmethod
+    def _capture_attrib_text_members(cls, attr) -> dict:
+        """Read the optional ATTRIB members a TEXT can take, skipping absent ones.
+
+        ``Normal`` is a WCS unit vector and is only worth carrying when it is
+        not already +Z; ``TextAlignmentPoint`` is meaningless (and refused by
+        ActiveX on write) for a left-aligned text, so it is dropped when
+        ``Alignment`` is ``acAlignmentLeft`` (0).
+        """
+        out: dict = {}
+        for name in cls._ATTRIB_TEXT_MEMBERS:
+            try:
+                raw = getattr(attr, name)
+            except Exception:
+                continue
+            if name in ("Normal", "TextAlignmentPoint"):
+                try:
+                    raw = tuple(float(v) for v in raw)
+                except (TypeError, ValueError):
+                    continue
+                if name == "Normal" and ocs.is_wcs_frame(raw):
+                    continue
+            elif name in ("Alignment", "Color"):
+                try:
+                    raw = int(raw)
+                except (TypeError, ValueError):
+                    continue
+            elif name in ("Backward", "UpsideDown"):
+                raw = bool(raw)
+            elif name == "StyleName":
+                raw = str(raw)
+            else:
+                try:
+                    raw = float(raw)
+                except (TypeError, ValueError):
+                    continue
+            out[name] = raw
+        if out.get("Alignment", 0) == 0:
+            out.pop("TextAlignmentPoint", None)
+        return out
+
+    #: ``AcadText.Alignment`` -> ``AcadMText.AttachmentPoint``, the inverse of
+    #: the map ezdxf applies when it embeds an MTEXT into an ATTRIB (the
+    #: attachment becomes ``halign``/``valign`` and both ``insert`` and
+    #: ``align_point`` become the MTEXT insert). Rows: Top 1-3, Middle 4-6,
+    #: Bottom 7-9; the baseline alignments (Left/Center/Right/Aligned/Middle/
+    #: Fit), which an embedded MTEXT never produces, fall to the nearest row.
+    _TEXT_ALIGNMENT_TO_MTEXT_ATTACHMENT = {
+        0: 7,  # acAlignmentLeft -> BottomLeft
+        1: 8,  # acAlignmentCenter -> BottomCenter
+        2: 9,  # acAlignmentRight -> BottomRight
+        3: 7,  # acAlignmentAligned -> BottomLeft
+        4: 5,  # acAlignmentMiddle -> MiddleCenter
+        5: 7,  # acAlignmentFit -> BottomLeft
+        6: 1,  # acAlignmentTopLeft
+        7: 2,  # acAlignmentTopCenter
+        8: 3,  # acAlignmentTopRight
+        9: 4,  # acAlignmentMiddleLeft
+        10: 5,  # acAlignmentMiddleCenter
+        11: 6,  # acAlignmentMiddleRight
+        12: 7,  # acAlignmentBottomLeft
+        13: 8,  # acAlignmentBottomCenter
+        14: 9,  # acAlignmentBottomRight
+    }
+
+    @classmethod
+    def _capture_attrib(cls, attr) -> dict:
+        """Everything a TEXT (or MTEXT) needs to stand in for ``attr`` (an
+        ATTRIB or ATTDEF).
+
+        A multi-line attribute (``MTextAttribute`` true) keeps its content in
+        ``MTextAttributeContent`` -- ``TextString`` is one flattened string --
+        and its box width in ``MTextBoundaryWidth``; ``mtext`` marks it so the
+        writer builds an MTEXT. An object that does not expose *that* member
+        is single-line (the member is younger than the ActiveX surface, and a
+        ``TextString`` fallback loses nothing).
+
+        ``Invisible`` is *not* guessed: a read failure used to default to
+        visible, so a hidden attribute's value (a link, a cost code) became
+        visible text with ``ok: True``. The failure propagates, and the
+        caller of this helper reads it before anything is written.
+        """
+        invisible = bool(attr.Invisible)
+        try:
+            is_mtext = bool(attr.MTextAttribute)
+        except Exception:
+            is_mtext = False
+        item = {
+            "text": str(attr.TextString),
+            "mtext": is_mtext,
+            "insertion": tuple(attr.InsertionPoint),
+            "height": float(attr.Height),
+            "rotation": float(attr.Rotation),
+            "layer": str(attr.Layer),
+            "invisible": invisible,
+            "members": cls._capture_attrib_text_members(attr),
+        }
+        if is_mtext:
+            try:
+                item["text"] = str(attr.MTextAttributeContent)
+            except Exception as exc:
+                log.debug("MTextAttributeContent unreadable, keeping TextString: %s", exc)
+            try:
+                item["width"] = float(attr.MTextBoundaryWidth)
+            except Exception:
+                item["width"] = 0.0  # unbounded box, as AddMText takes it
+        return item
+
+    @classmethod
+    def _add_mtext_from_capture(cls, owner, item: dict):
+        """``owner.AddMText`` carrying a captured multi-line ATTRIB/ATTDEF.
+
+        The MTEXT's insertion point *is* its attachment anchor, so it is the
+        ATTRIB's ``TextAlignmentPoint`` when the attribute is box-aligned and
+        the ``InsertionPoint`` otherwise (ezdxf writes both from the embedded
+        MTEXT's insert, so they agree). Height, style and frame go on before
+        ``Rotation``, then the attachment (the ATTRIB's ``Alignment`` mapped
+        through ``_TEXT_ALIGNMENT_TO_MTEXT_ATTACHMENT``), and the WCS anchor
+        is written *last*: ActiveX ``AttachmentPoint`` keeps the text body
+        where it is and relocates ``InsertionPoint`` to the new corner, so an
+        anchor written before it left every non-TopLeft attribute laid out
+        TopLeft-at-anchor with only the label moved (verified live on AutoCAD
+        2026: a BottomLeft two-line note landed two lines low; re-asserting
+        the anchor after the attachment moves the body). A frame change
+        (``Normal``) moves the OCS origin the same way, so the one late write
+        covers both. ``Thickness``, oblique, width factor and the generation
+        flags are TEXT-only members and stay behind.
+        """
+        members = item["members"]
+        anchor = item["insertion"]
+        if members.get("Alignment", 0) != 0 and "TextAlignmentPoint" in members:
+            anchor = members["TextAlignmentPoint"]
+        point = _apoint(anchor[0], anchor[1], anchor[2] if len(anchor) > 2 else 0.0)
+        mtext = owner.AddMText(point, float(item.get("width", 0.0)), item["text"])
+        mtext.Height = item["height"]
+        if "StyleName" in members:
+            mtext.StyleName = members["StyleName"]
+        if "Normal" in members:
+            value = members["Normal"]
+            mtext.Normal = _apoint(value[0], value[1], value[2] if len(value) > 2 else 0.0)
+        mtext.Rotation = item["rotation"]
+        mtext.AttachmentPoint = cls._TEXT_ALIGNMENT_TO_MTEXT_ATTACHMENT.get(
+            members.get("Alignment", 0), 1
+        )
+        mtext.InsertionPoint = point  # after the attachment and the frame: both relocate it
+        mtext.Layer = item["layer"]
+        if "Color" in members:
+            mtext.Color = members["Color"]
+        if item["invisible"]:
+            mtext.Visible = False
+        return mtext
+
+    @classmethod
+    def _add_text_from_capture(cls, owner, item: dict):
+        """``owner.AddText`` carrying a captured ATTRIB/ATTDEF; returns the TEXT
+        (or, for a multi-line capture, the MTEXT ``_add_mtext_from_capture``
+        builds -- a TEXT of ``TextString`` would show ``\\P`` literally).
+
+        Every point or vector goes through ``_apoint`` (``VT_ARRAY|VT_R8``):
+        ActiveX refuses a plain Python tuple (marshalled ``VT_ARRAY|VT_VARIANT``)
+        with ``E_INVALIDARG``, and ``Normal`` is written after the explode and
+        the ATTDEF deletes, so a tuple there tore the drawing.
+        """
+        if item.get("mtext"):
+            return cls._add_mtext_from_capture(owner, item)
+        ins = item["insertion"]
+        point = _apoint(ins[0], ins[1], ins[2] if len(ins) > 2 else 0.0)
+        text = owner.AddText(item["text"], point, item["height"])
+        members = item["members"]
+        for name in cls._ATTRIB_FRAME_MEMBERS:
+            if name not in members:
+                continue
+            value = members[name]
+            if name == "Normal":
+                value = _apoint(value[0], value[1], value[2] if len(value) > 2 else 0.0)
+            setattr(text, name, value)
+        text.Rotation = item["rotation"]
+        if "Normal" in members:
+            # The frame moved the OCS origin; the anchor was WCS.
+            text.InsertionPoint = point
+        if "Alignment" in members:
+            text.Alignment = members["Alignment"]
+            if "TextAlignmentPoint" in members:
+                tap = members["TextAlignmentPoint"]
+                text.TextAlignmentPoint = _apoint(tap[0], tap[1], tap[2] if len(tap) > 2 else 0.0)
+        text.Layer = item["layer"]
+        if "Color" in members:
+            text.Color = members["Color"]
+        if item["invisible"]:
+            text.Visible = False
+        return text
+
+    @staticmethod
+    def _undo_explode(exploded, texts) -> None:
+        """Delete what a failed burst has already written (best effort).
+
+        An object the burst deleted itself (an ATTDEF placeholder) raises on a
+        second ``Delete``; that is skipped, every other failure is logged and
+        the next object is tried, so the original exception -- the one the
+        caller is about to re-raise -- stays the one the caller sees.
+        """
+        for obj in tuple(texts) + tuple(exploded):
+            try:
+                obj.Delete()
+            except Exception as exc:
+                log.debug("explode rollback: %r not deleted: %s", obj, exc)
+
+    @staticmethod
+    def _is_constant_attdef(obj, constant_tags: set) -> bool:
+        """Whether an exploded ``AcDbAttributeDefinition`` is a constant attribute.
+
+        ``Constant`` is the documented member; when the object does not expose
+        it the tag is matched against ``GetConstantAttributes()`` read before
+        the explode, so a constant attribute is never mistaken for a value-less
+        placeholder and deleted.
+        """
+        try:
+            return bool(obj.Constant)
+        except Exception:
+            pass
+        return str(obj.TagString) in constant_tags
+
     async def block_explode(self, handle) -> dict:
+        """Explode an INSERT through ActiveX; ATTRIB values survive as TEXT.
+
+        AutoCAD's EXPLODE keeps the attribute *definitions* (the tag names as
+        ATTDEF entities) and discards the values; ActiveX ``Explode()`` does
+        the same and, unlike the command, leaves the original reference in
+        place. This is the BURST rule instead: each ATTRIB's value, placement,
+        height, rotation, layer, frame and text style are read before the
+        explode, the ATTDEFs the explode returns are deleted, one ``AddText``
+        per ATTRIB carries the value (an invisible ATTRIB becomes an invisible
+        TEXT), and the reference itself is deleted. Unit-tested against a fake
+        ActiveX surface; ``Explode()``'s return shape is the ActiveX documented
+        one (an array of the new objects) and is exercised live by the
+        settings smoke.
+
+        A *constant* attribute has no ATTRIB: ``GetAttributes()`` excludes it
+        (``GetConstantAttributes()`` lists it) and ``Explode()`` hands it back
+        as an ``AcDbAttributeDefinition`` already at its WCS placement showing
+        its value. Deleting every ATTDEF therefore destroyed the constant text
+        with ``ok: True``; BURST converts it to TEXT, so a constant ATTDEF from
+        the explode is captured the same way an ATTRIB is, then replaced by a
+        TEXT, and only the value-less placeholders are just deleted.
+
+        An ATTRIB is an OCS entity and ``AddText`` builds a +Z TEXT, so the
+        frame is carried the way the headless engine carries ``extrusion`` /
+        ``thickness``: ``Normal`` is written *before* ``Rotation`` (the
+        group-50 angle only means the same thing inside the same frame -- a
+        headless-authored mirrored reference's ATTRIB sits on ``(0, 0, -1)``;
+        AutoCAD's own MIRROR keeps +Z with ``XScaleFactor -1``) and the WCS
+        ``InsertionPoint`` is re-asserted *after* it, because a frame change
+        moves the OCS origin under a point that was handed over in WCS. The
+        members ezdxf's ``_ATTRIB_TO_TEXT`` names have their ActiveX twins in
+        ``_ATTRIB_TEXT_MEMBERS``; each is optional and skipped when the object
+        does not expose it, never written as a guess. ``Normal`` is written as
+        a ``VT_ARRAY|VT_R8`` VARIANT like every other point in this file; a
+        plain tuple is ``E_INVALIDARG`` live (verified on AutoCAD 2026).
+
+        A *multi-line* attribute (``MTextAttribute`` true) is captured from
+        ``MTextAttributeContent`` and written back with ``AddMText`` -- its
+        ``TextString`` is one flattened line and a TEXT of it would show the
+        ``\\P`` breaks literally -- see ``_add_mtext_from_capture``.
+
+        The TEXTs go into the reference's *owner* block
+        (``ObjectIdToObject(OwnerID)``), which is where ``Explode()`` puts the
+        members; ``HandleToObject`` resolves a handle in any layout, so a title
+        block on a sheet exploded while Model was active used to get its tag
+        text in model space with ``ok: True``. Refused before the explode is
+        dispatched: a reference nested inside a block definition (owner
+        ``IsLayout`` false), a MINSERT (``AcDbMInsertBlock``, which used to
+        fail the INSERT check with the misleading "not a block reference"),
+        and an xref (``Blocks.Item(Name).IsXRef``; ActiveX ``Explode()`` raises
+        on one, the headless engine used to delete it) -- the same three
+        refusals the headless engine names.
+
+        No read that decides what gets written is guessed: ``GetAttributes()``,
+        ``GetConstantAttributes()`` and each attribute's ``Invisible`` are read
+        before ``Explode()`` and a failure propagates with nothing written
+        (a swallowed ``GetAttributes()`` used to burst *no* value and report
+        ``ok: True``). A failure after the explode -- a constant ATTDEF whose
+        members cannot be read, an ``AddText`` that is refused -- undoes what
+        the explode added and the TEXTs written so far and leaves the
+        reference in place (``_undo_explode``), so the drawing is never left
+        half-burst under an exception.
+        """
+
         def _sync():
             doc = _acad_doc()
             ent = doc.HandleToObject(handle)
-            ent.Explode()
-            return {"ok": True, "exploded_handle": handle}
+            if ent.ObjectName == "AcDbMInsertBlock":
+                rows = _int_member(ent, "Rows")
+                cols = _int_member(ent, "Columns")
+                grid = f"{rows}x{cols} grid" if rows and cols else "grid"
+                raise RuntimeError(
+                    f"Entity {handle} is a MINSERT ({grid} of {str(ent.Name)!r}); a "
+                    "multi-insert cannot be exploded"
+                )
+            if ent.ObjectName != "AcDbBlockReference":
+                raise RuntimeError(f"Entity {handle} is not a block reference (INSERT)")
+            name = str(ent.Name)
+            try:
+                is_xref = bool(doc.Blocks.Item(name).IsXRef)
+            except Exception as exc:
+                log.debug("IsXRef probe failed for %r, treating as a local block: %s", name, exc)
+                is_xref = False
+            if is_xref:
+                raise RuntimeError(
+                    f"Entity {handle} is an external reference {name!r}; an xref cannot "
+                    "be exploded (bind it into the drawing first)"
+                )
+            owner = _owner_layout_block(doc, ent, handle)
+            # Every read that decides what the burst writes happens *before*
+            # ``Explode()`` and propagates: swallowing a failing
+            # ``GetAttributes()`` (a transient ``RPC_E_CALL_REJECTED`` while
+            # AutoCAD is busy is enough) went on to explode, delete every
+            # ATTDEF placeholder and the reference, and report ``ok: True``
+            # with ``attribute_texts: []`` -- every value destroyed silently,
+            # the defect this method exists to remove. Nothing has been
+            # written yet, so raising here costs nothing.
+            attrs = ent.GetAttributes()
+            captured = [self._capture_attrib(attr) for attr in attrs]
+            constant_tags: set = {str(attr.TagString) for attr in ent.GetConstantAttributes() or ()}
+            exploded = tuple(ent.Explode() or ())
+            inserted = []
+            attribute_texts = []
+            texts = []
+            try:
+                for obj in exploded:
+                    if obj.ObjectName == "AcDbAttributeDefinition":
+                        if self._is_constant_attdef(obj, constant_tags):
+                            # A constant attribute's only text; already WCS here.
+                            captured.append(self._capture_attrib(obj))
+                        obj.Delete()  # the tag placeholder EXPLODE leaves; the value is below
+                        continue
+                    inserted.append(str(obj.Handle))
+                for item in captured:
+                    text = self._add_text_from_capture(owner, item)
+                    texts.append(text)
+                    attribute_texts.append(str(text.Handle))
+            except Exception:
+                # ActiveX ``Explode()`` leaves the reference in place, so the
+                # drawing is put back to exactly that: the members it added and
+                # the TEXTs written so far are removed, the reference stays,
+                # and the failure propagates instead of a half-burst symbol.
+                self._undo_explode(exploded, texts)
+                raise
+            ent.Delete()
+            _regen()
+            return {
+                "ok": True,
+                "exploded_handle": handle,
+                "inserted_handles": inserted,
+                "attribute_texts": attribute_texts,
+                "backend": "com",
+            }
 
         return await self._run(_sync)
 
@@ -3294,6 +3734,10 @@ class ComBackend(AutoCADBackend):
         return await self._run(_sync)
 
     async def block_set_attributes(self, handle, attributes) -> dict:
+        from backends.block_specs import validate_attribute_values
+
+        values = validate_attribute_values(attributes)
+
         def _sync():
             doc = _acad_doc()
             ref = doc.HandleToObject(handle)
@@ -3301,8 +3745,8 @@ class ComBackend(AutoCADBackend):
             updated = []
             for attr in attrs:
                 tag = attr.TagString
-                if tag in attributes:
-                    attr.TextString = str(attributes[tag])
+                if tag in values:
+                    attr.TextString = values[tag]
                     updated.append(tag)
             return {"ok": True, "updated_tags": updated}
 
@@ -3436,18 +3880,25 @@ class ComBackend(AutoCADBackend):
         base_x=0.0,
         base_y=0.0,
         overwrite=False,
+        create_layers=False,
     ) -> dict:
         """A block definition with ATTDEFs from typed specs, through ActiveX.
 
         ``Blocks.Add`` creates the definition; each primitive is one ``Add*``
         call on the Block object, each ATTDEF one ``AddAttribute``. Overwrite
         deletes the existing definition's members and re-adds — the name and
-        its INSERTs survive. Unit-tested against a fake ActiveX surface;
-        executed live by ``scripts/smoke_pid_com.py``.
+        its INSERTs survive. The base point must be finite (a NaN would reach
+        AutoCAD as a VARIANT) and every primitive layer must exist
+        (``Layers.Item`` probe before ``Blocks.Add`` — ``obj.Layer = name`` for
+        an unknown layer would otherwise fail mid-loop with the definition half
+        written) unless ``create_layers`` adds them first. Unit-tested against
+        a fake ActiveX surface; executed live by ``scripts/smoke_pid_com.py``.
         """
         from backends.block_specs import (
+            referenced_layers,
             solid_vertices,
             validate_attdef_specs,
+            validate_base_point,
             validate_entity_specs,
         )
 
@@ -3459,6 +3910,8 @@ class ComBackend(AutoCADBackend):
         clean_name = sanitize_symbol_name(name, kind="block")
         ents = validate_entity_specs(entities)
         atts = validate_attdef_specs(attdefs or [])
+        base_xy = validate_base_point(base_x, base_y)
+        wanted_layers = referenced_layers(ents)
         # acAlignmentLeft / Center / Right / MiddleCenter
         align_map = {"left": 0, "center": 1, "right": 2, "middle_center": 10}
 
@@ -3479,7 +3932,23 @@ class ComBackend(AutoCADBackend):
                     "pass overwrite=true to replace its contents"
                 )
             replaced = existing is not None
-            base = _apoint(float(base_x), float(base_y), 0.0)
+            missing_layers = []
+            # ``Layers.Item`` matches case-insensitively, like the table itself.
+            for layer in wanted_layers:
+                try:
+                    doc.Layers.Item(layer)
+                except Exception:
+                    missing_layers.append(layer)
+            if missing_layers and not create_layers:
+                raise ValueError(
+                    "block_define: layer(s) "
+                    + ", ".join(repr(layer) for layer in missing_layers)
+                    + " do not exist in the drawing; create them with layer_create "
+                    "or pass create_layers=true"
+                )
+            for layer in missing_layers:
+                doc.Layers.Add(layer)
+            base = _apoint(base_xy[0], base_xy[1], 0.0)
             if existing is None:
                 block = doc.Blocks.Add(base, clean_name)
             else:
@@ -3545,6 +4014,7 @@ class ComBackend(AutoCADBackend):
                 "entity_count": len(ents),
                 "attdef_count": len(atts),
                 "replaced": replaced,
+                "layers_created": missing_layers,
                 "backend": "com",
             }
 
@@ -3898,6 +4368,22 @@ class ComBackend(AutoCADBackend):
 
         def _sync():
             doc = _acad_doc()
+            # `_UNDO _M` below is typed at the command line; with a command or
+            # prompt already active it would be swallowed as that command's
+            # input and no mark would exist for the rollback to go back to.
+            try:
+                cmd_active = int(doc.GetVariable("CMDACTIVE"))
+            except Exception as exc:
+                log.debug("CMDACTIVE read failed, proceeding anyway: %s", exc)
+                cmd_active = 0
+            if cmd_active:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"AutoCAD has an active command or prompt (CMDACTIVE={cmd_active}); "
+                        "press ESC in AutoCAD before transaction_begin."
+                    ),
+                }
             # R32: record the mark from inside the worker, immediately before
             # setting it. `_transaction_active = True` used to run only after
             # `_run` returned, so a timed-out begin left StartUndoMark open in
@@ -3906,10 +4392,22 @@ class ComBackend(AutoCADBackend):
             # exact inverse of the R16 fix transaction_commit already carries.
             # The abandoned STA thread cannot be cancelled, so the flag has to
             # be written where the call happens; and it is written *before*
-            # StartUndoMark because a call that hangs inside it may still land.
+            # the marks because a call that hangs inside them may still land.
             # A `_acad_doc()` that fails leaves the flag alone, which is right:
             # nothing reached AutoCAD.
             self._transaction_active = True
+            # Two marks, deliberately. StartUndoMark/EndUndoMark form an undo
+            # *group* (one UNDO step), not an UNDO Mark: on the live AutoCAD
+            # 2026 `_UNDO B` with no Mark answers "This will undo everything.
+            # OK? <Y>" and SendCommand blocks at that prompt until a human
+            # presses ESC (measured: rollback timed out at 60 s, the entities
+            # stayed, every COM client was rejected meanwhile). The Mark is set
+            # *before* the group so `_UNDO _B` in transaction_rollback lands
+            # exactly at the transaction's start — also when the group is
+            # empty, where `_UNDO 1` would be one step too many. Measured on
+            # AutoCAD 2026: Mark + group + 2 entities + `_UNDO _B` -> entities
+            # gone, CMDACTIVE 0, 47 ms; empty group -> nothing else undone.
+            doc.SendCommand("_.UNDO _M\n")
             doc.StartUndoMark()
             return {"ok": True, "message": "Transaction begun (AutoCAD undo mark set)"}
 
@@ -3929,12 +4427,21 @@ class ComBackend(AutoCADBackend):
             self._transaction_active = False
 
     async def transaction_rollback(self) -> dict:
+        # Without a transaction there is no Mark to go back to, and `_UNDO _B`
+        # would then prompt "This will undo everything. OK? <Y>" and block the
+        # STA worker at it (see transaction_begin). Refuse the same way the
+        # headless engine does.
+        if not self._transaction_active:
+            return {"ok": False, "error": "No active transaction to rollback"}
+
         def _sync():
             doc = _acad_doc()
             doc.EndUndoMark()
-            # R16: route UNDO B through the CMDACTIVE-aware sender instead of a raw
-            # SendCommand that could deadlock if a command/prompt is active.
-            self._safe_send_command(doc, "_UNDO B")
+            # R16: route UNDO Back through the CMDACTIVE-aware sender instead of
+            # a raw SendCommand that could deadlock if a command/prompt is active.
+            # Back to the Mark transaction_begin set before the group, so this
+            # never prompts and never undoes anything older than the transaction.
+            self._safe_send_command(doc, "_.UNDO _B")
             return {"ok": True, "message": "Transaction rolled back"}
 
         try:

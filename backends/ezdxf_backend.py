@@ -1027,6 +1027,13 @@ class EzdxfBackend(AutoCADBackend):
                 "measure_area_acis": FeatureCapability(
                     False, reason="acis_evaluation_requires_live_autocad"
                 ),
+                "explode_opaque_members": FeatureCapability(
+                    False,
+                    reason=(
+                        "ezdxf_cannot_transform:OLE2FRAME,VIEWPORT,"
+                        "ACAD_PROXY_ENTITY_without_proxy_graphic;refused_before_writing"
+                    ),
+                ),
                 "ocs_normalized": FeatureCapability(
                     True,
                     "wcs",
@@ -1086,6 +1093,28 @@ class EzdxfBackend(AutoCADBackend):
         if self._doc is None:
             raise RuntimeError("No document open. Call drawing_new() or drawing_open() first.")
         return self._doc
+
+    def _require_block(self, name):
+        """The block definition ``name`` names, or a refusal before any write.
+
+        ``add_blockref`` never checks the name and ``add_auto_attribs`` skips
+        autofill when ``Insert.block()`` resolves to None, so a typo'd name
+        used to yield a dangling INSERT that dropped its attribute values and
+        that ``doc.audit()`` later deletes. A layout block (``*Model_Space``,
+        ``*Paper_Space``) is in ``doc.blocks`` too, but inserting one is the
+        reference cycle AutoCAD's INSERT refuses, so it is refused here by
+        name. Shared by ``block_insert`` and ``entity_create_block_ref`` so the
+        two tools that place a block reference agree on what a typo does.
+        """
+        doc = self._require_doc()
+        if not isinstance(name, str) or not name.strip():
+            raise TypeError("block name must be a non-empty string")
+        if name not in doc.blocks:
+            raise ValueError(f"block {name!r} is not defined")
+        blk = doc.blocks.get(name)
+        if blk.block_record.is_any_layout:
+            raise ValueError(f"block {name!r} is a layout block and cannot be inserted")
+        return blk
 
     def _msp(self):
         """The space new geometry goes into — model space, or the current layout.
@@ -2230,7 +2259,7 @@ class EzdxfBackend(AutoCADBackend):
                     frozen_text = self._format_measurement(entity.get_measurement())
                     entity.dxf.text = frozen_text
 
-                entity.transform(matrix)
+                self._transform(entity, matrix)
                 source.move_to_layout(entity, target)
 
                 # Where the entity now sits, expressed in paper coordinates.
@@ -3002,6 +3031,7 @@ class EzdxfBackend(AutoCADBackend):
     ) -> EntityInfo:
         def _sync():
             msp = self._msp()
+            self._require_block(name)
             ent = msp.add_blockref(
                 name,
                 (float(x), float(y)),
@@ -3515,7 +3545,7 @@ class EzdxfBackend(AutoCADBackend):
     async def entity_move(self, handle, dx, dy, dz=0.0) -> dict:
         def _sync():
             ent = self._get_entity(handle)
-            ent.translate(float(dx), float(dy), float(dz))
+            self._translate(ent, float(dx), float(dy), float(dz))
             self._mark_dirty()
             return {"ok": True, "handle": handle}
 
@@ -3526,7 +3556,7 @@ class EzdxfBackend(AutoCADBackend):
             ent = self._get_entity(handle)
             copy = ent.copy()
             self._msp().add_entity(copy)
-            copy.translate(float(dx), float(dy), float(dz))
+            self._translate(copy, float(dx), float(dy), float(dz))
             self._mark_dirty()
             return _entity_info_dxf(copy)
 
@@ -3540,7 +3570,9 @@ class EzdxfBackend(AutoCADBackend):
             m = Matrix44.z_rotate(math.radians(float(angle_deg)))
             # Translate to origin, rotate, translate back
             bx, by = float(base_x), float(base_y)
-            ent.transform(Matrix44.translate(-bx, -by, 0) @ m @ Matrix44.translate(bx, by, 0))
+            self._transform(
+                ent, Matrix44.translate(-bx, -by, 0) @ m @ Matrix44.translate(bx, by, 0)
+            )
             self._mark_dirty()
             return {"ok": True, "handle": handle}
 
@@ -3553,10 +3585,11 @@ class EzdxfBackend(AutoCADBackend):
 
             s = float(factor)
             bx, by = float(base_x), float(base_y)
-            ent.transform(
+            self._transform(
+                ent,
                 Matrix44.translate(-bx, -by, 0)
                 @ Matrix44.scale(s, s, s)
-                @ Matrix44.translate(bx, by, 0)
+                @ Matrix44.translate(bx, by, 0),
             )
             self._mark_dirty()
             return {"ok": True, "handle": handle}
@@ -3607,7 +3640,9 @@ class EzdxfBackend(AutoCADBackend):
                 )
             )
             tx, ty = float(x1), float(y1)
-            copy.transform(Matrix44.translate(-tx, -ty, 0) @ m @ Matrix44.translate(tx, ty, 0))
+            self._transform(
+                copy, Matrix44.translate(-tx, -ty, 0) @ m @ Matrix44.translate(tx, ty, 0)
+            )
             if delete_original:
                 self._msp().delete_entity(ent)
             self._mark_dirty()
@@ -3714,7 +3749,7 @@ class EzdxfBackend(AutoCADBackend):
                         continue  # skip original
                     copy = ent.copy()
                     msp.add_entity(copy)
-                    copy.translate(c * float(col_spacing), r * float(row_spacing), 0)
+                    self._translate(copy, c * float(col_spacing), r * float(row_spacing), 0)
                     results.append(_entity_info_dxf(copy))
             self._mark_dirty()
             return results
@@ -3750,7 +3785,7 @@ class EzdxfBackend(AutoCADBackend):
                     @ Matrix44.z_rotate(angle)
                     @ Matrix44.translate(cx, cy, 0)
                 )
-                copy.transform(m)
+                self._transform(copy, m)
                 results.append(_entity_info_dxf(copy))
             self._mark_dirty()
             return results
@@ -3928,13 +3963,27 @@ class EzdxfBackend(AutoCADBackend):
                 seen.add(key)
                 if layer and entity.dxf.get("layer", "0") != layer:
                     continue
-                current = entity.text if dxftype == "MTEXT" else entity.dxf.get("text", "")
+                # An ATTRIB/ATTDEF is read and written through the attribute
+                # helpers: a multi-line one keeps its content in an embedded
+                # MTEXT and ``dxf.text`` is only the first line, so matching
+                # and writing ``dxf.text`` alone reported ``replaced: 1`` while
+                # ``block_get_attributes`` and ``block_explode`` still carried
+                # the old value. One value, every surface -- the same rule
+                # ``block_set_attributes`` follows.
+                if dxftype == "MTEXT":
+                    current = entity.text
+                elif dxftype in ("ATTRIB", "ATTDEF"):
+                    current = self._attrib_value(entity)
+                else:
+                    current = entity.dxf.get("text", "")
                 if not current or not pattern.search(current):
                     continue
                 updated = pattern.sub(replace, current)
                 if not dry_run:
                     if dxftype == "MTEXT":
                         entity.text = updated
+                    elif dxftype in ("ATTRIB", "ATTDEF"):
+                        self._write_attrib_value(entity, updated)
                     else:
                         entity.dxf.text = updated
                 changed.append(
@@ -4476,6 +4525,10 @@ class EzdxfBackend(AutoCADBackend):
         attributes=None,
         layer=None,
     ) -> EntityInfo:
+        from backends.block_specs import validate_attribute_values
+
+        values = validate_attribute_values(attributes)
+
         def _sync():
             msp = self._msp()
             attribs: dict = {
@@ -4485,42 +4538,375 @@ class EzdxfBackend(AutoCADBackend):
             }
             if layer:
                 attribs["layer"] = layer
-            # `add_blockref` never checks the name, and `add_auto_attribs`
-            # silently skips autofill when `Insert.block()` resolves to None,
-            # so a typo'd name used to yield a dangling INSERT that dropped its
-            # attribute values and that `doc.audit()` later deletes. Refuse
-            # before writing, as COM's `InsertBlock` does for an unknown name.
-            if name not in self._doc.blocks:
-                raise ValueError(f"block {name!r} is not defined")
+            self._require_block(name)
             ref = msp.add_blockref(name, (float(x), float(y)), dxfattribs=attribs)
-            if attributes:
+            if values:
                 # `add_auto_blockref` wraps the INSERT in an anonymous *U block,
                 # so the returned handle names `*U1` and carries no ATTRIBs.
                 # `add_auto_attribs` attaches ATTRIBs to this INSERT for every
                 # ATTDEF the definition has; values for tags it lacks are ignored.
-                ref.add_auto_attribs({str(k): str(v) for k, v in attributes.items()})
+                ref.add_auto_attribs(values)
+                # A multi-line ATTDEF becomes a multi-line ATTRIB through
+                # `embed_mtext`, which mirrors only the first line of the value
+                # into `dxf.text`; the whole value goes there (the convention
+                # `_write_attrib_value` keeps) so an R2010 save keeps every line.
+                for attrib in ref.attribs:
+                    if attrib.has_embedded_mtext_entity:
+                        attrib.dxf.text = self._attrib_value(attrib)
             self._mark_dirty()
             return _entity_info_dxf(ref)
 
         return await self._async(_sync)
 
+    @staticmethod
+    def _owner_layout_for_explode(ent, handle: str):
+        """The layout that owns ``ent`` — model space or a paper-space layout.
+
+        Raises before any write when the owner is a block definition (a nested
+        reference) or cannot be resolved at all; guessing the current space
+        instead is how geometry ends up duplicated into the wrong tab.
+        """
+        try:
+            layout = ent.get_layout()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Entity {handle} has no resolvable owner layout ({exc}); refusing to "
+                "explode into a guessed space"
+            ) from exc
+        if layout is None or not layout.is_any_layout:
+            owner = getattr(layout, "name", None) or ent.dxf.get("owner", "?")
+            raise RuntimeError(
+                f"Entity {handle} is nested inside block definition {owner!r}; explode "
+                "the outer reference instead (exploding here would redefine the block "
+                "under every other reference)"
+            )
+        return layout
+
+    #: ATTRIB DXF attributes carried onto the TEXT that replaces it on explode.
+    #: An ATTRIB is an OCS entity: ``insert``/``align_point`` are numbers in the
+    #: plane of its own ``extrusion``, so the frame travels with them. Without
+    #: it the TEXT took the OCS numbers with the default +Z frame, and a
+    #: mirrored reference (ezdxf reflects the ATTRIB to extrusion ``(0, 0, -1)``
+    #: while the INSERT keeps +Z with ``yscale=-1``) put the tag 50 units away
+    #: on the other side of the mirror axis — audit clean, ``plane_normal``
+    #: None, nothing said. Same numbers in the same frame is the same place.
+    _ATTRIB_TO_TEXT = (
+        "layer",
+        "color",
+        "style",
+        "height",
+        "rotation",
+        "width",
+        "oblique",
+        "halign",
+        "valign",
+        "text_generation_flag",
+        "insert",
+        "align_point",
+        "extrusion",
+        "thickness",
+    )
+
+    @classmethod
+    def _text_attribs_of(cls, attrib) -> dict:
+        """The ``_ATTRIB_TO_TEXT`` members ``attrib`` (ATTRIB or ATTDEF) carries."""
+        return {key: attrib.dxf.get(key) for key in cls._ATTRIB_TO_TEXT if attrib.dxf.hasattr(key)}
+
+    @staticmethod
+    def _anchored_mtext(attrib):
+        """The embedded MTEXT of a multi-line ``attrib`` (ATTRIB or ATTDEF) as a
+        virtual entity placed where the attribute itself is.
+
+        A multi-line attribute keeps its placement on two surfaces: the
+        ATTRIB's own ``insert``/``align_point`` (OCS, the frame of its
+        ``extrusion``) and the embedded MTEXT's ``insert`` (WCS). ezdxf keeps
+        them in step through ``transform`` (``BaseAttrib`` overrides it) but
+        not through ``translate``: ``Insert.translate`` calls ``Text.translate``
+        on every ATTRIB, which moves the ATTRIB's two points and nothing else
+        (ezdxf 1.4.4 ``attrib.py`` has no ``translate``). So after a move the
+        virtual MTEXT still said where the attribute *was*, ``block_explode``
+        burst the note 50 units from its symbol with a clean audit, and a
+        value write (``set_mtext`` re-places the ATTRIB from the MTEXT) pulled
+        the attribute back to the old spot while the INSERT stayed put.
+
+        The ATTRIB's placement is the attribute's placement -- it is what
+        ``entity_get`` reports, what a single-line attribute has, and what
+        every ezdxf write path maintains -- so the virtual entity is anchored
+        to it: the inverse of ezdxf's own ``_update_location_from_mtext``
+        (``get_placement()`` picks ``insert`` for a LEFT-aligned text and
+        ``align_point`` otherwise, the same rule the renderer uses).
+        """
+        mtext = attrib.virtual_mtext_entity()
+        mtext.dxf.insert = attrib.ocs().to_wcs(attrib.get_placement()[1])
+        return mtext
+
+    @classmethod
+    def _settle_attrib_mtext(cls, attrib) -> None:
+        """Put the embedded MTEXT of ``attrib`` where the ATTRIB now is; a
+        no-op for a single-line attribute.
+
+        Runs after every ``translate`` of an INSERT (``entity_move``,
+        ``entity_copy``, ``entity_array_rectangular``). The round trip is the
+        one ezdxf's ``BaseAttrib.transform`` uses; ``set_mtext`` also mirrors
+        only the first line into ``dxf.text``, so the value (the whole
+        ``Line1\\PLine2`` -- see ``_write_attrib_value``) is put back.
+        """
+        if not attrib.has_embedded_mtext_entity:
+            return
+        text = attrib.dxf.text
+        attrib.set_mtext(cls._anchored_mtext(attrib), graphic_properties=False)
+        attrib.dxf.text = text
+
+    @classmethod
+    def _translate(cls, ent, dx: float, dy: float, dz: float) -> None:
+        """``ent.translate(dx, dy, dz)`` that carries a multi-line ATTRIB's
+        embedded MTEXT along (see ``_anchored_mtext``)."""
+        ent.translate(dx, dy, dz)
+        if ent.dxftype() == "INSERT":
+            for attrib in ent.attribs:
+                cls._settle_attrib_mtext(attrib)
+
+    @staticmethod
+    def _transform(ent, m) -> None:
+        """``ent.transform(m)`` that keeps group 1 of a multi-line ATTRIB whole.
+
+        ezdxf's ``BaseAttrib.transform`` rebuilds the ATTRIB through
+        ``set_mtext``, which mirrors only the *first line* into ``dxf.text``:
+        a rotate, scale or mirror after ``block_set_attributes`` turned
+        ``A\\PB`` back into ``A`` on the one surface an R2010 save keeps, and
+        the reloaded drawing had lost every line but the first. The content
+        does not change under a transform, so the value is put back.
+        """
+        if ent.dxftype() != "INSERT":
+            ent.transform(m)
+            return
+        texts = [(a, a.dxf.text) for a in ent.attribs if a.has_embedded_mtext_entity]
+        ent.transform(m)
+        for attrib, text in texts:
+            attrib.dxf.text = text
+
+    @classmethod
+    def _burst_attrib(cls, layout, attrib, matrix=None):
+        """Add the entity that stands in for ``attrib`` (ATTRIB or ATTDEF) to
+        ``layout`` and return it: a TEXT carrying the value, or -- for a
+        multi-line attribute -- an MTEXT carrying every line.
+
+        A multi-line ATTRIB keeps its content in an embedded MTEXT; its
+        ``dxf.text`` is only the first line (ezdxf) or ``Line1\\PLine2...``
+        (AutoCAD), so a TEXT built from it drops the other lines or renders
+        literal ``\\P`` -- with a clean audit. BURST emits an MTEXT there.
+        ``_anchored_mtext`` carries the ATTRIB's graphic properties and its
+        placement (the embedded MTEXT's own ``insert`` is stale after a
+        ``translate``, see there). ``matrix``, when given, is the reference's
+        matrix, for an ATTDEF still in block coordinates.
+        """
+        if attrib.has_embedded_mtext_entity:
+            entity = cls._anchored_mtext(attrib)
+            if matrix is not None:
+                entity.transform(matrix)
+            layout.add_entity(entity)
+        else:
+            entity = layout.add_text(attrib.dxf.text, dxfattribs=cls._text_attribs_of(attrib))
+            if matrix is not None:
+                entity.transform(matrix)
+        if attrib.is_invisible:
+            entity.dxf.invisible = 1
+        return entity
+
+    @staticmethod
+    def _refuse_unexplodable_reference(ent, handle: str) -> None:
+        """Raise before any write for the two INSERT kinds ``virtual_entities()``
+        cannot explode -- both used to be destroyed with ``ok: True``.
+
+        An *xref* INSERT yields no virtual entities (the geometry is in the
+        other file), so the reference was deleted and nothing put in its
+        place; AutoCAD refuses to explode an xref (bind it first). A
+        *MINSERT* (``mcount`` > 1) yields only its first cell -- ``multi_insert()``
+        resolves the grid -- so a 2x3 grid exploded into one cell and five
+        vanished; AutoCAD refuses to explode a MINSERT.
+        """
+        name = ent.dxf.get("name", "?")
+        block = ent.block()
+        record = getattr(block, "block_record", None)
+        if record is not None and record.is_xref:  # covers XREF_OVERLAY too
+            raise RuntimeError(
+                f"Entity {handle} is an external reference {name!r}; an xref cannot "
+                "be exploded (bind it into the drawing first)"
+            )
+        if ent.mcount > 1:
+            rows = ent.dxf.get("row_count", 1)
+            cols = ent.dxf.get("column_count", 1)
+            raise RuntimeError(
+                f"Entity {handle} is a MINSERT ({rows}x{cols} grid of {name!r}); a "
+                "multi-insert cannot be exploded"
+            )
+
+    @staticmethod
+    def _explodable_members(ent, handle: str) -> list:
+        """The reference's members as virtual entities, or a typed refusal
+        before any write when ezdxf would drop one.
+
+        ``virtual_entities()`` skips every member it cannot copy (OLE2FRAME)
+        or transform (VIEWPORT) with a debug-level log only, and an
+        ACAD_PROXY_ENTITY contributes its proxy graphic -- nothing at all when
+        it carries none -- so a title block's OLE logo or a vertical product's
+        proxy geometry used to vanish with ``ok: True`` and a clean audit. The
+        list is materialized here so the skips are known before the layout is
+        touched; AutoCAD explodes all of these natively.
+        """
+        skipped: list[str] = []
+
+        def _collect(entity, reason):
+            entity_handle = entity.dxf.get("handle") or "?"
+            skipped.append(f"{entity.dxftype()} {entity_handle} ({reason})")
+
+        members = list(ent.virtual_entities(skipped_entity_callback=_collect))
+        block = ent.block()
+        for member in block if block is not None else ():
+            if member.dxftype() != "ACAD_PROXY_ENTITY":
+                continue
+            if not any(True for _ in member.virtual_entities()):
+                skipped.append(f"ACAD_PROXY_ENTITY {member.dxf.handle} (no proxy graphic)")
+        if skipped:
+            name = ent.dxf.get("name", "?")
+            raise UnsupportedCapabilityError(
+                "explode_opaque_members",
+                f"block_explode: entity {handle} references block {name!r} whose "
+                f"members {', '.join(skipped)} cannot be exploded by the headless "
+                "ezdxf backend (it cannot transform them; exploding would delete "
+                "them). Nothing was written. Switch to the live COM backend "
+                "(AUTOCAD_MCP_BACKEND=com, needs Windows + AutoCAD), which hands "
+                "the explode to AutoCAD.",
+            )
+        return members
+
     async def block_explode(self, handle) -> dict:
+        """Explode an INSERT into its members; ATTRIB values survive as TEXT.
+
+        ``virtual_entities()`` yields the definition's geometry only — no
+        ATTDEF, no ATTRIB — so an exploded tagged symbol used to lose its tag
+        text silently. This is the BURST rule (Express Tools): every attached
+        ATTRIB becomes a TEXT at the same WCS placement, height, rotation,
+        style and layer, carrying the *value*; an invisible ATTRIB becomes an
+        invisible TEXT rather than appearing. The new handles are reported as
+        ``attribute_texts``, separate from the geometry's ``inserted_handles``.
+
+        A *constant* attribute (ATTDEF flag 2) carries its value in the
+        definition and, in an AutoCAD-authored file, has no ATTRIB on the
+        reference — ``virtual_entities()`` skips ATTDEF, so its visible text
+        used to vanish with a clean audit. BURST converts it to TEXT, so every
+        constant ATTDEF whose tag has no attached ATTRIB is copied as a TEXT
+        and transformed by the reference's matrix — the same path
+        ``add_auto_attribs`` takes, so it lands where the ATTRIB the headless
+        ``block_insert`` attaches would have (that ATTRIB, when present, is
+        converted above and the definition is not converted twice).
+
+        A *multi-line* attribute (ATTRIB or constant ATTDEF with an embedded
+        MTEXT) becomes an MTEXT carrying every line, as BURST does -- its
+        ``dxf.text`` holds only the first line (ezdxf) or the lines joined
+        with literal ``\\P`` (AutoCAD), so a TEXT silently lost content. See
+        ``_burst_attrib``.
+
+        The members and the TEXTs go into the INSERT's *owner* layout, not the
+        current one: ``_get_entity`` resolves a handle in any layout, so a title
+        block on a sheet exploded while Model was current used to have its
+        geometry copied into model space and then die on ``delete_entity``
+        with the reference still alive on the sheet. Refused before anything
+        is written: a reference nested inside a block definition (exploding
+        it there would redefine the block under every other reference), an
+        xref, and a MINSERT -- see ``_refuse_unexplodable_reference`` for the
+        last two, which ``virtual_entities()`` cannot represent and which used
+        to be deleted with ``ok: True`` -- and a reference whose definition
+        holds a member ezdxf cannot copy or transform (OLE2FRAME, VIEWPORT, a
+        proxy entity without proxy graphics), refused by member with the
+        capability key ``explode_opaque_members`` -- see
+        ``_explodable_members``; those used to be dropped from the result with
+        ``ok: True`` while the reference was deleted.
+        """
+
         def _sync():
             ent = self._get_entity(handle)
             if ent.dxftype() != "INSERT":
                 raise RuntimeError(f"Entity {handle} is not a block reference (INSERT)")
-            msp = self._msp()
-            # Decompose: add individual entities to modelspace
+            self._refuse_unexplodable_reference(ent, handle)
+            msp = self._owner_layout_for_explode(ent, handle)
+            members = self._explodable_members(ent, handle)
             inserted = []
-            for sub in ent.virtual_entities():
+            for sub in members:
                 sub_copy = sub.copy()
                 msp.add_entity(sub_copy)
                 inserted.append(sub_copy.dxf.handle)
+            attribute_texts = []
+            attached_tags = set()
+            for attrib in ent.attribs:
+                attached_tags.add(attrib.dxf.tag)
+                attribute_texts.append(self._burst_attrib(msp, attrib).dxf.handle)
+            block = ent.block()
+            attdefs = block.attdefs() if block is not None else ()
+            matrix = ent.matrix44()
+            for attdef in attdefs:
+                if not attdef.is_const or attdef.dxf.get("tag") in attached_tags:
+                    continue
+                if not attdef.dxf.hasattr("insert"):
+                    continue  # a structure error; nowhere to place it
+                attribute_texts.append(self._burst_attrib(msp, attdef, matrix).dxf.handle)
             msp.delete_entity(ent)
             self._mark_dirty()
-            return {"ok": True, "inserted_handles": inserted}
+            return {
+                "ok": True,
+                "exploded_handle": handle,
+                "inserted_handles": inserted,
+                "attribute_texts": attribute_texts,
+                "backend": "ezdxf",
+            }
 
         return await self._async(_sync)
+
+    @staticmethod
+    def _attrib_value(attrib) -> str:
+        """The value an ATTRIB carries, as AutoCAD's ``TextString`` reports it.
+
+        A multi-line attribute keeps its content in an embedded MTEXT and its
+        ``dxf.text`` is only the first line when ezdxf's ``embed_mtext`` /
+        ``set_mtext`` authored it (AutoCAD, and ``_write_attrib_value``, write
+        ``Line1\\PLine2``), so the embedded content is the value; a
+        single-line attribute's value is ``dxf.text``.
+        """
+        if attrib.has_embedded_mtext_entity:
+            return attrib.virtual_mtext_entity().text
+        return attrib.dxf.text
+
+    @classmethod
+    def _write_attrib_value(cls, attrib, value: str) -> None:
+        """Write ``value`` into ``attrib`` on every surface it has.
+
+        Setting only ``dxf.text`` on a multi-line ATTRIB left the embedded
+        MTEXT at its old content: ``block_get_attributes`` reported the new
+        value, ``block_explode`` burst the old one, and on an R2010 document
+        (no embedded MTEXT exported) a save/reload carried the new value the
+        exploded drawing never showed. The embedded MTEXT is rebuilt from its
+        virtual entity with the new content -- the round trip ezdxf's
+        ``BaseAttrib.transform`` itself uses -- so the MTEXT and the placement
+        stay one attribute. The virtual entity is anchored to the ATTRIB's
+        own placement first (``_anchored_mtext``): ``set_mtext`` re-places
+        the ATTRIB from the MTEXT, and after an ``entity_move`` the embedded
+        MTEXT still sat where the attribute *was*, so a value edit teleported
+        the attribute 50 units away from its symbol.
+
+        ``set_mtext`` then mirrors only the *first line* into ``dxf.text``
+        (ezdxf's own choice), and below R2018 ezdxf exports no embedded MTEXT,
+        so the default (R2010) document saved ``NEW ONE`` where the reader had
+        promised ``NEW ONE\\PNEW TWO``. ``dxf.text`` is therefore written last
+        with the whole value: that is AutoCAD's own convention (``TextString``
+        of a live multi-line attribute reads ``'LINE ONE\\PLINE TWO'``), the
+        reader prefers the embedded MTEXT when there is one, and the file
+        carries every line on every DXF version.
+        """
+        if attrib.has_embedded_mtext_entity:
+            mtext = cls._anchored_mtext(attrib)
+            mtext.text = value
+            attrib.set_mtext(mtext, graphic_properties=False)
+        attrib.dxf.text = value
 
     async def block_get_attributes(self, handle) -> dict:
         def _sync():
@@ -4529,12 +4915,16 @@ class EzdxfBackend(AutoCADBackend):
                 raise RuntimeError(f"Entity {handle} is not a block reference")
             result = {}
             for attrib in ent.attribs:
-                result[attrib.dxf.tag] = attrib.dxf.text
+                result[attrib.dxf.tag] = self._attrib_value(attrib)
             return result
 
         return await self._async(_sync)
 
     async def block_set_attributes(self, handle, attributes) -> dict:
+        from backends.block_specs import validate_attribute_values
+
+        values = validate_attribute_values(attributes)
+
         def _sync():
             ent = self._get_entity(handle)
             if ent.dxftype() != "INSERT":
@@ -4542,8 +4932,8 @@ class EzdxfBackend(AutoCADBackend):
             updated = []
             for attrib in ent.attribs:
                 tag = attrib.dxf.tag
-                if tag in attributes:
-                    attrib.dxf.text = str(attributes[tag])
+                if tag in values:
+                    self._write_attrib_value(attrib, values[tag])
                     updated.append(tag)
             self._mark_dirty()
             return {"ok": True, "updated_tags": updated}
@@ -4675,20 +5065,27 @@ class EzdxfBackend(AutoCADBackend):
         base_x=0.0,
         base_y=0.0,
         overwrite=False,
+        create_layers=False,
     ) -> dict:
         """A block definition with ATTDEFs from typed specs.
 
         Validation runs before any write, so a malformed entry leaves no
-        definition behind. ``overwrite`` replaces the *contents* of an existing
-        definition rather than deleting it: existing INSERTs keep pointing at
-        the name and show the new geometry (deleting a referenced block is
-        refused by both engines; replacing contents works on both).
+        definition behind: specs, the base point (``base_x``/``base_y`` must be
+        finite numbers — ``float("nan")`` used to be written into the BLOCK
+        record) and the layer table (a primitive's ``layer`` must exist, or
+        ``create_layers`` must be true — a dangling layer reference passes
+        ``doc.audit()`` silently). ``overwrite`` replaces the *contents* of an
+        existing definition rather than deleting it: existing INSERTs keep
+        pointing at the name and show the new geometry (deleting a referenced
+        block is refused by both engines; replacing contents works on both).
         """
         from ezdxf.enums import TextEntityAlignment
 
         from backends.block_specs import (
+            referenced_layers,
             solid_vertices,
             validate_attdef_specs,
+            validate_base_point,
             validate_entity_specs,
         )
         from security import sanitize_symbol_name
@@ -4701,6 +5098,8 @@ class EzdxfBackend(AutoCADBackend):
         clean_name = sanitize_symbol_name(name, kind="block")
         ents = validate_entity_specs(entities)
         atts = validate_attdef_specs(attdefs or [])
+        base = (*validate_base_point(base_x, base_y), 0.0)
+        wanted_layers = referenced_layers(ents)
         align_map = {
             "left": TextEntityAlignment.LEFT,
             "center": TextEntityAlignment.CENTER,
@@ -4717,7 +5116,17 @@ class EzdxfBackend(AutoCADBackend):
                     "pass overwrite=true to replace its contents"
                 )
             replaced = existing is not None
-            base = (float(base_x), float(base_y), 0.0)
+            # ``in doc.layers`` is case-insensitive, like the table itself.
+            missing_layers = [layer for layer in wanted_layers if layer not in doc.layers]
+            if missing_layers and not create_layers:
+                raise ValueError(
+                    "block_define: layer(s) "
+                    + ", ".join(repr(layer) for layer in missing_layers)
+                    + " do not exist in the drawing; create them with layer_create "
+                    "or pass create_layers=true"
+                )
+            for layer in missing_layers:
+                doc.layers.add(layer)
             if existing is None:
                 blk = doc.blocks.new(name=clean_name, base_point=base)
             else:
@@ -4784,6 +5193,7 @@ class EzdxfBackend(AutoCADBackend):
                 "entity_count": len(ents),
                 "attdef_count": len(atts),
                 "replaced": replaced,
+                "layers_created": missing_layers,
                 "backend": "ezdxf",
             }
 
