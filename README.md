@@ -27,7 +27,7 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 
 </div>
 
-> **v1.5 release snapshot:** 179 tools · 8 resources · 5 prompt templates · 2423 collected tests.
+> **v1.5 release snapshot:** 185 tools · 8 resources · 5 prompt templates · 2423 collected tests.
 > 166 is the **registered** count; a default install advertises 161 over `tools/list`,
 > because `ENABLE_3D` is unset. `system_about` is the runtime authority.
 
@@ -103,7 +103,8 @@ Claude Desktop, Cursor, or any stdio MCP host. For HTTP: `autocad-mcp --transpor
 | P&ID | catalogue blocks with ports and tags (ISO 10628-2 / ISA-5.1), port-to-port lines with ISA-5.1 classes and line numbers, `pid_graph` reads any P&ID back with confidence, instrument index / line list / equipment list, `pid_from_spec` one-call sheets |
 | Discovery | `search_tools` ranked over an AutoCAD command and synonym corpus — `FILLET`, `BPOLY`, `QSELECT`, `WBLOCK`, `OVERKILL`, `CHSPACE` each rank **#1** of the 161-tool advertised catalog |
 | Batching | `cad_batch` runs a step list in one round trip; `fields=` projects 11 result-heavy tools |
-| Paper space | tab lifecycle, viewports, `entity_change_space` (CHSPACE), `drawing_export_pdf(layout=…)` |
+| Paper space | tab lifecycle, viewports, `entity_change_space` (CHSPACE), `page_setup_apply` (ISO 216 / ANSI Y14.1 paper, ctb, scale, device — on both engines), `batch_plot` with every sheet size read back from its PDF's `/MediaBox`, `drawing_export_pdf(layout=…)` |
+| Templates | five bundled templates built by the server's own tools and pinned reproducible (`iso_a3_mech`, `iso_a1_arch`, `iso_a3_pid`, `ansi_b_mech`, `ansi_d_arch`) — `drawing_new(template="iso_a3_mech")`, `drawing_template_list`, `drawing_template_save` (.dwt on live AutoCAD, `dwt_write` refused headlessly) |
 | Selection | window vs crossing stated back to the caller; a polygon tested against its own shape, not its bounding box |
 | Boundaries | `boundary_trace` (BOUNDARY/BPOLY) chains loose edges into one closed polyline, arcs kept as bulges *(headless)* |
 | Measurement | `analysis_measure_entity` measures what is *in* the drawing, by handle |
@@ -113,7 +114,7 @@ Claude Desktop, Cursor, or any stdio MCP host. For HTTP: `autocad-mcp --transpor
 | Quality loop | `drawing_preflight` → `drawing_plan` → `drawing_critique` → `drawing_refine` → `drawing_finalize` (0–100 score) |
 | Delivery | `drawing_deliver`: DXF/PDF/PNG + SHA-256 manifest + reopen-parity checks |
 
-<sub>166 tools in 20 groups; <code>TOOL_PACKS=core</code> hides the nine <code>pid_*</code> tools from a client that never draws a P&ID. Plus 8 resources that cost nothing in the tool budget (<code>autocad://drawing/info</code>, <code>layers</code>, <code>blocks</code>, <code>entities/stats</code>, <code>entities/{layer_name}</code>, <code>system/status</code>, <code>pid/symbols</code>, <code>standards/isa51</code>) and 5 prompt templates.</sub>
+<sub>172 tools in 20 groups; <code>TOOL_PACKS=core</code> hides the nine <code>pid_*</code> tools from a client that never draws a P&ID. Plus 8 resources that cost nothing in the tool budget (<code>autocad://drawing/info</code>, <code>layers</code>, <code>blocks</code>, <code>entities/stats</code>, <code>entities/{layer_name}</code>, <code>system/status</code>, <code>pid/symbols</code>, <code>standards/isa51</code>) and 5 prompt templates.</sub>
 
 **Two rules worth knowing.** Every coordinate in and out of a tool is WCS on both engines — the one exception is TEXT `rotation`, which stays in the entity frame because a mirrored TEXT is mirror-imaged and no scalar angle expresses that. And never read vertices back and shoelace them: that loses **28.2%** of the area on a semicircular edge, silently. `analysis_measure_entity(handle)` reads the real geometry and states its own accuracy.
 

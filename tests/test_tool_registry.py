@@ -495,7 +495,7 @@ async def test_tool_groups_is_byte_identical_to_the_source_declared_grouping():
 
 
 async def test_tool_group_sizes_are_unchanged():
-    """Frozen snapshot of the surface (161 tools, 20 groups).
+    """Frozen snapshot of the surface (172 tools, 20 groups).
 
     Taken before @cad_tool landed at 131 tools; `batch` moved 2 -> 3 when
     v1.5.0's `cad_batch` joined `entity_batch_create`/`entity_batch_modify`, and
@@ -528,8 +528,15 @@ async def test_tool_group_sizes_are_unchanged():
     as a read-only tool) opened SECTION 20. `drawing` moved 11 -> 13 when
     v1.6's `drawing_properties_get` / `drawing_properties_set` (DWGPROPS on
     both engines) joined SECTION 20 — tagged `drawing` and `settings`, and
-    `settings` is not a group tag, so they file under drawing. Every other
-    number here has been unchanged since the snapshot was taken.
+    `settings` is not a group tag, so they file under drawing.
+    `layouts` moved 12 -> 16 when v1.6's SECTION 19 opened with
+    `page_setup_list` / `page_setup_apply` / `plot_style_list` / `batch_plot`
+    — all tagged `layout`, which `_GROUP_TAG_PRIORITY` ranks above
+    `query`/`export`, so they file with the sheets they set up. `templates`
+    moved 2 -> 3 when v1.6's `drawing_template_list` joined SECTION 19
+    (tagged `template`, which ranks above `drawing`), then 3 -> 4 when
+    `drawing_template_save` joined. Every other number
+    here has been unchanged since the snapshot was taken.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
@@ -544,15 +551,15 @@ async def test_tool_group_sizes_are_unchanged():
         "entity_modification": 16,
         "entity_query": 9,
         "layers": 14,
-        "layouts": 12,
+        "layouts": 16,
         "pid": 9,
         "premium": 12,
         "solids": 5,
         "styles": 10,
         "system": 8,
-        "templates": 2,
+        "templates": 4,
         "transactions": 3,
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 179
+    assert sum(sizes.values()) == 185

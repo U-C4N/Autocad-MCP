@@ -178,6 +178,18 @@ _DWG_WRITE_REFUSAL = (
 )
 
 
+# A DWT is a DWG container with a template flag. ezdxf cannot write it, and a
+# DXF under a .dwt name is exactly the mislabelled file the DWG refusal exists
+# to prevent. The DXF route works headlessly end to end: drawing_new(template=)
+# opens a .dxf template.
+_DWT_WRITE_REFUSAL = (
+    "drawing_template_save: the headless ezdxf backend cannot write DWT — a .dwt is a DWG "
+    "container, and ezdxf has no DWG writer. Save the template as .dxf instead "
+    "(drawing_new(template='{stem}.dxf') opens it headlessly), or switch to the live COM "
+    "backend (AUTOCAD_MCP_BACKEND=com, needs Windows + AutoCAD) for a real .dwt."
+)
+
+
 def _is_dwg_path(path: str) -> bool:
     """True when `path` names a DWG file. The extension is authoritative (N2)."""
     return Path(path).suffix.lower() == ".dwg"
@@ -1402,6 +1414,9 @@ class EzdxfBackend(AutoCADBackend):
                 "refiner": FeatureCapability(True, "shared"),
                 "delivery": FeatureCapability(True, "shared"),
                 "paper_space": FeatureCapability(True, "native"),
+                "dwt_write": FeatureCapability(
+                    False, reason="dwt_is_a_dwg_container_requires_live_autocad"
+                ),
                 # Measured, not assumed: a sheet holding nothing but a viewport
                 # renders the model geometry that viewport looks at, at its
                 # scale and position, clipped to its window. v1.4 declared this
@@ -1897,6 +1912,16 @@ class EzdxfBackend(AutoCADBackend):
         the geometry that viewport shows, and geometry outside the window is
         correctly left out. What is genuinely missing is the viewport *border*,
         which the headless renderer does not draw.
+
+        ``layout=None`` and ``layout="Model"`` both mean model space, as the
+        tool advertises and as the COM engine plots. This used to route them
+        through ``_msp()``, which follows the *current* tab, so with a sheet
+        current the "Model" PDF was that sheet's paper-space content — a wrong
+        page with no refusal. Measured: circle in model space, 390 x 270
+        rectangle on an A3 sheet, sheet current — the Model row's /MediaBox
+        was 176.1 x 121.9 mm (the rectangle's aspect) instead of the circle's
+        121.9 x 121.9. The target is now ``doc.modelspace()`` whichever tab
+        is current.
         """
 
         def _sync():
@@ -1907,18 +1932,41 @@ class EzdxfBackend(AutoCADBackend):
                     return {"ok": False, "error": f"Layout not found: {layout}"}
                 target = doc.layouts.get(resolved)
             else:
-                target = self._msp()
+                target = doc.modelspace()
             try:
                 from ezdxf.addons.drawing import Frontend, RenderContext
                 from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
 
-                fig = _new_agg_figure()
+                # Track E: for a sheet, the figure *is* the paper. Sized from
+                # the layout's page setup and left unadjusted, so the PDF's
+                # /MediaBox is the paper size — the evidence page_setup_apply
+                # is judged by. Measured: adjust_figure=True gave 691.2 x 345.6
+                # pt whatever the sheet was.
+                paper = None
+                if resolved is not None and resolved != "Model":
+                    paper = self._paper_frame(target)
+                fig = _new_agg_figure(figsize=paper["figsize"] if paper else None)
                 ax = fig.add_axes([0, 0, 1, 1])
                 ctx = RenderContext(doc)
-                out = MatplotlibBackend(ax)
+                out = MatplotlibBackend(ax, adjust_figure=paper is None)
                 Frontend(ctx, out).draw_layout(target, finalize=True)
+                if paper is not None:
+                    ax.set_xlim(*paper["xlim"])
+                    ax.set_ylim(*paper["ylim"])
+                    ax.set_aspect("equal", adjustable="box")
                 fig.savefig(path, dpi=150)
                 result = {"ok": True, "path": path}
+                if paper is not None:
+                    result["paper_mm"] = paper["size_mm"]
+                    result["scale"] = paper["scale"]
+                    result["effective_scale"] = paper["effective_scale"]
+                    result["scale_applied"] = paper["scale_applied"]
+                    result["plot_area"] = paper["plot_area"]
+                    result["plot_area_applied"] = paper["plot_area_applied"]
+                    if "plot_area_note" in paper:
+                        result["plot_area_note"] = paper["plot_area_note"]
+                    if not paper["rotation_applied"]:
+                        result["rotation_applied"] = False
                 if resolved is not None and resolved != "Model":
                     result["layout"] = resolved
                     result["note"] = (
@@ -2680,6 +2728,397 @@ class EzdxfBackend(AutoCADBackend):
         """Render a dimension measurement the way a dimension text reads."""
         text = f"{float(value):.4f}".rstrip("0").rstrip(".")
         return text or "0"
+
+    # ── page setup (track E) ─────────────────────────────────────────────────
+
+    def _paper_layout(self, raw: str, operation: str):
+        """Resolve a paper-space layout by name, refusing Model and unknowns."""
+        doc = self._require_doc()
+        resolved = self._find_layout(raw)
+        if resolved is None:
+            available = [n for n in doc.layouts.names_in_taborder() if n != "Model"]
+            raise ValueError(
+                f"{operation}: layout {raw!r} not found (paper-space layouts: "
+                f"{', '.join(available) or 'none'})"
+            )
+        if resolved == "Model":
+            raise ValueError(
+                f"{operation}: Model space has no sheet; plot it with "
+                "drawing_export_pdf(layout=None) or apply the setup to a paper-space layout"
+            )
+        return doc.layouts.get(resolved)
+
+    @staticmethod
+    def _stored_sheet(dxf) -> tuple[list[float], list[float]]:
+        """``(size_mm, margins_mm)`` of the sheet *as plotted*, from the media
+        as stored: ``papers.turned_sheet`` over PLOTSETTINGS 40-47 and
+        ``plot_rotation``. DXF stores every paper size and margin in
+        millimetres, whatever ``plot_paper_units`` says (ezdxf's
+        acdb_plot_settings, verified). ``margins_mm`` is [top, bottom, left, right].
+        """
+        from engineering.standards.papers import turned_sheet
+
+        return turned_sheet(
+            dxf.paper_width,
+            dxf.paper_height,
+            (dxf.top_margin, dxf.bottom_margin, dxf.left_margin, dxf.right_margin),
+            dxf.plot_rotation,
+        )
+
+    @classmethod
+    def _page_setup_row(cls, layout) -> dict:
+        from engineering.standards.papers import (
+            PLOT_TYPE_NAMES,
+            center_applies,
+            dxf_scale_label,
+            paper_from_size,
+            paper_units_name,
+            scale_label,
+        )
+
+        dxf = layout.dxf_layout.dxf
+        flags = int(dxf.get("plot_layout_flags", dxf.get_default("plot_layout_flags")))
+        # The sheet as plotted: size *and* margins turned by plot_rotation
+        # (the same mapping _paper_frame plots by). Swapping only the size
+        # reported a 297 x 210 sheet with its portrait margins.
+        (width, height), margins = cls._stored_sheet(dxf)
+        media = str(dxf.paper_size)
+        numerator, denominator = float(dxf.scale_numerator), float(dxf.scale_denominator)
+        if flags & layout.USE_STANDARD_SCALE:
+            scale = dxf_scale_label(int(dxf.standard_scale_type), numerator, denominator)
+        else:
+            scale = scale_label(numerator, denominator)
+        plot_type = int(dxf.plot_type)
+        return {
+            "layout": layout.name,
+            "paper": paper_from_size(width, height) or media,
+            "canonical_media_name": media,
+            "size_mm": [round(width, 2), round(height, 2)],
+            "orientation": "landscape" if width >= height else "portrait",
+            "plot_style": str(dxf.current_style_sheet),
+            "scale": scale,
+            "plot_area": PLOT_TYPE_NAMES.get(plot_type, str(dxf.plot_type)),
+            "device": str(dxf.plot_configuration_file),
+            "margins_mm": [round(v, 3) for v in margins],
+            # What one paper-space unit means at the plot scale (DXF group 72).
+            "paper_units": paper_units_name(dxf.plot_paper_units),
+            # A layout plot has no centring (AutoCAD greys it out; ActiveX
+            # refuses CenterPlot=True under acLayout): None, not a bit nobody honours.
+            "center": bool(flags & layout.PLOT_CENTERED) if center_applies(plot_type) else None,
+        }
+
+    @staticmethod
+    def _plot_scale(layout) -> tuple[str, float | None, float | None]:
+        """``(label, numerator, denominator)`` of the layout's plot scale; the
+        terms are ``None`` for *scaled to fit* (code 75 = 0).
+
+        Reads the same bits ``_page_setup_row`` reports, so the label here is
+        the label ``page_setup_list`` shows: a standard code under
+        ``USE_STANDARD_SCALE`` resolves through the authored ``DXF_STD_SCALES``
+        (the ObjectARX enum AutoCAD writes — ezdxf's ``STD_SCALES`` is one off
+        above 18 and would render an AutoCAD-authored 1:10 sheet at 1:16),
+        anything else through the stored numerator / denominator.
+        """
+        from engineering.standards.papers import DXF_STD_SCALES, dxf_scale_label, scale_label
+
+        dxf = layout.dxf_layout.dxf
+        flags = int(dxf.get("plot_layout_flags", dxf.get_default("plot_layout_flags")))
+        numerator, denominator = float(dxf.scale_numerator), float(dxf.scale_denominator)
+        if flags & layout.USE_STANDARD_SCALE:
+            code = int(dxf.standard_scale_type)
+            if code == 0:
+                return "fit", None, None
+            if code in DXF_STD_SCALES:
+                numerator, denominator = (float(v) for v in DXF_STD_SCALES[code])
+            return dxf_scale_label(code, numerator, denominator), numerator, denominator
+        return scale_label(numerator, denominator), numerator, denominator
+
+    @staticmethod
+    def _plot_extents(layout):
+        """Paper-space extents AutoCAD's *extents* plot area means, or ``None``.
+
+        ``ezdxf.bbox`` counts the main paper-space viewport (id 1, the whole
+        sheet) as an entity; AutoCAD does not, so it is left out here.
+        """
+        from ezdxf import bbox
+
+        entities = [
+            e for e in layout if not (e.dxftype() == "VIEWPORT" and int(e.dxf.get("id", 0)) == 1)
+        ]
+        if not entities:
+            return None
+        box = bbox.extents(entities, fast=True)
+        return box if box.has_data else None
+
+    @classmethod
+    def _paper_frame(cls, layout) -> dict:
+        """The sheet as a matplotlib figure: size in inches plus the axes window.
+
+        Used by ``drawing_export_pdf`` so the PDF's /MediaBox *is* the paper
+        and the content lands on it at the layout's plot scale.
+
+        **Scale.** The axes window spans the sheet in paper-space units, and
+        that is ``sheet_mm / unit x denominator / numerator`` — at 1:2 an A3
+        sheet holds 840 x 594 units, not 420 x 297. It used to be the sheet at
+        1:1 whatever ``page_setup_apply`` had written (measured: a 1:2 sheet
+        exported pixel-identical to the same sheet at 1:1, ``ok: True``, and
+        the MediaBox read as correct, so nothing downstream could see it).
+        ``fit`` on a *layout* plot is 1:1: AutoCAD greys "Fit to paper" out
+        under that plot area (reported as ``effective_scale``).
+
+        **Plot area.** ``layout`` (5) is the sheet from the plot origin.
+        ``extents`` (1) is the paper-space extents (the main viewport excluded,
+        as AutoCAD excludes it) placed at the plot origin, or centred on the
+        printable area under ``PLOT_CENTERED``; with ``fit`` the extents are
+        scaled to the printable area. The plot areas the headless engine cannot
+        know (display, view) and the ones it does not read (limits, window)
+        fall back to the sheet window and say so in ``plot_area_applied``.
+
+        ``plot_rotation`` 1/3 is AutoCAD's landscape-on-portrait-media
+        convention: the media stays 210 x 297 and the sheet is turned, so
+        paper-space X runs along the 297 mm side. The figure *and* the axes
+        window both take the turned size — sizing only the figure left the
+        window 210 wide inside a 297 mm page, and ``set_aspect("equal")`` then
+        shrank the axes box to 0.707 and cut everything past x = 210 minus the
+        margin (measured: a 277 mm frame lost its right 27%, with ``ok: True``
+        and a MediaBox that read as correct). The margins turn with the sheet,
+        mapped the way ezdxf's own ``Page.from_dxf_layout`` maps them —
+        ``papers.turned_sheet``, the one mapping ``page_setup_list`` reports
+        by, so the row and the plot never disagree. What the headless renderer
+        still does not do is rotate the *content* on the media (reported as
+        ``rotation_applied``, not hidden).
+        """
+        from engineering.standards.papers import PLOT_TYPE_NAMES, scale_label
+
+        dxf = layout.dxf_layout.dxf
+        rotation = int(dxf.plot_rotation)
+        unit = 25.4 if int(dxf.plot_paper_units) == 0 else 1.0
+        (sheet_w, sheet_h), (top, bottom, left, right) = cls._stored_sheet(dxf)
+        offset_x = float(dxf.plot_origin_x_offset)
+        offset_y = float(dxf.plot_origin_y_offset)
+        printable_w = max(sheet_w - left - right, 1e-9)
+        printable_h = max(sheet_h - top - bottom, 1e-9)
+
+        label, numerator, denominator = cls._plot_scale(layout)
+        plot_type = int(dxf.plot_type)
+        plot_area = PLOT_TYPE_NAMES.get(plot_type, str(plot_type))
+        flags = int(dxf.get("plot_layout_flags", dxf.get_default("plot_layout_flags")))
+        centered = bool(flags & layout.PLOT_CENTERED)
+
+        box = cls._plot_extents(layout) if plot_type == 1 else None
+        plot_area_applied = plot_type == 5 or box is not None
+        note = None
+        if plot_type == 1 and box is None:
+            note = "extents: the layout holds no entities, so the sheet window was plotted"
+        elif plot_type not in (1, 5):
+            note = (
+                f"plot area {plot_area!r} is not rendered headlessly; the sheet window was plotted"
+            )
+
+        # Paper-space units per millimetre of sheet.
+        scale_applied = True
+        effective = label
+        if (
+            numerator is not None
+            and denominator is not None
+            and (numerator <= 0 or denominator <= 0)
+        ):
+            scale_applied, effective, units_per_mm = False, "1:1", 1.0 / unit
+        elif numerator is None:  # scaled to fit
+            if box is not None:
+                ratios = [
+                    printable_w / box.size.x if box.size.x > 1e-12 else None,
+                    printable_h / box.size.y if box.size.y > 1e-12 else None,
+                ]
+                usable = [r for r in ratios if r is not None]
+                mm_per_unit = min(usable) if usable else 1.0
+                units_per_mm = 1.0 / mm_per_unit
+                # ``unit`` is millimetres per paper unit (25.4 under inches),
+                # so paper units per drawing unit *divides* by it. Multiplying
+                # reported a 1:1.06 inch fit as ``607.06:1`` (off by 25.4^2)
+                # while the render itself was right, ``units_per_mm`` being
+                # unit-free; the mm sheet hid it because there ``unit`` is 1.
+                paper_per_unit = mm_per_unit / unit
+                effective = (
+                    scale_label(paper_per_unit, 1.0)
+                    if paper_per_unit >= 1.0
+                    else scale_label(1.0, 1.0 / paper_per_unit)
+                )
+            else:
+                # Fit under a layout plot is not a choice AutoCAD offers: the
+                # Page Setup dialog greys it out and the sheet plots at 1:1.
+                units_per_mm, effective = 1.0 / unit, "1:1"
+        else:
+            units_per_mm = denominator / numerator / unit
+
+        # Lower-left corner of the *sheet* in paper-space units.
+        if box is None:
+            x0 = -(left + offset_x) * units_per_mm
+            y0 = -(bottom + offset_y) * units_per_mm
+        elif centered:
+            x0 = box.center.x - (left + printable_w / 2.0) * units_per_mm
+            y0 = box.center.y - (bottom + printable_h / 2.0) * units_per_mm
+        else:
+            x0 = box.extmin.x - (left + offset_x) * units_per_mm
+            y0 = box.extmin.y - (bottom + offset_y) * units_per_mm
+        frame = {
+            "size_mm": [round(sheet_w, 2), round(sheet_h, 2)],
+            "figsize": (sheet_w / 25.4, sheet_h / 25.4),
+            "xlim": (x0, x0 + sheet_w * units_per_mm),
+            "ylim": (y0, y0 + sheet_h * units_per_mm),
+            "rotation_applied": rotation == 0,
+            "scale": label,
+            "effective_scale": effective,
+            "scale_applied": scale_applied,
+            "plot_area": plot_area,
+            "plot_area_applied": plot_area_applied,
+        }
+        if note:
+            frame["plot_area_note"] = note
+        return frame
+
+    async def page_setup_list(self, layout: str | None = None) -> list[dict]:
+        def _sync():
+            doc = self._require_doc()
+            if layout is not None and self._layout_name(layout):
+                return [self._page_setup_row(self._paper_layout(layout, "page_setup_list"))]
+            return [
+                self._page_setup_row(doc.layouts.get(name))
+                for name in doc.layouts.names_in_taborder()
+                if name != "Model"
+            ]
+
+        return await self._async(_sync)
+
+    async def page_setup_apply(self, layout: str, setup: dict) -> dict:
+        from engineering.standards.papers import (
+            PAPER_UNITS,
+            page_setup_warnings,
+            require_page_setup,
+        )
+
+        resolved = require_page_setup(setup)
+
+        def _sync():
+            target = self._paper_layout(layout, "page_setup_apply")
+            before = self._page_setup_row(target)
+            dxf = target.dxf_layout.dxf
+            # Measured: a fresh layout has no stored plot_layout_flags, and
+            # set_flag_state starts from 0 — toggling one bit would drop
+            # plot-styles (32), lineweights (128) and viewports-first (512).
+            if not dxf.hasattr("plot_layout_flags"):
+                dxf.plot_layout_flags = dxf.get_default("plot_layout_flags")
+            width, height = (float(v) for v in resolved["size_mm"])
+            # Orientation rides on width/height, as AutoCAD names media, so
+            # plot_rotation goes to 0. The stored margins only meant what
+            # they meant *through* the old turn: with none asked for, the
+            # sheet keeps the margins it had (the turned ones are written as
+            # the unturned ones), instead of silently swapping to the media's
+            # portrait margins with nothing in ``changed``.
+            margins = resolved["margins_mm"]
+            if margins is None:
+                margins = self._stored_sheet(dxf)[1]  # turned, un-rounded
+            dxf.page_setup_name = ""
+            dxf.plot_configuration_file = resolved["device"]
+            dxf.paper_size = resolved["canonical_media_name"]
+            dxf.paper_width = width
+            dxf.paper_height = height
+            if resolved["paper_units"] is not None:
+                dxf.plot_paper_units = PAPER_UNITS[resolved["paper_units"]]
+            dxf.plot_rotation = 0
+            top, bottom, left, right = (float(v) for v in margins)
+            dxf.top_margin, dxf.bottom_margin = top, bottom
+            dxf.left_margin, dxf.right_margin = left, right
+            dxf.plot_origin_x_offset = 0.0
+            dxf.plot_origin_y_offset = 0.0
+            dxf.current_style_sheet = resolved["plot_style"]
+            target.use_plot_styles(True)
+            target.set_plot_type(int(resolved["plot_type"]))
+            # The scale is stored three ways and AutoCAD reads a different
+            # one per route (measured, AutoCAD 2026 — papers.py docstring):
+            # under USE_STANDARD_SCALE its plot engine scales by group 147
+            # alone (a sheet with code 21 and 147 = 1.0 plots 1:10 geometry
+            # at 1:1 while page_setup_list says 1:10); under the custom
+            # route it scales by 142/143. All three are written, on every
+            # route, from the one resolved ratio, so no reader can disagree
+            # with the plot. ``fit`` has ratio 1/1 and 147 = 1.0, as AutoCAD
+            # writes it.
+            code = resolved["dxf_standard_scale_type"]
+            numerator, denominator = (float(v) for v in resolved["scale_ratio"])
+            if code is not None:
+                dxf.standard_scale_type = int(code)
+                target.use_standard_scale(True)
+            else:
+                dxf.standard_scale_type = 16
+                target.use_standard_scale(False)
+            dxf.scale_numerator, dxf.scale_denominator = numerator, denominator
+            dxf.unit_factor = numerator / denominator
+            # resolve_page_setup hands over None for a layout plot: the bit is
+            # cleared, never set — the state AutoCAD itself stores for acLayout,
+            # and the mirror of the live engine never writing CenterPlot there.
+            target.plot_centered(bool(resolved["center"]))
+            # Limits follow the paper; viewports are deliberately left alone
+            # (Paperspace.page_setup() would delete them).
+            target.reset_paper_limits()
+            self._mark_dirty()
+            after = self._page_setup_row(target)
+            changed = {
+                key: [before[key], after[key]]
+                for key in after
+                if key != "layout" and before.get(key) != after[key]
+            }
+            return {
+                "ok": True,
+                "layout": target.name,
+                "applied": dict(resolved),
+                "changed": changed,
+                "warnings": page_setup_warnings(changed),
+                "plot_style_known": bool(resolved["plot_style_known"]),
+                "viewports_kept": True,
+                "backend": "ezdxf",
+            }
+
+        return await self._async(_sync)
+
+    async def plot_style_list(self) -> list[dict]:
+        from engineering.standards.papers import CTB_CATALOG
+
+        return [{"name": name, "source": "catalog", "installed": None} for name in CTB_CATALOG]
+
+    async def drawing_template_save(self, path, name=None, description=None) -> dict:
+        """Save the current drawing as a template — DXF only, headlessly.
+
+        ``.dwt`` is refused with capability ``dwt_write`` before anything is
+        written; ``.dxf`` goes through ``drawing_save_as`` (the document is
+        rebound to the new path, as AutoCAD's SAVEAS does). A description has
+        no home in a DXF header — it is a DWG/DWT summary property — so it is
+        reported ``description_written: False`` rather than dropped silently.
+        """
+        suffix = Path(path).suffix.lower()
+        if suffix == ".dwt":
+            raise UnsupportedCapabilityError(
+                "dwt_write", _DWT_WRITE_REFUSAL.format(stem=Path(path).stem)
+            )
+        if suffix != ".dxf":
+            raise ValueError(
+                f"drawing_template_save: path must end in .dxf (headless) or .dwt (live "
+                f"AutoCAD), got {path!r}"
+            )
+        saved = await self.drawing_save_as(path, "dxf")
+        result = {
+            "ok": True,
+            "path": saved["path"],
+            "format": "dxf",
+            "backend": "ezdxf",
+            "name": name or Path(path).stem,
+            "description_written": False,
+        }
+        if description is not None:
+            result["description_note"] = (
+                "DXF has no template description field; it is a DWG/DWT summary property "
+                "(capability 'dwgprops')"
+            )
+        return result
 
     # ── 3D solids (unsupported headlessly — honest capability boundary) ─────
 

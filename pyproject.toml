@@ -138,6 +138,7 @@ only-include = [
     "backends",
     "engineering",
     "discovery",
+    "templates",
 ]
 
 [tool.ruff]

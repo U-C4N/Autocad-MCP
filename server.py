@@ -1090,7 +1090,7 @@ async def drawing_info(ctx: Context) -> dict:
 
 
 @cad_tool(
-    summary="Start a blank drawing, pre-seeded with the standard engineering layers.",
+    summary="Start a drawing: blank with the engineering layers, or from a bundled/own template.",
     cost="mutate",
 )
 @mcp.tool(
@@ -1098,7 +1098,11 @@ async def drawing_info(ctx: Context) -> dict:
     tags={"drawing"},
 )
 async def drawing_new(
-    template: Annotated[str | None, "Optional path to .dwt template file"] = None,
+    template: Annotated[
+        str | None,
+        "Bundled template name (drawing_template_list: iso_a3_mech, iso_a1_arch, iso_a3_pid, "
+        "ansi_b_mech, ansi_d_arch) or a path to a .dwt/.dxf template file.",
+    ] = None,
     bootstrap: Annotated[
         bool,
         Field(
@@ -1109,19 +1113,54 @@ async def drawing_new(
     ] = True,
     ctx: Context = None,
 ) -> dict:
-    """Create a new empty drawing, optionally from a template (.dwt).
+    """Create a new drawing, optionally from a template.
 
-    When ``bootstrap=True`` (default), the drawing is also seeded with the
-    standard engineering linetypes (CENTER/HIDDEN/PHANTOM) and layers
-    (GEOMETRY, DIM, CENTER, HIDDEN, PHANTOM, HATCH, TEXT, TITLEBLOCK).
+    A bundled name resolves to `templates/<name>.dxf` headlessly and
+    `templates/<name>.dwt` on the live engine (falling back to the DXF with
+    `source: "bundled_dxf"` when no `.dwt` twin is committed); a path is used
+    as given. The result carries `template: {name|path, path, source}`.
+
+    On the live engine only a genuine `.dwt` reaches `Documents.Add` —
+    measured on AutoCAD 2026, `Add(<file.dxf>)` silently returns the default
+    drawing — so a `.dxf` template (bundled or a path) is first converted
+    through AutoCAD into a cached `.dwt` and `template.dwt` names it
+    (`template.dwt_cached` says whether the conversion was reused). The
+    drawing then really carries the template's layers, tabs and page setup.
+
+    Refused before anything is replaced: a bare name that is not in the
+    catalogue (the message lists the five), a template path that does not
+    exist, and a path outside the allowed directories. With `bootstrap=True`
+    (default) the standard engineering linetypes and layers are ensured
+    afterwards — idempotent on a template that already has them.
     """
-    if template is not None:
-        validated_template = validate_path(template, allow_write=False)
-        template = str(validated_template)
-    await ctx.info(f"Creating new drawing (template={template}, bootstrap={bootstrap})")
+    from pathlib import Path as _P
+
+    from engineering.standards.templates import resolve_template
+
     backend = _backend(ctx)
+    template_info: dict | None = None
+    if template is not None:
+        try:
+            resolved, source = resolve_template(template, backend.name)
+        except ValueError as exc:
+            raise ToolError(f"drawing_new: {exc}") from exc
+        if source == "path":
+            resolved = str(validate_path(resolved, allow_write=False))
+            if not _P(resolved).is_file():
+                raise ToolError(f"drawing_new: template file not found: {resolved}")
+            template_info = {"path": resolved, "source": source}
+        else:
+            template_info = {"name": template.strip().lower(), "path": resolved, "source": source}
+        template = resolved
+    await ctx.info(f"Creating new drawing (template={template}, bootstrap={bootstrap})")
     raw = await backend.drawing_new(template)
     result = dict(raw) if isinstance(raw, dict) else {"result": raw}
+    converted = result.pop("template_dwt", None)
+    if template_info is not None:
+        if converted:  # the live engine built a .dwt from the .dxf (see ComBackend.drawing_new)
+            template_info["dwt"] = converted["path"]
+            template_info["dwt_cached"] = bool(converted.get("cached"))
+        result["template"] = template_info
     if bootstrap:
         try:
             from engineering import (
@@ -7228,6 +7267,234 @@ async def drawing_apply_standard(
 
     await ctx.info(f"Applying the {standard} drafting standard")
     return await apply_standard(_backend(ctx), standard, layers, units)
+
+
+# ---------------------------------------------------------------------------
+# ── SECTION 19: Page Setup & Templates (6 tools) ────────────────────────────
+# ---------------------------------------------------------------------------
+
+
+@cad_tool(
+    summary="Read each sheet's page setup: paper, orientation, ctb, scale, device.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "List Page Setups", "readOnlyHint": True},
+    tags={"layout", "plot", "query"},
+)
+async def page_setup_list(
+    layout: Annotated[
+        str | None, "One paper-space layout, or omit for every sheet (Model is never listed)."
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """The page setup stored on each paper-space layout.
+
+    `paper` is the catalogue name (ISO_A3, ANSI_B, …) when the stored size
+    matches one within 0.5 mm, otherwise the media name as stored; `size_mm`,
+    `orientation`, `plot_style` (ctb), `scale` ("fit", "1:50", or a custom
+    ratio), `plot_area`, `device`, `margins_mm` [top, bottom, left, right] and
+    `center` are read back from the LAYOUT object (headless) or the AutoCAD
+    Layout (live). Refuses an unknown layout name and `Model` (model space has
+    no sheet; plot it with `drawing_export_pdf(layout=None)`).
+    """
+    try:
+        rows = await _backend(ctx).page_setup_list(layout)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+    return {"ok": True, "layouts": rows, "count": len(rows)}
+
+
+@cad_tool(
+    summary="Set a sheet's paper, orientation, ctb, plot scale and device (PAGESETUP).",
+    cost="safe",
+)
+@mcp.tool(
+    annotations={"title": "Apply Page Setup", "destructiveHint": False},
+    tags={"layout", "plot"},
+)
+async def page_setup_apply(
+    layout: Annotated[str, "Paper-space layout to set up (never 'Model')."],
+    paper: Annotated[str, "ISO_A0…ISO_A4 or ANSI_A…ANSI_E (short forms A3, ansi_b accepted)."],
+    orientation: Annotated[str, "landscape | portrait"] = "landscape",
+    plot_style: Annotated[
+        str, "Plot style table, e.g. monochrome.ctb, acad.ctb, Grayscale.ctb (plot_style_list)."
+    ] = "monochrome.ctb",
+    scale: Annotated[
+        str, "fit | 1:1 | 1:2 | 1:5 | 1:10 | 1:20 | 1:50 | 1:100 | 2:1 | 5:1 | 10:1"
+    ] = "fit",
+    plot_area: Annotated[str, "layout | extents"] = "layout",
+    device: Annotated[str, "Plotter configuration (.pc3) or printer name."] = "DWG To PDF.pc3",
+    margins_mm: Annotated[
+        list[float] | None,
+        "[top, bottom, left, right] in mm. Headless only: AutoCAD takes margins from the .pc3.",
+    ] = None,
+    center: Annotated[bool, "Centre the plot on the paper."] = True,
+    ctx: Context = None,
+) -> dict:
+    """AutoCAD's PAGESETUP as one call, on both engines.
+
+    Paper sizes are ISO 216 / ANSI Y14.1; the media is written in AutoCAD's own
+    spelling (`ISO_A3_(420.00_x_297.00_MM)`). `changed` lists only the values
+    that moved — re-applying the same setup reports `{}`. An unknown ctb is
+    written and reported `plot_style_known: false` (a missing ctb only matters
+    at plot time). Viewports on the sheet are never touched.
+
+    Refused before anything is written: an unknown paper, orientation, scale
+    or plot_area, an empty device or plot_style, margins that leave no
+    printable area, `Model`, an unknown layout. On the live engine `margins_mm`
+    is refused (the .pc3 owns them) and a media the device does not offer is
+    refused with the device's names for the same paper.
+
+    The proof is the PDF: `batch_plot` reads each sheet's `/MediaBox` back.
+    """
+    from engineering.standards.papers import resolve_page_setup
+
+    try:
+        setup = resolve_page_setup(
+            paper, orientation, plot_style, scale, plot_area, device, margins_mm, center
+        )
+        await ctx.info(f"Applying page setup {setup['paper']} {orientation} to {layout}")
+        return await _backend(ctx).page_setup_apply(layout, setup)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@cad_tool(
+    summary="List the plot style tables (ctb): the AutoCAD catalogue, plus what is installed.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "List Plot Styles", "readOnlyHint": True},
+    tags={"layout", "plot", "query"},
+)
+async def plot_style_list(ctx: Context = None) -> dict:
+    """The ctb files AutoCAD ships (`monochrome.ctb`, `acad.ctb`, `Grayscale.ctb`,
+    the Screening set, …) and, on the live engine, the files actually present
+    in `Preferences.Files.PrinterStyleSheetPath` (`source: "installed"`,
+    `installed: true/false` per row). Headlessly `installed` is `null`: there
+    is no installation to scan, and the catalogue is not evidence of one.
+    Never refuses; an unreadable Preferences object degrades to the catalogue.
+    """
+    backend = _backend(ctx)
+    rows = await backend.plot_style_list()
+    return {"ok": True, "styles": rows, "count": len(rows), "backend": backend.name}
+
+
+@cad_tool(
+    summary="Plot every sheet (or the named ones) to PDF; each sheet size is read back from its PDF.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Batch Plot", "destructiveHint": False},
+    tags={"layout", "plot", "export"},
+)
+async def batch_plot(
+    output_dir: Annotated[str, "Folder for the PDFs (created if missing)."],
+    layouts: Annotated[
+        list[str] | None,
+        "Layouts to plot; omit for every paper-space layout. 'Model' only when named.",
+    ] = None,
+    format: Annotated[str, "pdf (the only format this release plots)."] = "pdf",
+    file_pattern: Annotated[
+        str, "File name per sheet; {drawing} and {layout} are substituted."
+    ] = "{drawing}-{layout}.pdf",
+    ctx: Context = None,
+) -> dict:
+    """AutoCAD's PUBLISH for a PDF set, through `drawing_export_pdf(layout=…)`.
+
+    One row per sheet: `path`, `bytes`, and `mediabox_mm` **parsed from the
+    PDF that was written** (`/MediaBox`, points → mm), with `paper` naming the
+    catalogue size it matches within 0.5 mm — so the sheet size is verified,
+    never assumed. Model space is included only when named.
+
+    Refused before any file is written: a format other than pdf, an empty
+    `layouts` list, a layout that does not exist, a `file_pattern` containing a
+    path separator or lacking `{layout}` when more than one sheet is plotted,
+    and any output path outside the allowed directories. A sheet whose PDF has
+    no readable MediaBox is reported with `mediabox_mm: null` and an `error`.
+    """
+    from engineering.standards.plot import batch_plot as _batch_plot
+
+    if str(format).lower() != "pdf":
+        raise ToolError(
+            f"batch_plot: format must be 'pdf' (got {format!r}); PDF is the only plot format"
+        )
+    destination = validate_path(output_dir, allow_write=True)
+    await ctx.info(f"Batch plotting {layouts or 'every sheet'} to {destination}")
+    try:
+        return await _batch_plot(_backend(ctx), layouts, str(destination), file_pattern)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@cad_tool(
+    summary="List the five bundled drawing templates: standard, sheet, layers, styles, page setup.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "List Drawing Templates", "readOnlyHint": True},
+    tags={"template", "drawing", "query"},
+)
+async def drawing_template_list(ctx: Context = None) -> dict:
+    """The templates `drawing_new(template=<name>)` can start from.
+
+    Each row: `standard` (ISO/ANSI), `sheet`, `paper`, `layout` (the sheet tab's
+    name), `layer_set` (mech / pid / iso13567), `dimstyle` / `textstyle`
+    (ISO-25 / ISOCP or ANSI / ROMANS), `scale`, `title_block` (the ISO 5457 A3
+    frame, A3 sheets only), the `settings` applied, and `files.dxf` /
+    `files.dwt` with `present` flags — the `.dwt` twins exist only once built
+    on a live AutoCAD (`scripts/smoke_settings_com.py --build-dwt`). Never
+    refuses; it reads a catalogue.
+    """
+    from engineering.standards.templates import TEMPLATES_DIR, template_rows
+
+    rows = template_rows()
+    return {
+        "ok": True,
+        "templates": rows,
+        "count": len(rows),
+        "templates_dir": str(TEMPLATES_DIR),
+        "engine": _backend(ctx).name,
+    }
+
+
+@cad_tool(
+    summary="Save the current drawing as a template: .dwt on live AutoCAD, .dxf headlessly.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Save As Template", "destructiveHint": False},
+    tags={"template", "drawing"},
+)
+async def drawing_template_save(
+    path: Annotated[str, "Destination .dwt (live AutoCAD) or .dxf (either engine)."],
+    name: Annotated[str | None, "Template name for the report (default: the file stem)."] = None,
+    description: Annotated[
+        str | None, "Template description → DWT summary Comments on the live engine."
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """AutoCAD's SAVEAS → Drawing Template, on both engines.
+
+    Live AutoCAD writes a real `.dwt` (`SaveAs(path, ac2018_Template)`) and
+    puts `description` into the template's summary Comments; the active
+    document is rebound to the new file, as SAVEAS does. Headlessly a `.dxf`
+    template is written — `drawing_new(template=<path>)` opens it — and a
+    `.dwt` request is refused with capability `dwt_write` (the message names
+    the DXF route and the COM route); a description is reported
+    `description_written: false` because DXF has nowhere to keep it. Any other
+    suffix, and any path outside the allowed directories, is refused before
+    a byte is written.
+
+    Pack: core · lean: no (`drawing_save_as` is not lean either).
+    """
+    validated = validate_path(path, allow_write=True)
+    await ctx.info(f"Saving template: {validated}")
+    try:
+        return await _backend(ctx).drawing_template_save(str(validated), name, description)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

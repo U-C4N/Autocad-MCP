@@ -78,6 +78,12 @@ class ToolAliases:
 #       destination for every one of them.
 #   DWGPROPS -- one dialog, three tabs: General (drawing_info), Summary and
 #       Custom (drawing_properties_get / drawing_properties_set).
+#   PAGESETUP -- the Page Setup Manager both shows and edits a sheet's setup
+#       (page_setup_list vs page_setup_apply).
+#   PLOT -- one sheet to PDF (drawing_export_pdf) or every sheet in one go
+#       (batch_plot); a drafter typing it could mean either.
+#   SAVEAS -- the same command saves a copy (drawing_save_as) or a template
+#       (drawing_template_save, its "Drawing Template" file type).
 #
 # Every other AutoCAD command must map to exactly one tool.
 SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
@@ -92,8 +98,11 @@ SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
         "LAYOUT",
         "MEASUREGEOM",
         "MLEADERSTYLE",
+        "PAGESETUP",
         "PLINE",
+        "PLOT",
         "QSELECT",
+        "SAVEAS",
         "SETVAR",
         "STYLE",
         "ZOOM",
@@ -451,7 +460,13 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
     ),
     "drawing_new": ToolAliases(
         acad=("NEW", "QNEW"),
-        synonyms=("new drawing", "start a drawing", "blank sheet", "create a file"),
+        synonyms=(
+            "new drawing",
+            "start a drawing",
+            "blank sheet",
+            "create a file",
+            "start from a bundled template",
+        ),
     ),
     "drawing_open": ToolAliases(
         acad=("OPEN",),
@@ -1590,6 +1605,71 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "switch the text style",
             "use isocp for new text",
             "active text style",
+        ),
+    ),
+    # ── Page setup & templates (track E) ────────────────────────────────────
+    "batch_plot": ToolAliases(
+        acad=("PUBLISH", "PLOT"),
+        synonyms=(
+            "print all sheets to pdf",
+            "plot every layout",
+            "publish the sheet set",
+            "batch print",
+            "one pdf per sheet",
+            "plot the whole drawing set",
+        ),
+    ),
+    "drawing_template_list": ToolAliases(
+        acad=(),
+        synonyms=(
+            "which templates are there",
+            "bundled templates",
+            "iso a3 template",
+            "ansi b sheet",
+            "start from a standard sheet",
+            "dwt list",
+        ),
+    ),
+    "drawing_template_save": ToolAliases(
+        acad=("SAVEAS",),
+        synonyms=(
+            "save as template",
+            "make a dwt",
+            "template from this drawing",
+            "save as dwt",
+            "reuse this sheet setup",
+        ),
+    ),
+    "page_setup_apply": ToolAliases(
+        acad=("PAGESETUP",),
+        synonyms=(
+            "page setup",
+            "set the paper size",
+            "a3 landscape",
+            "plot scale",
+            "monochrome ctb",
+            "which printer",
+            "set up the sheet for printing",
+        ),
+    ),
+    "page_setup_list": ToolAliases(
+        acad=("PAGESETUP",),
+        synonyms=(
+            "what paper is this sheet",
+            "page setup of each layout",
+            "plot settings",
+            "sheet size and orientation",
+            "which ctb is set",
+        ),
+    ),
+    "plot_style_list": ToolAliases(
+        acad=("STYLESMANAGER",),
+        synonyms=(
+            "ctb files",
+            "plot style table",
+            "pen assignments",
+            "monochrome or grayscale",
+            "which plot styles are installed",
         ),
     ),
 }

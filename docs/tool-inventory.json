@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 179,
+    "tools": 185,
     "resources": 8,
     "prompts": 5,
     "groups": 21
@@ -20,13 +20,13 @@
     "entity_modification": 16,
     "entity_query": 9,
     "layers": 14,
-    "layouts": 12,
+    "layouts": 16,
     "pid": 9,
     "premium": 12,
     "solids": 5,
     "styles": 10,
     "system": 8,
-    "templates": 2,
+    "templates": 4,
     "transactions": 3,
     "validation": 1,
     "view": 4
@@ -174,6 +174,21 @@
       "annotations": {
         "title": "Select Entities By Type",
         "readOnlyHint": true
+      }
+    },
+    {
+      "name": "batch_plot",
+      "group": "layouts",
+      "cost": "mutate",
+      "summary": "Plot every sheet (or the named ones) to PDF; each sheet size is read back from its PDF.",
+      "tags": [
+        "export",
+        "layout",
+        "plot"
+      ],
+      "annotations": {
+        "title": "Batch Plot",
+        "destructiveHint": false
       }
     },
     {
@@ -652,7 +667,7 @@
       "name": "drawing_new",
       "group": "drawing",
       "cost": "mutate",
-      "summary": "Start a blank drawing, pre-seeded with the standard engineering layers.",
+      "summary": "Start a drawing: blank with the engineering layers, or from a bundled/own template.",
       "tags": [
         "drawing"
       ],
@@ -807,6 +822,35 @@
       "annotations": {
         "title": "Drawing Settings (read / change)",
         "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "drawing_template_list",
+      "group": "templates",
+      "cost": "read",
+      "summary": "List the five bundled drawing templates: standard, sheet, layers, styles, page setup.",
+      "tags": [
+        "drawing",
+        "query",
+        "template"
+      ],
+      "annotations": {
+        "title": "List Drawing Templates",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "drawing_template_save",
+      "group": "templates",
+      "cost": "mutate",
+      "summary": "Save the current drawing as a template: .dwt on live AutoCAD, .dxf headlessly.",
+      "tags": [
+        "drawing",
+        "template"
+      ],
+      "annotations": {
+        "title": "Save As Template",
         "destructiveHint": false
       }
     },
@@ -1845,6 +1889,35 @@
       }
     },
     {
+      "name": "page_setup_apply",
+      "group": "layouts",
+      "cost": "safe",
+      "summary": "Set a sheet's paper, orientation, ctb, plot scale and device (PAGESETUP).",
+      "tags": [
+        "layout",
+        "plot"
+      ],
+      "annotations": {
+        "title": "Apply Page Setup",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "page_setup_list",
+      "group": "layouts",
+      "cost": "read",
+      "summary": "Read each sheet's page setup: paper, orientation, ctb, scale, device.",
+      "tags": [
+        "layout",
+        "plot",
+        "query"
+      ],
+      "annotations": {
+        "title": "List Page Setups",
+        "readOnlyHint": true
+      }
+    },
+    {
       "name": "pid_equipment_list",
       "group": "pid",
       "cost": "read",
@@ -1968,6 +2041,21 @@
       ],
       "annotations": {
         "title": "P&ID: Parse Tag",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "plot_style_list",
+      "group": "layouts",
+      "cost": "read",
+      "summary": "List the plot style tables (ctb): the AutoCAD catalogue, plus what is installed.",
+      "tags": [
+        "layout",
+        "plot",
+        "query"
+      ],
+      "annotations": {
+        "title": "List Plot Styles",
         "readOnlyHint": true
       }
     },

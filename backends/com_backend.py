@@ -14,6 +14,7 @@ import os
 import sys
 import time
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -168,6 +169,71 @@ def _acad_app():
                     f"{config.DEFAULT_CAD_PROGID!r}.)"
                 ) from exc
     return _COM_STATE["app"]
+
+
+#: ``AcSaveAsType`` template constants, newest first: ac2018_Template,
+#: ac2013_Template, ac2010_Template. A seat older than the first refuses it
+#: with a COM error and the next one is tried.
+_TEMPLATE_SAVE_FORMATS = (66, 62, 50)
+
+
+def _template_cache_dir() -> Path:
+    import tempfile
+
+    return Path(tempfile.gettempdir()) / "acadmcp-templates"
+
+
+def _template_as_dwt(app, source: Path) -> tuple[Path, bool]:
+    """A real ``.dwt`` for ``source``, built once through AutoCAD and cached.
+
+    ``Documents.Add(<file>)`` accepts only a genuine DWT: measured on AutoCAD
+    2026, ``Add(templates/iso_a3_mech.dxf)`` returned the default acadiso
+    drawing (layers ``['0']``, tabs ``Layout1``/``Layout2``) exactly as
+    ``Add()`` and ``Add(<nonexistent.dwt>)`` did, and the DXF bytes renamed
+    ``.dwt`` fared no better. Opening the file and saving it as a template
+    (``SaveAs(path, ac2018_Template)``) is what yields the eleven layers and
+    the ``A3`` tab, so that is done here — once per file content, keyed on the
+    path, size and mtime, under the temp folder — and the ``.dwt`` is what
+    ``Add`` is handed. Returns ``(dwt_path, cached)``.
+
+    Must only be called from the COM executor thread. The conversion document
+    is opened read-only and closed without saving in a ``finally``; the
+    ``.dwt`` on disk is the only thing it leaves behind.
+    """
+    import hashlib
+
+    source = Path(source).resolve()
+    stat = source.stat()
+    digest = hashlib.sha1(
+        f"{source}|{stat.st_size}|{stat.st_mtime_ns}".encode("utf-8", "surrogateescape")
+    ).hexdigest()[:12]
+    cache_dir = _template_cache_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    dwt = cache_dir / f"{source.stem}-{digest}.dwt"
+    if dwt.is_file() and dwt.stat().st_size > 0:
+        return dwt, True
+    doc = app.Documents.Open(str(source), True)
+    try:
+        last_exc: Exception | None = None
+        for fmt in _TEMPLATE_SAVE_FORMATS:
+            try:
+                doc.SaveAs(str(dwt), fmt)
+                break
+            except _COM_ERROR as exc:
+                last_exc = exc
+                log.debug("SaveAs(%s, %d) refused: %s", dwt, fmt, exc)
+        else:
+            raise RuntimeError(
+                f"could not save {source.name} as a .dwt template: {last_exc}"
+            ) from last_exc
+    finally:
+        try:
+            doc.Close(False)
+        except Exception as exc:  # the temp document must never stay open
+            log.warning("template conversion document did not close: %s", exc)
+    if not dwt.is_file() or dwt.stat().st_size == 0:
+        raise RuntimeError(f"AutoCAD reported the template saved but {dwt} is not on disk")
+    return dwt, False
 
 
 def _acad_doc():
@@ -1349,6 +1415,7 @@ class ComBackend(AutoCADBackend):
                 "refiner": FeatureCapability(True, "shared"),
                 "delivery": FeatureCapability(True, "shared"),
                 "paper_space": FeatureCapability(True, "native"),
+                "dwt_write": FeatureCapability(True, "native"),
                 "viewport_render": FeatureCapability(True, "native"),
                 "solid_3d": _solid_3d_capability(),
                 "lisp": FeatureCapability(True, "sanitized"),
@@ -1531,13 +1598,36 @@ class ComBackend(AutoCADBackend):
         return await self._run(_sync)
 
     async def drawing_new(self, template: str | None = None) -> dict:
+        """``Documents.Add()``, or ``Documents.Add(<dwt>)`` from a template file.
+
+        A template that is not already a ``.dwt`` (the bundled ``.dxf`` files,
+        an explicit ``.dxf`` path) is first converted into one through AutoCAD
+        itself — see ``_template_as_dwt`` for the measurement that makes this
+        necessary — and the result reports ``template_dwt: {path, cached}``.
+        A template path that is not a file is refused here rather than handed
+        to ``Add``, which would silently create the default drawing instead.
+        """
+
         def _sync():
             app = _acad_app()
-            if template:
-                doc = app.Documents.Add(template)
-            else:
+            if not template:
                 doc = app.Documents.Add()
-            return {"ok": True, "name": doc.Name}
+                return {"ok": True, "name": doc.Name}
+            source = Path(template)
+            if not source.is_file():
+                raise FileNotFoundError(
+                    f"template file not found: {template} (Documents.Add would silently "
+                    "create the default drawing instead)"
+                )
+            result: dict[str, Any] = {"ok": True}
+            if source.suffix.lower() == ".dwt":
+                dwt = source
+            else:
+                dwt, cached = _template_as_dwt(app, source)
+                result["template_dwt"] = {"path": str(dwt), "cached": cached}
+            doc = app.Documents.Add(str(dwt))
+            result["name"] = doc.Name
+            return result
 
         result = await self._run(_sync)
         await self._ensure_document_state()
@@ -1567,8 +1657,10 @@ class ComBackend(AutoCADBackend):
     async def drawing_save_as(self, path: str, fmt: str = "dwg") -> dict:
         def _sync():
             doc = _acad_doc()
-            # AutoCAD SaveAs format constants: 12=DWG R2010, 61=DXF R2010
-            fmt_map = {"dwg": 12, "dxf": 61, "dwt": 5}
+            # AutoCAD AcSaveAsType: 12 = ac2000_dwg, 61 = ac2013_dxf, 66 = ac2018_Template.
+            # "dwt" was 5 (acR13_dxf) until v1.6: a DWT request wrote an R13 DXF
+            # under a .dwt name.
+            fmt_map = {"dwg": 12, "dxf": 61, "dwt": 66}
             acad_fmt = fmt_map.get(fmt.lower(), 12)
             doc.SaveAs(path, acad_fmt)
             return {"ok": True, "path": path, "format": fmt}
@@ -1579,23 +1671,73 @@ class ComBackend(AutoCADBackend):
         return await self.drawing_save_as(path, "dxf")
 
     async def drawing_export_pdf(self, path: str, layout: str | None = None) -> dict:
+        """Plot one layout to PDF through ``Plot.PlotToFile`` and confirm the file.
+
+        ``layout=None`` means model space, as the tool advertises — the Model
+        tab is made current for the plot (and the previous tab restored), so
+        the row is never silently the sheet that happened to be active.
+
+        Measured on AutoCAD 2026 with the operator's default BACKGROUNDPLOT=2:
+        ``PlotToFile`` returns True immediately, the job is queued to the
+        background plotter, and no file exists when the call comes back —
+        seconds later the folder was still empty, and a foreground plot
+        attempted after such a stranded job raised E_FAIL. So the plot is
+        forced to the foreground (``BACKGROUNDPLOT=0``, restored afterwards),
+        the method's boolean is honoured, and ``ok`` is reported only once the
+        file is on disk with a size.
+        """
+
         def _sync():
             doc = _acad_doc()
-            previous = None
-            if layout:
-                previous = doc.ActiveLayout.Name
-                if previous != layout:
-                    doc.ActiveLayout = doc.Layouts.Item(layout)
+            target = layout.strip() if layout and layout.strip() else "Model"
+            previous = doc.ActiveLayout.Name
+            switched = False
+            if previous.lower() != target.lower():
+                doc.ActiveLayout = doc.Layouts.Item(target)
+                switched = True
+            old_background = None
             try:
-                plot = doc.Plot
-                plot.PlotToFile(path, "DWG To PDF.pc3")
-                result = {"ok": True, "path": path}
-                if layout:
-                    result["layout"] = layout
-                return result
+                try:
+                    old_background = int(doc.GetVariable("BACKGROUNDPLOT"))
+                except Exception as exc:
+                    log.debug("BACKGROUNDPLOT unreadable (%s); plotting as configured", exc)
+                if old_background not in (None, 0):
+                    doc.SetVariable("BACKGROUNDPLOT", 0)
+                plotted = doc.Plot.PlotToFile(path, "DWG To PDF.pc3")
+                written = Path(path)
+                if not plotted:
+                    return {
+                        "ok": False,
+                        "path": path,
+                        "layout": target,
+                        "error": "PlotToFile returned False: AutoCAD refused the plot "
+                        "(check the layout's plot area and the 'DWG To PDF.pc3' device)",
+                    }
+                if not written.is_file():
+                    return {
+                        "ok": False,
+                        "path": path,
+                        "layout": target,
+                        "error": "PlotToFile reported success but wrote no file at "
+                        f"{path} (BACKGROUNDPLOT was {old_background})",
+                    }
+                return {
+                    "ok": True,
+                    "path": path,
+                    "layout": target,
+                    "bytes": written.stat().st_size,
+                }
             finally:
-                if previous is not None and previous != layout:
-                    doc.ActiveLayout = doc.Layouts.Item(previous)
+                if old_background not in (None, 0):
+                    try:
+                        doc.SetVariable("BACKGROUNDPLOT", old_background)
+                    except Exception as exc:
+                        log.warning("could not restore BACKGROUNDPLOT=%s: %s", old_background, exc)
+                if switched:
+                    try:
+                        doc.ActiveLayout = doc.Layouts.Item(previous)
+                    except Exception as exc:
+                        log.warning("could not restore the active layout %r: %s", previous, exc)
 
         return await self._run(_sync)
 
@@ -2493,6 +2635,393 @@ class ComBackend(AutoCADBackend):
     # a typed refusal carrying that key rather than an unverified
     # CopyObjects-and-delete that would destroy and recreate geometry in the
     # operator's open drawing when it goes wrong.
+
+    # ── page setup (track E) ─────────────────────────────────────────────────
+    #
+    # Layout is an IAcadPlotConfiguration. Constants from the AutoCAD 2026
+    # typelib: AcPlotPaperUnits acMillimeters=1; AcPlotRotation ac0degrees=0;
+    # AcPlotType acExtents=1 / acLayout=5; AcPlotScale acScaleToFit=0, ac1_1=16
+    # (the full table is engineering.standards.papers.ACTIVEX_PLOT_SCALE).
+    # CenterPlot (ActiveX Reference, acadauto.chm): "This property cannot be
+    # set to True on a layout object whose PlotType property is set to
+    # acLayout" — so a layout plot never writes it (resolve_page_setup hands
+    # over None), an extents plot writes it *after* PlotType, and a stale True
+    # is cleared *before* PlotType moves to acLayout. Every write is journaled
+    # and unwound in reverse when AutoCAD refuses one, so a failed apply leaves
+    # the layout as it was — and the read-back after the unwind is compared to
+    # the read-back before the first write, so a value that did not go back is
+    # named rather than claimed restored.
+    #
+    # Two behaviours measured live (AutoCAD 2026, 2026-09-17) that the ActiveX
+    # Reference does not document:
+    # * GetPaperSize / GetPaperMargins answer in millimetres whatever
+    #   PaperUnits says (ISO_A3 under PaperUnits=0 -> (420.0, 297.0); ANSI_B
+    #   under 0 and 1 -> (431.8, 279.4) both times). They are never scaled.
+    #   PaperUnits itself still governs what one paper-space unit means at
+    #   the plot scale, so the row reports it (``paper_units``) and an apply
+    #   that moves it says so in ``changed`` and ``warnings``.
+    # * Both answer in the *media's* frame (the PLOTSETTINGS fields the DXF
+    #   row reads); under PlotRotation 1/3 the row turns size and margins
+    #   together through ``papers.turned_sheet``, the one mapping the headless
+    #   row and renderer use. The rotated read-back is not yet measured live
+    #   (scripts/smoke_settings_com.py, Task 24, is where it gets measured).
+    # * Writing ConfigName replaces CanonicalMediaName with the new device's
+    #   default when the current media does not exist on it, and writing the
+    #   old device back does *not* bring the old media with it (DWG To PDF /
+    #   ISO_A3 -> Microsoft Print to PDF -> 'psk:ISOA4' -> DWG To PDF ->
+    #   'ANSI_A_(11.00_x_8.50_Inches)'). The device write therefore journals
+    #   one combined undo: device back, then the media / units / rotation
+    #   snapshotted before the switch re-applied.
+    #
+    # Fake-tested in tests/test_page_setup.py (the fake enforces the CenterPlot
+    # rule and replays both measurements); executed live by
+    # scripts/smoke_settings_com.py (Task 24).
+
+    _AC_NO_ROTATION = 0
+    #: AcSaveAsType, AutoCAD 2026 typelib: ac2018_Template = 66 (acNative = 64,
+    #: ac2013_dxf = 61). The spec's "acTemplateDwg" is not a member of the enum.
+    _AC_SAVEAS_TEMPLATE = 66
+    _AC_SAVEAS_DXF = 61
+    #: Layout properties a ConfigName write can move as a side effect (measured
+    #: live for CanonicalMediaName; units / rotation are re-applied on the same
+    #: evidence-before-trust basis) — snapshotted before the device switch and
+    #: put back by its undo.
+    _DEVICE_SIDE_EFFECTS = ("CanonicalMediaName", "PaperUnits", "PlotRotation")
+
+    @staticmethod
+    def _com_page_setup_row(layout) -> dict:
+        from engineering.standards.papers import (
+            PLOT_TYPE_NAMES,
+            activex_scale_label,
+            center_applies,
+            paper_from_size,
+            paper_units_name,
+            scale_label,
+            turned_sheet,
+        )
+
+        def _get(attr):
+            try:
+                return getattr(layout, attr)
+            except Exception as exc:
+                log.debug("Layout.%s read failed: %s", attr, exc)
+                return None
+
+        # GetPaperSize / GetPaperMargins are millimetres regardless of
+        # PaperUnits (measured live; see the block comment above) — no factor.
+        size = None
+        try:
+            width, height = layout.GetPaperSize()
+            size = [round(float(width), 2), round(float(height), 2)]
+        except Exception as exc:
+            log.debug("Layout.GetPaperSize failed: %s", exc)
+        margins = None
+        try:
+            (left, bottom), (right, top) = layout.GetPaperMargins()
+            margins = [round(float(v), 3) for v in (top, bottom, left, right)]
+        except Exception as exc:
+            log.debug("Layout.GetPaperMargins failed: %s", exc)
+        rotation = _get("PlotRotation") or 0
+        if size and margins:
+            size, margins = turned_sheet(size[0], size[1], margins, rotation)
+            size = [round(v, 2) for v in size]
+            margins = [round(v, 3) for v in margins]
+        elif size and int(rotation) in (1, 3):
+            size = [size[1], size[0]]
+        if _get("UseStandardScale"):
+            scale = activex_scale_label(_get("StandardScale") or 0)
+        else:
+            try:
+                numerator, denominator = layout.GetCustomScale()
+                scale = scale_label(float(numerator), float(denominator))
+            except Exception as exc:
+                log.debug("Layout.GetCustomScale failed: %s", exc)
+                scale = None
+        media = _get("CanonicalMediaName")
+        plot_type = _get("PlotType")
+        return {
+            "layout": layout.Name,
+            "paper": (paper_from_size(*size) if size else None) or media,
+            "canonical_media_name": media,
+            "size_mm": size,
+            "orientation": (
+                None if not size else ("landscape" if size[0] >= size[1] else "portrait")
+            ),
+            "plot_style": _get("StyleSheet"),
+            "scale": scale,
+            "plot_area": PLOT_TYPE_NAMES.get(plot_type, plot_type),
+            "device": _get("ConfigName"),
+            "margins_mm": margins,
+            "paper_units": paper_units_name(_get("PaperUnits")),
+            "center": bool(_get("CenterPlot")) if center_applies(plot_type) else None,
+        }
+
+    def _com_paper_layout(self, doc, raw: str, operation: str):
+        resolved = self._find_layout(doc, raw)
+        if resolved is None:
+            available = [n for n in self._layout_names(doc) if n != "Model"]
+            raise ValueError(
+                f"{operation}: layout {raw!r} not found (paper-space layouts: "
+                f"{', '.join(available) or 'none'})"
+            )
+        if resolved == "Model":
+            raise ValueError(
+                f"{operation}: Model space has no sheet; plot it with "
+                "drawing_export_pdf(layout=None) or apply the setup to a paper-space layout"
+            )
+        return doc.Layouts.Item(resolved)
+
+    async def page_setup_list(self, layout: str | None = None) -> list[dict]:
+        def _sync():
+            doc = _acad_doc()
+            if layout is not None and self._layout_name(layout):
+                target = self._com_paper_layout(doc, layout, "page_setup_list")
+                return [self._com_page_setup_row(target)]
+            return [
+                self._com_page_setup_row(doc.Layouts.Item(name))
+                for name in self._layout_names(doc)
+                if name != "Model"
+            ]
+
+        return await self._run(_sync)
+
+    async def page_setup_apply(self, layout: str, setup: dict) -> dict:
+        from engineering.standards.papers import (
+            PAPER_UNITS,
+            page_setup_warnings,
+            require_page_setup,
+        )
+
+        resolved = require_page_setup(setup)
+        if resolved["margins_mm"] is not None:
+            raise ValueError(
+                "page_setup_apply: margins_mm cannot be written on the COM backend — AutoCAD "
+                "takes the printable margins from the plotter configuration (.pc3). Omit "
+                "margins_mm; the device's margins are read back in the result."
+            )
+
+        def _sync():
+            doc = _acad_doc()
+            target = self._com_paper_layout(doc, layout, "page_setup_apply")
+            before = self._com_page_setup_row(target)
+            # Journal of (undo callable, label) for every write that landed,
+            # unwound in reverse when a later one is refused.
+            journal: list[tuple[Callable[[], None], str]] = []
+
+            def _set(attr: str, value):
+                previous = getattr(target, attr)
+                setattr(target, attr, value)
+                journal.append((lambda: setattr(target, attr, previous), attr))
+
+            def _set_custom_scale(numerator: float, denominator: float):
+                previous = tuple(float(v) for v in target.GetCustomScale())
+                target.SetCustomScale(numerator, denominator)
+                journal.append((lambda: target.SetCustomScale(*previous), "SetCustomScale"))
+
+            def _set_device(device: str):
+                # A device switch moves the media (and can move units /
+                # rotation) as a side effect, and switching back does not
+                # move them back — so the undo re-applies what was there.
+                snapshot = {attr: getattr(target, attr) for attr in self._DEVICE_SIDE_EFFECTS}
+                previous = target.ConfigName
+                target.ConfigName = device
+
+                def _undo():
+                    target.ConfigName = previous
+                    target.RefreshPlotDeviceInfo()
+                    for attr, value in snapshot.items():
+                        if getattr(target, attr) != value:
+                            setattr(target, attr, value)
+
+                journal.append((_undo, "ConfigName"))
+
+            step = "ConfigName"
+            try:
+                target.RefreshPlotDeviceInfo()
+                _set_device(resolved["device"])
+                target.RefreshPlotDeviceInfo()
+                media = resolved["canonical_media_name"]
+                names = [str(n) for n in (target.GetCanonicalMediaNames() or ())]
+                if media not in names:
+                    nearest = [n for n in names if n.split("_(")[0] == media.split("_(")[0]]
+                    raise ValueError(
+                        f"page_setup_apply: device {resolved['device']!r} has no media "
+                        f"{media!r} (same paper on this device: "
+                        f"{', '.join(nearest) or 'none'}; {len(names)} media in total)"
+                    )
+                step = "CanonicalMediaName"
+                _set("CanonicalMediaName", media)
+                if resolved["paper_units"] is not None:
+                    # None keeps the layout's units — what AutoCAD's own Page
+                    # Setup does when a media is chosen.
+                    step = "PaperUnits"
+                    _set("PaperUnits", PAPER_UNITS[resolved["paper_units"]])
+                step = "PlotRotation"
+                _set("PlotRotation", self._AC_NO_ROTATION)
+                step = "StyleSheet"
+                _set("StyleSheet", resolved["plot_style"])
+                step = "PlotWithPlotStyles"
+                _set("PlotWithPlotStyles", True)
+                center = resolved["center"]
+                if center is None and self._com_center_plot_is_set(target):
+                    # Clearing is legal under any PlotType; the layout plot
+                    # then carries the flag AutoCAD stores for acLayout.
+                    step = "CenterPlot"
+                    _set("CenterPlot", False)
+                step = "PlotType"
+                _set("PlotType", int(resolved["plot_type"]))
+                code = resolved["activex_standard_scale"]
+                if code is not None:
+                    step = "StandardScale"
+                    _set("StandardScale", int(code))
+                    step = "UseStandardScale"
+                    _set("UseStandardScale", True)
+                else:
+                    numerator, denominator = (float(v) for v in resolved["scale_ratio"])
+                    step = "SetCustomScale"
+                    _set_custom_scale(numerator, denominator)
+                    step = "UseStandardScale"
+                    _set("UseStandardScale", False)
+                if center is not None:
+                    # Extents plot: PlotType is already acExtents, so True is legal.
+                    step = "CenterPlot"
+                    _set("CenterPlot", bool(center))
+            except Exception as exc:
+                failed = self._com_unwind_page_setup(journal)
+                # The unwind's own word is not evidence: read the layout back
+                # and name every field that is not what it was.
+                failed += [
+                    key
+                    for key, value in self._com_page_setup_row(target).items()
+                    if key != "layout" and value != before.get(key) and key not in failed
+                ]
+                if isinstance(exc, ValueError) and not failed:
+                    raise  # our own refusal (unknown media), nothing left changed
+                restored = (
+                    f"layout {target.Name!r} restored to its previous page setup"
+                    if not failed
+                    else f"layout {target.Name!r} could NOT be fully restored "
+                    f"(still changed: {', '.join(failed)})"
+                )
+                if isinstance(exc, ValueError):
+                    raise ValueError(f"{exc}; {restored}") from exc
+                raise ValueError(
+                    f"page_setup_apply: AutoCAD refused Layout.{step} ({exc}); {restored}"
+                ) from exc
+            after = self._com_page_setup_row(target)
+            changed = {
+                key: [before[key], after[key]]
+                for key in after
+                if key != "layout" and before.get(key) != after[key]
+            }
+            return {
+                "ok": True,
+                "layout": target.Name,
+                "applied": dict(resolved),
+                "changed": changed,
+                "warnings": page_setup_warnings(changed),
+                "plot_style_known": bool(resolved["plot_style_known"]),
+                "viewports_kept": True,
+                "backend": "com",
+            }
+
+        return await self._run(_sync)
+
+    @staticmethod
+    def _com_center_plot_is_set(layout) -> bool:
+        """Whether the layout carries CenterPlot=True (a failed read counts as no)."""
+        try:
+            return bool(layout.CenterPlot)
+        except Exception as exc:
+            log.debug("Layout.CenterPlot read failed: %s", exc)
+            return False
+
+    @staticmethod
+    def _com_unwind_page_setup(journal: list[tuple[Callable[[], None], str]]) -> list[str]:
+        """Undo every journaled page-setup write in reverse; return what would not go back."""
+        failed: list[str] = []
+        for undo, label in reversed(journal):
+            try:
+                undo()
+            except Exception as exc:
+                log.warning("page_setup_apply: could not restore Layout.%s: %s", label, exc)
+                failed.append(label)
+        return failed
+
+    async def plot_style_list(self) -> list[dict]:
+        """The ctb catalogue, marked against the files in AutoCAD's plot style path.
+
+        ``Preferences.Files.PrinterStyleSheetPath`` is a ``;``-separated list of
+        folders. Every read is guarded: a folder that cannot be listed is
+        skipped, and when the Preferences object is unreachable the catalogue
+        rows come back with ``installed: None`` rather than a fabricated False.
+        """
+        from engineering.standards.papers import CTB_CATALOG
+
+        def _sync():
+            rows = [{"name": name, "source": "catalog", "installed": None} for name in CTB_CATALOG]
+            try:
+                raw = str(_acad_app().Preferences.Files.PrinterStyleSheetPath or "")
+            except Exception as exc:
+                log.debug("Preferences.Files.PrinterStyleSheetPath unreadable: %s", exc)
+                return rows
+            installed: dict[str, str] = {}
+            for folder in (part.strip() for part in raw.split(";")):
+                if not folder:
+                    continue
+                try:
+                    entries = sorted(Path(folder).iterdir())
+                except OSError as exc:
+                    log.debug("plot style folder %r not listable: %s", folder, exc)
+                    continue
+                for entry in entries:
+                    if entry.suffix.lower() in (".ctb", ".stb"):
+                        installed.setdefault(entry.name.lower(), entry.name)
+            catalog_lower = {row["name"].lower() for row in rows}
+            for row in rows:
+                row["installed"] = row["name"].lower() in installed
+            for key, name in installed.items():
+                if key not in catalog_lower:
+                    rows.append({"name": name, "source": "installed", "installed": True})
+            return rows
+
+        return await self._run(_sync)
+
+    async def drawing_template_save(self, path, name=None, description=None) -> dict:
+        """``SaveAs(path, ac2018_Template)`` for ``.dwt``, the DXF code for ``.dxf``.
+
+        AutoCAD's template description is its summary-info Comments field, so
+        ``description`` is written there first (``description_written`` says
+        whether it took). SaveAs rebinds the active document to the new file,
+        as the SAVEAS command does — reported as ``document_rebound``.
+        Fake-tested; executed live by ``scripts/smoke_settings_com.py --build-dwt``.
+        """
+        suffix = Path(path).suffix.lower()
+        if suffix not in (".dwt", ".dxf"):
+            raise ValueError(f"drawing_template_save: path must end in .dwt or .dxf, got {path!r}")
+
+        def _sync():
+            doc = _acad_doc()
+            description_written = False
+            if description is not None:
+                try:
+                    doc.SummaryInfo.Comments = str(description)
+                    description_written = True
+                except Exception as exc:
+                    log.debug("SummaryInfo.Comments write failed: %s", exc)
+            code = self._AC_SAVEAS_TEMPLATE if suffix == ".dwt" else self._AC_SAVEAS_DXF
+            doc.SaveAs(path, code)
+            return {
+                "ok": True,
+                "path": path,
+                "format": suffix[1:],
+                "backend": "com",
+                "name": name or Path(path).stem,
+                "description_written": description_written,
+                "document_rebound": True,
+            }
+
+        return await self._run(_sync)
 
     # ── 3D solids (native ActiveX; gated behind ENABLE_3D at the tool layer) ─
 

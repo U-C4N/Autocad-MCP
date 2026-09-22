@@ -47,6 +47,9 @@ benchmarks/results/*
 !benchmarks/results/published/**
 benchmarks/.competitors/
 *.dxf
+# The bundled templates are the one committed DXF set: built by
+# scripts/build_templates.py and pinned reproducible by its --check.
+!templates/*.dxf
 *.dwg
 *.bak
 
