@@ -1,6 +1,6 @@
 """Golden query set for tool discovery: English in, one right tool out.
 
-Sixty-six cases (51 tuning + 15 holdout) split into a **tuning** set and a
+Seventy-one cases (56 tuning + 15 holdout) split into a **tuning** set and a
 **holdout** set. The split is
 the point of the file. Ranking work is measured against
 :data:`TUNING_CASES` only; :data:`HOLDOUT_CASES` were written at the same time,
@@ -143,6 +143,18 @@ TUNING_CASES: tuple[GoldenCase, ...] = (
         "counting",
         risk="read",
     ),
+    # Styles (track E). DIMSTYLE / STYLE / MLEADERSTYLE are umbrella commands
+    # shared by their list/create/modify/set-current tools, so the one command
+    # case uses the command unique to a single tool and the rest are phrased.
+    GoldenCase("DDIM", "dimstyle_create", "command"),
+    GoldenCase("make ISO-25 the current dimension style", "dimstyle_set_current", "paraphrase"),
+    GoldenCase(
+        "set the drawing up to the ISO drafting standard in one go",
+        "drawing_apply_standard",
+        "paraphrase",
+    ),
+    GoldenCase("create a text style that uses the isocp font", "textstyle_create", "paraphrase"),
+    GoldenCase("which dimension styles are defined", "dimstyle_list", "counting", risk="read"),
 )
 
 

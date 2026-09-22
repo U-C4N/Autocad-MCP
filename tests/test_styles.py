@@ -1716,3 +1716,20 @@ async def test_com_apply_standard_creates_both_styles_and_sets_units(com_backend
     assert ("ActiveTextStyle", "ISOCP") in document.calls
     assert document.ActiveDimStyle.Name == "ISO-25"
     assert document.variables["DIMDSEP"] == "," and document.variables["INSUNITS"] == 4
+
+
+# ── profile decision ────────────────────────────────────────────────────────
+
+
+async def test_lean_carries_the_two_set_current_tools_and_apply_standard_only():
+    import server
+
+    lean = server.LEAN_TOOL_NAMES
+    assert {"dimstyle_set_current", "textstyle_set_current", "drawing_apply_standard"} <= lean
+    assert not (STYLE_TOOLS - {"dimstyle_set_current", "textstyle_set_current"}) & lean, (
+        "authoring and listing styles is full-profile work"
+    )
+    claimed = set().union(*server.PACK_TOOL_NAMES.values())
+    assert not claimed & (STYLE_TOOLS | {"drawing_apply_standard"}), (
+        "styles are core: no pack may claim them"
+    )

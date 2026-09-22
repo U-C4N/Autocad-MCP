@@ -932,6 +932,12 @@ LEAN_TOOL_NAMES = frozenset(
         "pid_symbol_insert",
         "pid_line_draw",
         "pid_graph",
+        # Styles (track E) — a lean client *uses* a style far more often than
+        # it authors one; drawing_apply_standard authors the whole set in one
+        # call when it must.
+        "dimstyle_set_current",
+        "textstyle_set_current",
+        "drawing_apply_standard",
     }
 )
 
