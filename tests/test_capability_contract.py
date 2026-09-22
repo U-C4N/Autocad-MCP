@@ -32,6 +32,9 @@ import pytest
 from backends.base import AutoCADBackend, UnsupportedCapabilityError
 from backends.capability import capability_keys, is_capability_default
 from backends.com_backend import ComBackend
+from backends.contracts.environment import EnvironmentContract
+from backends.contracts.pagesetup import PageSetupContract
+from backends.contracts.styles import StylesContract
 from backends.ezdxf_backend import EzdxfBackend
 
 # Marked per-test rather than module-wide: half of these are plain registry
@@ -116,3 +119,50 @@ async def test_an_implementing_backend_is_unaffected(backend):
     result = await backend.entity_change_space([], "nope")
     assert result["ok"] is False
     assert "error" in result, "the real implementation still does its own validation"
+
+
+# ── track E: composition and the five agreed keys ───────────────────────────
+
+#: spec §8.1 — the flag each engine must report. `mleaderstyle` is deliberately
+#: absent: the spec retracted it (the ActiveX route through the
+#: ``ACAD_MLEADERSTYLE`` dictionary exists, §4.2), and both engines implement
+#: ``mleaderstyle_create`` natively — `capability_keys()` never registers it.
+TRACK_E_KEYS = {
+    "dwgprops": {"ezdxf": False, "com": True},
+    "dwt_write": {"ezdxf": False, "com": True},
+    "live_application": {"ezdxf": False, "com": True},
+    "preferences": {"ezdxf": False, "com": True},
+    "interactive_prompt": {"ezdxf": False, "com": True},
+}
+
+
+def _feature_keys_full(backend) -> dict:
+    return backend.capabilities().to_dict()["features"]
+
+
+def test_track_e_contracts_are_composed_into_the_backend():
+    for contract in (StylesContract, PageSetupContract, EnvironmentContract):
+        assert issubclass(AutoCADBackend, contract), f"{contract.__name__} not in AutoCADBackend"
+        assert issubclass(EzdxfBackend, contract) and issubclass(ComBackend, contract)
+
+
+def test_track_e_capability_keys_carry_the_agreed_flags():
+    assert "mleaderstyle" not in capability_keys(), "spec §8.1: no such engine boundary"
+    ezdxf_features = _feature_keys_full(EzdxfBackend())
+    com_features = _feature_keys_full(ComBackend())
+    for key, flags in TRACK_E_KEYS.items():
+        assert key in ezdxf_features, f"{key} undeclared on ezdxf"
+        assert key in com_features, f"{key} undeclared on com"
+        assert ezdxf_features[key]["supported"] is flags["ezdxf"], key
+        assert com_features[key]["supported"] is flags["com"], key
+
+
+def test_layer_states_are_declared_as_ours_not_autocads():
+    """Spec §7.2 / §8.3: the states live in the file and travel with it, and do
+    not appear in AutoCAD's Layer States Manager. Said in the map, not only in
+    a docstring."""
+    for backend in (EzdxfBackend(), ComBackend()):
+        feature = _feature_keys_full(backend)["layer_states"]
+        assert feature["supported"] is True
+        assert feature["mode"] == "xrecord"
+        assert "layer_states_manager" in (feature["reason"] or ""), backend.name

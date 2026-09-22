@@ -1,6 +1,6 @@
 """Golden query set for tool discovery: English in, one right tool out.
 
-Seventy-one cases (56 tuning + 15 holdout) split into a **tuning** set and a
+Eighty-one cases (66 tuning + 15 holdout) split into a **tuning** set and a
 **holdout** set. The split is
 the point of the file. Ranking work is measured against
 :data:`TUNING_CASES` only; :data:`HOLDOUT_CASES` were written at the same time,
@@ -155,6 +155,25 @@ TUNING_CASES: tuple[GoldenCase, ...] = (
     ),
     GoldenCase("create a text style that uses the isocp font", "textstyle_create", "paraphrase"),
     GoldenCase("which dimension styles are defined", "dimstyle_list", "counting", risk="read"),
+    # v1.6 track E — styles, page setup, templates, environment. Written
+    # before the alias records were measured against them; a miss here is
+    # fixed by adding vocabulary to the tool's record in discovery/aliases.py,
+    # never by moving the expectation.
+    GoldenCase("PAGESETUP", "page_setup_apply", "command"),
+    GoldenCase("PUBLISH", "batch_plot", "command"),
+    GoldenCase("MLEADERSTYLE", "mleaderstyle_create", "command"),
+    GoldenCase("STYLE", "textstyle_create", "command"),
+    GoldenCase("iso 25 dimension style", "dimstyle_create", "synonym"),
+    GoldenCase("layer snapshot", "layer_state_save", "synonym"),
+    GoldenCase("save this drawing as a template", "drawing_template_save", "paraphrase"),
+    GoldenCase("switch to the other open drawing", "document_activate", "paraphrase"),
+    GoldenCase("ask the operator to click a point on screen", "user_pick_point", "paraphrase"),
+    GoldenCase(
+        "what does the LTSCALE variable mean",
+        "system_variable_describe",
+        "counting",
+        risk="read",
+    ),
 )
 
 

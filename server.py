@@ -690,6 +690,9 @@ async def _registered_tool_count() -> int | None:
 # entity/drawing tags. Tools whose tags match none fall into "other".
 _GROUP_TAG_PRIORITY = (
     "pid",
+    "style",
+    "pagesetup",
+    "environment",
     "engineering",
     "premium",
     "corner",
@@ -703,7 +706,6 @@ _GROUP_TAG_PRIORITY = (
     "validation",
     "analysis",
     "block",
-    "style",
     "layer",
     "linetype",
     "create",
@@ -716,6 +718,9 @@ _GROUP_TAG_PRIORITY = (
 # Map the winning tag to a human-readable group label for the breakdown.
 _GROUP_TAG_LABELS = {
     "pid": "pid",
+    "style": "styles",
+    "pagesetup": "page_setup",
+    "environment": "environment",
     "engineering": "engineering",
     "premium": "premium",
     "corner": "corner_ops",
@@ -729,7 +734,6 @@ _GROUP_TAG_LABELS = {
     "analysis": "analysis",
     "validation": "validation",
     "block": "blocks",
-    "style": "styles",
     "layer": "layers",
     "linetype": "layers",
     "create": "entity_creation",
@@ -938,6 +942,11 @@ LEAN_TOOL_NAMES = frozenset(
         "dimstyle_set_current",
         "textstyle_set_current",
         "drawing_apply_standard",
+        # Page setup (track E) — the two a lean client needs to set the
+        # sheet and plot it. Core-pack tools, so TOOL_PACKS=core leaves
+        # them on the lean surface; with S's three above, lean is 55.
+        "page_setup_apply",
+        "batch_plot",
     }
 )
 
@@ -948,8 +957,10 @@ SOLID_TOOL_NAMES = frozenset(
 # Tool packs: vertical domains a client can opt out of advertising. `core` is
 # everything not claimed by another pack and is always on. ~300 tools would
 # push the full catalog to ~80k idle tokens; a client that only drafts
-# mechanically should not pay for the P&ID surface.
-TOOL_PACK_NAMES = ("core", "pid")
+# mechanically should not pay for the P&ID surface, and a client that never
+# talks to a live seat should not pay for the environment surface. Styles and
+# page setup (SECTION 18/19) are drafting essentials and stay in core.
+TOOL_PACK_NAMES = ("core", "pid", "settings")
 PACK_TOOL_NAMES: dict[str, frozenset[str]] = {
     "pid": frozenset(
         {
@@ -962,6 +973,33 @@ PACK_TOOL_NAMES: dict[str, frozenset[str]] = {
             "pid_line_list",
             "pid_equipment_list",
             "pid_from_spec",
+        }
+    ),
+    # SECTION 20 — the 22 environment tools (spec §7, §8.2).
+    "settings": frozenset(
+        {
+            "document_list",
+            "document_activate",
+            "document_close",
+            "layer_state_save",
+            "layer_state_restore",
+            "layer_state_list",
+            "layer_state_delete",
+            "view_named_save",
+            "view_named_restore",
+            "view_named_list",
+            "ucs_list",
+            "ucs_set",
+            "ucs_restore",
+            "system_launch",
+            "system_preferences_get",
+            "system_preferences_set",
+            "drawing_properties_get",
+            "drawing_properties_set",
+            "system_variable_describe",
+            "user_pick_point",
+            "user_select",
+            "system_prompt_message",
         }
     ),
 }
@@ -7283,7 +7321,7 @@ async def drawing_apply_standard(
 )
 @mcp.tool(
     annotations={"title": "List Page Setups", "readOnlyHint": True},
-    tags={"layout", "plot", "query"},
+    tags={"pagesetup", "layout", "plot", "query"},
 )
 async def page_setup_list(
     layout: Annotated[
@@ -7314,7 +7352,7 @@ async def page_setup_list(
 )
 @mcp.tool(
     annotations={"title": "Apply Page Setup", "destructiveHint": False},
-    tags={"layout", "plot"},
+    tags={"pagesetup", "layout", "plot"},
 )
 async def page_setup_apply(
     layout: Annotated[str, "Paper-space layout to set up (never 'Model')."],
@@ -7369,7 +7407,7 @@ async def page_setup_apply(
 )
 @mcp.tool(
     annotations={"title": "List Plot Styles", "readOnlyHint": True},
-    tags={"layout", "plot", "query"},
+    tags={"pagesetup", "layout", "plot", "query"},
 )
 async def plot_style_list(ctx: Context = None) -> dict:
     """The ctb files AutoCAD ships (`monochrome.ctb`, `acad.ctb`, `Grayscale.ctb`,
@@ -7390,7 +7428,7 @@ async def plot_style_list(ctx: Context = None) -> dict:
 )
 @mcp.tool(
     annotations={"title": "Batch Plot", "destructiveHint": False},
-    tags={"layout", "plot", "export"},
+    tags={"pagesetup", "layout", "plot", "export"},
 )
 async def batch_plot(
     output_dir: Annotated[str, "Folder for the PDFs (created if missing)."],
@@ -7437,7 +7475,7 @@ async def batch_plot(
 )
 @mcp.tool(
     annotations={"title": "List Drawing Templates", "readOnlyHint": True},
-    tags={"template", "drawing", "query"},
+    tags={"pagesetup", "template", "drawing", "query"},
 )
 async def drawing_template_list(ctx: Context = None) -> dict:
     """The templates `drawing_new(template=<name>)` can start from.
@@ -7468,7 +7506,7 @@ async def drawing_template_list(ctx: Context = None) -> dict:
 )
 @mcp.tool(
     annotations={"title": "Save As Template", "destructiveHint": False},
-    tags={"template", "drawing"},
+    tags={"pagesetup", "template", "drawing"},
 )
 async def drawing_template_save(
     path: Annotated[str, "Destination .dwt (live AutoCAD) or .dxf (either engine)."],
@@ -7511,7 +7549,7 @@ async def drawing_template_save(
 )
 @mcp.tool(
     annotations={"title": "List Documents", "readOnlyHint": True},
-    tags={"drawing"},
+    tags={"environment", "drawing"},
 )
 async def document_list(ctx: Context = None) -> dict:
     """Every open document with `name`, `path`, `active`, `saved` and
@@ -7534,7 +7572,7 @@ async def document_list(ctx: Context = None) -> dict:
 @cad_tool(summary="Switch which open document every later tool call targets.", cost="safe")
 @mcp.tool(
     annotations={"title": "Activate Document", "readOnlyHint": False, "destructiveHint": False},
-    tags={"drawing"},
+    tags={"environment", "drawing"},
 )
 async def document_activate(
     name_or_path: Annotated[
@@ -7560,7 +7598,7 @@ async def document_activate(
 )
 @mcp.tool(
     annotations={"title": "Close Document", "destructiveHint": True},
-    tags={"drawing"},
+    tags={"environment", "drawing"},
 )
 async def document_close(
     name_or_path: Annotated[
@@ -7592,7 +7630,7 @@ async def document_close(
 )
 @mcp.tool(
     annotations={"title": "Save Layer State", "readOnlyHint": False, "destructiveHint": False},
-    tags={"layer"},
+    tags={"environment", "layer"},
 )
 async def layer_state_save(
     name: Annotated[str, "State name, e.g. PLOT-SET or DESIGN"],
@@ -7616,7 +7654,7 @@ async def layer_state_save(
 @cad_tool(summary="Restore a saved layer state, all properties or a chosen subset.", cost="safe")
 @mcp.tool(
     annotations={"title": "Restore Layer State", "readOnlyHint": False, "destructiveHint": False},
-    tags={"layer"},
+    tags={"environment", "layer"},
 )
 async def layer_state_restore(
     name: Annotated[str, "A name from layer_state_list"],
@@ -7646,7 +7684,7 @@ async def layer_state_restore(
 @cad_tool(summary="List the layer states saved in this drawing.", cost="read")
 @mcp.tool(
     annotations={"title": "List Layer States", "readOnlyHint": True},
-    tags={"layer"},
+    tags={"environment", "layer"},
 )
 async def layer_state_list(ctx: Context = None) -> dict:
     """Every state under `ACADMCP_LAYERSTATES` with its description and layer
@@ -7659,7 +7697,7 @@ async def layer_state_list(ctx: Context = None) -> dict:
 @cad_tool(summary="Delete one saved layer state from the drawing.", cost="destructive")
 @mcp.tool(
     annotations={"title": "Delete Layer State", "destructiveHint": True},
-    tags={"layer"},
+    tags={"environment", "layer"},
 )
 async def layer_state_delete(
     name: Annotated[str, "A name from layer_state_list"],
@@ -7676,7 +7714,7 @@ async def layer_state_delete(
 )
 @mcp.tool(
     annotations={"title": "Save Named View", "readOnlyHint": False, "destructiveHint": False},
-    tags={"view"},
+    tags={"environment", "view"},
 )
 async def view_named_save(
     name: Annotated[str, "View name, e.g. DETAIL-A"],
@@ -7701,7 +7739,7 @@ async def view_named_save(
 @cad_tool(summary="Restore a named view.", cost="safe")
 @mcp.tool(
     annotations={"title": "Restore Named View", "readOnlyHint": False, "destructiveHint": False},
-    tags={"view"},
+    tags={"environment", "view"},
 )
 async def view_named_restore(
     name: Annotated[str, "A name from view_named_list"],
@@ -7725,7 +7763,7 @@ async def view_named_restore(
 @cad_tool(summary="List the named views saved in this drawing.", cost="read")
 @mcp.tool(
     annotations={"title": "List Named Views", "readOnlyHint": True},
-    tags={"view"},
+    tags={"environment", "view"},
 )
 async def view_named_list(ctx: Context = None) -> dict:
     """Every VIEW table entry with centre, height and width. No refusals.
@@ -7737,7 +7775,7 @@ async def view_named_list(ctx: Context = None) -> dict:
 @cad_tool(summary="List the user coordinate systems, with the implicit world one.", cost="read")
 @mcp.tool(
     annotations={"title": "List UCS", "readOnlyHint": True},
-    tags={"view"},
+    tags={"environment", "view"},
 )
 async def ucs_list(ctx: Context = None) -> dict:
     """The `world` row first, then every UCS table entry with origin and unit
@@ -7763,7 +7801,7 @@ async def ucs_list(ctx: Context = None) -> dict:
 )
 @mcp.tool(
     annotations={"title": "Set UCS", "readOnlyHint": False, "destructiveHint": False},
-    tags={"view"},
+    tags={"environment", "view"},
 )
 async def ucs_set(
     name: Annotated[str, "UCS name"],
@@ -7788,7 +7826,7 @@ async def ucs_set(
 @cad_tool(summary="Make a saved UCS current, or `world` to reset to WCS.", cost="safe")
 @mcp.tool(
     annotations={"title": "Restore UCS", "readOnlyHint": False, "destructiveHint": False},
-    tags={"view"},
+    tags={"environment", "view"},
 )
 async def ucs_restore(
     name: Annotated[str, "A name from ucs_list, or `world`"],
@@ -7812,7 +7850,7 @@ async def ucs_restore(
         "readOnlyHint": False,
         "destructiveHint": False,
     },
-    tags={"system"},
+    tags={"environment", "system"},
 )
 async def system_launch(
     visible: Annotated[bool, "Show the application window"] = True,
@@ -7837,7 +7875,7 @@ async def system_launch(
 )
 @mcp.tool(
     annotations={"title": "Get Preferences", "readOnlyHint": True},
-    tags={"system"},
+    tags={"environment", "system"},
 )
 async def system_preferences_get(
     keys: Annotated[
@@ -7865,7 +7903,7 @@ async def system_preferences_get(
 )
 @mcp.tool(
     annotations={"title": "Set Preference", "readOnlyHint": False, "destructiveHint": False},
-    tags={"system"},
+    tags={"environment", "system"},
 )
 async def system_preferences_set(
     key: Annotated[str, "A writable key from system_preferences_get"],
@@ -7890,7 +7928,7 @@ async def system_preferences_set(
 )
 @mcp.tool(
     annotations={"title": "Ask Operator: Pick Point", "readOnlyHint": True},
-    tags={"system"},
+    tags={"environment", "system"},
 )
 async def user_pick_point(
     prompt: Annotated[str, "Shown on the command line, e.g. 'Pick the base point'"],
@@ -7914,7 +7952,7 @@ async def user_pick_point(
 )
 @mcp.tool(
     annotations={"title": "Ask Operator: Select", "readOnlyHint": True},
-    tags={"system"},
+    tags={"environment", "system"},
 )
 async def user_select(
     prompt: Annotated[str, "Shown on the command line"],
@@ -7937,7 +7975,7 @@ async def user_select(
 @cad_tool(summary="Print a message on AutoCAD's command line (live only).", cost="safe")
 @mcp.tool(
     annotations={"title": "Command-Line Message", "readOnlyHint": False, "destructiveHint": False},
-    tags={"system"},
+    tags={"environment", "system"},
 )
 async def system_prompt_message(
     text: Annotated[str, "The message; one line is best"],
@@ -7955,7 +7993,7 @@ async def system_prompt_message(
 )
 @mcp.tool(
     annotations={"title": "Describe System Variable", "readOnlyHint": True},
-    tags={"system", "settings"},
+    tags={"environment", "system", "settings"},
 )
 async def system_variable_describe(
     name: Annotated[
@@ -8006,7 +8044,7 @@ async def system_variable_describe(
 )
 @mcp.tool(
     annotations={"title": "Drawing Properties (read)", "readOnlyHint": True},
-    tags={"drawing", "settings"},
+    tags={"environment", "drawing", "settings"},
 )
 async def drawing_properties_get(ctx: Context = None) -> dict:
     """The DWGPROPS dialog as data: `summary` (title, subject, author, keywords,
@@ -8027,7 +8065,7 @@ async def drawing_properties_get(ctx: Context = None) -> dict:
 )
 @mcp.tool(
     annotations={"title": "Drawing Properties (write)", "readOnlyHint": False},
-    tags={"drawing", "settings"},
+    tags={"environment", "drawing", "settings"},
 )
 async def drawing_properties_set(
     title: Annotated[str | None, "SummaryInfo Title"] = None,

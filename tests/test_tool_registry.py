@@ -495,7 +495,7 @@ async def test_tool_groups_is_byte_identical_to_the_source_declared_grouping():
 
 
 async def test_tool_group_sizes_are_unchanged():
-    """Frozen snapshot of the surface (172 tools, 20 groups).
+    """Frozen snapshot of the surface (204 tools, 23 groups).
 
     Taken before @cad_tool landed at 131 tools; `batch` moved 2 -> 3 when
     v1.5.0's `cad_batch` joined `entity_batch_create`/`entity_batch_modify`, and
@@ -517,35 +517,18 @@ async def test_tool_group_sizes_are_unchanged():
     when `pid_tag_parse` (the ISA-5.1 tag grammar as a read-only tool)
     joined; the `pid`
     tag is ranked first in `_GROUP_TAG_PRIORITY` so those tools file under
-    `pid` rather than under their secondary `query` / `create` tags. `styles`
-    appeared (0 -> 9) when track E's SECTION 18 opened with the dimension,
-    text and multileader style tools, then 9 -> 10 when
-    `drawing_apply_standard` (ISO or ANSI styles, units and layers in one
-    call) joined; the `style` tag sits ahead of `layer` and `drawing` in
-    `_GROUP_TAG_PRIORITY` so they never file under their secondary
-    `query` / `create` / `modify` / `drawing` tags. `system`
-    moved 7 -> 8 when v1.6's `system_variable_describe` (the sysvar catalogue
-    as a read-only tool) opened SECTION 20. `drawing` moved 11 -> 13 when
-    v1.6's `drawing_properties_get` / `drawing_properties_set` (DWGPROPS on
-    both engines) joined SECTION 20 — tagged `drawing` and `settings`, and
-    `settings` is not a group tag, so they file under drawing.
-    `layouts` moved 12 -> 16 when v1.6's SECTION 19 opened with
-    `page_setup_list` / `page_setup_apply` / `plot_style_list` / `batch_plot`
-    — all tagged `layout`, which `_GROUP_TAG_PRIORITY` ranks above
-    `query`/`export`, so they file with the sheets they set up. `templates`
-    moved 2 -> 3 when v1.6's `drawing_template_list` joined SECTION 19
-    (tagged `template`, which ranks above `drawing`), then 3 -> 4 when
-    `drawing_template_save` joined. `drawing`
-    moved 13 -> 16 when v1.6's `document_list` / `document_activate` /
-    `document_close` (multi-document on both engines) opened SECTION 20;
-    `layers` moved 14 -> 18 with the four `layer_state_*` tools and `view`
-    4 -> 10 with `view_named_*` and `ucs_*` (UCS files under `view`, where
-    AutoCAD's own ribbon keeps it) when v1.6's SECTION 20 grew. `system`
-    moved 8 -> 14 with v1.6's live-only environment tools (`system_launch`,
-    `system_preferences_get/set`, `user_pick_point`, `user_select`,
-    `system_prompt_message`), which refuse headlessly with declared
-    capability keys. Every other number here has been unchanged since the
-    snapshot was taken.
+    `pid` rather than under their secondary `query` / `create` tags.
+    Three groups appeared with v1.6's track E — `styles` (10, SECTION 18),
+    `page_setup` (6, SECTION 19) and `environment` (22, SECTION 20) — each
+    tagged with its section name, ranked directly after `pid` in
+    `_GROUP_TAG_PRIORITY` so a style tool that also carries `dimension` or an
+    environment tool that also carries `layer` files under its section; the
+    `environment` group is exactly `PACK_TOOL_NAMES["settings"]`. (Until the
+    merge task tagged them, the four groups had filed those 28 tools under
+    `layouts` / `templates` / `drawing` / `layers` / `view` / `system` by
+    their secondary tags; those counts returned to their pre-track-E values
+    when the section tags landed.) Every other number here has been unchanged
+    since the snapshot was taken.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
@@ -554,21 +537,23 @@ async def test_tool_group_sizes_are_unchanged():
         "blocks": 9,
         "corner_ops": 4,
         "dimensions": 5,
-        "drawing": 16,
+        "drawing": 11,
         "engineering": 10,
         "entity_creation": 18,
         "entity_modification": 16,
         "entity_query": 9,
-        "layers": 18,
-        "layouts": 16,
+        "environment": 22,
+        "layers": 14,
+        "layouts": 12,
+        "page_setup": 6,
         "pid": 9,
         "premium": 12,
         "solids": 5,
         "styles": 10,
-        "system": 14,
-        "templates": 4,
+        "system": 7,
+        "templates": 2,
         "transactions": 3,
         "validation": 1,
-        "view": 10,
+        "view": 4,
     }
     assert sum(sizes.values()) == 204

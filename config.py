@@ -103,7 +103,7 @@ class Settings:
         self.tool_profile: str = os.environ.get("TOOL_PROFILE", "full").lower().strip()
 
         # Tool packs: "all" (default) advertises every vertical pack; a comma
-        # list ("core,pid") advertises only those. core cannot be disabled.
+        # list ("core,pid,settings") advertises only those. core cannot be disabled.
         self.tool_packs: str = os.environ.get("TOOL_PACKS", "all").lower().strip()
 
         # Tool discovery: "off" (default) advertises the full catalog; "search"

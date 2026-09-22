@@ -6,7 +6,7 @@
     "tools": 204,
     "resources": 8,
     "prompts": 5,
-    "groups": 21
+    "groups": 23
   },
   "groups": {
     "analysis": 12,
@@ -14,22 +14,24 @@
     "blocks": 9,
     "corner_ops": 4,
     "dimensions": 5,
-    "drawing": 16,
+    "drawing": 11,
     "engineering": 10,
     "entity_creation": 18,
     "entity_modification": 16,
     "entity_query": 9,
-    "layers": 18,
-    "layouts": 16,
+    "environment": 22,
+    "layers": 14,
+    "layouts": 12,
+    "page_setup": 6,
     "pid": 9,
     "premium": 12,
     "solids": 5,
     "styles": 10,
-    "system": 14,
-    "templates": 4,
+    "system": 7,
+    "templates": 2,
     "transactions": 3,
     "validation": 1,
-    "view": 10
+    "view": 4
   },
   "tools": [
     {
@@ -178,12 +180,13 @@
     },
     {
       "name": "batch_plot",
-      "group": "layouts",
+      "group": "page_setup",
       "cost": "mutate",
       "summary": "Plot every sheet (or the named ones) to PDF; each sheet size is read back from its PDF.",
       "tags": [
         "export",
         "layout",
+        "pagesetup",
         "plot"
       ],
       "annotations": {
@@ -524,11 +527,12 @@
     },
     {
       "name": "document_activate",
-      "group": "drawing",
+      "group": "environment",
       "cost": "safe",
       "summary": "Switch which open document every later tool call targets.",
       "tags": [
-        "drawing"
+        "drawing",
+        "environment"
       ],
       "annotations": {
         "title": "Activate Document",
@@ -538,11 +542,12 @@
     },
     {
       "name": "document_close",
-      "group": "drawing",
+      "group": "environment",
       "cost": "destructive",
       "summary": "Close one open document by name; never drops unsaved work unless told to.",
       "tags": [
-        "drawing"
+        "drawing",
+        "environment"
       ],
       "annotations": {
         "title": "Close Document",
@@ -551,11 +556,12 @@
     },
     {
       "name": "document_list",
-      "group": "drawing",
+      "group": "environment",
       "cost": "read",
       "summary": "List the open documents: which is active, which have unsaved changes.",
       "tags": [
-        "drawing"
+        "drawing",
+        "environment"
       ],
       "annotations": {
         "title": "List Documents",
@@ -759,11 +765,12 @@
     },
     {
       "name": "drawing_properties_get",
-      "group": "drawing",
+      "group": "environment",
       "cost": "read",
       "summary": "Read the drawing's title, subject, author, keywords, comments and custom properties.",
       "tags": [
         "drawing",
+        "environment",
         "settings"
       ],
       "annotations": {
@@ -773,11 +780,12 @@
     },
     {
       "name": "drawing_properties_set",
-      "group": "drawing",
+      "group": "environment",
       "cost": "safe",
       "summary": "Set the drawing's summary fields and add, change or delete custom properties.",
       "tags": [
         "drawing",
+        "environment",
         "settings"
       ],
       "annotations": {
@@ -867,11 +875,12 @@
     },
     {
       "name": "drawing_template_list",
-      "group": "templates",
+      "group": "page_setup",
       "cost": "read",
       "summary": "List the five bundled drawing templates: standard, sheet, layers, styles, page setup.",
       "tags": [
         "drawing",
+        "pagesetup",
         "query",
         "template"
       ],
@@ -882,11 +891,12 @@
     },
     {
       "name": "drawing_template_save",
-      "group": "templates",
+      "group": "page_setup",
       "cost": "mutate",
       "summary": "Save the current drawing as a template: .dwt on live AutoCAD, .dxf headlessly.",
       "tags": [
         "drawing",
+        "pagesetup",
         "template"
       ],
       "annotations": {
@@ -1756,10 +1766,11 @@
     },
     {
       "name": "layer_state_delete",
-      "group": "layers",
+      "group": "environment",
       "cost": "destructive",
       "summary": "Delete one saved layer state from the drawing.",
       "tags": [
+        "environment",
         "layer"
       ],
       "annotations": {
@@ -1769,10 +1780,11 @@
     },
     {
       "name": "layer_state_list",
-      "group": "layers",
+      "group": "environment",
       "cost": "read",
       "summary": "List the layer states saved in this drawing.",
       "tags": [
+        "environment",
         "layer"
       ],
       "annotations": {
@@ -1782,10 +1794,11 @@
     },
     {
       "name": "layer_state_restore",
-      "group": "layers",
+      "group": "environment",
       "cost": "safe",
       "summary": "Restore a saved layer state, all properties or a chosen subset.",
       "tags": [
+        "environment",
         "layer"
       ],
       "annotations": {
@@ -1796,10 +1809,11 @@
     },
     {
       "name": "layer_state_save",
-      "group": "layers",
+      "group": "environment",
       "cost": "safe",
       "summary": "Save the layer table (on/frozen/locked/colour/linetype/lineweight/plot + current) under a name, in the file.",
       "tags": [
+        "environment",
         "layer"
       ],
       "annotations": {
@@ -1984,11 +1998,12 @@
     },
     {
       "name": "page_setup_apply",
-      "group": "layouts",
+      "group": "page_setup",
       "cost": "safe",
       "summary": "Set a sheet's paper, orientation, ctb, plot scale and device (PAGESETUP).",
       "tags": [
         "layout",
+        "pagesetup",
         "plot"
       ],
       "annotations": {
@@ -1998,11 +2013,12 @@
     },
     {
       "name": "page_setup_list",
-      "group": "layouts",
+      "group": "page_setup",
       "cost": "read",
       "summary": "Read each sheet's page setup: paper, orientation, ctb, scale, device.",
       "tags": [
         "layout",
+        "pagesetup",
         "plot",
         "query"
       ],
@@ -2140,11 +2156,12 @@
     },
     {
       "name": "plot_style_list",
-      "group": "layouts",
+      "group": "page_setup",
       "cost": "read",
       "summary": "List the plot style tables (ctb): the AutoCAD catalogue, plus what is installed.",
       "tags": [
         "layout",
+        "pagesetup",
         "plot",
         "query"
       ],
@@ -2358,10 +2375,11 @@
     },
     {
       "name": "system_launch",
-      "group": "system",
+      "group": "environment",
       "cost": "safe",
       "summary": "Attach to the running AutoCAD or start it, optionally opening a file (live only).",
       "tags": [
+        "environment",
         "system"
       ],
       "annotations": {
@@ -2372,10 +2390,11 @@
     },
     {
       "name": "system_preferences_get",
-      "group": "system",
+      "group": "environment",
       "cost": "read",
       "summary": "Read AutoCAD preferences from the whitelist (OPTIONS dialog values; live only).",
       "tags": [
+        "environment",
         "system"
       ],
       "annotations": {
@@ -2385,10 +2404,11 @@
     },
     {
       "name": "system_preferences_set",
-      "group": "system",
+      "group": "environment",
       "cost": "safe",
       "summary": "Change one whitelisted AutoCAD preference; reports old and new (live only).",
       "tags": [
+        "environment",
         "system"
       ],
       "annotations": {
@@ -2399,10 +2419,11 @@
     },
     {
       "name": "system_prompt_message",
-      "group": "system",
+      "group": "environment",
       "cost": "safe",
       "summary": "Print a message on AutoCAD's command line (live only).",
       "tags": [
+        "environment",
         "system"
       ],
       "annotations": {
@@ -2465,10 +2486,11 @@
     },
     {
       "name": "system_variable_describe",
-      "group": "system",
+      "group": "environment",
       "cost": "read",
       "summary": "Explain a system variable: type, range, default, where it is saved, which engine honours it.",
       "tags": [
+        "environment",
         "settings",
         "system"
       ],
@@ -2633,10 +2655,11 @@
     },
     {
       "name": "ucs_list",
-      "group": "view",
+      "group": "environment",
       "cost": "read",
       "summary": "List the user coordinate systems, with the implicit world one.",
       "tags": [
+        "environment",
         "view"
       ],
       "annotations": {
@@ -2646,10 +2669,11 @@
     },
     {
       "name": "ucs_restore",
-      "group": "view",
+      "group": "environment",
       "cost": "safe",
       "summary": "Make a saved UCS current, or `world` to reset to WCS.",
       "tags": [
+        "environment",
         "view"
       ],
       "annotations": {
@@ -2660,10 +2684,11 @@
     },
     {
       "name": "ucs_set",
-      "group": "view",
+      "group": "environment",
       "cost": "safe",
       "summary": "Define (or replace) a named UCS from an origin and two perpendicular axes, and make it current.",
       "tags": [
+        "environment",
         "view"
       ],
       "annotations": {
@@ -2674,10 +2699,11 @@
     },
     {
       "name": "user_pick_point",
-      "group": "system",
+      "group": "environment",
       "cost": "read",
       "summary": "Ask the operator to pick a point on screen (live only; blocks until they do).",
       "tags": [
+        "environment",
         "system"
       ],
       "annotations": {
@@ -2687,10 +2713,11 @@
     },
     {
       "name": "user_select",
-      "group": "system",
+      "group": "environment",
       "cost": "read",
       "summary": "Ask the operator to select one entity or a set on screen (live only).",
       "tags": [
+        "environment",
         "system"
       ],
       "annotations": {
@@ -2714,10 +2741,11 @@
     },
     {
       "name": "view_named_list",
-      "group": "view",
+      "group": "environment",
       "cost": "read",
       "summary": "List the named views saved in this drawing.",
       "tags": [
+        "environment",
         "view"
       ],
       "annotations": {
@@ -2727,10 +2755,11 @@
     },
     {
       "name": "view_named_restore",
-      "group": "view",
+      "group": "environment",
       "cost": "safe",
       "summary": "Restore a named view.",
       "tags": [
+        "environment",
         "view"
       ],
       "annotations": {
@@ -2741,10 +2770,11 @@
     },
     {
       "name": "view_named_save",
-      "group": "view",
+      "group": "environment",
       "cost": "safe",
       "summary": "Save a named view: a centre and height (and width) to come back to.",
       "tags": [
+        "environment",
         "view"
       ],
       "annotations": {
