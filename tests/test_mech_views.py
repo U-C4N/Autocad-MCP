@@ -7,6 +7,8 @@ to 1e-9. The radial profile is the single calculation both the silhouette and
 
 from __future__ import annotations
 
+from collections import Counter
+
 import pytest
 
 from engineering.mech.features import (
@@ -17,6 +19,7 @@ from engineering.mech.features import (
     Fillet,
     Hole,
     Keyway,
+    ORingGroove,
     RetainingGroove,
 )
 from engineering.mech.part import PrismaticPart, RevolvedPart, Segment
@@ -53,6 +56,17 @@ def plate(*features) -> PrismaticPart:
 
 def roles(view: View, role: str):
     return [p for p in view.prims if getattr(p, "role", None) == role]
+
+
+def coincident(view: View) -> dict:
+    """Geometries drawn more than once - exactly what ``_check_duplicate_entities`` flags."""
+    counts: Counter = Counter()
+    for prim in view.prims:
+        if isinstance(prim, Line):
+            counts[tuple(sorted((prim.p1, prim.p2)))] += 1
+        elif isinstance(prim, Circle):
+            counts[(prim.center, round(prim.radius, 9))] += 1
+    return {key: n for key, n in counts.items() if n > 1}
 
 
 def test_the_engine_declares_three_orthographic_kinds_and_two_projections():
@@ -162,25 +176,141 @@ def test_an_axisymmetric_feature_is_mirrored_and_a_keyway_is_not():
     assert keyway_lines and all(line.p1[1] > 0 for line in keyway_lines)
 
 
+@pytest.mark.parametrize(
+    "groove",
+    [
+        RetainingGroove(id="rg", x=30.0, d=30.0, m=1.6, d2=28.6),
+        ORingGroove(id="or", x=40.0, cord=3.0, b=4.1, h=2.3),
+    ],
+    ids=["retaining", "oring"],
+)
+def test_a_groove_is_the_notch_in_the_silhouette_and_is_not_drawn_a_second_time(groove):
+    """The spec's rule is `grooves cut a notch in the silhouette`. The notch is
+    the radial profile's; the feature does not redraw it. Two coincident LINEs
+    are what ``drawing_critique(focus=None)`` reports as a duplicate, and
+    premium rule 7 needs that report empty before ``drawing_finalize``."""
+    view = build_view(shaft(groove), "front")
+    assert coincident(view) == {}
+    # the notch is still there, mirrored, once per side
+    floor = {round(abs(line.p1[1]), 6) for line in view.prims if isinstance(line, Line)}
+    assert (14.3 in floor) or (12.7 in floor)
+    assert view.omitted == ()
+
+
+def test_an_axial_bore_end_circle_is_drawn_once():
+    """``_end_circles`` reads the bore off the same radial profile the feature
+    edited, so the feature's own circle would be the second copy of it."""
+    view = build_view(shaft(AxialBore(id="ab", at="start", diameter=8.0, depth=30.0)), "side")
+    assert coincident(view) == {}
+    assert len([c for c in view.prims if isinstance(c, Circle) and abs(c.radius - 4.0) < EPS]) == 1
+
+
+def test_a_blind_bore_keeps_the_bottom_line_the_profile_cannot_draw():
+    """Suppression is `the profile already drew this`, not `this feature edits
+    the profile` - the blind bottom is not on the radial profile at all."""
+    view = build_view(shaft(AxialBore(id="ab", at="start", diameter=8.0, depth=30.0)), "front")
+    bottoms = [
+        line
+        for line in roles(view, "hidden")
+        if isinstance(line, Line) and abs(line.p1[0] - 30.0) < EPS and abs(line.p2[0] - 30.0) < EPS
+    ]
+    assert len(bottoms) == 1
+    assert {round(bottoms[0].p1[1], 6), round(bottoms[0].p2[1], 6)} == {-4.0, 4.0}
+
+
+def test_a_groove_straddling_a_step_leaves_one_closed_silhouette():
+    """The feature's own prims read a single surface radius for a span that has
+    two, so drawing them as well as the profile's notch put a groove floor
+    through solid material and left the +Y path with four odd-degree nodes.
+    An open path has exactly two: its two ends on the axis."""
+    part = shaft(RetainingGroove(id="rg", x=20.0, d=30.0, m=1.6, d2=28.6))
+    upper = [
+        line
+        for line in roles(build_view(part, "front"), "visible")
+        if isinstance(line, Line) and line.p1[1] >= 0.0 and line.p2[1] >= 0.0
+    ]
+    degree: Counter = Counter()
+    for line in upper:
+        degree[(round(line.p1[0], 6), round(line.p1[1], 6))] += 1
+        degree[(round(line.p2[0], 6), round(line.p2[1], 6))] += 1
+    assert sorted(node for node, n in degree.items() if n % 2) == [(0.0, 0.0), (75.0, 0.0)]
+    # nothing is drawn at the groove floor radius outside the band the profile cut
+    assert not [
+        line
+        for line in upper
+        if abs(line.p1[1] - 14.3) < EPS and abs(line.p2[1] - 14.3) < EPS and line.p1[0] < 20.0
+    ]
+
+
 # -- the revolved end view ---------------------------------------------------
 
 
-def test_the_end_view_marks_a_diameter_behind_a_larger_one_as_hidden():
+def test_the_end_view_hides_the_smaller_diameter_and_draws_the_step_face_continuous():
+    """Ground truth by ray cast along the axis of the same solid of revolution
+    (viewer at +X, probe just inside each edge):
+
+        edge r=10   at x=75 -> first surface at x=75 -> VISIBLE
+        edge r=15   at x=60 -> first surface at x=60 -> VISIBLE
+        edge r=12.5 at x=20 -> first surface at x=60 -> HIDDEN
+
+    The annular step face at x=60 faces the observer and nothing at projected
+    radius 15-eps stands in front of it, so the 30 mm circle is continuous. The
+    25 mm circle is the one that is genuinely covered, and it is still *drawn* -
+    dashed, not dropped.
+    """
     view = build_view(shaft(), "side", side="right")
     circles = [p for p in view.prims if isinstance(p, Circle)]
     radii = {(round(c.radius, 6), c.role) for c in circles}
-    assert (10.0, "visible") in radii  # the near end
-    assert (15.0, "hidden") in radii  # the middle step, behind it
-    assert (12.5, "hidden") not in radii  # smaller than 15, never seen
+    assert radii == {(10.0, "visible"), (15.0, "visible"), (12.5, "hidden")}
     assert len([p for p in view.prims if getattr(p, "role", None) == "center"]) == 2
 
 
 def test_looking_from_the_left_reverses_which_circle_is_visible():
+    """From -X the near end is the 25 mm face; the 20 mm end is behind the 30 mm body."""
     view = build_view(shaft(), "side", side="left")
     circles = [p for p in view.prims if isinstance(p, Circle)]
     radii = {(round(c.radius, 6), c.role) for c in circles}
-    assert (12.5, "visible") in radii
-    assert (15.0, "hidden") in radii
+    assert radii == {(12.5, "visible"), (15.0, "visible"), (10.0, "hidden")}
+
+
+def test_a_feature_circle_at_the_far_end_is_hidden_behind_the_larger_body():
+    """A chamfer at x=0 seen from +X sits behind the 30 mm band, so its circle
+    is dashed; seen from -X nothing is in front of it and it is continuous."""
+    part = shaft(Chamfer(id="c1", at="start", size=2.0))
+    right = {
+        (round(c.radius, 6), c.role)
+        for c in build_view(part, "side", side="right").prims
+        if isinstance(c, Circle)
+    }
+    left = {
+        (round(c.radius, 6), c.role)
+        for c in build_view(part, "side", side="left").prims
+        if isinstance(c, Circle)
+    }
+    assert (10.5, "hidden") in right
+    assert (10.5, "visible") in left
+
+
+def test_a_bore_that_widens_behind_a_narrower_one_is_hidden():
+    """Looking into the narrow end you see the small bore; the wider bore behind
+    it is covered by the wall of the narrow one. From the other end, both are
+    seen down the widening hole."""
+    part = RevolvedPart(
+        name="stepped-bore",
+        segments=(Segment(20.0, 40.0, 10.0), Segment(20.0, 40.0, 20.0)),
+    )
+    right = {
+        (round(c.radius, 6), c.role)
+        for c in build_view(part, "side", side="right").prims
+        if isinstance(c, Circle)
+    }
+    left = {
+        (round(c.radius, 6), c.role)
+        for c in build_view(part, "side", side="left").prims
+        if isinstance(c, Circle)
+    }
+    assert (10.0, "visible") in right and (5.0, "visible") in right
+    assert (5.0, "visible") in left and (10.0, "hidden") in left
 
 
 def test_a_revolved_top_view_is_refused_because_it_repeats_the_front():
@@ -211,14 +341,46 @@ def test_a_corner_fillet_replaces_an_outline_vertex_with_an_arc():
 
 
 def test_a_prismatic_side_view_is_the_thickness_rectangle_with_a_hidden_line_per_hole():
-    hole = Hole(id="h1", x=20.0, y=25.0, diameter=10.0)
+    # y=10, deliberately OFF the y=25 mirror axis of the 0..50 plate: a hole on
+    # the axis cannot tell a right-hand view from a left-hand one.
+    hole = Hole(id="h1", x=20.0, y=10.0, diameter=10.0)
     view = build_view(plate(hole), "side")
     visible = roles(view, "visible")
     hidden = roles(view, "hidden")
     assert len(visible) == 4
     assert view.bbox == (0.0, 0.0, 50.0, 8.0)
     assert len(hidden) == 2
-    assert {round(line.p1[0], 6) for line in hidden} == {20.0, 30.0}
+    assert {round(line.p1[0], 6) for line in hidden} == {5.0, 15.0}
+
+
+def test_a_prismatic_left_side_view_is_the_right_view_mirrored():
+    """An observer at -X sees screen-right = -Y, so the hole at y=10 in a plate
+    spanning y 0..50 lands at u = 50-15 .. 50-5. Accepting ``side='left'`` and
+    returning the right-hand view puts every feature on the wrong side of the
+    sheet with nothing in the drawing to reveal it."""
+    hole = Hole(id="h1", x=20.0, y=10.0, diameter=10.0)
+    part = plate(hole)
+    right = {
+        round(line.p1[0], 6) for line in roles(build_view(part, "side", side="right"), "hidden")
+    }
+    left = {round(line.p1[0], 6) for line in roles(build_view(part, "side", side="left"), "hidden")}
+    assert right == {5.0, 15.0}
+    assert left == {35.0, 45.0}
+    # the thickness rectangle is its own mirror, so only the features move
+    assert build_view(part, "side", side="left").bbox == (0.0, 0.0, 50.0, 8.0)
+
+
+def test_a_prismatic_top_view_is_always_seen_from_above():
+    """``side`` names the end an *end* view is taken from; the top view is not
+    one, so it must not move with it."""
+    part = plate(Hole(id="h1", x=20.0, y=10.0, diameter=10.0))
+    from_right = {
+        round(line.p1[0], 6) for line in roles(build_view(part, "top", side="right"), "hidden")
+    }
+    from_left = {
+        round(line.p1[0], 6) for line in roles(build_view(part, "top", side="left"), "hidden")
+    }
+    assert from_right == from_left == {15.0, 25.0}
 
 
 def test_a_prismatic_top_view_projects_the_other_axis():

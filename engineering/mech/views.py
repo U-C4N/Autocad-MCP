@@ -33,10 +33,24 @@ from engineering.mech.part import (
     part_max_diameter,
     segment_bounds,
 )
-from engineering.mech.primitives import Circle, DimIntent, Line, Prim, Pt, bbox
+from engineering.mech.primitives import (
+    Arc,
+    Circle,
+    DimIntent,
+    HatchArea,
+    Line,
+    Poly,
+    Prim,
+    Pt,
+    Text,
+    bbox,
+)
 
 _EPS = 1e-9
 _SNAP = 6  # decimals used to match a corner vertex to a corner edit
+#: Radii closer together than this are the same circle, in millimetres. Looser
+#: than ``_EPS`` on purpose: it compares *measured* radii, not exact vertices.
+_TOL = 1e-6
 
 VIEW_KINDS: tuple[str, ...] = ("front", "side", "top")
 PROJECTIONS: tuple[str, ...] = ("first", "third")
@@ -279,24 +293,81 @@ def _axis_prims(part: RevolvedPart) -> tuple[Prim, ...]:
     return (Line((-over, 0.0), (length + over, 0.0), "center"),)
 
 
+def _band_order(bands: tuple[Band, ...], side: str) -> list[Band]:
+    """The bands from the end the observer stands at, nearest first."""
+    return list(reversed(bands)) if side == "right" else list(bands)
+
+
+def _band_radii_near_first(band: Band, side: str) -> tuple[float, float]:
+    """A band's two outer radii, the one nearer the observer first.
+
+    They differ only on a taper: ``r_out0`` sits at ``x0`` and ``r_out1`` at
+    ``x1``, so which of them faces the observer depends on the end they are
+    looking from.
+    """
+    return (band.r_out1, band.r_out0) if side == "right" else (band.r_out0, band.r_out1)
+
+
+def _front_max(bands: tuple[Band, ...], side: str, x: float) -> float:
+    """The largest outer radius of the material lying **between** ``x`` and the observer.
+
+    This is the whole hidden-line rule for a view along the axis of a solid of
+    revolution: a circular edge of radius ``r`` at station ``x`` is drawn
+    continuous when ``r`` is larger than everything in front of it, because then
+    nothing can cover it, and dashed when it is not, because the material in
+    front does cover it. A step face whose circle is *larger* than the material
+    ahead of it is the one edge that cannot be occluded.
+    """
+    best = 0.0
+    for band in bands:
+        nearer = band.x0 >= x - _TOL if side == "right" else band.x1 <= x + _TOL
+        if nearer:
+            best = max(best, band.r_out0, band.r_out1)
+    return best
+
+
 def _end_circles(part: RevolvedPart, side: str) -> tuple[Prim, ...]:
+    """The concentric circles the profile crosses at one end, roled by occlusion.
+
+    Outer edges: walking from the observer, a radius larger than everything
+    already passed is ``visible``; a smaller one is behind that material and is
+    ``hidden`` - it is still drawn, dashed, because it is a real edge of the
+    part. Bore edges follow the mirror-image rule: you can see down a bore only
+    while it stays at least as wide, so a bore radius no larger than the
+    narrowest bore in front of it is ``visible`` and anything wider (or anything
+    behind solid material) is ``hidden``.
+
+    Each distinct radius is emitted once: two coincident circles would be a
+    duplicate entity, which is what ``drawing_critique`` reports.
+    """
     bands = radial_profile(part)
-    order = list(reversed(bands)) if side == "right" else list(bands)
+    order = _band_order(bands, side)
 
     prims: list[Prim] = []
-    seen_out = 0.0
-    for index, band in enumerate(order):
-        radius = max(band.r_out0, band.r_out1)
-        if radius > seen_out + 1e-6:
-            prims.append(Circle((0.0, 0.0), radius, "visible" if index == 0 else "hidden"))
-            seen_out = radius
-    seen_in = 0.0
-    for index, band in enumerate(order):
-        if band.r_in > seen_in + 1e-6:
-            prims.append(Circle((0.0, 0.0), band.r_in, "visible" if index == 0 else "hidden"))
-            seen_in = band.r_in
+    emitted: set[float] = set()
 
-    over = seen_out * (1.0 + AXIS_OVERRUN)
+    def emit(radius: float, role: str) -> None:
+        key = round(float(radius), _SNAP)
+        if key <= _TOL or key in emitted:
+            return
+        emitted.add(key)
+        prims.append(Circle((0.0, 0.0), float(radius), role))
+
+    front_max = 0.0
+    for band in order:
+        for radius in _band_radii_near_first(band, side):
+            emit(radius, "visible" if radius > front_max + _TOL else "hidden")
+            front_max = max(front_max, radius)
+
+    open_r = math.inf
+    for band in order:
+        if band.r_in <= _TOL:
+            open_r = 0.0  # solid across the whole section: nothing behind is seen
+            continue
+        emit(band.r_in, "visible" if band.r_in <= open_r + _TOL else "hidden")
+        open_r = min(open_r, band.r_in)
+
+    over = front_max * (1.0 + AXIS_OVERRUN)
     prims.append(Line((-over, 0.0), (over, 0.0), "center"))
     prims.append(Line((0.0, -over), (0.0, over), "center"))
     return tuple(prims)
@@ -313,15 +384,131 @@ def _rectangle(
     )
 
 
-def _feature_layer(part, kind: str, ctx: dict) -> tuple[list[Prim], list[DimIntent], list[dict]]:
+def _mirror_u(prims, axis: float) -> tuple[Prim, ...]:
+    """Reflect primitives about the vertical line ``u = axis`` (screen left <-> right).
+
+    ``Text`` moves with the drawing but keeps its rotation: a mirrored label
+    would read backwards, and no drawing has ever wanted that.
+    """
+
+    def flip(point: Pt) -> Pt:
+        return (2.0 * axis - float(point[0]), float(point[1]))
+
+    out: list[Prim] = []
+    for prim in prims:
+        if isinstance(prim, Line):
+            out.append(Line(flip(prim.p1), flip(prim.p2), prim.role))
+        elif isinstance(prim, Arc):
+            # reflection reverses the sweep, so the CCW arc runs from the
+            # reflected end angle to the reflected start angle
+            out.append(
+                Arc(
+                    flip(prim.center),
+                    prim.radius,
+                    (180.0 - prim.end_deg) % 360.0,
+                    (180.0 - prim.start_deg) % 360.0,
+                    prim.role,
+                )
+            )
+        elif isinstance(prim, Circle):
+            out.append(Circle(flip(prim.center), prim.radius, prim.role))
+        elif isinstance(prim, Poly):
+            out.append(Poly(tuple(flip(pt) for pt in prim.points), prim.closed, prim.role))
+        elif isinstance(prim, HatchArea):
+            out.append(
+                HatchArea(
+                    tuple(tuple(flip(pt) for pt in loop) for loop in prim.loops), prim.material
+                )
+            )
+        elif isinstance(prim, Text):
+            out.append(prim._replace(at=flip(prim.at)))
+        else:  # pragma: no cover - Prim is a closed union
+            raise TypeError(f"_mirror_u: not a primitive: {prim!r}")
+    return tuple(out)
+
+
+def _same_geometry(a: Prim, b: Prim) -> bool:
+    """True when two primitives would be drawn on top of each other, role aside.
+
+    Exactly what ``engineering/critique.py::_check_duplicate_entities`` matches,
+    so anything this returns True for is a warning on the finished drawing.
+    """
+    if isinstance(a, Line) and isinstance(b, Line):
+        forward = math.dist(a.p1, b.p1) <= _TOL and math.dist(a.p2, b.p2) <= _TOL
+        reverse = math.dist(a.p1, b.p2) <= _TOL and math.dist(a.p2, b.p1) <= _TOL
+        return forward or reverse
+    if isinstance(a, Circle) and isinstance(b, Circle):
+        return math.dist(a.center, b.center) <= _TOL and abs(a.radius - b.radius) <= _TOL
+    if isinstance(a, Arc) and isinstance(b, Arc):
+        return (
+            math.dist(a.center, b.center) <= _TOL
+            and abs(a.radius - b.radius) <= _TOL
+            and abs((a.start_deg - b.start_deg) % 360.0) <= _TOL
+            and abs((a.end_deg - b.end_deg) % 360.0) <= _TOL
+        )
+    return False
+
+
+def _profile_owned(feature, part, prim: Prim, kind: str, body: list[Prim]) -> bool:
+    """True when the radial profile has already drawn this primitive.
+
+    Two separate reasons, and both are the same principle - the profile is the
+    one calculation the silhouette comes out of, so a feature never draws it a
+    second time:
+
+    * the primitive is coincident with something the body already emitted; or
+    * the feature edits the radial profile and this is a **silhouette** line of
+      a revolved front view. ``radial_profile`` already cut the notch, and the
+      feature's own idea of where the surface is can even contradict it - a
+      groove straddling a step reads one surface radius for a span that has two.
+    """
+    if any(_same_geometry(prim, other) for other in body):
+        return True
+    if kind == "front" and getattr(prim, "role", None) == "visible":
+        return bool(feature.radial_edit(part))
+    return False
+
+
+def _end_view_role(feature, part, prim: Prim, bands: tuple[Band, ...], side: str) -> Prim:
+    """Re-role a feature's axis-centred end-view circle by the same occlusion rule.
+
+    The feature knows its diameter, not what is standing in front of it. Its
+    axial station comes from ``removal_box``; a feature that does not report one
+    keeps its own verdict rather than having one guessed for it.
+    """
+    if not isinstance(prim, Circle) or math.dist(prim.center, (0.0, 0.0)) > _TOL:
+        return prim
+    box = feature.removal_box(part)
+    if box is None:
+        return prim
+    x_near = float(box[2]) if side == "right" else float(box[0])
+    covered = _front_max(bands, side, x_near)
+    return prim._replace(role="visible" if prim.radius > covered + _TOL else "hidden")
+
+
+def _feature_layer(
+    part,
+    kind: str,
+    ctx: dict,
+    *,
+    body: list[Prim] | None = None,
+    bands: tuple[Band, ...] | None = None,
+) -> tuple[list[Prim], list[DimIntent], list[dict]]:
+    drawn: list[Prim] = list(body or ())
     prims: list[Prim] = []
     dims: list[DimIntent] = []
     omitted: list[dict] = []
+    end_view = bands is not None and kind == "side"
+    side = str(ctx.get("side", "right")).strip().lower()
     for feature in part.features:
-        own = feature.prims(part, kind, ctx)
+        own = tuple(feature.prims(part, kind, ctx))
+        if end_view:
+            own = tuple(_end_view_role(feature, part, prim, bands, side) for prim in own)
+        own = tuple(prim for prim in own if not _profile_owned(feature, part, prim, kind, drawn))
         if own and kind == "front" and getattr(feature, "axisymmetric", False):
             own = tuple(own) + mirror_about_x(own)
         prims.extend(own)
+        drawn.extend(own)
         dims.extend(feature.dims(part, kind, ctx))
         if own:
             continue
@@ -344,7 +531,12 @@ def build_view(
     projection: str = "first",
     detail: dict | None = None,
 ) -> View:
-    """Project a part onto one view plane and return its primitive description."""
+    """Project a part onto one view plane and return its primitive description.
+
+    ``side`` is the end the observer stands at for an end view, and it decides
+    both what is in front of what and which way round the view reads. The
+    ``top`` view is always seen from above, so ``side`` does not apply to it.
+    """
     name = str(kind or "").strip().lower()
     if name not in VIEW_KINDS:
         raise ValueError(f"build_view: kind {kind!r} is not one of {VIEW_KINDS}.")
@@ -356,6 +548,8 @@ def build_view(
     ctx = {"side": where, "scale": float(scale), "projection": str(projection)}
     prims: list[Prim] = []
     omitted: list[dict] = []
+    bands: tuple[Band, ...] | None = None
+    mirror_u: float | None = None
 
     if isinstance(part, RevolvedPart):
         if name == "top":
@@ -369,6 +563,7 @@ def build_view(
             prims.extend(_axis_prims(part))
             omitted.extend(unplaced)
         else:
+            bands = radial_profile(part)
             prims.extend(_end_circles(part, where))
     elif isinstance(part, PrismaticPart):
         x0, y0, x1, y1 = outline_bbox(part)
@@ -378,12 +573,19 @@ def build_view(
             omitted.extend(unplaced)
         elif name == "side":
             prims.extend(_rectangle(y0, y1, 0.0, part.thickness))
+            # An observer standing at -X sees screen-right = -Y, so the left
+            # view is the right view mirrored. The thickness rectangle spans
+            # y0..y1 either way and is its own mirror; the features are not.
+            if where == "left":
+                mirror_u = (y0 + y1) / 2.0
         else:
             prims.extend(_rectangle(x0, x1, 0.0, part.thickness))
     else:  # pragma: no cover - build_part only makes these two
         raise ValueError(f"build_view: {type(part).__name__} is not a part model.")
 
-    feature_prims, dims, feature_omitted = _feature_layer(part, name, ctx)
+    feature_prims, dims, feature_omitted = _feature_layer(part, name, ctx, body=prims, bands=bands)
+    if mirror_u is not None:
+        feature_prims = list(_mirror_u(feature_prims, mirror_u))
     prims.extend(feature_prims)
     omitted.extend(feature_omitted)
 
