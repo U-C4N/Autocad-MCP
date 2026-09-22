@@ -22,13 +22,34 @@ The test asserts pairwise disjointness with the same helper, which makes "no
 overlapping dimension text" measured rather than claimed - and it is the same
 property the repository's `dim_overlap` critique focus checks on the finished
 drawing.
+
+Three rules the module enforces rather than assumes:
+
+*ISO 286 fits reach the pipeline.* :func:`dimension_intents` takes
+``fits={key: code}`` and stamps the code onto the intent it names, so a bearing
+seat gets its k6 without anyone hand-building a ``DimIntent``. The part's own
+diameters are addressable by segment (``"segment[1]"``, ``"segment[1].bore"``);
+a feature's are addressable by its id. An unknown key is refused by name - a fit
+that lands nowhere is a manufacturing requirement lost in silence.
+
+*An explicit tolerance is validated as a whole.* ``DimIntent.tol`` is
+``{"mode", "upper", "lower"}`` and nothing else. ``mode`` is required, because
+``build_dim_override`` reads a missing mode as ``"none"`` and returns an empty
+override: a +-0.05 with no ``mode`` used to resolve, report its own numbers back
+and then draw a dimension carrying no tolerance at all.
+
+*ISO 129-1: each measurement appears once.* A closed chain plus the overall
+states the overall twice. :func:`redundant_linear` finds the span that the
+others tile end to end, and :func:`dimension_intents` marks it as an auxiliary
+(reference) dimension - ``(<>)``, drawn in parentheses - rather than emitting a
+fourth plain DIMENSION that contradicts nothing and adds nothing.
 """
 
 from __future__ import annotations
 
 import math
 
-from engineering.fits import fit_lookup
+from engineering.fits import fit_lookup, parse_fit_code
 from engineering.mech.features import Hole
 from engineering.mech.part import (
     PrismaticPart,
@@ -38,7 +59,7 @@ from engineering.mech.part import (
     segment_bounds,
 )
 from engineering.mech.primitives import DimIntent
-from engineering.tolerances import build_dim_override
+from engineering.tolerances import TOL_MODES, build_dim_override
 
 _EPS = 1e-9
 
@@ -51,6 +72,18 @@ TEXT_WIDTH_FACTOR = 0.7
 
 #: Padding added around a measured label, in text heights.
 TEXT_PADDING = 0.6
+
+#: How an auxiliary (reference) dimension is written - ISO 129-1 puts a
+#: measurement that is already given elsewhere in parentheses. ``<>`` is the
+#: DIMENSION text placeholder for the measured value, on both engines.
+REFERENCE_FORMAT = "(<>)"
+
+#: The only keys ``DimIntent.tol`` accepts.
+TOL_KEYS: frozenset[str] = frozenset({"mode", "upper", "lower"})
+
+#: Tolerance modes that write no deviation, so carrying upper/lower with them
+#: would silently discard the numbers.
+_NO_DEVIATION_MODES: frozenset[str] = frozenset({"none", "basic"})
 
 
 def measured_value(intent: DimIntent) -> float:
@@ -66,15 +99,47 @@ def _format(value: float) -> str:
     return f"{round(value, 3):g}"
 
 
-def intent_text(intent: DimIntent) -> str:
-    """The text a dimension will carry - the override, or the measurement."""
-    if intent.text_override:
-        return intent.text_override
+def _with_fit(text: str, fit: str | None) -> str:
+    """Append an ISO 286 code to a dimension's text, once.
+
+    A feature that already names itself (a hole's ``⌀6``) keeps its own text and
+    gains the code; without this the deviations would be written and the code
+    the inspector reads would not be on the sheet.
+    """
+    code = (fit or "").strip()
+    if not code or code in text:
+        return text
+    return f"{text} {code}"
+
+
+def _measured_text(intent: DimIntent) -> str:
     if intent.kind == "diameter":
         return f"⌀{_format(measured_value(intent))}"
     if intent.kind == "radius":
         return f"R{_format(measured_value(intent))}"
     return _format(measured_value(intent))
+
+
+def intent_text(intent: DimIntent) -> str:
+    """The text a dimension will carry, as the engine will render it.
+
+    ``<>`` is the DIMENSION placeholder for the measured value, so an override
+    of ``"(<>)"`` reads ``"(75)"`` and a resolved fit's ``"<> H7"`` reads
+    ``"⌀40 H7"``. Expanding it here is what makes :func:`text_rects` measure the
+    string that is actually drawn - a label measured as ``"<> H7"`` and drawn as
+    ``"⌀40 H7"`` is a layout computed against the wrong width.
+    """
+    measured = _measured_text(intent)
+    base = intent.text_override.replace("<>", measured) if intent.text_override else measured
+    # The fit code is appended to the text by `resolve_tolerance`; the rectangle
+    # has to reserve room for it before the layout runs.
+    return _with_fit(base, intent.fit)
+
+
+def is_reference(intent: DimIntent) -> bool:
+    """True for an auxiliary (reference) dimension - ISO 129-1 parentheses."""
+    override = intent.text_override or ""
+    return override.startswith("(") and override.endswith(")")
 
 
 def _text_size(intent: DimIntent, height: float) -> tuple[float, float]:
@@ -104,6 +169,44 @@ def text_rects(intents, *, height: float = 3.5):
 # -- tolerances --------------------------------------------------------------
 
 
+def _explicit_tol(intent: DimIntent) -> tuple[str, float | None, float | None]:
+    """Validate ``intent.tol`` as a whole and return ``(mode, upper, lower)``.
+
+    ``build_dim_override`` alone is not enough: it defaults a missing mode to
+    ``"none"`` and answers with an empty override, so ``{"upper": 0.05,
+    "lower": 0.05}`` used to resolve, echo its own numbers back and draw a
+    dimension with no DIMTOL/DIMTP/DIMTM at all. A tolerance that disappears
+    between the spec and the sheet is the silent wrong value this repository
+    refuses, so the schema is checked here, by name.
+    """
+    who = intent.feature or intent.kind
+    tol = intent.tol
+    if not isinstance(tol, dict):
+        raise ValueError(
+            f"{who}.tol: expected a dict with keys {sorted(TOL_KEYS)}, got {type(tol).__name__}."
+        )
+    unknown = set(tol) - TOL_KEYS
+    if unknown:
+        raise ValueError(
+            f"{who}.tol: unknown key(s) {sorted(unknown)}; a tolerance takes {sorted(TOL_KEYS)}."
+        )
+    if "mode" not in tol:
+        raise ValueError(
+            f"{who}.tol: needs an explicit 'mode' (one of {list(TOL_MODES)}). Without it the "
+            "deviations are carried in the payload and no tolerance reaches the drawing."
+        )
+    mode = str(tol["mode"]).strip().lower()
+    upper = tol.get("upper")
+    lower = tol.get("lower")
+    if mode in _NO_DEVIATION_MODES and (upper is not None or lower is not None):
+        raise ValueError(
+            f"{who}.tol: tol_mode={mode!r} writes no deviation, but upper={upper!r} / "
+            f"lower={lower!r} were given. Use 'symmetric', 'deviation' or 'limit', or drop "
+            "the values."
+        )
+    return mode, upper, lower
+
+
 def resolve_tolerance(intent: DimIntent, nominal: float | None = None) -> dict:
     """Turn an intent's ``fit`` / ``tol`` into the backend dimension call's arguments.
 
@@ -111,7 +214,7 @@ def resolve_tolerance(intent: DimIntent, nominal: float | None = None) -> dict:
     ``build_dim_override`` reads ``tol_lower`` as the *magnitude* of the minus
     deviation, so a resolved fit passes ``-deviation.lower_mm``.
     """
-    has_tol = bool(intent.tol)
+    has_tol = intent.tol is not None
     if intent.fit and has_tol:
         raise ValueError(
             f"{intent.feature or intent.kind}: pass either fit=<ISO 286 code> or an explicit "
@@ -129,13 +232,10 @@ def resolve_tolerance(intent: DimIntent, nominal: float | None = None) -> dict:
             "tol_upper": deviation.upper_mm,
             "tol_lower": -deviation.lower_mm,
             "tol_mode": "deviation",
-            "text_override": intent.text_override or f"<> {deviation.code}",
+            "text_override": _with_fit(intent.text_override or "<>", deviation.code),
         }
     if has_tol:
-        tol = dict(intent.tol)
-        mode = str(tol.get("mode", "none"))
-        upper = tol.get("upper")
-        lower = tol.get("lower")
+        mode, upper, lower = _explicit_tol(intent)
         build_dim_override(upper, lower, mode, intent.text_override)  # validates, or raises
         return {
             "tol_upper": upper,
@@ -172,6 +272,129 @@ def _dedupe(intents) -> tuple[DimIntent, ...]:
     return tuple(out)
 
 
+def _linear_span(intent: DimIntent) -> tuple[str, float, float, float] | None:
+    """``(axis, level, lo, hi)`` of an axis-parallel linear dimension, else None.
+
+    ``level`` is the coordinate the dimension does *not* run along, so two
+    horizontal dimensions at different heights are never compared with each
+    other. A skewed linear intent has no span: it is not part of a chain.
+    """
+    if intent.kind != "linear":
+        return None
+    (ax, ay), (bx, by) = intent.p1, intent.p2
+    if abs(bx - ax) >= abs(by - ay):
+        if abs(by - ay) > _EPS:
+            return None
+        return ("x", round(float(ay), 6), round(min(ax, bx), 6), round(max(ax, bx), 6))
+    if abs(bx - ax) > _EPS:
+        return None
+    return ("y", round(float(ax), 6), round(min(ay, by), 6), round(max(ay, by), 6))
+
+
+def redundant_linear(intents) -> tuple[int, ...]:
+    """Indices of the linear intents that shorter ones already tile end to end.
+
+    ISO 129-1: a measurement appears once. A closed chain (20 + 40 + 15) that
+    also carries the overall (75) states the overall twice, and the second
+    statement has to be an auxiliary (reference) dimension or be left off.
+
+    The error is one-sided on purpose. A tiling that is found is a real one -
+    the pieces butt, in order, from ``lo`` to ``hi`` on the same axis and level
+    - so a dimension is never called redundant when it is not. A tiling that
+    the greedy walk misses simply leaves the dimension plain, which is the way
+    round the repository's critique rule wants: a check that misses a bad
+    drawing costs a review, a check that calls a good drawing bad gets
+    switched off.
+    """
+    groups: dict[tuple[str, float], list[tuple[float, float, int]]] = {}
+    for index, intent in enumerate(intents):
+        span = _linear_span(intent)
+        if span is None:
+            continue
+        axis, level, lo, hi = span
+        groups.setdefault((axis, level), []).append((lo, hi, index))
+
+    out: list[int] = []
+    for group in groups.values():
+        for lo, hi, index in group:
+            pieces = sorted(
+                (a, b)
+                for a, b, other in group
+                if other != index
+                and a >= lo - 1e-6
+                and b <= hi + 1e-6
+                and (b - a) < (hi - lo) - 1e-6
+            )
+            cursor = lo
+            for a, b in pieces:
+                if abs(a - cursor) <= 1e-6:
+                    cursor = b
+            if cursor > lo + 1e-6 and abs(cursor - hi) <= 1e-6:
+                out.append(index)
+    return tuple(sorted(out))
+
+
+def _mark_references(intents: list[DimIntent]) -> list[DimIntent]:
+    """Put the redundant measurements in parentheses, ISO 129-1."""
+    for index in redundant_linear(intents):
+        intent = intents[index]
+        if intent.text_override is None:
+            intents[index] = intent._replace(text_override=REFERENCE_FORMAT)
+    return intents
+
+
+def _apply_fits(intents: list[DimIntent], fits, *, table_ids: frozenset[str]) -> list[DimIntent]:
+    """Stamp each ``{key: ISO 286 code}`` onto the intent its key names.
+
+    Without this the ``fit`` branch of :func:`resolve_tolerance` is reachable
+    only from a hand-built ``DimIntent``: no feature and no segment carries a
+    fit, so the ISO 286 path would be real in the table and absent from every
+    drawing the module actually produces.
+    """
+    if not fits:
+        return intents
+    if not isinstance(fits, dict):
+        raise ValueError(
+            f"fits: expected a dict of {{key: ISO 286 code}}, got {type(fits).__name__}."
+        )
+
+    available = {intent.feature for intent in intents if intent.feature}
+    by_key: dict[str, list[int]] = {}
+    for index, intent in enumerate(intents):
+        if intent.feature:
+            by_key.setdefault(intent.feature, []).append(index)
+
+    for key, code in fits.items():
+        name = str(key)
+        if name not in available:
+            if name in table_ids:
+                raise ValueError(
+                    f"fits[{name!r}]: that hole's diameter moved into the hole table, which has "
+                    "no tolerance column. Raise hole_table_threshold, or dimension the hole "
+                    "directly."
+                )
+            raise ValueError(
+                f"fits[{name!r}]: nothing in this view is dimensioned under that name. "
+                f"Available: {sorted(available)}."
+            )
+        parse_fit_code(str(code))  # refuses a typo here, not at draw time
+        for index in by_key[name]:
+            intent = intents[index]
+            if is_reference(intent):
+                raise ValueError(
+                    f"fits[{name!r}]: {intent_text(intent)} is an auxiliary (reference) "
+                    "dimension - ISO 129-1 gives it no tolerance. Put the fit on the "
+                    "dimension that states the size."
+                )
+            if intent.tol is not None:
+                raise ValueError(
+                    f"fits[{name!r}]: that dimension already carries an explicit tol. Pass "
+                    "either fit=<ISO 286 code> or an explicit tol, not both."
+                )
+            intents[index] = intent._replace(fit=str(code))
+    return intents
+
+
 def _revolved_axial(part: RevolvedPart, style: str) -> list[DimIntent]:
     stations = [0.0] + [x1 for _, x1 in segment_bounds(part)]
     intents: list[DimIntent] = []
@@ -189,18 +412,39 @@ def _revolved_axial(part: RevolvedPart, style: str) -> list[DimIntent]:
     return intents
 
 
+def segment_key(index: int, *, bore: bool = False) -> str:
+    """The ``fits`` key that names one segment's outer diameter, or its bore.
+
+    The part's own diameters have to be addressable one at a time: "ISO 286
+    fits on the bearing seats" means a code on *segment 1*, not on every
+    dimension the part emits.
+    """
+    return f"segment[{int(index)}].bore" if bore else f"segment[{int(index)}]"
+
+
 def _revolved_diameters(part: RevolvedPart) -> list[DimIntent]:
     intents: list[DimIntent] = []
-    for (x0, x1), segment in zip(segment_bounds(part), part.segments, strict=True):
+    bounds = zip(segment_bounds(part), part.segments, strict=True)
+    for index, ((x0, x1), segment) in enumerate(bounds):
         mid = (x0 + x1) / 2.0
         radius = segment.d_outer / 2.0
         intents.append(
-            DimIntent(kind="diameter", p1=(mid, radius), p2=(mid, -radius), feature="part")
+            DimIntent(
+                kind="diameter",
+                p1=(mid, radius),
+                p2=(mid, -radius),
+                feature=segment_key(index),
+            )
         )
         if segment.d_inner > _EPS:
             bore = segment.d_inner / 2.0
             intents.append(
-                DimIntent(kind="diameter", p1=(mid, bore), p2=(mid, -bore), feature="part")
+                DimIntent(
+                    kind="diameter",
+                    p1=(mid, bore),
+                    p2=(mid, -bore),
+                    feature=segment_key(index, bore=True),
+                )
             )
     return intents
 
@@ -226,8 +470,21 @@ def dimension_intents(
     *,
     style: str = "chain",
     hole_table_threshold: int = 8,
+    fits: dict | None = None,
 ) -> tuple[DimIntent, ...]:
-    """Every dimension this view wants: the features' own, plus the part's sizes."""
+    """Every dimension this view wants: the features' own, plus the part's sizes.
+
+    ``fits`` maps a dimension's name to an ISO 286 code - a feature id, or one
+    of the part's own diameters by :func:`segment_key` (``"segment[1]"``,
+    ``"segment[1].bore"``). The code is stamped onto the matching intent, so
+    :func:`resolve_tolerance` resolves it and :func:`layout_dimensions` reserves
+    room for the widened text. A key that names nothing is refused with the
+    names that exist.
+
+    ISO 129-1 is applied last: a measurement the other dimensions already tile
+    end to end is marked as an auxiliary (reference) dimension, in parentheses,
+    instead of being drawn a second time as a plain DIMENSION.
+    """
     name = str(style or "").strip().lower()
     if name not in DIM_STYLES:
         raise ValueError(f"style: expected one of {DIM_STYLES}, got {style!r}.")
@@ -240,15 +497,26 @@ def dimension_intents(
             intents.extend(_revolved_axial(part, name))
             intents.extend(_revolved_diameters(part))
         elif kind == "side":
-            near = part.segments[-1]
+            last = len(part.segments) - 1
+            near = part.segments[last]
             radius = near.d_outer / 2.0
             intents.append(
-                DimIntent(kind="diameter", p1=(-radius, 0.0), p2=(radius, 0.0), feature="part")
+                DimIntent(
+                    kind="diameter",
+                    p1=(-radius, 0.0),
+                    p2=(radius, 0.0),
+                    feature=segment_key(last),
+                )
             )
             if near.d_inner > _EPS:
                 bore = near.d_inner / 2.0
                 intents.append(
-                    DimIntent(kind="diameter", p1=(-bore, 0.0), p2=(bore, 0.0), feature="part")
+                    DimIntent(
+                        kind="diameter",
+                        p1=(-bore, 0.0),
+                        p2=(bore, 0.0),
+                        feature=segment_key(last, bore=True),
+                    )
                 )
     elif isinstance(part, PrismaticPart):
         x0, y0, x1, y1 = outline_bbox(part)
@@ -270,11 +538,13 @@ def dimension_intents(
 
     groups = _hole_groups(part)
     total_holes = sum(len(holes) for holes in groups.values())
+    table_ids: frozenset[str] = frozenset()
     if total_holes > int(hole_table_threshold):
-        hole_ids = {hole.id for holes in groups.values() for hole in holes}
-        intents = [i for i in intents if i.feature not in hole_ids]
+        table_ids = frozenset(hole.id for holes in groups.values() for hole in holes)
+        intents = [i for i in intents if i.feature not in table_ids]
 
-    return _dedupe(intents)
+    collected = _mark_references(list(_dedupe(intents)))
+    return tuple(_apply_fits(collected, fits, table_ids=table_ids))
 
 
 def hole_table_rows(part, view, *, hole_table_threshold: int = 8) -> tuple[dict, ...]:
