@@ -46,7 +46,7 @@ python -m benchmarks.run_competitors --server autocad-mcp-pro --backend ezdxf --
 python -m benchmarks.run_competitors --task table_mleader --task hatch_islands --json
 ```
 
-The release-machine ezdxf self-check is **16/16 (100.0)** on the v4 matrix
+The release-machine ezdxf self-check is **17/17 (100.0)** on the v4 matrix
 (`--matrix v3` / `--matrix v2` reproduce the earlier sets).
 Repository stars and raw tool counts do not contribute to the score. Adapter
 registration lives in `competitors.yaml`.
@@ -87,17 +87,18 @@ zero we invented would be indistinguishable from a zero we measured.
 only described, and `--publish` writes the artifact-path-free file that
 `results/published/` holds.
 
-### Matrix v4 (v1.6) — the P&ID round trip
+### Matrix v4 (v1.6) — the P&ID round trip and the page-setup truth
 
-`tasks_v4.py` keeps the v3 fifteen unchanged and adds one task the reader can
-fail on its own:
+`tasks_v4.py` keeps the v3 fifteen unchanged and adds two tasks that can each
+fail on their own:
 
 | Task | Category | Verified against |
 |---|---|---|
 | `pid_roundtrip` | pid | the example spec drawn through `pid_from_spec`'s code, then read back by the graph builder, which never sees the spec: 5 nodes, 4 edges, 0 dangling ends, `confidence_min` 1.0, zero critique issues, an instrument index of exactly `FIC-101` wired to `FCV-101`, and the two authored line numbers back on the two process lines while the two unnumbered lines carry sequence-built numbers from XDATA |
+| `page_setup_truth` | pagesetup | `page_setup_apply("Layout1", ISO_A3 landscape 1:1)` then `batch_plot`; the PDF's own `/MediaBox` must parse to 420 × 297 mm (±0.5), the page-setup list must say `ISO_A3` / `landscape` / `[420, 297]`, and the ctb must be a known one |
 
-The competitor reports carry no result for it, for the same reason they carry
-none for the v3 five. `--matrix v3` reproduces the v1.5 set exactly.
+The competitor reports carry no result for either, for the same reason they
+carry none for the v3 five. `--matrix v3` reproduces the v1.5 set exactly.
 
 ## Live competitor lane (v1.4)
 
@@ -216,19 +217,24 @@ python benchmarks/compare_versions.py --json results.json
 
 ### Result — this branch (1.6.0-dev) vs v1.5.1 (release gate)
 
-29 checks, ezdxf backend, one subprocess per check. Machine-readable report:
+32 checks, ezdxf backend, one subprocess per check. Machine-readable report:
 [`results/published/ab-v1.5.1-vs-v1.6.0-dev.json`](results/published/ab-v1.5.1-vs-v1.6.0-dev.json).
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---------|----------------|-----------|-------|-----------|
-| **v1.5.1** (baseline)     | 26 / 29 | 89.7 % | — | — |
-| **v1.6.0-dev** (this branch) | 29 / 29 | 100 % | 3 | **0** |
+| **v1.5.1** (baseline)     | 26 / 32 | 81.2 % | — | — |
+| **v1.6.0-dev** (this branch) | 32 / 32 | 100 % | 6 | **0** |
 
-The three are the P&ID checks Track A added — `pid_block_define_attdef_roundtrip`,
-`pid_tag_parse_fic`, `pid_graph_edge_count` — all `miss → pass`: v1.5.1 has
-none of the methods. Every one of the 26 checks it was released on still
-passes, so the track added capability without moving a number it had already
-earned.
+The six are all `miss → pass` — v1.5.1 has none of the methods: the three
+P&ID checks track A added (`pid_block_define_attdef_roundtrip`,
+`pid_tag_parse_fic`, `pid_graph_edge_count`) and the three settings checks of
+track E (`settings_dimstyle_iso25_values`: the ISO-25 preset reaches the
+DIMSTYLE table with ISO 129-1's numbers, read back through ezdxf and not
+through the lister; `settings_layer_state_roundtrip`: save → change → restore
+puts the layer table back and the state survives save/reopen as an XRECORD in
+the file; `settings_pdf_mediabox_a3`: the plotted PDF's own `/MediaBox` reads
+420 × 297 mm). Every one of the 26 checks it was released on still passes, so
+the two tracks added capability without moving a number it had already earned.
 
 ### Result — v1.5.1 vs v1.5.0
 

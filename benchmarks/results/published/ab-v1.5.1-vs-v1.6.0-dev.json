@@ -1,12 +1,12 @@
 {
   "summary": {
     "baseline_ref": "v1.5.1",
-    "total": 29,
+    "total": 32,
     "old_pass": 26,
-    "new_pass": 29,
-    "old_pct": 89.7,
+    "new_pass": 32,
+    "old_pct": 81.2,
     "new_pct": 100.0,
-    "fixed": 3,
+    "fixed": 6,
     "regressed": 0
   },
   "rows": [
@@ -181,6 +181,24 @@
     {
       "check": "pid_graph_edge_count",
       "category": "P&ID",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "settings_dimstyle_iso25_values",
+      "category": "Settings",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "settings_layer_state_roundtrip",
+      "category": "Settings",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "settings_pdf_mediabox_a3",
+      "category": "Settings",
       "old": "miss",
       "new": "pass"
     }

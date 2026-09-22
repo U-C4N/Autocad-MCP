@@ -321,6 +321,74 @@ async def pid_graph_edge_count():
     return len(result["graph"]["edges"]) == 4 and result["graph"]["stats"]["dangling"] == 0
 
 
+# ── Settings and environment (v1.6, track E) ─────────────────────────────────
+
+
+async def settings_dimstyle_iso25_values():
+    """The ISO-25 preset reaches the DIMSTYLE table with ISO 129-1's numbers.
+
+    Read back through ezdxf directly, not through `dimstyle_list`, so the
+    check cannot be satisfied by a list that echoes its own input.
+    """
+    from engineering.standards.dimstyles import resolve_dimstyle
+
+    b = await _b()
+    await b.dimstyle_create("ISO-25", resolve_dimstyle("iso-25", None), set_current=True)
+    style = b._doc.dimstyles.get("ISO-25")
+    listed = {row["name"]: row for row in await b.dimstyle_list()}
+    return (
+        abs(float(style.dxf.dimtxt) - 2.5) < 1e-9
+        and abs(float(style.dxf.dimasz) - 2.5) < 1e-9
+        and abs(float(style.dxf.dimexe) - 1.25) < 1e-9
+        and abs(float(style.dxf.dimexo) - 0.625) < 1e-9
+        and abs(float(style.dxf.dimgap) - 0.625) < 1e-9
+        and int(style.dxf.dimtad) == 1
+        and int(style.dxf.dimdsep) == ord(",")
+        and str(style.dxf.dimtxsty) == "ISOCP"
+        and b._doc.header["$DIMSTYLE"] == "ISO-25"
+        and listed["ISO-25"]["current"] is True
+        and listed["ISO-25"]["values"]["DIMDSEP"] == ","
+    )
+
+
+async def settings_layer_state_roundtrip():
+    """Save → change → restore puts the table back, and the state survives a
+    save/reopen because it is an XRECORD in the file, not server memory."""
+    b = await _b()
+    await b.layer_create("LS_A", color=1)
+    await b.layer_create("LS_B", color=2)
+    saved = await b.layer_state_save("bench", description="A/B round trip")
+    await b.layer_modify("LS_A", color=5)
+    await b.layer_freeze("LS_B")
+    restored = await b.layer_state_restore("bench")
+    layers = {layer.name: layer for layer in await b.layer_list()}
+    path = os.path.join(tempfile.mkdtemp(), "ls.dxf")
+    await b.drawing_save_as(path, "dxf")
+    await b.drawing_open(path)
+    names_after_reopen = {row["name"] for row in await b.layer_state_list()}
+    return (
+        saved["ok"] is True
+        and restored["missing_layers"] == []
+        and restored["new_layers"] == []
+        and layers["LS_A"].color == 1
+        and layers["LS_B"].is_frozen is False
+        and "bench" in names_after_reopen
+    )
+
+
+async def settings_pdf_mediabox_a3():
+    """Page setup evidence is the PDF's own /MediaBox (spec §8.3)."""
+    from engineering.standards.papers import resolve_page_setup
+    from engineering.standards.plot import batch_plot
+
+    b = await _b()
+    await b.page_setup_apply("Layout1", resolve_page_setup("ISO_A3"))
+    out_dir = tempfile.mkdtemp()
+    report = await batch_plot(b, ["Layout1"], out_dir, "{drawing}-{layout}.pdf")
+    width_mm, height_mm = report["sheets"][0]["mediabox_mm"]
+    return abs(width_mm - 420.0) < 0.5 and abs(height_mm - 297.0) < 0.5
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -351,6 +419,9 @@ CHECKS = {
     "pid_block_define_attdef_roundtrip": (pid_block_define_attdef_roundtrip, "P&ID"),
     "pid_tag_parse_fic": (pid_tag_parse_fic, "P&ID"),
     "pid_graph_edge_count": (pid_graph_edge_count, "P&ID"),
+    "settings_dimstyle_iso25_values": (settings_dimstyle_iso25_values, "Settings"),
+    "settings_layer_state_roundtrip": (settings_layer_state_roundtrip, "Settings"),
+    "settings_pdf_mediabox_a3": (settings_pdf_mediabox_a3, "Settings"),
 }
 
 

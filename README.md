@@ -27,7 +27,7 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 
 </div>
 
-> **v1.5 release snapshot:** 204 tools · 8 resources · 5 prompt templates · 3259 collected tests.
+> **v1.5 release snapshot:** 204 tools · 8 resources · 5 prompt templates · 3282 collected tests.
 > 204 is the **registered** count; a default install advertises 199 over `tools/list`,
 > because `ENABLE_3D` is unset. `system_about` is the runtime authority.
 
@@ -155,18 +155,18 @@ Self-measurement, produced by scripts in [`benchmarks/`](https://github.com/U-C4
 
 ### Correctness — every release re-proves itself
 
-29 deterministic headless checks against the previous tag and the current tree, each in its own subprocess so a hard crash counts as a miss rather than killing the run.
+32 deterministic headless checks against the previous tag and the current tree, each in its own subprocess so a hard crash counts as a miss rather than killing the run.
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---|---:|---:|---:|---:|
-| v1.5.1 *(baseline)* | 26 / 29 | 89.7 % | — | — |
-| **v1.6.0-dev** *(this branch)* | **29 / 29** | **100 %** | 3 | **0** |
+| v1.5.1 *(baseline)* | 26 / 32 | 81.2 % | — | — |
+| **v1.6.0-dev** *(this branch)* | **32 / 32** | **100 %** | 6 | **0** |
 
-The three fixed rows are the P&ID checks, new capability (`miss → pass`): `block_define` round-trips an ATTDEF, `pid_tag_parse` reads `FIC-101`, and `pid_graph` counts the example sheet's four edges. The 26 checks v1.5.1 was gated on all still pass. Against the older `v1.4.0` baseline the same 26 reported **21 / 26 → 26 / 26, five fixed, zero regressed** — two of those were repaired defects (`fail → pass`), the diameter and radius callouts, which measured the leader as geometry and dimensioned a 40 mm bore as 60 at default settings.
+The six fixed rows are new capability (`miss → pass`): the three P&ID checks of track A and, from track E, `settings_dimstyle_iso25_values` (the ISO-25 preset lands in the DIMSTYLE table with ISO 129-1's numbers), `settings_layer_state_roundtrip` (save → change → restore puts the layer table back, and the state survives save/reopen because it is an XRECORD in the file) and `settings_pdf_mediabox_a3` (the plotted PDF's own `/MediaBox` reads 420 × 297). The 26 checks v1.5.1 was gated on all still pass. Against the older `v1.4.0` baseline the same 26 reported **21 / 26 → 26 / 26, five fixed, zero regressed** — two of those were repaired defects (`fail → pass`), the diameter and radius callouts, which measured the leader as geometry and dimensioned a 40 mm bore as 60 at default settings.
 
 ### The task matrix — six tasks that can fail
 
-An earlier matrix scored this server 10/10, which carried no information: every task in it exercised something the server was built around. Five were added in 1.5 because they *can* fail, and three did while being written; 1.6 adds a sixth that the P&ID reader can fail on its own.
+An earlier matrix scored this server 10/10, which carried no information: every task in it exercised something the server was built around. Five were added in 1.5 because they *can* fail, and three did while being written; 1.6 adds two more — one the P&ID reader can fail on its own, one where the PDF file, not the setter, is the witness.
 
 | Task | Verified against |
 |---|---|
@@ -176,6 +176,7 @@ An earlier matrix scored this server 10/10, which carried no information: every 
 | `selection_filter` | window 1, crossing 2, bounding box 3, polygon 1 |
 | `measure_from_handle` | 139.2699 against the 100.0 a vertex shoelace gives |
 | `pid_roundtrip` | the example sheet drawn by `pid_from_spec`, read back by `pid_graph`, which never sees the spec: 5 nodes, 4 edges, 0 dangling, `confidence_min` 1.0, `FIC-101` wired to `FCV-101` |
+| `page_setup_truth` | ISO A3 landscape applied to Layout1, plotted through `batch_plot`, and the sheet read back from the PDF's `/MediaBox`: 420 × 297 mm, not the setter's return value |
 
 ### Headless performance
 

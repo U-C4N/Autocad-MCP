@@ -431,6 +431,54 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
             [],
         )
 
+    async def _task_page_setup_truth(self):
+        """ISO A3 landscape on Layout1, plotted, and the sheet read back from the PDF.
+
+        The number that matters is parsed from the file's ``/MediaBox`` — the
+        setter's ``applied`` block is what we asked for, the page-setup list is
+        what the LAYOUT now says, and the PDF is what a printer would get. All
+        three have to agree with ISO 216's 420 × 297.
+        """
+        from engineering.standards.papers import resolve_page_setup
+        from engineering.standards.plot import batch_plot
+
+        setup = resolve_page_setup(
+            "ISO_A3",
+            orientation="landscape",
+            plot_style="monochrome.ctb",
+            scale="1:1",
+        )
+        applied = await self.backend.page_setup_apply("Layout1", setup)
+        listed = (await self.backend.page_setup_list("Layout1"))[0]
+        out_dir = self.artifact_dir / "page_setup_truth"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        report = await batch_plot(self.backend, ["Layout1"], str(out_dir), "{drawing}-{layout}.pdf")
+        row = report["sheets"][0]
+        width_mm, height_mm = (float(v) for v in row["mediabox_mm"])
+        size_listed = tuple(float(v) for v in listed["size_mm"])
+        passed = (
+            applied["ok"] is True
+            and applied["plot_style_known"] is True
+            and listed["paper"] == "ISO_A3"
+            and listed["orientation"] == "landscape"
+            and size_listed == (420.0, 297.0)
+            and abs(width_mm - 420.0) < 0.5
+            and abs(height_mm - 297.0) < 0.5
+            and row["bytes"] > 0
+        )
+        return (
+            passed,
+            {
+                "paper": listed["paper"],
+                "orientation": listed["orientation"],
+                "size_mm_listed": list(size_listed),
+                "mediabox_mm": [width_mm, height_mm],
+                "pdf_bytes": row["bytes"],
+                "plot_style_known": applied["plot_style_known"],
+            },
+            [str(row["path"])],
+        )
+
     async def _task_auditable_delivery(self):
         await ensure_engineering_layers(self.backend)
         await self.backend.entity_create_line(0, 0, 10, 0, layer="GEOMETRY")
