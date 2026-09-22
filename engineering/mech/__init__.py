@@ -22,6 +22,16 @@ from .dimension import (
     segment_key,
     text_rects,
 )
+from .draw import (
+    ANCHOR_LAYER,
+    add_view,
+    dimension_part,
+    draw_from_spec,
+    draw_hole_pattern,
+    draw_part,
+    draw_prims,
+    read_part,
+)
 from .features import (
     FEATURE_KINDS,
     AxialBore,
@@ -105,6 +115,7 @@ from .views import (
 )
 
 __all__ = [
+    "ANCHOR_LAYER",
     "Arc",
     "AxialBore",
     "Band",
@@ -153,6 +164,7 @@ __all__ = [
     "Undercut",
     "VIEW_KINDS",
     "View",
+    "add_view",
     "bbox",
     "build_part",
     "build_view",
@@ -160,6 +172,11 @@ __all__ = [
     "detail_marker_prims",
     "detail_view",
     "dimension_intents",
+    "dimension_part",
+    "draw_from_spec",
+    "draw_hole_pattern",
+    "draw_part",
+    "draw_prims",
     "feature_from_dict",
     "hole_table_rows",
     "inner_radius_at",
@@ -180,6 +197,7 @@ __all__ = [
     "point_in_outline",
     "points_of",
     "radial_profile",
+    "read_part",
     "redundant_linear",
     "resolve_tolerance",
     "rotate",

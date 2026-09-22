@@ -527,8 +527,15 @@ async def test_tool_group_sizes_are_unchanged():
     merge task tagged them, the four groups had filed those 28 tools under
     `layouts` / `templates` / `drawing` / `layers` / `view` / `system` by
     their secondary tags; those counts returned to their pre-track-E values
-    when the section tags landed.) Every other number here has been unchanged
-    since the snapshot was taken.
+    when the section tags landed.) `mech` appeared (0 -> 6) when v1.6's
+    SECTION 21 opened with the part model and its view engine
+    (`mech_part_draw` / `mech_view_add` / `mech_dimension_part` /
+    `mech_hole_pattern` / `mech_part_from_spec` / `mech_part_inspect`); the
+    `mech` tag is ranked directly after `pid` in `_GROUP_TAG_PRIORITY`, so
+    those tools file under `mech` rather than under their secondary `create` /
+    `dimension` / `query` tags. This snapshot is branch-local: the merge task
+    recomputes it once all four track B+G branches have landed. Every other
+    number here has been unchanged since the snapshot was taken.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
@@ -545,6 +552,7 @@ async def test_tool_group_sizes_are_unchanged():
         "environment": 22,
         "layers": 14,
         "layouts": 12,
+        "mech": 6,
         "page_setup": 6,
         "pid": 9,
         "premium": 12,
@@ -556,4 +564,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 204
+    assert sum(sizes.values()) == 210

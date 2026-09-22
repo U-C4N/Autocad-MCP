@@ -3,10 +3,10 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 204,
+    "tools": 210,
     "resources": 8,
     "prompts": 5,
-    "groups": 23
+    "groups": 24
   },
   "groups": {
     "analysis": 12,
@@ -22,6 +22,7 @@
     "environment": 22,
     "layers": 14,
     "layouts": 12,
+    "mech": 6,
     "page_setup": 6,
     "pid": 9,
     "premium": 12,
@@ -1966,6 +1967,90 @@
       "annotations": {
         "title": "Load Linetype",
         "readOnlyHint": false
+      }
+    },
+    {
+      "name": "mech_dimension_part",
+      "group": "mech",
+      "cost": "mutate",
+      "summary": "Dimension a drawn part: ISO 129 dimensions, ISO 286 fits, a hole table.",
+      "tags": [
+        "dimension",
+        "mech"
+      ],
+      "annotations": {
+        "title": "Mechanical: Dimension Part",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "mech_hole_pattern",
+      "group": "mech",
+      "cost": "mutate",
+      "summary": "Draw a linear, grid or polar hole pattern with centre marks on any drawing.",
+      "tags": [
+        "create",
+        "mech"
+      ],
+      "annotations": {
+        "title": "Mechanical: Hole Pattern",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "mech_part_draw",
+      "group": "mech",
+      "cost": "mutate",
+      "summary": "Draw a machine part from a segment list or an outline plus typed features.",
+      "tags": [
+        "create",
+        "mech"
+      ],
+      "annotations": {
+        "title": "Mechanical: Draw Part",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "mech_part_from_spec",
+      "group": "mech",
+      "cost": "mutate",
+      "summary": "Draw a whole mechanical sheet - several parts and their views - in one transaction.",
+      "tags": [
+        "create",
+        "mech"
+      ],
+      "annotations": {
+        "title": "Mechanical: Sheet From Spec",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "mech_part_inspect",
+      "group": "mech",
+      "cost": "read",
+      "summary": "Read the part model back off the drawing: segments, features, views, omissions.",
+      "tags": [
+        "mech",
+        "query"
+      ],
+      "annotations": {
+        "title": "Mechanical: Inspect Part",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "mech_view_add",
+      "group": "mech",
+      "cost": "mutate",
+      "summary": "Add another view of a drawn part: side, top, section (full/half/offset) or detail.",
+      "tags": [
+        "create",
+        "mech"
+      ],
+      "annotations": {
+        "title": "Mechanical: Add View",
+        "destructiveHint": false
       }
     },
     {
