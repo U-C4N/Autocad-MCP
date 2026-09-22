@@ -815,3 +815,95 @@ async def test_com_drawing_close_refuses_the_untitled_save_dialog(com_backend):
     with pytest.raises(ValueError, match="Save dialog"):
         await backend.drawing_close(save=True)
     assert app.Documents._docs[2].calls == []
+
+
+# ── the busy window after a document switch ──────────────────────────────────
+
+
+class _BusyDocuments(_FakeDocuments):
+    """``Documents`` that answers ``RPC_E_CALL_REJECTED`` a fixed number of
+    times before ``Count`` works — AutoCAD's own message filter refusing the
+    incoming call while it is still switching documents (measured 2026-09-22
+    by ``scripts/smoke_settings_com.py --build-dwt`` on AutoCAD 2026, twice:
+    ``Documents.Count`` right after ``Documents.Open`` and after ``Close``)."""
+
+    def __init__(self, rejections: int):
+        super().__init__()
+        self.rejections_left = rejections
+        self.rejected = 0
+
+    @property
+    def Count(self):
+        if self.rejections_left > 0:
+            self.rejections_left -= 1
+            self.rejected += 1
+            pywintypes = pytest.importorskip("pywintypes")
+            raise pywintypes.com_error(-2147418111, "Call was rejected by callee.", None, None)
+        return super().Count
+
+
+async def test_com_ensure_document_state_waits_out_a_rejected_call(com_backend, monkeypatch):
+    backend, app = com_backend
+    busy = _BusyDocuments(rejections=3)
+    busy._docs.extend(app.Documents._docs)
+    app.Documents = busy
+    monkeypatch.setattr(backend, "_REJECTED_RETRY_FIRST_PAUSE_S", 0.001)
+    await backend._ensure_document_state()
+    assert busy.rejected == 3
+    assert backend._document_scope_key == ("First.dwg", "C:/work/First.dwg")
+
+
+async def test_com_ensure_document_state_gives_up_after_its_budget(com_backend, monkeypatch):
+    """A seat that keeps rejecting (an operator mid-command) still surfaces
+    the error — the retry is a window, not a wait forever."""
+    backend, app = com_backend
+    busy = _BusyDocuments(rejections=10_000)
+    busy._docs.extend(app.Documents._docs)
+    app.Documents = busy
+    monkeypatch.setattr(backend, "_REJECTED_RETRY_FIRST_PAUSE_S", 0.001)
+    monkeypatch.setattr(backend, "_REJECTED_RETRY_BUDGET_S", 0.02)
+    pywintypes = pytest.importorskip("pywintypes")
+    with pytest.raises(pywintypes.com_error) as excinfo:
+        await backend._ensure_document_state()
+    assert excinfo.value.args[0] == -2147418111
+    assert 1 < busy.rejected < 100, "bounded by the budget, not by the rejection count"
+
+
+async def test_com_ensure_document_state_does_not_retry_other_errors(com_backend):
+    backend, app = com_backend
+    pywintypes = pytest.importorskip("pywintypes")
+
+    class _Broken(_FakeDocuments):
+        calls = 0
+
+        @property
+        def Count(self):
+            _Broken.calls += 1
+            raise pywintypes.com_error(-2147417848, "disconnected", None, None)
+
+    app.Documents = _Broken()
+    with pytest.raises(pywintypes.com_error):
+        await backend._ensure_document_state()
+    assert _Broken.calls == 1
+
+
+async def test_com_document_close_waits_out_the_rejection_after_close(com_backend, monkeypatch):
+    """The third measured site: ``Documents.Count`` straight after
+    ``doc.Close(False)`` inside ``document_close`` itself, before the
+    ``_ensure_document_state`` read is even reached."""
+    backend, app = com_backend
+    busy = _BusyDocuments(rejections=0)
+    busy._docs.extend(app.Documents._docs)
+    app.Documents = busy
+    monkeypatch.setattr(backend, "_REJECTED_RETRY_FIRST_PAUSE_S", 0.001)
+    untitled = busy._docs[2]
+    original_close = untitled.Close
+
+    def _close_then_go_busy(save_changes):
+        original_close(save_changes)
+        busy.rejections_left = 2
+
+    untitled.Close = _close_then_go_busy
+    result = await backend.document_close("Drawing1.dwg", discard=True)
+    assert busy.rejected == 2
+    assert result["open_documents"] == 2 and result["active"] == "Second.dwg"

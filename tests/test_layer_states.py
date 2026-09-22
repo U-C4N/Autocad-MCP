@@ -290,6 +290,22 @@ class _FakeXRecord:
         self.deleted = True
 
 
+class _Narrowed:
+    """What pywin32 hands back for ``IAcadDictionaries.Item`` and
+    ``IAcadDictionary.Item`` once a makepy cache exists: the gen_py
+    ``IAcadObject`` wrapper of the *declared* return type — no ``Count``, no
+    ``GetXRecordData`` — with the live object reachable only through
+    ``_oleobj_`` (measured 2026-09-22, AutoCAD 2026, ``layer_state_restore``
+    in ``scripts/smoke_settings_com.py``: ``AttributeError: 'IAcadObject'
+    object has no attribute 'Count'``)."""
+
+    def __init__(self, obj):
+        self._oleobj_ = obj
+
+    def __getattr__(self, name):
+        raise AttributeError(f"'IAcadObject' object has no attribute {name!r}")
+
+
 class _FakeDict:
     def __init__(self, name):
         self.Name = name
@@ -301,7 +317,7 @@ class _FakeDict:
         return len(self.entries)
 
     def Item(self, index):
-        return self.entries[index]
+        return _Narrowed(self.entries[index])
 
     def GetName(self, obj):
         return obj.name
@@ -328,7 +344,7 @@ class _FakeDictionaries:
         self.calls.append(("Item", (name,)))
         if name not in self.dicts:
             raise RuntimeError(f"no dictionary {name}")
-        return self.dicts[name]
+        return _Narrowed(self.dicts[name])
 
     def Add(self, name):
         self.calls.append(("Add", (name,)))
@@ -337,14 +353,19 @@ class _FakeDictionaries:
 
 
 class _FakeLayer:
-    """Models the two refusals measured live (AutoCAD 2026): the active layer
-    cannot be frozen, and a frozen layer cannot be made active."""
+    """Models the three refusals measured live (AutoCAD 2026): the active layer
+    cannot be frozen, a frozen layer cannot be made active, and layer ``0``
+    refuses the ``Freeze`` put with 'Invalid layer' whatever the value — even
+    ``False`` on the already-thawed layer (2026-09-22, scratch document:
+    ``Freeze=False`` on ``0`` → 'Invalid layer'; ``color`` / ``Linetype`` /
+    ``Lineweight`` / ``Plottable`` / ``LayerOn`` / ``Lock`` / ``ActiveLayer``
+    all fine on it)."""
 
     def __init__(self, name, **props):
         self.Name = name
-        self.Color = props.get("color", 7)
+        self.color = props.get("color", 7)
         self.Linetype = props.get("linetype", "Continuous")
-        self.LineWeight = props.get("lineweight", -3)
+        self.Lineweight = props.get("lineweight", -3)
         self.LayerOn = props.get("on", True)
         self._frozen = props.get("frozen", False)
         self.Lock = props.get("locked", False)
@@ -357,6 +378,8 @@ class _FakeLayer:
 
     @Freeze.setter
     def Freeze(self, value):
+        if self.Name == "0":
+            raise RuntimeError("AutoCAD COM error: Invalid layer")
         if value and self.document is not None and self.document.ActiveLayer is self:
             raise RuntimeError("AutoCAD COM error: cannot freeze the current layer")
         self._frozen = bool(value)
@@ -447,13 +470,13 @@ async def test_com_restore_reads_the_xrecord_and_writes_layer_properties(com_bac
     await backend.layer_state_save("S")
     hidden = document.Layers.Item("HIDDEN")
     hidden.Freeze = False
-    hidden.Color = 3
+    hidden.color = 3
     hidden.Plottable = True
     document.ActiveLayer = document.Layers.Item("0")
     result = await backend.layer_state_restore("S")
     assert result["applied"]["layers"] == 3
     assert result["applied"]["current_layer"] == "GEOMETRY"
-    assert hidden.Freeze is True and hidden.Color == 8 and hidden.Plottable is False
+    assert hidden.Freeze is True and hidden.color == 8 and hidden.Plottable is False
     assert document.ActiveLayer.Name == "GEOMETRY"
     assert result["missing_layers"] == [] and result["new_layers"] == []
 
@@ -488,15 +511,36 @@ async def test_com_restore_reports_a_refused_current_layer_instead_of_failing(co
     await backend.layer_state_save("PLOT")
     geometry = document.Layers.Item("GEOMETRY")
     hidden = document.Layers.Item("HIDDEN")
-    hidden.Color = 3
+    hidden.color = 3
     document.ActiveLayer = document.Layers.Item("0")
     geometry.Freeze = True
     result = await backend.layer_state_restore("PLOT", properties=["color", "current"])
     assert result["applied"]["current_layer"] is None
-    assert result["applied"]["layers"] == 3 and hidden.Color == 8
+    assert result["applied"]["layers"] == 3 and hidden.color == 8
     assert geometry.Freeze is True and document.ActiveLayer.Name == "0"
     (warning,) = result["warnings"]
     assert warning.startswith("GEOMETRY: cannot be made current: ")
+
+
+async def test_com_restore_never_writes_freeze_on_layer_zero(com_backend):
+    """Measured live (see ``_FakeLayer``): the ``Freeze`` put on layer ``0``
+    raises 'Invalid layer' even for ``False``, so a state saved with ``0``
+    current used to come back with two warnings and ``0`` unapplied. A
+    ``Freeze`` write only happens when it would change the layer."""
+    backend, document = com_backend
+    document.ActiveLayer = document.Layers.Item("0")
+    await backend.layer_state_save("ZERO")
+    hidden = document.Layers.Item("HIDDEN")
+    hidden.color = 3
+    document.ActiveLayer = document.Layers.Item("GEOMETRY")
+    result = await backend.layer_state_restore("ZERO")
+    assert "warnings" not in result, result
+    assert result["applied"] == {
+        "layers": 3,
+        "properties": list(PROPERTIES),
+        "current_layer": "0",
+    }
+    assert document.ActiveLayer.Name == "0" and hidden.color == 8
 
 
 async def test_com_list_and_delete(com_backend):

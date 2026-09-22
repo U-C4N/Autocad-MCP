@@ -795,7 +795,7 @@ class _NarrowedToIAcadEntity(_NarrowedToIAcadObject):
 
     IACADENTITY_MEMBERS = frozenset(
         {
-            "Color",
+            "color",
             "EntityTransparency",
             "Hyperlinks",
             "Layer",

@@ -483,7 +483,7 @@ async def test_com_explode_carries_the_attrib_frame_and_style_onto_the_text(com)
         UpsideDown=False,
         Alignment=4,
         TextAlignmentPoint=(-20.0, 13.0, 0.0),
-        Color=3,
+        color=3,
     )
     ref = _FakeObject(
         "AcDbBlockReference",
@@ -537,7 +537,7 @@ async def test_com_explode_carries_the_attrib_frame_and_style_onto_the_text(com)
         "Alignment": 4,
         "TextAlignmentPoint": (-20.0, 13.0, 0.0),
         "Layer": "PID-TAG",
-        "Color": 3,
+        "color": 3,
     }
 
 
@@ -963,7 +963,7 @@ async def test_com_explode_turns_a_multi_line_attrib_into_mtext(com):
         Rotation=0.5236,
         StyleName="ISO",
         Layer="PID-TAG",
-        Color=3,
+        color=3,
         Invisible=False,
     )
     plain = _FakeObject(
@@ -1010,7 +1010,7 @@ async def test_com_explode_turns_a_multi_line_attrib_into_mtext(com):
         ("AttachmentPoint", 9),  # acAttachmentPointBottomRight
         ("InsertionPoint", (7.0, 15.2, 0.0)),  # re-asserted after the attachment moved it
         ("Layer", "PID-TAG"),
-        ("Color", 3),
+        ("color", 3),
     ]
     assert tuple(space.texts[0].InsertionPoint.value) == (7.0, 15.2, 0.0), (
         "the MTEXT ends up anchored at the ATTRIB's alignment point"

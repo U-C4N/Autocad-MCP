@@ -75,6 +75,39 @@ else:
 #: than the bug: it would silently swallow unrelated errors.
 _COM_ERROR: tuple[type[BaseException], ...] = (pywintypes.com_error,) if _COM_IMPORTS_OK else ()
 
+#: ``RPC_E_CALL_REJECTED``: the callee's message filter refused the incoming
+#: call *before* running it, so nothing happened on the seat. AutoCAD answers
+#: it for a moment after ``Documents.Open`` / ``Add`` / ``Close`` while it is
+#: still switching documents — measured twice on 2026-09-22 (AutoCAD 2026,
+#: ``scripts/smoke_settings_com.py --build-dwt``: ``Documents.Count`` right
+#: after ``Documents.Open`` and right after ``Close(False)``) — and for as long
+#: as an operator or another client leaves a command prompt open. pywin32 has
+#: no ``CoRegisterMessageFilter``, the client-side hook that would retry this
+#: per call, so the read-only reads that follow a switch wait it out themselves.
+_RPC_E_CALL_REJECTED = -2147418111
+
+
+def _wait_out_rejected_call(read: Callable[[], Any], *, budget_s: float, first_pause_s: float):
+    """Run a read-only COM callable again while it answers ``RPC_E_CALL_REJECTED``.
+
+    Only for callables that change nothing on the seat (the rejection means
+    the refused call did not run, but an earlier call inside ``read`` did).
+    Pauses double from ``first_pause_s`` up to one second and stop at
+    ``budget_s``; any other ``com_error`` is re-raised on the first attempt.
+    """
+    deadline = time.monotonic() + budget_s
+    pause = first_pause_s
+    while True:
+        try:
+            return read()
+        except _COM_ERROR as exc:
+            hr = exc.args[0] if exc.args else 0
+            if hr != _RPC_E_CALL_REJECTED or time.monotonic() + pause > deadline:
+                raise
+            time.sleep(pause)
+            pause = min(pause * 2, 1.0)
+
+
 try:
     from PIL import Image as PILImage
 
@@ -440,7 +473,7 @@ def _apply_entity_attrs(entity, layer: str | None, color: int | None, linetype: 
     if layer is not None:
         entity.Layer = layer
     if color is not None:
-        entity.Color = int(color)
+        entity.color = int(color)
     if linetype is not None:
         _ensure_linetype_loaded(linetype)
         entity.Linetype = linetype
@@ -1286,20 +1319,34 @@ def _entity_info(entity) -> EntityInfo:
         handle=entity.Handle,
         type=ent_type,
         layer=entity.Layer,
-        color=entity.Color,
+        color=entity.color,
         linetype=linetype,
         visible=bool(entity.Visible),
         properties=props,
     )
 
 
+#: Two ActiveX members this backend spells the way the type library does and
+#: not the way the documentation capitalises them: ``IAcadEntity`` / ``IAcadLayer``
+#: declare ``color`` and ``Lineweight`` (acax25enu.tlb). Late-bound dispatch
+#: resolves names case-insensitively, so ``.Color`` worked on a seat without a
+#: makepy cache; once ``win32com.client.gencache`` has run against AutoCAD
+#: (any tool calling ``EnsureDispatch`` leaves it behind, and every object a
+#: method returns is then wrapped in the generated class) the lookup is exact
+#: and ``.Color`` / ``.LineWeight`` raise ``AttributeError: ... no attribute
+#: 'Color'. Did you mean: 'color'?`` — measured 2026-09-22 on AutoCAD 2026 by
+#: ``scripts/smoke_settings_com.py`` (``layer_list`` on the reopened template)
+#: and on a scratch document's ``AddLine``. The typelib spelling works on both
+#: kinds of wrapper; the fakes in tests/ model the same names.
+
+
 def _layer_info(layer, current_layer_name: str) -> LayerInfo:
     """Convert a COM layer object to LayerInfo."""
     return LayerInfo(
         name=layer.Name,
-        color=layer.Color,
+        color=layer.color,
         linetype=layer.Linetype,
-        lineweight=layer.LineWeight,
+        lineweight=layer.Lineweight,
         is_on=bool(layer.LayerOn),
         is_frozen=bool(layer.Freeze),
         is_locked=bool(layer.Lock),
@@ -1396,6 +1443,11 @@ def _capture_window(hwnd: int) -> bytes | None:
 
 class ComBackend(AutoCADBackend):
     """Live AutoCAD control via COM API."""
+
+    #: How long ``_ensure_document_state`` waits out ``RPC_E_CALL_REJECTED``
+    #: after a document switch, well inside ``COM_CALL_TIMEOUT`` (60 s).
+    _REJECTED_RETRY_BUDGET_S = 20.0
+    _REJECTED_RETRY_FIRST_PAUSE_S = 0.25
 
     def __init__(self):
         self._executor: ThreadPoolExecutor | None = None
@@ -1518,16 +1570,32 @@ class ComBackend(AutoCADBackend):
         self._reset_document_state()
         self._connected = False
 
-    async def _ensure_document_state(self) -> None:
-        """Reset drawing-scoped metadata when AutoCAD's active document changes."""
+    def _wait_out_rejected_call(self, read: Callable[[], Any]):
+        """``_wait_out_rejected_call`` with this backend's budget (COM thread only)."""
+        return _wait_out_rejected_call(
+            read,
+            budget_s=self._REJECTED_RETRY_BUDGET_S,
+            first_pause_s=self._REJECTED_RETRY_FIRST_PAUSE_S,
+        )
 
-        def _sync():
+    async def _ensure_document_state(self) -> None:
+        """Reset drawing-scoped metadata when AutoCAD's active document changes.
+
+        Runs directly after ``Documents.Add`` / ``Open`` / ``Close`` — the
+        window in which AutoCAD still rejects incoming calls (see
+        ``_RPC_E_CALL_REJECTED``) — so the read waits that window out. It is
+        a pure read, which is what makes re-running it safe.
+        """
+
+        def _read_active_key():
             app = _acad_app()
             if app.Documents.Count == 0:
-                key = None
-            else:
-                doc = app.ActiveDocument
-                key = (str(doc.Name), str(doc.FullName))
+                return None
+            doc = app.ActiveDocument
+            return (str(doc.Name), str(doc.FullName))
+
+        def _sync():
+            key = self._wait_out_rejected_call(_read_active_key)
             if key != self._document_scope_key:
                 self._document_scope_key = key
                 self._transaction_active = False
@@ -1678,7 +1746,7 @@ class ComBackend(AutoCADBackend):
             app = _acad_app()
             if not template:
                 doc = app.Documents.Add()
-                return {"ok": True, "name": doc.Name}
+                return {"ok": True, "name": self._wait_out_rejected_call(lambda: doc.Name)}
             source = Path(template)
             if not source.is_file():
                 raise FileNotFoundError(
@@ -1692,7 +1760,7 @@ class ComBackend(AutoCADBackend):
                 dwt, cached = _template_as_dwt(app, source)
                 result["template_dwt"] = {"path": str(dwt), "cached": cached}
             doc = app.Documents.Add(str(dwt))
-            result["name"] = doc.Name
+            result["name"] = self._wait_out_rejected_call(lambda: doc.Name)
             return result
 
         result = await self._run(_sync)
@@ -1703,7 +1771,8 @@ class ComBackend(AutoCADBackend):
         def _sync():
             app = _acad_app()
             doc = app.Documents.Open(path)
-            return {"ok": True, "name": doc.Name, "path": doc.FullName}
+            name, full_name = self._wait_out_rejected_call(lambda: (doc.Name, doc.FullName))
+            return {"ok": True, "name": name, "path": full_name}
 
         result = await self._run(_sync)
         await self._ensure_document_state()
@@ -2127,14 +2196,21 @@ class ComBackend(AutoCADBackend):
             # A clean or untitled document is never asked to save: Close(True)
             # on a clean file is a no-op write, on an untitled one a dialog.
             doc.Close(bool(save and dirty and path))
-            count = int(app.Documents.Count)
+
+            def _read_after_close():
+                # AutoCAD still rejects calls for a moment after Close
+                # (see _RPC_E_CALL_REJECTED); this read changes nothing.
+                count = int(app.Documents.Count)
+                return count, (str(app.ActiveDocument.Name) if count else None)
+
+            count, active = self._wait_out_rejected_call(_read_after_close)
             return {
                 "ok": True,
                 "closed": name,
                 "path": path,
                 "saved": bool(save and dirty and path),
                 "discarded_changes": bool(dirty and not save),
-                "active": str(app.ActiveDocument.Name) if count else None,
+                "active": active,
                 "open_documents": count,
                 "backend": "com",
             }
@@ -2147,15 +2223,25 @@ class ComBackend(AutoCADBackend):
 
     @staticmethod
     def _com_layer_states(doc, *, create: bool):
+        """The ``ACADMCP_LAYERSTATES`` dictionary, or None when absent.
+
+        ``Dictionaries.Item`` is declared ``IAcadObject*`` (see
+        ``_com_unnarrow``): with a makepy cache the wrapper has no ``Count``,
+        ``Item`` or ``AddXRecord`` — measured 2026-09-22 on AutoCAD 2026 by
+        ``layer_state_restore`` in ``scripts/smoke_settings_com.py`` (the save
+        before it had gone through ``Dictionaries.Add``, which is typed, so
+        only the reopen paths failed). Every object the dictionary hands out
+        goes through ``_com_unnarrow`` for the same reason.
+        """
         from engineering.environment.layer_states import DICT_NAME
 
         try:
-            return doc.Dictionaries.Item(DICT_NAME)
+            return _com_unnarrow(doc.Dictionaries.Item(DICT_NAME))
         except Exception as exc:  # absent
             log.debug("Dictionaries.Item(%s): %s", DICT_NAME, exc)
         if not create:
             return None
-        return doc.Dictionaries.Add(DICT_NAME)
+        return _com_unnarrow(doc.Dictionaries.Add(DICT_NAME))
 
     @staticmethod
     def _com_dict_entries(states) -> list[tuple[str, Any]]:
@@ -2163,7 +2249,7 @@ class ComBackend(AutoCADBackend):
             return []
         out = []
         for index in range(int(states.Count)):
-            obj = states.Item(index)
+            obj = _com_unnarrow(states.Item(index))  # IAcadDictionary.Item is IAcadObject* too
             out.append((str(states.GetName(obj)), obj))
         return out
 
@@ -2261,11 +2347,19 @@ class ComBackend(AutoCADBackend):
             # comes before the ActiveLayer write instead of after it in the
             # loop. Only a requested property is touched: without "frozen" the
             # refusal stands and lands in ``warnings`` like every other one.
+            # ``Freeze`` is written only when it changes the layer: layer 0
+            # refuses the put with 'Invalid layer' whatever the value, even
+            # ``False`` while thawed (measured 2026-09-22, AutoCAD 2026), and
+            # a state saved with 0 current came back with two warnings.
             if "current" in props and state["current_layer"] not in missing:
                 target_name = state["current_layer"]
                 target = doc.Layers.Item(target_name)
                 try:
-                    if "frozen" in props and not bool(state["layers"][target_name]["frozen"]):
+                    if (
+                        "frozen" in props
+                        and not bool(state["layers"][target_name]["frozen"])
+                        and bool(target.Freeze)
+                    ):
                         target.Freeze = False
                     doc.ActiveLayer = target
                     current = target_name
@@ -2278,17 +2372,17 @@ class ComBackend(AutoCADBackend):
                 lyr = doc.Layers.Item(layer_name)
                 try:
                     if "color" in props:
-                        lyr.Color = int(snap["color"])
+                        lyr.color = int(snap["color"])
                     if "linetype" in props:
                         _ensure_linetype_loaded(snap["linetype"])
                         lyr.Linetype = snap["linetype"]
                     if "lineweight" in props:
-                        lyr.LineWeight = int(snap["lineweight"])
+                        lyr.Lineweight = int(snap["lineweight"])
                     if "plot" in props:
                         lyr.Plottable = bool(snap["plot"])
                     if "on" in props:
                         lyr.LayerOn = bool(snap["on"])
-                    if "frozen" in props:
+                    if "frozen" in props and bool(lyr.Freeze) != bool(snap["frozen"]):
                         lyr.Freeze = bool(snap["frozen"])
                     if "locked" in props:
                         lyr.Lock = bool(snap["locked"])
@@ -3011,7 +3105,7 @@ class ComBackend(AutoCADBackend):
                     continue
                 if wanted_layer and entity.Layer != wanted_layer:
                     continue
-                if color is not None and int(entity.Color) != int(color):
+                if color is not None and int(entity.color) != int(color):
                     continue
                 if wanted_linetype and entity.Linetype != wanted_linetype:
                     continue
@@ -3129,7 +3223,7 @@ class ComBackend(AutoCADBackend):
                     "pattern": hatch.PatternName,
                     "scale": float(hatch.PatternScale),
                     "angle": float(hatch.PatternAngle),
-                    "color": int(hatch.Color),
+                    "color": int(hatch.color),
                     "style": int(hatch.HatchStyle),
                 }
 
@@ -3141,7 +3235,7 @@ class ComBackend(AutoCADBackend):
             if angle is not None:
                 hatch.PatternAngle = math.radians(float(angle))
             if color is not None:
-                hatch.Color = int(color)
+                hatch.color = int(color)
             if wanted_style:
                 hatch.HatchStyle = self._HATCH_STYLES.index(wanted_style)
             hatch.Evaluate()
@@ -3181,7 +3275,7 @@ class ComBackend(AutoCADBackend):
             dump: dict = {}
             for member in (
                 "Layer",
-                "Color",
+                "color",
                 "Linetype",
                 "LinetypeScale",
                 "Lineweight",
@@ -4814,12 +4908,12 @@ class ComBackend(AutoCADBackend):
             if layer is not None:
                 ent.Layer = layer
             if color is not None:
-                ent.Color = int(color)
+                ent.color = int(color)
             if linetype is not None:
                 _ensure_linetype_loaded(linetype)
                 ent.Linetype = linetype
             if lineweight is not None:
-                ent.LineWeight = normalize_lineweight(lineweight)
+                ent.Lineweight = normalize_lineweight(lineweight)
             if visible is not None:
                 ent.Visible = bool(visible)
             return {"ok": True, "handle": handle}
@@ -4999,13 +5093,13 @@ class ComBackend(AutoCADBackend):
         def _sync():
             doc = _acad_doc()
             lyr = doc.Layers.Add(name)
-            lyr.Color = int(color)
+            lyr.color = int(color)
             _ensure_linetype_loaded(linetype)
             try:
                 lyr.Linetype = linetype
             except Exception as exc:
                 log.warning("Failed to set linetype '%s' on layer '%s': %s", linetype, name, exc)
-            lyr.LineWeight = normalize_lineweight(lineweight)
+            lyr.Lineweight = normalize_lineweight(lineweight)
             return _layer_info(lyr, doc.ActiveLayer.Name)
 
         return await self._run(_sync)
@@ -5039,12 +5133,12 @@ class ComBackend(AutoCADBackend):
             doc = _acad_doc()
             lyr = doc.Layers.Item(name)
             if color is not None:
-                lyr.Color = int(color)
+                lyr.color = int(color)
             if linetype is not None:
                 _ensure_linetype_loaded(linetype)
                 lyr.Linetype = linetype
             if lineweight is not None:
-                lyr.LineWeight = normalize_lineweight(lineweight)
+                lyr.Lineweight = normalize_lineweight(lineweight)
             return _layer_info(lyr, doc.ActiveLayer.Name)
 
         return await self._run(_sync)
@@ -5245,7 +5339,7 @@ class ComBackend(AutoCADBackend):
         "Backward",
         "UpsideDown",
     )
-    _ATTRIB_TEXT_MEMBERS = _ATTRIB_FRAME_MEMBERS + ("Alignment", "TextAlignmentPoint", "Color")
+    _ATTRIB_TEXT_MEMBERS = _ATTRIB_FRAME_MEMBERS + ("Alignment", "TextAlignmentPoint", "color")
 
     @classmethod
     def _capture_attrib_text_members(cls, attr) -> dict:
@@ -5269,7 +5363,7 @@ class ComBackend(AutoCADBackend):
                     continue
                 if name == "Normal" and ocs.is_wcs_frame(raw):
                     continue
-            elif name in ("Alignment", "Color"):
+            elif name in ("Alignment", "color"):
                 try:
                     raw = int(raw)
                 except (TypeError, ValueError):
@@ -5393,8 +5487,8 @@ class ComBackend(AutoCADBackend):
         )
         mtext.InsertionPoint = point  # after the attachment and the frame: both relocate it
         mtext.Layer = item["layer"]
-        if "Color" in members:
-            mtext.Color = members["Color"]
+        if "color" in members:
+            mtext.color = members["color"]
         if item["invisible"]:
             mtext.Visible = False
         return mtext
@@ -5433,8 +5527,8 @@ class ComBackend(AutoCADBackend):
                 tap = members["TextAlignmentPoint"]
                 text.TextAlignmentPoint = _apoint(tap[0], tap[1], tap[2] if len(tap) > 2 else 0.0)
         text.Layer = item["layer"]
-        if "Color" in members:
-            text.Color = members["Color"]
+        if "color" in members:
+            text.color = members["color"]
         if item["invisible"]:
             text.Visible = False
         return text
@@ -5802,7 +5896,7 @@ class ComBackend(AutoCADBackend):
 
         def _style(obj, layer: str) -> None:
             obj.Layer = layer
-            obj.Color = 0  # acByBlock
+            obj.color = 0  # acByBlock
             obj.Linetype = "ByBlock"
 
         def _sync():

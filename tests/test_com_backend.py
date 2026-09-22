@@ -529,7 +529,7 @@ def _blockref(name, blocks, insertion=(0.0, 0.0, 0.0), sx=1.0, sy=1.0, rotation=
         Rotation=rotation,
         Handle="B1",
         Layer="0",
-        Color=256,
+        color=256,
         Linetype="ByLayer",
         Visible=True,
         **extra,

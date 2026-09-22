@@ -234,7 +234,7 @@ def _com_pid_polyline(handle, coords, payload):
         "AcDbPolyline",
         Handle=handle,
         Layer="PROCESS-PIPING-MAIN",
-        Color=256,
+        color=256,
         Linetype="ByLayer",
         Visible=True,
         Closed=False,

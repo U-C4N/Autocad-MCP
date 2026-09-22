@@ -262,7 +262,7 @@ def _fake_lwpolyline(coords, normal):
         Elevation=0.0,
         Handle="2F",
         Layer="0",
-        Color=256,
+        color=256,
         Linetype="ByLayer",
         Visible=True,
         Closed=False,
