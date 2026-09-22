@@ -84,20 +84,30 @@ class ToolAliases:
 #       (batch_plot); a drafter typing it could mean either.
 #   SAVEAS -- the same command saves a copy (drawing_save_as) or a template
 #       (drawing_template_save, its "Drawing Template" file type).
+#   CLOSE -- the active document (drawing_close) or one named document
+#       (document_close); a drafter typing it could mean either.
+#   LAYERSTATE, VIEW, UCS -- umbrella dialog/option commands (save, restore,
+#       list, delete in one) that this server splits into discrete tools.
+#   OPTIONS -- one dialog both reads and writes a preference; the server
+#       splits read (system_preferences_get) and write (system_preferences_set),
+#       the SETVAR precedent.
 #
 # Every other AutoCAD command must map to exactly one tool.
 SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
     {
         "ARRAY",
         "BLOCK",
+        "CLOSE",
         "DIMSTYLE",
         "DWGPROPS",
         "ERASE",
         "INSERT",
         "LAYER",
+        "LAYERSTATE",
         "LAYOUT",
         "MEASUREGEOM",
         "MLEADERSTYLE",
+        "OPTIONS",
         "PAGESETUP",
         "PLINE",
         "PLOT",
@@ -105,6 +115,8 @@ SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
         "SAVEAS",
         "SETVAR",
         "STYLE",
+        "UCS",
+        "VIEW",
         "ZOOM",
     }
 )
@@ -1670,6 +1682,181 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "pen assignments",
             "monochrome or grayscale",
             "which plot styles are installed",
+        ),
+    ),
+    # ── Environment (track E, group V) ──────────────────────────────────────
+    "document_activate": ToolAliases(
+        acad=(),
+        synonyms=(
+            "switch drawing",
+            "switch to the other drawing",
+            "make this drawing active",
+            "go to the other open file",
+            "change the current document",
+        ),
+    ),
+    "document_close": ToolAliases(
+        acad=("CLOSE",),
+        synonyms=(
+            "close a drawing by name",
+            "close the other drawing",
+            "close without saving",
+            "discard changes and close",
+            "close all but this one",
+        ),
+    ),
+    # No "which ... are" / "which one is" phrasings here: the interrogative
+    # tokens are rare in the corpus, so two of them made this tool outrank
+    # `block_list` for the holdout "which blocks are defined". "drawings",
+    # "open", "active" and "documents" carry every document-list question
+    # to #1 on their own (measured 2026-09-16).
+    "document_list": ToolAliases(
+        acad=(),
+        synonyms=(
+            "open drawings",
+            "list documents",
+            "what files are open",
+            "the active drawing",
+            "currently open files",
+        ),
+    ),
+    "layer_state_delete": ToolAliases(
+        acad=("LAYERSTATE",),
+        synonyms=("delete a layer state", "remove a saved layer setup", "drop the layer snapshot"),
+    ),
+    # Same rule as `document_list` above: no "which ... are" phrasings on the
+    # three list tools here — "which layer setups are saved" alone pushed
+    # `block_list` to #4 for the holdout "which blocks are defined" (measured
+    # 2026-09-17); the nouns carry the questions without the interrogative.
+    "layer_state_list": ToolAliases(
+        acad=("LAYERSTATE",),
+        synonyms=("saved layer states", "saved layer setups", "list layer snapshots"),
+    ),
+    "layer_state_restore": ToolAliases(
+        acad=("LAYERSTATE",),
+        synonyms=(
+            "restore the layer state",
+            "put the layers back",
+            "go back to the plot layer setup",
+            "reapply saved layer settings",
+            "layer snapshot restore",
+        ),
+    ),
+    "layer_state_save": ToolAliases(
+        acad=("LAYERSTATE",),
+        synonyms=(
+            "save the layer state",
+            "remember the layer setup",
+            "snapshot the layers",
+            "layer configuration for plotting",
+            "save which layers are frozen",
+        ),
+    ),
+    "system_launch": ToolAliases(
+        acad=(),
+        synonyms=(
+            "start autocad",
+            "launch autocad",
+            "attach to the running autocad",
+            "is autocad running",
+            "open autocad with this file",
+        ),
+    ),
+    "system_preferences_get": ToolAliases(
+        acad=("OPTIONS",),
+        synonyms=(
+            "read a preference",
+            "autosave interval",
+            "support file search path",
+            "what is the pickbox size",
+            "options dialog value",
+        ),
+    ),
+    "system_preferences_set": ToolAliases(
+        acad=("OPTIONS",),
+        synonyms=(
+            "change a preference",
+            "set the autosave interval",
+            "cursor size",
+            "pickbox size",
+            "default plot style table",
+        ),
+    ),
+    "system_prompt_message": ToolAliases(
+        acad=(),
+        synonyms=(
+            "message on the command line",
+            "tell the operator",
+            "print to the command line",
+            "command line note",
+            "say something in autocad",
+        ),
+    ),
+    "ucs_list": ToolAliases(
+        acad=("UCS", "UCSMAN"),
+        synonyms=("the current ucs", "list coordinate systems", "named ucs", "ucs manager"),
+    ),
+    "ucs_restore": ToolAliases(
+        acad=("UCS",),
+        synonyms=(
+            "back to world coordinates",
+            "reset the ucs",
+            "ucs world",
+            "switch to a saved ucs",
+            "make that coordinate system current",
+        ),
+    ),
+    "ucs_set": ToolAliases(
+        acad=("UCS",),
+        synonyms=(
+            "user coordinate system",
+            "define a ucs",
+            "new coordinate system at this origin",
+            "rotate the ucs",
+            "ucs origin",
+        ),
+    ),
+    "user_pick_point": ToolAliases(
+        acad=("ID",),
+        synonyms=(
+            "pick a point",
+            "click a point on screen",
+            "ask the operator for a point",
+            "where should this go",
+            "let me click",
+        ),
+    ),
+    "user_select": ToolAliases(
+        acad=("SELECT",),
+        synonyms=(
+            "let me select",
+            "pick objects on screen",
+            "ask the operator to select",
+            "select on screen",
+            "hand me the selection",
+        ),
+    ),
+    "view_named_list": ToolAliases(
+        acad=("VIEW",),
+        synonyms=("saved views", "existing named views", "list the views"),
+    ),
+    "view_named_restore": ToolAliases(
+        acad=("VIEW",),
+        synonyms=(
+            "go to the saved view",
+            "restore a named view",
+            "jump to the detail view",
+            "recall the view",
+        ),
+    ),
+    "view_named_save": ToolAliases(
+        acad=("VIEW",),
+        synonyms=(
+            "save this view",
+            "named view",
+            "remember where i am looking",
+            "bookmark the view",
+            "save a detail view",
         ),
     ),
 }

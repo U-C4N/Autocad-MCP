@@ -27,8 +27,8 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 
 </div>
 
-> **v1.5 release snapshot:** 185 tools · 8 resources · 5 prompt templates · 2423 collected tests.
-> 166 is the **registered** count; a default install advertises 161 over `tools/list`,
+> **v1.5 release snapshot:** 204 tools · 8 resources · 5 prompt templates · 2423 collected tests.
+> 204 is the **registered** count; a default install advertises 199 over `tools/list`,
 > because `ENABLE_3D` is unset. `system_about` is the runtime authority.
 
 ## Why this exists
@@ -105,6 +105,7 @@ Claude Desktop, Cursor, or any stdio MCP host. For HTTP: `autocad-mcp --transpor
 | Batching | `cad_batch` runs a step list in one round trip; `fields=` projects 11 result-heavy tools |
 | Paper space | tab lifecycle, viewports, `entity_change_space` (CHSPACE), `page_setup_apply` (ISO 216 / ANSI Y14.1 paper, ctb, scale, device — on both engines), `batch_plot` with every sheet size read back from its PDF's `/MediaBox`, `drawing_export_pdf(layout=…)` |
 | Templates | five bundled templates built by the server's own tools and pinned reproducible (`iso_a3_mech`, `iso_a1_arch`, `iso_a3_pid`, `ansi_b_mech`, `ansi_d_arch`) — `drawing_new(template="iso_a3_mech")`, `drawing_template_list`, `drawing_template_save` (.dwt on live AutoCAD, `dwt_write` refused headlessly) |
+| Environment | `document_list/activate/close` — several drawings open at once on both engines; portable layer states (`ACADMCP_LAYERSTATES` XRECORDs — in the file, not in AutoCAD's Layer States Manager); named views; UCS stored and made current *(tool coordinates stay WCS)*; live only: launch/attach, a preference whitelist (`OPTIONS`), and operator prompts — pick a point, select on screen, a command-line message — where ESC is `cancelled`, not an error |
 | Selection | window vs crossing stated back to the caller; a polygon tested against its own shape, not its bounding box |
 | Boundaries | `boundary_trace` (BOUNDARY/BPOLY) chains loose edges into one closed polyline, arcs kept as bulges *(headless)* |
 | Measurement | `analysis_measure_entity` measures what is *in* the drawing, by handle |

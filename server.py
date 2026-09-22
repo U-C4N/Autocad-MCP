@@ -1340,9 +1340,12 @@ async def drawing_close(
     save: Annotated[bool, "Save the drawing before closing"] = True,
     ctx: Context = None,
 ) -> dict:
-    """Close the current drawing. If save is True (default), the drawing is
-    saved to its current path before closing. After this call, you must call
-    drawing_new or drawing_open before any other tool."""
+    """Close the active document. If save is True (default), the drawing is
+    saved to its current path before closing; an untitled document is closed
+    and `warning` says its changes were discarded (headless) or the call is
+    refused (live, where the alternative is a modal Save dialog). The
+    active-document case of `document_close`; after the last document is
+    closed, call drawing_new or drawing_open before any other tool."""
     await ctx.info(f"Closing drawing (save={save})")
     return await _backend(ctx).drawing_close(save)
 
@@ -7498,12 +7501,452 @@ async def drawing_template_save(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 20: Environment (3 tools) ───────────────────────────────────────
+# ── SECTION 20: Environment (22 tools) ──────────────────────────────────────
 # ---------------------------------------------------------------------------
-# Group C (settings) opens this section with `system_variable_describe` and,
-# in Task 16, the two `drawing_properties_*` tools; group V's merge extends the
-# header count to the full environment surface (documents, layer states,
-# named views, UCS, launch, preferences, interactive prompts).
+
+
+@cad_tool(
+    summary="List the open documents: which is active, which have unsaved changes.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "List Documents", "readOnlyHint": True},
+    tags={"drawing"},
+)
+async def document_list(ctx: Context = None) -> dict:
+    """Every open document with `name`, `path`, `active`, `saved` and
+    `entity_count`.
+
+    Headless, the server keeps its own registry: `drawing_new` / `drawing_open`
+    add an entry (`untitled-N` or the file path) instead of replacing the only
+    one, and `document_activate` chooses which one every later tool targets.
+    Live, this is AutoCAD's `Documents` collection. No refusals: an empty
+    backend answers with an empty list. Pack: settings · lean: no.
+    """
+    rows = await _backend(ctx).document_list()
+    return {
+        "documents": rows,
+        "count": len(rows),
+        "active": next((r["name"] for r in rows if r["active"]), None),
+    }
+
+
+@cad_tool(summary="Switch which open document every later tool call targets.", cost="safe")
+@mcp.tool(
+    annotations={"title": "Activate Document", "readOnlyHint": False, "destructiveHint": False},
+    tags={"drawing"},
+)
+async def document_activate(
+    name_or_path: Annotated[
+        str, "A name from document_list (`gear.dxf`, `untitled-2`) or the full path"
+    ],
+    ctx: Context = None,
+) -> dict:
+    """Make one open document the active one; reports `previous`.
+
+    Matches the full path first, then the file name; an ambiguous name is
+    refused with the candidates, an unknown one with the list of open
+    documents. Headless, a document quarantined after an abandoned call cannot
+    be switched away from — `drawing_new`, `drawing_open` or closing it are
+    the ways out. Pack: settings · lean: no.
+    """
+    await ctx.info(f"Activating document {name_or_path!r}")
+    return await _backend(ctx).document_activate(name_or_path)
+
+
+@cad_tool(
+    summary="Close one open document by name; never drops unsaved work unless told to.",
+    cost="destructive",
+)
+@mcp.tool(
+    annotations={"title": "Close Document", "destructiveHint": True},
+    tags={"drawing"},
+)
+async def document_close(
+    name_or_path: Annotated[
+        str | None, "A name from document_list or the full path; omit for the active document"
+    ] = None,
+    save: Annotated[bool, "Write unsaved changes to the document's own path first"] = False,
+    discard: Annotated[bool, "Close even with unsaved changes, dropping them"] = False,
+    ctx: Context = None,
+) -> dict:
+    """Close a document and report `saved`, `discarded_changes` and the new `active`.
+
+    Refusals, all before anything is closed: unsaved changes with neither
+    `save` nor `discard`; `save` on a document that has never been saved (no
+    path to write — live, `Close(True)` would open AutoCAD's Save dialog and
+    block the COM thread); `save` together with `discard`. Closing the last
+    document leaves the backend with none open, which every tool already
+    reports. `drawing_close` is the same operation for the active document
+    with its 1.4 contract kept. Pack: settings · lean: no.
+    """
+    await ctx.info(
+        f"Closing document {name_or_path or '(active)'} (save={save}, discard={discard})"
+    )
+    return await _backend(ctx).document_close(name_or_path, save, discard)
+
+
+@cad_tool(
+    summary="Save the layer table (on/frozen/locked/colour/linetype/lineweight/plot + current) under a name, in the file.",
+    cost="safe",
+)
+@mcp.tool(
+    annotations={"title": "Save Layer State", "readOnlyHint": False, "destructiveHint": False},
+    tags={"layer"},
+)
+async def layer_state_save(
+    name: Annotated[str, "State name, e.g. PLOT-SET or DESIGN"],
+    description: Annotated[str | None, "Free text stored with the state"] = None,
+    ctx: Context = None,
+) -> dict:
+    """Snapshot every layer's on/frozen/locked/color/linetype/lineweight/plot
+    flags plus the current layer as a named state stored in the drawing.
+
+    These are the server's own portable layer states: JSON chunks in an XRECORD
+    under the `ACADMCP_LAYERSTATES` dictionary. They live in the file and
+    travel with it, work on both engines, and do **not** appear in AutoCAD's
+    Layer States Manager (LAYERSTATE). Same name replaces (`replaced: true`).
+    Refusals: an empty or control-character name, a non-string description.
+    Pack: settings · lean: no.
+    """
+    await ctx.info(f"Saving layer state {name!r}")
+    return await _backend(ctx).layer_state_save(name, description)
+
+
+@cad_tool(summary="Restore a saved layer state, all properties or a chosen subset.", cost="safe")
+@mcp.tool(
+    annotations={"title": "Restore Layer State", "readOnlyHint": False, "destructiveHint": False},
+    tags={"layer"},
+)
+async def layer_state_restore(
+    name: Annotated[str, "A name from layer_state_list"],
+    properties: Annotated[
+        list[str] | None,
+        "Subset of on, frozen, locked, color, linetype, lineweight, plot, current; omit for all",
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """Apply a saved state to the layers that still exist.
+
+    `missing_layers` (in the state, not in the drawing) are skipped, never
+    created; `new_layers` (in the drawing, not in the state) are untouched;
+    `applied` says how many layers and which properties moved. Refusals: an
+    unknown state name (lists the saved ones), a property outside the eight
+    (names the index). Live, a layer AutoCAD refuses to change (freezing the
+    active layer, making a frozen layer current) lands in `warnings` instead
+    of failing the call; the state's current layer is thawed before it is
+    made current when `frozen` is being restored, so save → freeze → restore
+    round-trips. Portable server states, not Layer States Manager entries.
+    Pack: settings · lean: no.
+    """
+    await ctx.info(f"Restoring layer state {name!r}")
+    return await _backend(ctx).layer_state_restore(name, properties)
+
+
+@cad_tool(summary="List the layer states saved in this drawing.", cost="read")
+@mcp.tool(
+    annotations={"title": "List Layer States", "readOnlyHint": True},
+    tags={"layer"},
+)
+async def layer_state_list(ctx: Context = None) -> dict:
+    """Every state under `ACADMCP_LAYERSTATES` with its description and layer
+    count. These are the server's portable states, not AutoCAD Layer States
+    Manager entries. No refusals. Pack: settings · lean: no."""
+    rows = await _backend(ctx).layer_state_list()
+    return {"states": rows, "count": len(rows)}
+
+
+@cad_tool(summary="Delete one saved layer state from the drawing.", cost="destructive")
+@mcp.tool(
+    annotations={"title": "Delete Layer State", "destructiveHint": True},
+    tags={"layer"},
+)
+async def layer_state_delete(
+    name: Annotated[str, "A name from layer_state_list"],
+    ctx: Context = None,
+) -> dict:
+    """Remove the named state's XRECORD. Layers themselves are untouched.
+    Refusal: an unknown name (lists the saved ones). Pack: settings · lean: no."""
+    await ctx.info(f"Deleting layer state {name!r}")
+    return await _backend(ctx).layer_state_delete(name)
+
+
+@cad_tool(
+    summary="Save a named view: a centre and height (and width) to come back to.", cost="safe"
+)
+@mcp.tool(
+    annotations={"title": "Save Named View", "readOnlyHint": False, "destructiveHint": False},
+    tags={"view"},
+)
+async def view_named_save(
+    name: Annotated[str, "View name, e.g. DETAIL-A"],
+    center: Annotated[
+        list[float] | None,
+        "[x, y] in WCS; default: the current view (live) or the drawing extents (headless)",
+    ] = None,
+    height: Annotated[float | None, "View height in drawing units; default as for center"] = None,
+    width: Annotated[
+        float | None, "View width; default: height × the current viewport aspect"
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """Store a VIEW table entry (AutoCAD's VIEW command). Same name replaces
+    (`replaced: true`). Refusals: `height`/`width` ≤ 0 or non-finite, a
+    malformed `center`, and headless an empty drawing with no `center`/`height`
+    (there are no extents to default to). Pack: settings · lean: no."""
+    await ctx.info(f"Saving named view {name!r}")
+    return await _backend(ctx).view_named_save(name, center, height, width)
+
+
+@cad_tool(summary="Restore a named view.", cost="safe")
+@mcp.tool(
+    annotations={"title": "Restore Named View", "readOnlyHint": False, "destructiveHint": False},
+    tags={"view"},
+)
+async def view_named_restore(
+    name: Annotated[str, "A name from view_named_list"],
+    ctx: Context = None,
+) -> dict:
+    """Live: zooms the active viewport to the saved window the way `-VIEW _R`
+    does — VIEWCTR becomes the saved centre and VIEWSIZE the saved height
+    (or width / display aspect when the window is wider than the display);
+    `applied: "zoom_window"` plus the read-back `viewctr` / `viewsize`.
+    Headless there is no display: the saved window is fitted into the
+    `*Active` VPORT — the view AutoCAD opens the file on — whose aspect ratio
+    is left as the file carries it (AutoCAD reconciles a changed aspect by the
+    viewport's lower-left corner, which shifts the centre); the result says
+    `applied: "header_only"` with the written `vport_height` and the kept
+    `aspect_ratio`, the same reported-no-op rule as `view_zoom_extents`.
+    Refusal: an unknown name (lists the saved views). Pack: settings · lean:
+    no."""
+    return await _backend(ctx).view_named_restore(name)
+
+
+@cad_tool(summary="List the named views saved in this drawing.", cost="read")
+@mcp.tool(
+    annotations={"title": "List Named Views", "readOnlyHint": True},
+    tags={"view"},
+)
+async def view_named_list(ctx: Context = None) -> dict:
+    """Every VIEW table entry with centre, height and width. No refusals.
+    Pack: settings · lean: no."""
+    rows = await _backend(ctx).view_named_list()
+    return {"views": rows, "count": len(rows)}
+
+
+@cad_tool(summary="List the user coordinate systems, with the implicit world one.", cost="read")
+@mcp.tool(
+    annotations={"title": "List UCS", "readOnlyHint": True},
+    tags={"view"},
+)
+async def ucs_list(ctx: Context = None) -> dict:
+    """The `world` row first, then every UCS table entry with origin and unit
+    axes, `current` on the active one. `world` is current only when the frame
+    IS the WCS (WORLDUCS live, the `$UCS*` header headless) — an unnamed UCS
+    (`UCS Origin` / `3P` without saving) has an empty name too and is
+    reported as a trailing row with `name: null` and its origin/axes, so
+    `current` is `null` then and never `world`. Tool coordinates stay WCS on
+    both engines whatever is current. No refusals. Pack: settings · lean: no."""
+    rows = await _backend(ctx).ucs_list()
+    active = next((r for r in rows if r["current"]), None)
+    return {
+        "ucs": rows,
+        "count": len(rows),
+        "current": active["name"] if active else None,
+        "current_unnamed": bool(active and active["name"] is None),
+    }
+
+
+@cad_tool(
+    summary="Define (or replace) a named UCS from an origin and two perpendicular axes, and make it current.",
+    cost="safe",
+)
+@mcp.tool(
+    annotations={"title": "Set UCS", "readOnlyHint": False, "destructiveHint": False},
+    tags={"view"},
+)
+async def ucs_set(
+    name: Annotated[str, "UCS name"],
+    origin: Annotated[list[float], "[x, y, z] in WCS"],
+    x_axis: Annotated[list[float], "Direction of the new X axis (any length)"],
+    y_axis: Annotated[list[float], "Direction of the new Y axis; must be perpendicular to x_axis"],
+    ctx: Context = None,
+) -> dict:
+    """Store a UCS table entry and make it current (AutoCAD's UCS command).
+
+    Axes are normalised to unit vectors. **Every tool keeps taking and
+    returning WCS coordinates** — the repository rule; a UCS is for the
+    operator's own drafting, and no tool starts interpreting inputs in it.
+    Refusals, before any write: a name of `world` (reserved), a zero-length
+    axis, and non-perpendicular axes — the message carries the measured angle
+    (tolerance 0.001°). Pack: settings · lean: no.
+    """
+    await ctx.info(f"Setting UCS {name!r}")
+    return await _backend(ctx).ucs_set(name, origin, x_axis, y_axis)
+
+
+@cad_tool(summary="Make a saved UCS current, or `world` to reset to WCS.", cost="safe")
+@mcp.tool(
+    annotations={"title": "Restore UCS", "readOnlyHint": False, "destructiveHint": False},
+    tags={"view"},
+)
+async def ucs_restore(
+    name: Annotated[str, "A name from ucs_list, or `world`"],
+    ctx: Context = None,
+) -> dict:
+    """Live: `ActiveUCS` for a named entry; `world` runs `UCS World`, which is
+    refused while AutoCAD has an active command (CMDACTIVE — press ESC).
+    Headless: the `$UCSNAME/$UCSORG/$UCSXDIR/$UCSYDIR` header variables.
+    Refusal: an unknown name (lists the saved ones). Tool coordinates stay
+    WCS. Pack: settings · lean: no."""
+    return await _backend(ctx).ucs_restore(name)
+
+
+@cad_tool(
+    summary="Attach to the running AutoCAD or start it, optionally opening a file (live only).",
+    cost="safe",
+)
+@mcp.tool(
+    annotations={
+        "title": "Launch / Attach AutoCAD",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+    },
+    tags={"system"},
+)
+async def system_launch(
+    visible: Annotated[bool, "Show the application window"] = True,
+    open_path: Annotated[str | None, "A .dwg/.dxf to open after attaching"] = None,
+    ctx: Context = None,
+) -> dict:
+    """Connect to the application named by `CAD_PROGID` (attach if running,
+    launch otherwise) and report `launched`, `attached`, `version` and the
+    active `document`. Refusals: headless, `capability: "live_application"`
+    (there is no application to launch); an `open_path` that fails path
+    validation. Pack: settings · lean: no.
+    """
+    if open_path is not None:
+        open_path = str(validate_path(open_path, allow_write=False))
+    await ctx.info(f"Launching or attaching to {config.settings.cad_progid}")
+    return await _backend(ctx).system_launch(visible, open_path)
+
+
+@cad_tool(
+    summary="Read AutoCAD preferences from the whitelist (OPTIONS dialog values; live only).",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Get Preferences", "readOnlyHint": True},
+    tags={"system"},
+)
+async def system_preferences_get(
+    keys: Annotated[
+        list[str] | None,
+        "Subset of OpenSave.SaveAsType, OpenSave.AutoSaveInterval, OpenSave.CreateBackup, "
+        "OpenSave.IncrementalSavePercent, Display.CursorSize, Drafting.AutoSnapMarkerSize, "
+        "Drafting.AutoSnapTooltip, Selection.PickBoxSize, Output.DefaultPlotStyleTable, "
+        "Output.DefaultOutputDevice, Files.SupportPath, Files.TemplateDwgPath, "
+        "Files.PrinterStyleSheetPath, Files.PrinterConfigPath; omit for all",
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """The whitelisted `Preferences.*` values, enum values as names
+    (`SaveAsType: "ac2018_dwg"`), with `read_only` naming the four `Files.*`
+    paths. Refusals: headless, `capability: "preferences"` (they live in the
+    running application, not in a file); a key outside the whitelist.
+    Pack: settings · lean: no.
+    """
+    return await _backend(ctx).preferences_get(keys)
+
+
+@cad_tool(
+    summary="Change one whitelisted AutoCAD preference; reports old and new (live only).",
+    cost="safe",
+)
+@mcp.tool(
+    annotations={"title": "Set Preference", "readOnlyHint": False, "destructiveHint": False},
+    tags={"system"},
+)
+async def system_preferences_set(
+    key: Annotated[str, "A writable key from system_preferences_get"],
+    value: Annotated[Any, "New value: bool, int within the key's range, string, or an enum name"],
+    ctx: Context = None,
+) -> dict:
+    """Write one preference and report `old`, `new` and `changed`.
+
+    Refusals, all before any write: a read-only key (`Files.*`), an unknown
+    key, a value of the wrong type, an int outside the authored range
+    (`AutoSaveInterval` 0–600 min, `CursorSize` 1–100, `PickBoxSize` 0–50, …),
+    an unknown `SaveAsType` name; headless, `capability: "preferences"`.
+    Pack: settings · lean: no.
+    """
+    await ctx.info(f"Setting preference {key} = {value!r}")
+    return await _backend(ctx).preferences_set(key, value)
+
+
+@cad_tool(
+    summary="Ask the operator to pick a point on screen (live only; blocks until they do).",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Ask Operator: Pick Point", "readOnlyHint": True},
+    tags={"system"},
+)
+async def user_pick_point(
+    prompt: Annotated[str, "Shown on the command line, e.g. 'Pick the base point'"],
+    ctx: Context = None,
+) -> dict:
+    """`Utility.GetPoint`: returns the WCS `x`, `y` (`z`) the operator clicks.
+
+    ESC is an answer, not an error: `cancelled: true` with AutoCAD's reason.
+    Waiting longer than `COM_CALL_TIMEOUT` returns `timed_out: true` (the
+    prompt is abandoned on AutoCAD's side; press ESC there). Refusals: an
+    empty prompt; headless, `capability: "interactive_prompt"` (no operator).
+    Pack: settings · lean: no.
+    """
+    await ctx.info(f"Asking the operator to pick a point: {prompt}")
+    return await _backend(ctx).user_pick_point(prompt)
+
+
+@cad_tool(
+    summary="Ask the operator to select one entity or a set on screen (live only).",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Ask Operator: Select", "readOnlyHint": True},
+    tags={"system"},
+)
+async def user_select(
+    prompt: Annotated[str, "Shown on the command line"],
+    mode: Annotated[str, "single (GetEntity) | multiple (SelectOnScreen)"] = "single",
+    ctx: Context = None,
+) -> dict:
+    """Returns `handles` the operator picked — one with `mode="single"` (plus
+    the `picked` point `[x, y]` in **WCS** — AutoCAD reports it in the current
+    UCS and the tool translates, so a UCS made current by `ucs_set` never
+    shifts it), any number with `mode="multiple"` (Enter with nothing
+    selected is `count: 0`, not a cancel). ESC → `cancelled: true`; a wait
+    longer than `COM_CALL_TIMEOUT` → `timed_out: true`. Refusals: a mode
+    outside the two, an empty prompt; headless, `capability:
+    "interactive_prompt"`. Pack: settings · lean: no.
+    """
+    await ctx.info(f"Asking the operator to select ({mode}): {prompt}")
+    return await _backend(ctx).user_select(prompt, mode)
+
+
+@cad_tool(summary="Print a message on AutoCAD's command line (live only).", cost="safe")
+@mcp.tool(
+    annotations={"title": "Command-Line Message", "readOnlyHint": False, "destructiveHint": False},
+    tags={"system"},
+)
+async def system_prompt_message(
+    text: Annotated[str, "The message; one line is best"],
+    ctx: Context = None,
+) -> dict:
+    """`Utility.Prompt`: tell the operator something where they are looking.
+    Nothing in the drawing changes. Refusals: an empty message; headless,
+    `capability: "interactive_prompt"`. Pack: settings · lean: no."""
+    return await _backend(ctx).system_prompt_message(text)
 
 
 @cad_tool(

@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 185,
+    "tools": 204,
     "resources": 8,
     "prompts": 5,
     "groups": 21
@@ -14,22 +14,22 @@
     "blocks": 9,
     "corner_ops": 4,
     "dimensions": 5,
-    "drawing": 13,
+    "drawing": 16,
     "engineering": 10,
     "entity_creation": 18,
     "entity_modification": 16,
     "entity_query": 9,
-    "layers": 14,
+    "layers": 18,
     "layouts": 16,
     "pid": 9,
     "premium": 12,
     "solids": 5,
     "styles": 10,
-    "system": 8,
+    "system": 14,
     "templates": 4,
     "transactions": 3,
     "validation": 1,
-    "view": 4
+    "view": 10
   },
   "tools": [
     {
@@ -520,6 +520,46 @@
       "annotations": {
         "title": "Styles: Set Current Dimension Style",
         "readOnlyHint": false
+      }
+    },
+    {
+      "name": "document_activate",
+      "group": "drawing",
+      "cost": "safe",
+      "summary": "Switch which open document every later tool call targets.",
+      "tags": [
+        "drawing"
+      ],
+      "annotations": {
+        "title": "Activate Document",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "document_close",
+      "group": "drawing",
+      "cost": "destructive",
+      "summary": "Close one open document by name; never drops unsaved work unless told to.",
+      "tags": [
+        "drawing"
+      ],
+      "annotations": {
+        "title": "Close Document",
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "document_list",
+      "group": "drawing",
+      "cost": "read",
+      "summary": "List the open documents: which is active, which have unsaved changes.",
+      "tags": [
+        "drawing"
+      ],
+      "annotations": {
+        "title": "List Documents",
+        "readOnlyHint": true
       }
     },
     {
@@ -1715,6 +1755,60 @@
       }
     },
     {
+      "name": "layer_state_delete",
+      "group": "layers",
+      "cost": "destructive",
+      "summary": "Delete one saved layer state from the drawing.",
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "Delete Layer State",
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "layer_state_list",
+      "group": "layers",
+      "cost": "read",
+      "summary": "List the layer states saved in this drawing.",
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "List Layer States",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "layer_state_restore",
+      "group": "layers",
+      "cost": "safe",
+      "summary": "Restore a saved layer state, all properties or a chosen subset.",
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "Restore Layer State",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "layer_state_save",
+      "group": "layers",
+      "cost": "safe",
+      "summary": "Save the layer table (on/frozen/locked/colour/linetype/lineweight/plot + current) under a name, in the file.",
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "Save Layer State",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
       "name": "layer_thaw",
       "group": "layers",
       "cost": "safe",
@@ -2263,6 +2357,61 @@
       }
     },
     {
+      "name": "system_launch",
+      "group": "system",
+      "cost": "safe",
+      "summary": "Attach to the running AutoCAD or start it, optionally opening a file (live only).",
+      "tags": [
+        "system"
+      ],
+      "annotations": {
+        "title": "Launch / Attach AutoCAD",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "system_preferences_get",
+      "group": "system",
+      "cost": "read",
+      "summary": "Read AutoCAD preferences from the whitelist (OPTIONS dialog values; live only).",
+      "tags": [
+        "system"
+      ],
+      "annotations": {
+        "title": "Get Preferences",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "system_preferences_set",
+      "group": "system",
+      "cost": "safe",
+      "summary": "Change one whitelisted AutoCAD preference; reports old and new (live only).",
+      "tags": [
+        "system"
+      ],
+      "annotations": {
+        "title": "Set Preference",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "system_prompt_message",
+      "group": "system",
+      "cost": "safe",
+      "summary": "Print a message on AutoCAD's command line (live only).",
+      "tags": [
+        "system"
+      ],
+      "annotations": {
+        "title": "Command-Line Message",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
       "name": "system_run_command",
       "group": "system",
       "cost": "escape",
@@ -2483,6 +2632,73 @@
       }
     },
     {
+      "name": "ucs_list",
+      "group": "view",
+      "cost": "read",
+      "summary": "List the user coordinate systems, with the implicit world one.",
+      "tags": [
+        "view"
+      ],
+      "annotations": {
+        "title": "List UCS",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "ucs_restore",
+      "group": "view",
+      "cost": "safe",
+      "summary": "Make a saved UCS current, or `world` to reset to WCS.",
+      "tags": [
+        "view"
+      ],
+      "annotations": {
+        "title": "Restore UCS",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "ucs_set",
+      "group": "view",
+      "cost": "safe",
+      "summary": "Define (or replace) a named UCS from an origin and two perpendicular axes, and make it current.",
+      "tags": [
+        "view"
+      ],
+      "annotations": {
+        "title": "Set UCS",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "user_pick_point",
+      "group": "system",
+      "cost": "read",
+      "summary": "Ask the operator to pick a point on screen (live only; blocks until they do).",
+      "tags": [
+        "system"
+      ],
+      "annotations": {
+        "title": "Ask Operator: Pick Point",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "user_select",
+      "group": "system",
+      "cost": "read",
+      "summary": "Ask the operator to select one entity or a set on screen (live only).",
+      "tags": [
+        "system"
+      ],
+      "annotations": {
+        "title": "Ask Operator: Select",
+        "readOnlyHint": true
+      }
+    },
+    {
       "name": "validation_check",
       "group": "validation",
       "cost": "read",
@@ -2494,6 +2710,47 @@
       "annotations": {
         "title": "Validate Drawing",
         "readOnlyHint": true
+      }
+    },
+    {
+      "name": "view_named_list",
+      "group": "view",
+      "cost": "read",
+      "summary": "List the named views saved in this drawing.",
+      "tags": [
+        "view"
+      ],
+      "annotations": {
+        "title": "List Named Views",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "view_named_restore",
+      "group": "view",
+      "cost": "safe",
+      "summary": "Restore a named view.",
+      "tags": [
+        "view"
+      ],
+      "annotations": {
+        "title": "Restore Named View",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "view_named_save",
+      "group": "view",
+      "cost": "safe",
+      "summary": "Save a named view: a centre and height (and width) to come back to.",
+      "tags": [
+        "view"
+      ],
+      "annotations": {
+        "title": "Save Named View",
+        "readOnlyHint": false,
+        "destructiveHint": false
       }
     },
     {

@@ -36,11 +36,18 @@ class PremiumContract(ABC):
 
     _plan_spec: PlanSpec | None = None
     _preflight_result: Any = None
+    # The standard `drawing_apply_iso_layers` last bootstrapped on *this*
+    # drawing (None until it runs) — `_active_layer_set_id` reads it ahead of
+    # the PlanSpec. Drawing-scoped like the plan: a live backend clears it
+    # when AutoCAD's active document changes, the headless registry keeps one
+    # per open document.
+    _active_layer_set: LayerSetId | None = None
 
     def _reset_document_state(self) -> None:
         """Clear metadata that is valid only for the current drawing."""
         self._plan_spec = None
         self._preflight_result = None
+        self._active_layer_set = None
         self._gdt_datums_defined = set()
         self._gdt_datums_referenced = set()
 

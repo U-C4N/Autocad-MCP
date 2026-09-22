@@ -111,6 +111,11 @@ def _com_teardown():
             pass
 
 
+# AcCoordinateSystem, as Utility.TranslateCoordinates takes it (From / To).
+_AC_WORLD = 0
+_AC_UCS = 1
+
+
 def _apoint(x: float, y: float, z: float = 0.0):
     """Create a VARIANT double-array point for AutoCAD COM."""
     return win32com.client.VARIANT(
@@ -131,6 +136,14 @@ def _ai(values: list[int]):
     """Create a VARIANT short-int array."""
     return win32com.client.VARIANT(
         pythoncom.VT_ARRAY | pythoncom.VT_I2,
+        list(values),
+    )
+
+
+def _avar(values):
+    """Create a VARIANT array of VARIANTs (what SetXRecordData takes for its values)."""
+    return win32com.client.VARIANT(
+        pythoncom.VT_ARRAY | pythoncom.VT_VARIANT,
         list(values),
     )
 
@@ -1421,6 +1434,23 @@ class ComBackend(AutoCADBackend):
                 "lisp": FeatureCapability(True, "sanitized"),
                 "registry_sysvar": FeatureCapability(True, "native"),
                 "dwgprops": FeatureCapability(True, "native"),
+                "documents": FeatureCapability(True, "native"),
+                # Spelling pinned by F Task 24's test_layer_states_are_declared_as_ours_not_autocads
+                # and quoted by the README and CLAUDE.md: mode "xrecord", this reason verbatim.
+                "layer_states": FeatureCapability(
+                    True,
+                    "xrecord",
+                    reason="portable_acadmcp_xrecord;not_listed_in_autocad_layer_states_manager",
+                ),
+                "named_views": FeatureCapability(True, "native"),
+                "ucs": FeatureCapability(
+                    True, "native", reason="world_restore_via_ucs_command;tool_coordinates_stay_wcs"
+                ),
+                "live_application": FeatureCapability(True, "native"),
+                "preferences": FeatureCapability(True, "native", reason="whitelisted_keys_only"),
+                "interactive_prompt": FeatureCapability(
+                    True, "native", reason="cancel_returns_cancelled_true;timeout_returns_timed_out"
+                ),
             },
         )
 
@@ -1955,6 +1985,840 @@ class ComBackend(AutoCADBackend):
             finally:
                 if previous != layout:
                     doc.ActiveLayout = doc.Layouts.Item(previous)
+
+        return await self._run(_sync)
+
+    # ---------------------------------------------------------------------------
+    # ── environment (track E) ───────────────────────────────────────────────────
+    # ---------------------------------------------------------------------------
+
+    @staticmethod
+    def _com_documents(app) -> list:
+        return [app.Documents.Item(i) for i in range(int(app.Documents.Count))]
+
+    @staticmethod
+    def _com_document_row(doc, active) -> dict:
+        full_name = str(doc.FullName)
+        return {
+            "name": str(doc.Name),
+            "path": full_name or None,
+            "active": active is not None
+            and (str(doc.Name), full_name) == (str(active.Name), str(active.FullName)),
+            "saved": bool(doc.Saved),
+            "entity_count": int(doc.ModelSpace.Count),
+        }
+
+    def _com_find_document(self, app, name_or_path: str):
+        """Match a key the way ``_resolve_document_key`` does: full path, then name."""
+        if not isinstance(name_or_path, str):
+            raise TypeError(f"name_or_path must be a string, got {type(name_or_path).__name__}")
+        wanted = name_or_path.strip()
+        if not wanted:
+            raise ValueError("name_or_path must not be empty")
+        docs = self._com_documents(app)
+        try:
+            as_path = str(Path(wanted).resolve()).lower()
+        except (OSError, ValueError):
+            as_path = wanted.lower()
+        by_path = [
+            d
+            for d in docs
+            if str(d.FullName) and str(Path(str(d.FullName)).resolve()).lower() == as_path
+        ]
+        by_name = [d for d in docs if str(d.Name).lower() == wanted.lower()]
+        hits = by_path or by_name
+        if len(hits) == 1:
+            return hits[0]
+        names = [str(d.Name) for d in docs]
+        if len(hits) > 1:
+            raise ValueError(f"document {wanted!r} is ambiguous: {names}; pass the full path")
+        raise ValueError(f"no open document named {wanted!r}; open documents: {names}")
+
+    async def document_list(self) -> list[dict]:
+        def _sync():
+            app = _acad_app()
+            active = app.ActiveDocument if int(app.Documents.Count) else None
+            return [self._com_document_row(doc, active) for doc in self._com_documents(app)]
+
+        return await self._run(_sync)
+
+    async def document_activate(self, name_or_path: str) -> dict:
+        def _sync():
+            app = _acad_app()
+            previous = str(app.ActiveDocument.Name) if int(app.Documents.Count) else None
+            doc = self._com_find_document(app, name_or_path)
+            doc.Activate()
+            return {
+                "ok": True,
+                "active": str(doc.Name),
+                "previous": previous,
+                "name": str(doc.Name),
+                "path": str(doc.FullName) or None,
+            }
+
+        result = await self._run(_sync)
+        await self._ensure_document_state()
+        return result
+
+    async def document_close(
+        self, name_or_path: str | None = None, save: bool = False, discard: bool = False
+    ) -> dict:
+        if save and discard:
+            raise ValueError("document_close: save and discard are mutually exclusive")
+
+        def _sync():
+            app = _acad_app()
+            doc = (
+                _acad_doc() if name_or_path is None else self._com_find_document(app, name_or_path)
+            )
+            name = str(doc.Name)
+            path = str(doc.FullName) or None
+            dirty = not bool(doc.Saved)
+            if dirty:
+                if save:
+                    if not path:
+                        raise ValueError(
+                            f"document_close: {name!r} has never been saved; Close(True) would "
+                            "open AutoCAD's Save dialog and block the COM thread. "
+                            "drawing_save_as(path) first, or pass discard=True"
+                        )
+                elif not discard:
+                    where = f" to {path}" if path else " (after drawing_save_as)"
+                    raise ValueError(
+                        f"document_close: {name!r} has unsaved changes; pass save=True to "
+                        f"write them{where}, or discard=True to drop them"
+                    )
+            # A clean or untitled document is never asked to save: Close(True)
+            # on a clean file is a no-op write, on an untitled one a dialog.
+            doc.Close(bool(save and dirty and path))
+            count = int(app.Documents.Count)
+            return {
+                "ok": True,
+                "closed": name,
+                "path": path,
+                "saved": bool(save and dirty and path),
+                "discarded_changes": bool(dirty and not save),
+                "active": str(app.ActiveDocument.Name) if count else None,
+                "open_documents": count,
+                "backend": "com",
+            }
+
+        result = await self._run(_sync)
+        await self._ensure_document_state()
+        return result
+
+    # ── layer states ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _com_layer_states(doc, *, create: bool):
+        from engineering.environment.layer_states import DICT_NAME
+
+        try:
+            return doc.Dictionaries.Item(DICT_NAME)
+        except Exception as exc:  # absent
+            log.debug("Dictionaries.Item(%s): %s", DICT_NAME, exc)
+        if not create:
+            return None
+        return doc.Dictionaries.Add(DICT_NAME)
+
+    @staticmethod
+    def _com_dict_entries(states) -> list[tuple[str, Any]]:
+        if states is None:
+            return []
+        out = []
+        for index in range(int(states.Count)):
+            obj = states.Item(index)
+            out.append((str(states.GetName(obj)), obj))
+        return out
+
+    def _com_layer_state_entry(self, states, name: str):
+        for key, obj in self._com_dict_entries(states):
+            if key.lower() == name.lower():
+                return key, obj
+        return None, None
+
+    @staticmethod
+    def _com_xrecord_chunks(xrecord) -> list[str]:
+        # pywin32 returns the two [out] parameters as a tuple, exactly as
+        # GetBoundingBox() / GetXData() do elsewhere in this file.
+        codes, values = xrecord.GetXRecordData()
+        return [
+            str(value)
+            for code, value in zip(list(codes or []), list(values or []), strict=False)
+            if int(code) == 1000
+        ]
+
+    @staticmethod
+    def _com_layer_snapshot(doc, description):
+        from engineering.environment.layer_states import snapshot_from_layers
+
+        current = str(doc.ActiveLayer.Name)
+        layers, plot = [], {}
+        for index in range(int(doc.Layers.Count)):
+            lyr = doc.Layers.Item(index)
+            layers.append(_layer_info(lyr, current))
+            plot[str(lyr.Name)] = bool(lyr.Plottable)
+        return snapshot_from_layers(layers, current, plot=plot, description=description)
+
+    async def layer_state_save(self, name, description=None) -> dict:
+        from engineering.environment.layer_states import encode_state, validate_state_name
+
+        clean = validate_state_name(name)
+        if description is not None and not isinstance(description, str):
+            raise TypeError("layer_state_save: description must be a string")
+
+        def _sync():
+            doc = _acad_doc()
+            state = self._com_layer_snapshot(doc, description)
+            chunks = encode_state(state)
+            states = self._com_layer_states(doc, create=True)
+            key, xrecord = self._com_layer_state_entry(states, clean)
+            replaced = xrecord is not None
+            if xrecord is None:
+                xrecord = states.AddXRecord(clean)
+                key = clean
+            xrecord.SetXRecordData(_ai([1000] * len(chunks)), _avar(chunks))
+            return {
+                "ok": True,
+                "name": key,
+                "layer_count": len(state["layers"]),
+                "replaced": replaced,
+                "chunks": len(chunks),
+                "backend": "com",
+            }
+
+        return await self._run(_sync)
+
+    async def layer_state_restore(self, name, properties=None) -> dict:
+        from engineering.environment.layer_states import (
+            decode_state,
+            diff_snapshot,
+            validate_properties,
+            validate_state_name,
+        )
+
+        clean = validate_state_name(name)
+        props = validate_properties(properties)
+
+        def _sync():
+            doc = _acad_doc()
+            states = self._com_layer_states(doc, create=False)
+            key, xrecord = self._com_layer_state_entry(states, clean)
+            if xrecord is None:
+                raise ValueError(
+                    f"layer_state_restore: no layer state named {clean!r}; "
+                    f"saved states: {[k for k, _ in self._com_dict_entries(states)]}"
+                )
+            state = decode_state(self._com_xrecord_chunks(xrecord))
+            current_name = str(doc.ActiveLayer.Name)
+            layers = [
+                _layer_info(doc.Layers.Item(i), current_name) for i in range(int(doc.Layers.Count))
+            ]
+            missing, new = diff_snapshot(state, layers)
+            current = None
+            warnings: list[str] = []
+            # Current first: AutoCAD refuses to freeze the active layer, so the
+            # active one must already be the state's before the loop freezes.
+            # And it refuses to make a *frozen* layer current (measured, AutoCAD
+            # 2026: ``doc.ActiveLayer = <frozen>`` raises 'Error setting active
+            # layer'), so when the state thaws its own current layer that thaw
+            # comes before the ActiveLayer write instead of after it in the
+            # loop. Only a requested property is touched: without "frozen" the
+            # refusal stands and lands in ``warnings`` like every other one.
+            if "current" in props and state["current_layer"] not in missing:
+                target_name = state["current_layer"]
+                target = doc.Layers.Item(target_name)
+                try:
+                    if "frozen" in props and not bool(state["layers"][target_name]["frozen"]):
+                        target.Freeze = False
+                    doc.ActiveLayer = target
+                    current = target_name
+                except Exception as exc:  # e.g. the state's current layer is frozen
+                    warnings.append(f"{target_name}: cannot be made current: {exc}")
+            applied = 0
+            for layer_name, snap in state["layers"].items():
+                if layer_name in missing:
+                    continue
+                lyr = doc.Layers.Item(layer_name)
+                try:
+                    if "color" in props:
+                        lyr.Color = int(snap["color"])
+                    if "linetype" in props:
+                        _ensure_linetype_loaded(snap["linetype"])
+                        lyr.Linetype = snap["linetype"]
+                    if "lineweight" in props:
+                        lyr.LineWeight = int(snap["lineweight"])
+                    if "plot" in props:
+                        lyr.Plottable = bool(snap["plot"])
+                    if "on" in props:
+                        lyr.LayerOn = bool(snap["on"])
+                    if "frozen" in props:
+                        lyr.Freeze = bool(snap["frozen"])
+                    if "locked" in props:
+                        lyr.Lock = bool(snap["locked"])
+                except Exception as exc:  # e.g. freezing the active layer
+                    warnings.append(f"{layer_name}: {exc}")
+                    continue
+                applied += 1
+            _regen()
+            result = {
+                "ok": True,
+                "name": key,
+                "applied": {
+                    "layers": applied,
+                    "properties": list(props),
+                    "current_layer": current,
+                },
+                "missing_layers": missing,
+                "new_layers": new,
+                "backend": "com",
+            }
+            if warnings:
+                result["warnings"] = warnings
+            return result
+
+        return await self._run(_sync)
+
+    async def layer_state_list(self) -> list[dict]:
+        from engineering.environment.layer_states import decode_state
+
+        def _sync():
+            doc = _acad_doc()
+            states = self._com_layer_states(doc, create=False)
+            rows = []
+            for key, xrecord in self._com_dict_entries(states):
+                state = decode_state(self._com_xrecord_chunks(xrecord))
+                rows.append(
+                    {
+                        "name": key,
+                        "description": state.get("description"),
+                        "layer_count": len(state["layers"]),
+                    }
+                )
+            return rows
+
+        return await self._run(_sync)
+
+    async def layer_state_delete(self, name) -> dict:
+        from engineering.environment.layer_states import validate_state_name
+
+        clean = validate_state_name(name)
+
+        def _sync():
+            doc = _acad_doc()
+            states = self._com_layer_states(doc, create=False)
+            key, xrecord = self._com_layer_state_entry(states, clean)
+            if xrecord is None:
+                raise ValueError(
+                    f"layer_state_delete: no layer state named {clean!r}; "
+                    f"saved states: {[k for k, _ in self._com_dict_entries(states)]}"
+                )
+            removed = states.Remove(key)
+            try:
+                removed.Delete()
+            except Exception as exc:  # Remove already detached it
+                log.debug("XRecord.Delete after Remove: %s", exc)
+            return {"ok": True, "deleted": key, "backend": "com"}
+
+        return await self._run(_sync)
+
+    # ── named views ───────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _com_view(doc, name: str):
+        try:
+            return doc.Views.Item(name)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _com_display_aspect(doc) -> float:
+        """Width / height of the current viewport's display, from SCREENSIZE."""
+        size = doc.GetVariable("SCREENSIZE")
+        sx, sy = float(size[0]), float(size[1])
+        return sx / sy if sx > 0 and sy > 0 else 1.0
+
+    @staticmethod
+    def _com_view_row(view) -> dict:
+        center = view.Center
+        return {
+            "name": str(view.Name),
+            "center": [float(center[0]), float(center[1])],
+            "height": float(view.Height),
+            "width": float(view.Width),
+        }
+
+    async def view_named_save(self, name, center=None, height=None, width=None) -> dict:
+        from engineering.environment.names import validate_name
+        from engineering.environment.views import resolve_view_args
+
+        clean = validate_name(name, what="view name")
+        args = resolve_view_args(center, height, width)
+
+        def _sync():
+            doc = _acad_doc()
+            # "The current view" is VIEWCTR / VIEWSIZE at the display's aspect
+            # (SCREENSIZE), which is what AutoCAD's own `-VIEW _S` records.
+            # NOT ``doc.ActiveViewport.Center/Height/Width``: that object does
+            # not track the display — measured (AutoCAD 2026) it still
+            # answered the document's initial view after `_.ZOOM _C 5,6 20`,
+            # after ``app.ZoomCenter`` and after its own values were written.
+            if args["center"] is None or args["height"] is None or args["width"] is None:
+                view_center = doc.GetVariable("VIEWCTR")
+                view_height = float(doc.GetVariable("VIEWSIZE")) or 1.0
+                aspect = self._com_display_aspect(doc)
+            else:
+                view_center, view_height, aspect = None, 1.0, 1.0
+            cx, cy = args["center"] or (float(view_center[0]), float(view_center[1]))
+            h = args["height"] or view_height
+            w = args["width"] or h * aspect
+            view = self._com_view(doc, clean)
+            replaced = view is not None
+            if view is None:
+                # Measured (AutoCAD 2026): Views.Add creates a plan view —
+                # Direction (0, 0, 1), Target (0, 0, 0) — so unlike ezdxf's
+                # VIEW default of (1, 1, 1) nothing has to be forced here.
+                view = doc.Views.Add(clean)
+            view.Center = _av([cx, cy])
+            view.Height = float(h)
+            view.Width = float(w)
+            return {
+                "ok": True,
+                "name": str(view.Name),
+                "center": [float(cx), float(cy)],
+                "height": float(h),
+                "width": float(w),
+                "replaced": replaced,
+                "backend": "com",
+            }
+
+        return await self._run(_sync)
+
+    async def view_named_restore(self, name) -> dict:
+        from engineering.environment.names import validate_name
+
+        clean = validate_name(name, what="view name")
+
+        def _sync():
+            doc = _acad_doc()
+            view = self._com_view(doc, clean)
+            if view is None:
+                names = [str(doc.Views.Item(i).Name) for i in range(int(doc.Views.Count))]
+                raise ValueError(
+                    f"view_named_restore: no named view {clean!r}; saved views: {names}"
+                )
+            row = self._com_view_row(view)
+            # NOT ``vport.Center/Height/Width`` + ``doc.ActiveViewport = vport``:
+            # AutoCAD reconciles a width that does not match the display aspect
+            # by anchoring the viewport's lower-left corner and widening, so the
+            # view lands off-centre (measured, AutoCAD 2026, display aspect
+            # 2.013: a 10x20 view at (5, 6) restored to VIEWCTR (20.134, 6)).
+            # `-VIEW _R` centres the saved window and fits it — VIEWCTR = the
+            # saved centre, VIEWSIZE = max(height, width / aspect) — and so
+            # does ZOOM Window on the same rectangle, without a SendCommand.
+            (cx, cy), h, w = row["center"], row["height"], row["width"]
+            _acad_app().ZoomWindow(
+                _apoint(cx - w / 2.0, cy - h / 2.0), _apoint(cx + w / 2.0, cy + h / 2.0)
+            )
+            result = {"ok": True, **row, "applied": "zoom_window", "backend": "com"}
+            try:  # the read-back is what a reviewer measures the tool against
+                ctr = doc.GetVariable("VIEWCTR")
+                result["viewctr"] = [float(ctr[0]), float(ctr[1])]
+                result["viewsize"] = float(doc.GetVariable("VIEWSIZE"))
+            except Exception as exc:
+                log.debug("VIEWCTR/VIEWSIZE read-back failed: %s", exc)
+            return result
+
+        return await self._run(_sync)
+
+    async def view_named_list(self) -> list[dict]:
+        def _sync():
+            doc = _acad_doc()
+            return [self._com_view_row(doc.Views.Item(i)) for i in range(int(doc.Views.Count))]
+
+        return await self._run(_sync)
+
+    # ── UCS ───────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _com_ucs(doc, name: str):
+        try:
+            return doc.UserCoordinateSystems.Item(name)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _com_ucs_row(ucs, current: str) -> dict:
+        return {
+            "name": str(ucs.Name),
+            "origin": [float(c) for c in ucs.Origin],
+            "x_axis": [float(c) for c in ucs.XVector],
+            "y_axis": [float(c) for c in ucs.YVector],
+            "current": current != "" and str(ucs.Name).lower() == current.lower(),
+        }
+
+    async def ucs_list(self) -> list[dict]:
+        from engineering.environment.ucs import WORLD, WORLD_ORIGIN, WORLD_X_AXIS, WORLD_Y_AXIS
+
+        def _sync():
+            # GetVariable is an AcadDocument member; AcadApplication has none
+            # (measured: ``hasattr(app, "GetVariable") is False``).
+            doc = _acad_doc()
+            current = str(doc.GetVariable("UCSNAME") or "")
+            rows = [
+                {
+                    "name": WORLD,
+                    "origin": list(WORLD_ORIGIN),
+                    "x_axis": list(WORLD_X_AXIS),
+                    "y_axis": list(WORLD_Y_AXIS),
+                    "current": False,
+                }
+            ]
+            collection = doc.UserCoordinateSystems
+            for index in range(int(collection.Count)):
+                rows.append(self._com_ucs_row(collection.Item(index), current))
+            if any(row["current"] for row in rows[1:]):
+                return rows
+            # No saved entry is current. UCSNAME is empty for an unnamed UCS
+            # (UCS Origin / 3P without saving) as well as for WCS — verified
+            # live (AutoCAD 2026: after `_.UCS _O 10,10,0`, UCSNAME="" and
+            # WORLDUCS=0). WORLDUCS is AutoCAD's own answer to "is this WCS".
+            if int(doc.GetVariable("WORLDUCS")) == 1:
+                rows[0]["current"] = True
+            else:
+                rows.append(
+                    {
+                        "name": None,
+                        "origin": [float(c) for c in doc.GetVariable("UCSORG")],
+                        "x_axis": [float(c) for c in doc.GetVariable("UCSXDIR")],
+                        "y_axis": [float(c) for c in doc.GetVariable("UCSYDIR")],
+                        "current": True,
+                    }
+                )
+            return rows
+
+        return await self._run(_sync)
+
+    async def ucs_set(self, name, origin, x_axis, y_axis) -> dict:
+        from engineering.environment.names import validate_name
+        from engineering.environment.ucs import WORLD, resolve_ucs_axes
+
+        clean = validate_name(name, what="UCS name")
+        if clean.lower() == WORLD:
+            raise ValueError("ucs_set: 'world' is reserved; ucs_restore('world') resets to WCS")
+        axes = resolve_ucs_axes(origin, x_axis, y_axis)  # refuses before any ActiveX call
+
+        def _sync():
+            doc = _acad_doc()
+            o, x, y = axes["origin"], axes["x_axis"], axes["y_axis"]
+            ucs = self._com_ucs(doc, clean)
+            replaced = ucs is not None
+            if ucs is None:
+                # ActiveX takes POINTS on the axes, not direction vectors.
+                ucs = doc.UserCoordinateSystems.Add(
+                    _apoint(*o),
+                    _apoint(o[0] + x[0], o[1] + x[1], o[2] + x[2]),
+                    _apoint(o[0] + y[0], o[1] + y[1], o[2] + y[2]),
+                    clean,
+                )
+            else:
+                ucs.Origin = _apoint(*o)
+                ucs.XVector = _apoint(*x)
+                ucs.YVector = _apoint(*y)
+            doc.ActiveUCS = ucs
+            return {
+                "ok": True,
+                "name": str(ucs.Name),
+                "origin": list(o),
+                "x_axis": list(x),
+                "y_axis": list(y),
+                "replaced": replaced,
+                "current": True,
+                "backend": "com",
+            }
+
+        return await self._run(_sync)
+
+    async def ucs_restore(self, name) -> dict:
+        from engineering.environment.names import validate_name
+        from engineering.environment.ucs import WORLD
+
+        clean = validate_name(name, what="UCS name")
+
+        def _sync():
+            doc = _acad_doc()
+            if clean.lower() == WORLD:
+                # No ActiveX member selects WCS; the command does. Same guard as
+                # system_run_command: never send into an active prompt. The
+                # read is a document member, and a failed read REFUSES: a
+                # swallowed error here once forced cmd_active to 0 and sent
+                # `_.UCS _W` into whatever prompt was open.
+                try:
+                    cmd_active = int(doc.GetVariable("CMDACTIVE"))
+                except Exception as exc:
+                    raise RuntimeError(
+                        "ucs_restore: cannot verify AutoCAD is idle (CMDACTIVE read "
+                        f"failed: {exc}); nothing was sent"
+                    ) from exc
+                if cmd_active:
+                    raise RuntimeError(
+                        "AutoCAD has an active command or prompt (CMDACTIVE="
+                        f"{cmd_active}). Press ESC in AutoCAD to cancel, then retry."
+                    )
+                doc.SendCommand("_.UCS _W\n")
+                return {"ok": True, "name": WORLD, "current": True, "backend": "com"}
+            ucs = self._com_ucs(doc, clean)
+            if ucs is None:
+                names = [
+                    str(doc.UserCoordinateSystems.Item(i).Name)
+                    for i in range(int(doc.UserCoordinateSystems.Count))
+                ]
+                raise ValueError(
+                    f"ucs_restore: no UCS named {clean!r}; saved: {names} (or 'world')"
+                )
+            doc.ActiveUCS = ucs
+            return {"ok": True, "name": str(ucs.Name), "current": True, "backend": "com"}
+
+        return await self._run(_sync)
+
+    # ── application, preferences, operator prompts ────────────────────────────
+
+    async def system_launch(self, visible: bool = True, open_path: str | None = None) -> dict:
+        """Attach to the running application, or start it; optionally open a file.
+
+        Honours ``CAD_PROGID`` on both paths, like ``_acad_app``: ``Dispatch``
+        launches the application, so falling back to AutoCAD would start the
+        very product the operator said they were not using. The path is
+        validated before any COM call.
+        """
+        path = str(validate_path(open_path, allow_write=False)) if open_path else None
+
+        def _sync():
+            progid = config.settings.cad_progid
+            app = _COM_STATE.get("app")
+            launched = False
+            if app is None:
+                try:
+                    app = win32com.client.GetActiveObject(progid)
+                except Exception as exc:
+                    log.debug("GetActiveObject(%r) failed, dispatching: %s", progid, exc)
+                    app = win32com.client.Dispatch(progid)
+                    launched = True
+                _COM_STATE["app"] = app
+            try:
+                app.Visible = bool(visible)
+            except Exception as exc:  # some hosts refuse to hide
+                log.debug("Visible=%s refused: %s", visible, exc)
+            document = None
+            if path:
+                document = str(app.Documents.Open(path).Name)
+            elif int(app.Documents.Count):
+                document = str(app.ActiveDocument.Name)
+            return {
+                "launched": launched,
+                "attached": not launched,
+                "version": str(app.Version),
+                "document": document,
+                "visible": bool(visible),
+                "progid": progid,
+                "backend": "com",
+            }
+
+        result = await self._run(_sync)
+        await self._ensure_document_state()
+        return result
+
+    async def preferences_get(self, keys: list[str] | None = None) -> dict:
+        from engineering.environment.preferences import (
+            PREFERENCE_KEYS,
+            READ_ONLY_KEYS,
+            decode_value,
+            known_keys,
+            split_key,
+        )
+
+        if keys is None:
+            wanted = known_keys()
+        else:
+            if isinstance(keys, str) or not isinstance(keys, (list, tuple)):
+                raise TypeError("preferences_get: keys must be a list of preference names")
+            unknown = [k for k in keys if k not in PREFERENCE_KEYS and k not in READ_ONLY_KEYS]
+            if unknown:
+                raise ValueError(
+                    f"preferences_get: unknown preference keys {unknown}; known: {known_keys()}"
+                )
+            wanted = list(keys)
+
+        def _sync():
+            prefs = _acad_app().Preferences
+            values = {}
+            for key in wanted:
+                section, member = split_key(key)
+                values[key] = decode_value(key, getattr(getattr(prefs, section), member))
+            return {
+                "values": values,
+                "read_only": [k for k in wanted if k in READ_ONLY_KEYS],
+                "backend": "com",
+            }
+
+        return await self._run(_sync)
+
+    async def preferences_set(self, key: str, value) -> dict:
+        from engineering.environment.preferences import (
+            decode_value,
+            split_key,
+            validate_preference,
+        )
+
+        coerced = validate_preference(key, value)  # read-only / unknown / range: refused here
+        section, member = split_key(key)
+
+        def _sync():
+            target = getattr(_acad_app().Preferences, section)
+            old = getattr(target, member)
+            setattr(target, member, coerced)
+            new = getattr(target, member)
+            return {
+                "ok": True,
+                "key": key,
+                "old": decode_value(key, old),
+                "new": decode_value(key, new),
+                "changed": old != new,
+                "backend": "com",
+            }
+
+        return await self._run(_sync)
+
+    @staticmethod
+    def _prompt_text(prompt, where: str, max_len: int = 255) -> str:
+        from engineering.environment.names import validate_name
+
+        return validate_name(prompt, what=f"{where}: prompt", max_len=max_len)
+
+    @staticmethod
+    def _com_cancel_reason(exc) -> str | None:
+        """The operator's cancel as ActiveX reports it, or None for any other COM error.
+
+        ESC in GetPoint / GetEntity / SelectOnScreen raises DISP_E_EXCEPTION
+        (-2147352567) with AutoCAD's description ("User input is a keyword",
+        "Function cancelled"). Anything else is a real failure and propagates.
+        """
+        args = getattr(exc, "args", ())
+        if not args or args[0] != -2147352567:
+            return None
+        detail = args[2] if len(args) > 2 and isinstance(args[2], tuple) else ()
+        description = detail[2] if len(detail) > 2 and detail[2] else "cancelled"
+        return str(description)
+
+    async def _interactive(self, func):
+        """Run an operator prompt; a wall-clock timeout is an answer, not a crash.
+
+        ``_run`` has already rebuilt the STA executor by the time its
+        "did not respond" error surfaces (the worker is still blocked inside
+        the prompt); the next call re-attaches lazily, exactly as after any
+        other timeout. ``COM_CALL_TIMEOUT`` is the budget the operator has.
+        """
+        try:
+            return await self._run(func)
+        except RuntimeError as exc:
+            if str(exc).startswith("AutoCAD did not respond"):
+                return {
+                    "timed_out": True,
+                    "timeout_s": config.settings.com_call_timeout,
+                    "error": str(exc),
+                }
+            raise
+
+    async def user_pick_point(self, prompt: str) -> dict:
+        text = self._prompt_text(prompt, "user_pick_point")
+
+        def _sync():
+            doc = _acad_doc()
+            try:
+                point = doc.Utility.GetPoint(pythoncom.Missing, f"\n{text}")
+            except _COM_ERROR as exc:
+                reason = self._com_cancel_reason(exc)
+                if reason is None:
+                    raise
+                return {"cancelled": True, "reason": reason, "backend": "com"}
+            return {
+                "cancelled": False,
+                "x": float(point[0]),
+                "y": float(point[1]),
+                "z": float(point[2]) if len(point) > 2 else 0.0,
+                "backend": "com",
+            }
+
+        return await self._interactive(_sync)
+
+    async def user_select(self, prompt: str, mode: str = "single") -> dict:
+        if mode not in ("single", "multiple"):
+            raise ValueError(f"user_select: mode must be 'single' or 'multiple', got {mode!r}")
+        text = self._prompt_text(prompt, "user_select")
+
+        def _sync():
+            doc = _acad_doc()
+            if mode == "single":
+                try:
+                    obj, picked = doc.Utility.GetEntity(f"\n{text}")
+                except _COM_ERROR as exc:
+                    reason = self._com_cancel_reason(exc)
+                    if reason is None:
+                        raise
+                    return {"cancelled": True, "reason": reason, "handles": [], "backend": "com"}
+                # MEASURED (AutoCAD 2026): GetEntity's PickedPoint is in the
+                # *current UCS* — under a UCS at (100,50) rotated 90 deg, a pick
+                # on a circle at WCS (105,70) came back as (20,-5,0) — whereas
+                # Utility.GetPoint already answers in WCS. Every coordinate out
+                # of a tool is WCS, so translate acUCS → acWorld. The point must
+                # be a VT_ARRAY|VT_R8 VARIANT: the tuple GetEntity hands back is
+                # refused as "Invalid argument Point".
+                world = doc.Utility.TranslateCoordinates(
+                    _apoint(picked[0], picked[1], picked[2] if len(picked) > 2 else 0.0),
+                    _AC_UCS,
+                    _AC_WORLD,
+                    False,
+                )
+                return {
+                    "cancelled": False,
+                    "mode": "single",
+                    "handles": [str(obj.Handle)],
+                    "picked": [float(world[0]), float(world[1])],
+                    "backend": "com",
+                }
+            doc.Utility.Prompt(f"\n{text}\n")
+            ss = doc.SelectionSets.Add(f"_PICK_{uuid.uuid4().hex[:8]}")
+            try:
+                try:
+                    ss.SelectOnScreen()
+                except _COM_ERROR as exc:
+                    reason = self._com_cancel_reason(exc)
+                    if reason is None:
+                        raise
+                    return {"cancelled": True, "reason": reason, "handles": [], "backend": "com"}
+                handles = [str(ss.Item(i).Handle) for i in range(int(ss.Count))]
+                # Enter with nothing selected is an empty answer, not a cancel.
+                return {
+                    "cancelled": False,
+                    "mode": "multiple",
+                    "handles": handles,
+                    "count": len(handles),
+                    "backend": "com",
+                }
+            finally:
+                try:
+                    ss.Delete()
+                except Exception as exc:
+                    log.debug("SelectionSet cleanup failed: %s", exc)
+
+        return await self._interactive(_sync)
+
+    async def system_prompt_message(self, text: str) -> dict:
+        clean = self._prompt_text(text, "system_prompt_message", max_len=2000)
+
+        def _sync():
+            _acad_doc().Utility.Prompt(f"\n{clean}\n")
+            return {"ok": True, "text": clean, "backend": "com"}
 
         return await self._run(_sync)
 
@@ -3188,14 +4052,13 @@ class ComBackend(AutoCADBackend):
         return await self._run(_sync)
 
     async def drawing_close(self, save: bool = True) -> dict:
-        def _sync():
-            doc = _acad_doc()
-            doc.Close(save)
-            return {"ok": True}
+        """The active-document case of ``document_close``.
 
-        result = await self._run(_sync)
-        await self._ensure_document_state()
-        return result
+        ``Close(True)`` on a drawing that has never been saved opens AutoCAD's
+        Save dialog and blocks the single STA thread until ``COM_CALL_TIMEOUT``;
+        that is refused here by name rather than waited out.
+        """
+        return await self.document_close(None, save=save, discard=not save)
 
     async def drawing_undo(self) -> dict:
         def _sync():
