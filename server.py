@@ -703,6 +703,7 @@ _GROUP_TAG_PRIORITY = (
     "validation",
     "analysis",
     "block",
+    "style",
     "layer",
     "linetype",
     "create",
@@ -728,6 +729,7 @@ _GROUP_TAG_LABELS = {
     "analysis": "analysis",
     "validation": "validation",
     "block": "blocks",
+    "style": "styles",
     "layer": "layers",
     "linetype": "layers",
     "create": "entity_creation",
@@ -930,6 +932,12 @@ LEAN_TOOL_NAMES = frozenset(
         "pid_symbol_insert",
         "pid_line_draw",
         "pid_graph",
+        # Styles (track E) — a lean client *uses* a style far more often than
+        # it authors one; drawing_apply_standard authors the whole set in one
+        # call when it must.
+        "dimstyle_set_current",
+        "textstyle_set_current",
+        "drawing_apply_standard",
     }
 )
 
@@ -6888,6 +6896,301 @@ async def pid_tag_parse(
     from engineering.pid.tags import parse_tag
 
     return parse_tag(tag, kind, equipment_prefixes)
+
+
+# ---------------------------------------------------------------------------
+# ── SECTION 18: Styles (10 tools) ───────────────────────────────────────────
+# ---------------------------------------------------------------------------
+#
+# Pack: core (drafting essentials). Lean profile: dimstyle_set_current and
+# textstyle_set_current only (Task 13) — a lean client needs to *use* a
+# style a template already holds far more often than to author one.
+
+
+@cad_tool(
+    summary="List dimension styles with their ISO-25/ANSI variables and the current one.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Styles: List Dimension Styles", "readOnlyHint": True},
+    tags={"style", "query"},
+)
+async def dimstyle_list(ctx: Context = None) -> dict:
+    """Every DIMSTYLE table entry with the seventeen preset variables
+    (DIMTXT, DIMASZ, DIMEXE, DIMEXO, DIMGAP, DIMTAD, DIMTIH, DIMTOH, DIMDEC,
+    DIMDSEP, DIMLUNIT, DIMZIN, DIMBLK, DIMTXSTY, DIMLWD, DIMLWE, DIMSCALE).
+
+    Headless, `values` is what the DXF stores (the schema default where an
+    entry omits a code). On the live engine ActiveX has no per-style getters,
+    so `values` is read for the *current* style only and the other rows carry
+    `values: null`, `values_available: false` — `dimstyle_set_current` a
+    style to read it. Never refuses on an open drawing.
+    """
+    rows = await _backend(ctx).dimstyle_list()
+    return {
+        "ok": True,
+        "styles": rows,
+        "count": len(rows),
+        "current": next((row["name"] for row in rows if row["current"]), None),
+    }
+
+
+@cad_tool(
+    summary="Create a dimension style from the ISO-25 or ANSI preset, with per-variable overrides.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Styles: Create Dimension Style", "readOnlyHint": False},
+    tags={"style", "create"},
+)
+async def dimstyle_create(
+    name: Annotated[str, "New dimension style name, e.g. ISO-25, ANSI, MECH-A3"],
+    preset: Annotated[
+        str | None,
+        "iso-25 (ISO 129-1, 2.5 mm, comma) | ansi (ASME Y14.2, 3 mm, point); omit for the ISO-25 base",
+    ] = None,
+    overrides: Annotated[
+        dict | None,
+        "DIM* variables applied on top of the preset, e.g. {DIMTXT: 3.5, DIMDSEP: '.', DIMTAD: 0}",
+    ] = None,
+    set_current: Annotated[bool, "Also make it the current dimension style"] = False,
+    ctx: Context = None,
+) -> dict:
+    """Create a dimension style: preset values first, then `overrides`.
+
+    Refuses, before anything is written: an unknown preset; an override key
+    outside the 33-variable whitelist (the 17 preset variables plus DIMTOL,
+    DIMTP, DIMTM, DIMTOLJ, DIMTFAC, DIMLFAC, DIMRND, DIMATFIT, DIMTMOVE,
+    DIMCLRD/E/T, DIMSAH, DIMBLK1/2, DIMCEN); a value outside its range
+    (DIMDEC 0-8, sizes > 0, DIMTAD 0-4, DIMDSEP one character, lineweights an
+    AutoCAD code); a name that already exists (use `dimstyle_modify`); a
+    user DIMBLK/DIMBLK1/DIMBLK2 naming a block the drawing does not define
+    (built-in arrowheads need none); a DIMTXSTY that is neither an existing
+    text style nor a bundled preset (ISOCP, ISOCPEUR, ARIAL, ROMANS — those
+    are created on both engines, `textstyle_created`; live, a preset whose
+    font file the seat lacks is refused the same way, nothing written). On
+    the live engine a write ActiveX still refuses after the style is added
+    is rolled back — previous style current, the half-made entry deleted.
+    With `set_current` the next dimension carries the style on both engines.
+    """
+    from engineering.standards.dimstyles import resolve_dimstyle
+
+    values = resolve_dimstyle(preset, overrides)
+    await ctx.info(f"Dimension style {name!r} from preset {preset or 'iso-25'}")
+    return await _backend(ctx).dimstyle_create(name, values, set_current)
+
+
+@cad_tool(
+    summary="Change DIM* variables on an existing dimension style; reports only what moved.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Styles: Modify Dimension Style", "readOnlyHint": False},
+    tags={"style", "modify"},
+)
+async def dimstyle_modify(
+    name: Annotated[str, "Existing dimension style name"],
+    overrides: Annotated[dict, "DIM* variables to change, e.g. {DIMDEC: 3, DIMTXT: 3.5}"],
+    ctx: Context = None,
+) -> dict:
+    """Change variables on an existing dimension style.
+
+    `changed` names only the variables that actually moved — re-setting a
+    value to itself is not a change. `dimensions_using_style` lists the
+    dimensions already drawn with it; headlessly `rerender_required: true`
+    says they still show the old style until redrawn (AutoCAD re-renders on
+    the next regen). Refuses a missing style, an empty `overrides`, a key
+    outside the whitelist, a value outside its range, a DIMTXSTY that does
+    not exist, a user arrowhead block the drawing does not define — all
+    before any write. On the live engine, editing a non-current style makes
+    it current for the duration of the call and the previous style is
+    restored — also when a write fails midway (its unsaved overrides are
+    discarded, which is AutoCAD's own DIMSTYLE rule).
+    """
+    await ctx.info(f"Modifying dimension style {name!r}")
+    return await _backend(ctx).dimstyle_modify(name, overrides)
+
+
+@cad_tool(summary="Make a dimension style current so new dimensions use it.", cost="safe")
+@mcp.tool(
+    annotations={"title": "Styles: Set Current Dimension Style", "readOnlyHint": False},
+    tags={"style", "modify"},
+)
+async def dimstyle_set_current(
+    name: Annotated[str, "Dimension style to make current (case-insensitive)"],
+    ctx: Context = None,
+) -> dict:
+    """Set `$DIMSTYLE` and load the style's variables as the current DIM*
+    settings — what a live seat's DIMSTYLE Restore does — so `dimension_*`
+    and `dimension_auto` draw with it on both engines. Per-dimension
+    tolerances, fits and text overrides still apply on top. Refuses a style
+    the drawing does not hold. Returns `previous` and `changed`.
+    """
+    return await _backend(ctx).dimstyle_set_current(name)
+
+
+@cad_tool(summary="List text styles: font file, height, width factor, oblique angle.", cost="read")
+@mcp.tool(
+    annotations={"title": "Styles: List Text Styles", "readOnlyHint": True},
+    tags={"style", "query"},
+)
+async def textstyle_list(ctx: Context = None) -> dict:
+    """Every STYLE table entry and the one new TEXT/MTEXT will use."""
+    rows = await _backend(ctx).textstyle_list()
+    return {
+        "ok": True,
+        "styles": rows,
+        "count": len(rows),
+        "current": next((row["name"] for row in rows if row["current"]), None),
+    }
+
+
+@cad_tool(
+    summary="Create a text style from a bundled font (isocp, isocpeur, arial, romans) or any file.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Styles: Create Text Style", "readOnlyHint": False},
+    tags={"style", "create"},
+)
+async def textstyle_create(
+    name: Annotated[str, "New text style name, e.g. ISOCP"],
+    font: Annotated[
+        str,
+        "isocp.shx | isocpeur.ttf | arial.ttf | romans.shx (name or file, any case) or any font file",
+    ],
+    height: Annotated[
+        float, Field(default=0.0, ge=0, description="Fixed height; 0 = ask per text")
+    ] = 0.0,
+    width_factor: Annotated[float, Field(default=1.0, gt=0, description="Width factor")] = 1.0,
+    oblique_deg: Annotated[float, "Obliquing angle in degrees, -85..85"] = 0.0,
+    set_current: Annotated[bool, "Also make it the current text style"] = False,
+    ctx: Context = None,
+) -> dict:
+    """Create a text style.
+
+    Headlessly a font nobody can find is *written* and reported
+    `font_resolved: false` (AutoCAD substitutes at open; the headless
+    renderer falls back), because a DXF stores only the name. The live
+    engine cannot do that: ActiveX refuses a font AutoCAD cannot open, so a
+    file that is neither on its support path nor in the Windows Fonts folder
+    is refused there before any write (the message names the folders and the
+    presets); a TrueType font is written by its typeface (`SetFont`, what the
+    STYLE dialog does — the record carries `arial.ttf`, never a machine
+    path), an SHX by the file name. Refuses, before any write on both
+    engines: a name that exists, an empty font, `width_factor <= 0`,
+    `height < 0`, an oblique angle outside ±85°.
+    """
+    await ctx.info(f"Text style {name!r} with font {font!r}")
+    return await _backend(ctx).textstyle_create(
+        name, font, height, width_factor, oblique_deg, set_current
+    )
+
+
+@cad_tool(summary="Make a text style current so new text uses it.", cost="safe")
+@mcp.tool(
+    annotations={"title": "Styles: Set Current Text Style", "readOnlyHint": False},
+    tags={"style", "modify"},
+)
+async def textstyle_set_current(
+    name: Annotated[str, "Text style to make current (case-insensitive)"],
+    ctx: Context = None,
+) -> dict:
+    """Set `$TEXTSTYLE`; `entity_create_text` / `entity_create_mtext` then
+    carry the style on both engines. Refuses a style the drawing does not
+    hold. Returns `previous` and `changed`."""
+    return await _backend(ctx).textstyle_set_current(name)
+
+
+@cad_tool(
+    summary="List multileader styles: arrow size, landing gap, text style and height.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Styles: List Multileader Styles", "readOnlyHint": True},
+    tags={"style", "query"},
+)
+async def mleaderstyle_list(ctx: Context = None) -> dict:
+    """Every MLEADERSTYLE with its four values on both engines
+    (`values_available: true`). Headless they are read from the MLEADERSTYLE
+    object; live from the `AcadMLeaderStyle` objects the `ACAD_MLEADERSTYLE`
+    dictionary holds (ActiveX exposes no *collection* property for them, but
+    the dictionary items are full objects). `leader_create_mleader` can still
+    override any of them per leader."""
+    rows = await _backend(ctx).mleaderstyle_list()
+    return {"ok": True, "styles": rows, "count": len(rows)}
+
+
+@cad_tool(
+    summary="Create a multileader style from the ISO or ANSI preset, on both engines.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Styles: Create Multileader Style", "readOnlyHint": False},
+    tags={"style", "create"},
+)
+async def mleaderstyle_create(
+    name: Annotated[str, "New multileader style name"],
+    preset: Annotated[
+        str, "iso (2.5 mm arrow, 1.0 landing, ISOCP 2.5) | ansi (3.0, 1.5, ROMANS 3.0)"
+    ],
+    overrides: Annotated[
+        dict | None, "arrow_size | landing_gap | text_style | text_height on top of the preset"
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """Create a multileader style: preset values first, then `overrides`.
+
+    Headless it lands on `doc.mleader_styles`; live it is added through the
+    `ACAD_MLEADERSTYLE` dictionary (`AddObject(name, "AcDbMLeaderStyle")`)
+    and the object's properties are written. Refuses, before any write: an
+    unknown preset; an override key outside the four; `arrow_size` /
+    `text_height <= 0`, `landing_gap < 0`; a name that exists; a `text_style`
+    that is neither present nor a bundled preset (ISOCP, ISOCPEUR, ARIAL,
+    ROMANS — those are created on both engines, `textstyle_created`; live, a
+    preset whose font file the seat lacks is refused, nothing written).
+    """
+    from engineering.standards.mleaderstyles import resolve_mleaderstyle
+
+    values = resolve_mleaderstyle(preset, overrides)
+    await ctx.info(f"Multileader style {name!r} from preset {preset}")
+    return await _backend(ctx).mleaderstyle_create(name, values)
+
+
+@cad_tool(
+    summary="Put the drawing on ISO or ANSI in one call: dimstyle, text style, units, mech layers.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Drawing: Apply Drafting Standard", "readOnlyHint": False},
+    tags={"style", "drawing"},
+)
+async def drawing_apply_standard(
+    standard: Annotated[
+        str, "iso (ISO-25 / ISOCP, decimal comma) | ansi (ANSI / ROMANS, decimal point)"
+    ],
+    layers: Annotated[bool, "Also bootstrap the mech layer set with ISO 128 lineweights"] = True,
+    units: Annotated[
+        bool, "Also write INSUNITS mm, LUNITS/AUNITS decimal, LTSCALE 1, DIMSCALE 1"
+    ] = True,
+    ctx: Context = None,
+) -> dict:
+    """One call for the common case: the standard's dimension style (created
+    if missing, then current), its text style (created if missing, then
+    current), the shared units, and with `layers` the `mech` layer set (ANSI
+    layer naming is company-specific, so both standards share it).
+
+    Every item reports `created` or already present; `settings.changed`
+    names only the variables that moved, so a second call reports nothing.
+    An existing ISO-25 / ANSI style is reused as it is, not reset — use
+    `dimstyle_modify` to change one. Refuses an unknown standard before any
+    write; the underlying style refusals (`dimstyle_create`,
+    `textstyle_create`) apply unchanged. In the `lean` profile (Task 13).
+    """
+    from engineering.standards.apply import apply_standard
+
+    await ctx.info(f"Applying the {standard} drafting standard")
+    return await apply_standard(_backend(ctx), standard, layers, units)
 
 
 # ---------------------------------------------------------------------------

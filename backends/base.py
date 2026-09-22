@@ -33,6 +33,7 @@ from backends.contracts import (
     PremiumContract,
     SettingsContract,
     SolidContract,
+    StylesContract,
     SystemContract,
     TransactionContract,
     ViewContract,
@@ -184,6 +185,7 @@ class AutoCADBackend(
     PremiumContract,
     GdtContract,
     SettingsContract,
+    StylesContract,
 ):
     """All backends implement this interface.
 

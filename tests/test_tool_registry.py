@@ -517,8 +517,14 @@ async def test_tool_group_sizes_are_unchanged():
     when `pid_tag_parse` (the ISA-5.1 tag grammar as a read-only tool)
     joined; the `pid`
     tag is ranked first in `_GROUP_TAG_PRIORITY` so those tools file under
-    `pid` rather than under their secondary `query` / `create` tags. Every
-    other number here has been unchanged since the snapshot was taken.
+    `pid` rather than under their secondary `query` / `create` tags. `styles`
+    appeared (0 -> 9) when track E's SECTION 18 opened with the dimension,
+    text and multileader style tools, then 9 -> 10 when
+    `drawing_apply_standard` (ISO or ANSI styles, units and layers in one
+    call) joined; the `style` tag sits ahead of `layer` and `drawing` in
+    `_GROUP_TAG_PRIORITY` so they never file under their secondary
+    `query` / `create` / `modify` / `drawing` tags. Every other number here has been
+    unchanged since the snapshot was taken.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
@@ -537,10 +543,11 @@ async def test_tool_group_sizes_are_unchanged():
         "pid": 9,
         "premium": 12,
         "solids": 5,
+        "styles": 10,
         "system": 7,
         "templates": 2,
         "transactions": 3,
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 166
+    assert sum(sizes.values()) == 176

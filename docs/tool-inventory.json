@@ -3,10 +3,10 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 166,
+    "tools": 176,
     "resources": 8,
     "prompts": 5,
-    "groups": 20
+    "groups": 21
   },
   "groups": {
     "analysis": 12,
@@ -24,6 +24,7 @@
     "pid": 9,
     "premium": 12,
     "solids": 5,
+    "styles": 10,
     "system": 7,
     "templates": 2,
     "transactions": 3,
@@ -451,6 +452,62 @@
       }
     },
     {
+      "name": "dimstyle_create",
+      "group": "styles",
+      "cost": "mutate",
+      "summary": "Create a dimension style from the ISO-25 or ANSI preset, with per-variable overrides.",
+      "tags": [
+        "create",
+        "style"
+      ],
+      "annotations": {
+        "title": "Styles: Create Dimension Style",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "dimstyle_list",
+      "group": "styles",
+      "cost": "read",
+      "summary": "List dimension styles with their ISO-25/ANSI variables and the current one.",
+      "tags": [
+        "query",
+        "style"
+      ],
+      "annotations": {
+        "title": "Styles: List Dimension Styles",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "dimstyle_modify",
+      "group": "styles",
+      "cost": "mutate",
+      "summary": "Change DIM* variables on an existing dimension style; reports only what moved.",
+      "tags": [
+        "modify",
+        "style"
+      ],
+      "annotations": {
+        "title": "Styles: Modify Dimension Style",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "dimstyle_set_current",
+      "group": "styles",
+      "cost": "safe",
+      "summary": "Make a dimension style current so new dimensions use it.",
+      "tags": [
+        "modify",
+        "style"
+      ],
+      "annotations": {
+        "title": "Styles: Set Current Dimension Style",
+        "readOnlyHint": false
+      }
+    },
+    {
       "name": "drawing_apply_iso_layers",
       "group": "premium",
       "cost": "mutate",
@@ -462,6 +519,20 @@
       "annotations": {
         "title": "Drawing: Apply ISO Layer Set (bootstrap)",
         "destructiveHint": false
+      }
+    },
+    {
+      "name": "drawing_apply_standard",
+      "group": "styles",
+      "cost": "mutate",
+      "summary": "Put the drawing on ISO or ANSI in one call: dimstyle, text style, units, mech layers.",
+      "tags": [
+        "drawing",
+        "style"
+      ],
+      "annotations": {
+        "title": "Drawing: Apply Drafting Standard",
+        "readOnlyHint": false
       }
     },
     {
@@ -1718,6 +1789,34 @@
       }
     },
     {
+      "name": "mleaderstyle_create",
+      "group": "styles",
+      "cost": "mutate",
+      "summary": "Create a multileader style from the ISO or ANSI preset, on both engines.",
+      "tags": [
+        "create",
+        "style"
+      ],
+      "annotations": {
+        "title": "Styles: Create Multileader Style",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "mleaderstyle_list",
+      "group": "styles",
+      "cost": "read",
+      "summary": "List multileader styles: arrow size, landing gap, text style and height.",
+      "tags": [
+        "query",
+        "style"
+      ],
+      "annotations": {
+        "title": "Styles: List Multileader Styles",
+        "readOnlyHint": true
+      }
+    },
+    {
       "name": "pid_equipment_list",
       "group": "pid",
       "cost": "read",
@@ -2153,6 +2252,48 @@
       "annotations": {
         "title": "Set Text Background",
         "destructiveHint": false
+      }
+    },
+    {
+      "name": "textstyle_create",
+      "group": "styles",
+      "cost": "mutate",
+      "summary": "Create a text style from a bundled font (isocp, isocpeur, arial, romans) or any file.",
+      "tags": [
+        "create",
+        "style"
+      ],
+      "annotations": {
+        "title": "Styles: Create Text Style",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "textstyle_list",
+      "group": "styles",
+      "cost": "read",
+      "summary": "List text styles: font file, height, width factor, oblique angle.",
+      "tags": [
+        "query",
+        "style"
+      ],
+      "annotations": {
+        "title": "Styles: List Text Styles",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "textstyle_set_current",
+      "group": "styles",
+      "cost": "safe",
+      "summary": "Make a text style current so new text uses it.",
+      "tags": [
+        "modify",
+        "style"
+      ],
+      "annotations": {
+        "title": "Styles: Set Current Text Style",
+        "readOnlyHint": false
       }
     },
     {

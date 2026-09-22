@@ -72,20 +72,27 @@ class ToolAliases:
 #   PLINE -- a raw polyline (entity_create_polyline) or a P&ID line run
 #       between two ports (pid_line_draw), which is an LWPOLYLINE with a
 #       class, a number and markers; a drafter typing it could mean either.
+#   DIMSTYLE, STYLE, MLEADERSTYLE -- one dialog each in AutoCAD for
+#       list / create / modify / set-current; this server splits each into
+#       discrete style tools (track E), so the command is a correct
+#       destination for every one of them.
 #
 # Every other AutoCAD command must map to exactly one tool.
 SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
     {
         "ARRAY",
         "BLOCK",
+        "DIMSTYLE",
         "ERASE",
         "INSERT",
         "LAYER",
         "LAYOUT",
         "MEASUREGEOM",
+        "MLEADERSTYLE",
         "PLINE",
         "QSELECT",
         "SETVAR",
+        "STYLE",
         "ZOOM",
     }
 )
@@ -1429,6 +1436,100 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "instrument tag letters",
             "decode the tag",
             "loop number",
+        ),
+    ),
+    # ── Styles (track E, group S) ───────────────────────────────────────────
+    "dimstyle_create": ToolAliases(
+        acad=("DIMSTYLE", "DDIM"),
+        synonyms=(
+            "new dimension style",
+            "create a dimension style",
+            "iso-25 dimension style",
+            "ansi dimension style",
+            "dimension style from a preset",
+            "set up dimension text height and arrows",
+        ),
+    ),
+    "dimstyle_list": ToolAliases(
+        acad=("DIMSTYLE",),
+        synonyms=(
+            "list dimension styles",
+            "dimension styles in the drawing",
+            "dimension style table",
+            "current dimstyle",
+            "dim styles",
+        ),
+    ),
+    "dimstyle_modify": ToolAliases(
+        acad=("DIMSTYLE",),
+        synonyms=(
+            "change a dimension style",
+            "edit the dimension style",
+            "change dimension text height for the whole drawing",
+            "set dimdec on a style",
+            "modify dimstyle variables",
+        ),
+    ),
+    "dimstyle_set_current": ToolAliases(
+        acad=("DIMSTYLE",),
+        synonyms=(
+            "current dimension style",
+            "make this dimension style current",
+            "switch dimension style",
+            "use iso-25 for new dimensions",
+            "activate a dimstyle",
+        ),
+    ),
+    "drawing_apply_standard": ToolAliases(
+        acad=(),
+        synonyms=(
+            "set the drawing up to iso",
+            "iso drafting standard",
+            "ansi drawing setup",
+            "apply the drafting standard",
+            "iso-25 and isocp in one go",
+            "standard styles units and layers",
+        ),
+    ),
+    "mleaderstyle_create": ToolAliases(
+        acad=("MLEADERSTYLE",),
+        synonyms=(
+            "new leader style",
+            "multileader style",
+            "leader arrow size and landing",
+            "iso leader style",
+        ),
+    ),
+    "mleaderstyle_list": ToolAliases(
+        acad=("MLEADERSTYLE",),
+        synonyms=("list leader styles", "multileader styles in the drawing", "mleader styles"),
+    ),
+    "textstyle_create": ToolAliases(
+        acad=("STYLE",),
+        synonyms=(
+            "new text style",
+            "create a text style",
+            "isocp font",
+            "set the font",
+            "text style with width factor and oblique angle",
+        ),
+    ),
+    "textstyle_list": ToolAliases(
+        acad=("STYLE",),
+        synonyms=(
+            "list text styles",
+            "fonts loaded in the drawing",
+            "text style table",
+            "current text style",
+        ),
+    ),
+    "textstyle_set_current": ToolAliases(
+        acad=("STYLE", "TEXTSTYLE"),
+        synonyms=(
+            "make this text style current",
+            "switch the text style",
+            "use isocp for new text",
+            "active text style",
         ),
     ),
 }

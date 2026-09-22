@@ -10,6 +10,7 @@ import asyncio
 import io
 import logging
 import math
+import os
 import sys
 import time
 import uuid
@@ -316,6 +317,451 @@ def _regen():
         _acad_doc().Regen(0)  # 0 = acActiveViewport
     except Exception as exc:
         log.debug("Regen failed: %s", exc)
+
+
+# ── styles (track E): module helpers ─────────────────────────────────────────
+#
+# The ActiveX object model has no per-style getters or setters for dimension
+# variables: `AcadDimStyle` exposes `Name` and `CopyFrom` and nothing else. A
+# style's values are therefore written the way AutoCAD's own DIMSTYLE command
+# writes them — set the DIM* system variables on the document (which makes
+# them overrides of the *current* style) and `CopyFrom(document)` to save
+# those settings into the target style. Assigning `ActiveDimStyle` restores
+# that style's saved settings and discards unsaved overrides (AutoCAD's
+# `-DIMSTYLE Restore` rule; the fake in tests/test_styles.py models exactly
+# this, and scripts/smoke_settings_com.py confirms it live). Reading is
+# one-sided: `GetVariable` reads the *current* style only, so `dimstyle_list`
+# reports values for the current style and `values_available: False` for the
+# rest rather than cycling the active style behind the operator's back.
+
+
+def _com_named(collection, name: str):
+    """A collection member by name, case-insensitive (AutoCAD's rule), or None."""
+    wanted = name.strip().lower()
+    for index in range(collection.Count):
+        item = collection.Item(index)
+        if str(item.Name).lower() == wanted:
+            return item
+    return None
+
+
+def _com_dimvar_for_write(var: str, value: Any) -> Any:
+    """ActiveX takes DIMDSEP and the arrowhead/text-style names as strings."""
+    if var in ("DIMDSEP", "DIMBLK", "DIMBLK1", "DIMBLK2", "DIMTXSTY"):
+        return str(value)
+    if isinstance(value, float):
+        return float(value)
+    return int(value)
+
+
+def _com_dimvar_for_report(var: str, raw: Any) -> Any:
+    if var == "DIMDSEP":
+        if isinstance(raw, int):
+            return "," if raw == 0 else chr(raw)
+        text = str(raw)
+        return text[:1] if text else ","
+    if var in ("DIMBLK", "DIMBLK1", "DIMBLK2"):
+        # AutoCAD reports the block name (``_OBLIQUE``, ``""`` for closed
+        # filled) — already canonical; the same read-side rule as ezdxf keeps
+        # the two engines' rows spelled identically.
+        from engineering.standards.dimstyles import reported_arrowhead
+
+        return reported_arrowhead(raw)
+    if var == "DIMTXSTY":
+        return str(raw)
+    return raw
+
+
+def _same_dimvar(old: Any, new: Any) -> bool:
+    if isinstance(old, (int, float)) and isinstance(new, (int, float)):
+        return abs(float(old) - float(new)) < 1e-9
+    return str(old) == str(new)
+
+
+#: ``SelectionSet.Select`` mode ``acSelectionSetAll`` (AcSelect enum): every
+#: entity in the database, in every layout — ``ssget "X"``.
+_AC_SELECTION_SET_ALL = 5
+
+#: Characters an ``ssget`` filter string treats as wildcards (AutoCAD's
+#: ``wcmatch`` grammar). Symbol names may carry most of them: a dimension
+#: style called ``A.B`` also matched ``A_B``, ``N#1`` matched ``N21``,
+#: ``P[1]`` matched ``P1`` and ``S@X`` matched ``SAX`` until the name was
+#: escaped (measured live, AutoCAD 2026).
+_WCMATCH_SPECIALS = frozenset("*?#@.~[]-,`")
+
+
+def _wcmatch_literal(text: str) -> str:
+    """``text`` spelled so an ``ssget`` filter matches it literally.
+
+    Every wildcard-significant character is escaped with a backtick, the
+    grammar's own escape. A symbol name can never contain a backtick itself
+    (AutoCAD refuses one), so the escaped form is unambiguous; the match stays
+    case-insensitive, as any symbol-table name comparison is.
+    """
+    return "".join("`" + char if char in _WCMATCH_SPECIALS else char for char in text)
+
+
+def _com_dimensions_using(doc, style_name: str) -> list[str]:
+    """Handles of every DIMENSION, in every layout, whose style is ``style_name``.
+
+    One filtered ``SelectionSet.Select(acSelectionSetAll)`` — the ``ssget "X"``
+    route with ``(0 . "DIMENSION") (3 . <style>)`` — answers from AutoCAD's own
+    index, so the cost does not grow with the drawing. The walk this replaced
+    read ``ObjectName`` on every entity of every layout through a dynamic
+    proxy (~8-10 ms each), which put ``dimstyle_modify`` past the 60 s
+    ``COM_CALL_TIMEOUT`` on a drawing of ~6k entities — after its write had
+    already landed. Measured live (AutoCAD 2026, 1000 LINEs + 14 dimensions
+    across model and paper space): walk 12.7-15.8 s, this 0.02-0.09 s, same
+    handles. The style name is escaped as a literal (``_wcmatch_literal``)
+    because the filter is a wildcard pattern; the ``DIMENSION`` group-0 name
+    keeps parity with the headless engine's ``query("DIMENSION")``.
+
+    Handles come back in ascending handle order (database order), whatever
+    order the selection set reports them in. Nothing is swallowed: a
+    selection that fails is an error the caller sees, not an empty list
+    reported as fact.
+    """
+    ss = doc.SelectionSets.Add(f"_DIMSTYLE_{uuid.uuid4().hex[:8]}")
+    try:
+        filter_types = _ai([0, 3])
+        filter_values = win32com.client.VARIANT(
+            pythoncom.VT_ARRAY | pythoncom.VT_VARIANT,
+            ["DIMENSION", _wcmatch_literal(style_name)],
+        )
+        ss.Select(_AC_SELECTION_SET_ALL, None, None, filter_types, filter_values)
+        # ``Handle`` is an IAcadObject member, so it answers on the narrowed
+        # ``IAcadEntity`` wrapper ``SelectionSet.Item`` hands back.
+        handles = [str(ss.Item(index).Handle) for index in range(ss.Count)]
+    finally:
+        try:
+            ss.Delete()
+        except Exception as exc:
+            log.debug("SelectionSet cleanup failed: %s", exc)
+    return sorted(handles, key=lambda handle: int(handle, 16))
+
+
+#: File suffixes AutoCAD hands to the Windows font system rather than its
+#: SHX loader (see ``_com_locate_font``).
+_TRUETYPE_SUFFIXES = frozenset({".ttf", ".ttc", ".otf"})
+
+
+def _com_font_folders() -> list[Path]:
+    """Every folder a font file is looked for, in order.
+
+    AutoCAD's support path (``Preferences.Files.SupportPath``, which carries
+    the install's ``fonts`` folder with the SHX shape files), then the Windows
+    font folders — machine-wide ``%WINDIR%\\Fonts`` (where AutoCAD's installer
+    puts ISOCPEUR next to Arial; measured) and the per-user
+    ``%LOCALAPPDATA%\\Microsoft\\Windows\\Fonts``.
+    """
+    folders: list[Path] = []
+    try:
+        support = str(_acad_app().Preferences.Files.SupportPath)
+    except Exception:
+        support = ""
+    folders.extend(Path(folder) for folder in support.split(";") if folder)
+    windir = os.environ.get("WINDIR") or os.environ.get("SystemRoot")
+    if windir:
+        folders.append(Path(windir) / "Fonts")
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        folders.append(Path(local) / "Microsoft" / "Windows" / "Fonts")
+    return folders
+
+
+def _com_font_path(font_file: str) -> Path | None:
+    """The file ``font_file`` names on this machine, or None when nobody has it.
+
+    An absolute path must exist as given; a bare name is searched over
+    ``_com_font_folders``, and a name without a suffix also as ``.shx`` (the
+    SHX loader appends it: ``fontFile = "isocp"`` is accepted live and stored
+    as given).
+    """
+    path = Path(font_file)
+    if path.is_absolute():
+        return path if path.is_file() else None
+    names = [font_file] if path.suffix else [font_file, font_file + ".shx"]
+    for folder in _com_font_folders():
+        for name in names:
+            candidate = folder / name
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _truetype_face(path: Path) -> tuple[str, bool, bool] | None:
+    """``(family, bold, italic)`` from a TrueType/OpenType file's ``name`` table.
+
+    The family (name ID 1) is the typeface Windows GDI — and therefore
+    AutoCAD's ``TextStyle.SetFont`` — knows the font by; the subfamily (ID 2)
+    says whether it is the bold and/or italic face, which ``SetFont`` takes
+    as flags. Windows/Unicode strings (platform 3, en-US preferred) win over
+    Macintosh Roman ones. A collection (``ttcf``) is read by its first font.
+    None for a file that is not an sfnt or carries no family name.
+    """
+    import struct
+
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    try:
+        offset = struct.unpack(">I", data[12:16])[0] if data[:4] == b"ttcf" else 0
+        num_tables = struct.unpack(">H", data[offset + 4 : offset + 6])[0]
+        name_table = None
+        for index in range(num_tables):
+            record = offset + 12 + 16 * index
+            if data[record : record + 4] == b"name":
+                name_table = struct.unpack(">II", data[record + 8 : record + 16])
+                break
+        if name_table is None:
+            return None
+        table_offset, _length = name_table
+        count, strings = struct.unpack(">HH", data[table_offset + 2 : table_offset + 6])
+        found: dict[tuple[int, int], str] = {}  # (name id, priority) -> text
+        for index in range(count):
+            record = table_offset + 6 + 12 * index
+            platform, _encoding, language, name_id, length, start = struct.unpack(
+                ">HHHHHH", data[record : record + 12]
+            )
+            if name_id not in (1, 2):
+                continue
+            raw = data[table_offset + strings + start : table_offset + strings + start + length]
+            if platform == 3:
+                priority = 0 if language == 0x409 else 1
+                text = raw.decode("utf-16-be", "replace")
+            elif platform == 1:
+                priority = 2
+                text = raw.decode("mac-roman", "replace")
+            else:
+                continue
+            found.setdefault((name_id, priority), text)
+    except (struct.error, IndexError):
+        return None
+    family = next((found[key] for key in sorted(found) if key[0] == 1), "").strip()
+    if not family:
+        return None
+    subfamily = next((found[key] for key in sorted(found) if key[0] == 2), "").lower()
+    return family, "bold" in subfamily, "italic" in subfamily or "oblique" in subfamily
+
+
+class _ComFont:
+    """A font file located for the live engine: where it is and, for
+    TrueType, the typeface ``SetFont`` needs (None for an SHX)."""
+
+    __slots__ = ("font_file", "path", "face")
+
+    def __init__(self, font_file: str, path: Path, face: tuple[str, bool, bool] | None):
+        self.font_file = font_file
+        self.path = path
+        self.face = face
+
+
+def _com_font_refusal(key: str, font_file: str, detail: str) -> ValueError:
+    from engineering.standards.textstyles import TEXT_PRESETS
+
+    presets = sorted(font for font, _w, _o in TEXT_PRESETS.values())
+    return ValueError(
+        f"{key}: font file {font_file!r} {detail}; ActiveX refuses a font it cannot open, "
+        "so the live engine refuses it before any write (headlessly it would be written and "
+        "reported font_resolved false) — copy the file to a support-path or Windows Fonts "
+        f"folder, or use a bundled preset ({presets})"
+    )
+
+
+def _com_locate_font(key: str, font_file: str) -> _ComFont:
+    """The font ``font_file`` names, resolved *before* ``TextStyles.Add`` — or a refusal.
+
+    Asked first because ``TextStyle.fontFile`` on a file AutoCAD cannot open
+    raises ``DISP_E_EXCEPTION 'Filer error'`` (measured on AutoCAD 2026 for
+    ``nosuchfont.shx``) *after* the table already holds the new name with an
+    empty font — a stub a retry then meets as "already exists". A TrueType
+    file must also carry a readable family name, because that — not the file
+    name — is what the write uses (``_com_write_font``).
+    """
+    path = _com_font_path(font_file)
+    if path is None:
+        raise _com_font_refusal(
+            key, font_file, "is not on AutoCAD's support path or in the Windows Fonts folder"
+        )
+    face = None
+    if path.suffix.lower() in _TRUETYPE_SUFFIXES:
+        face = _truetype_face(path)
+        if face is None:
+            raise _com_font_refusal(key, font_file, f"({path}) is not a readable TrueType file")
+    return _ComFont(font_file, path, face)
+
+
+def _com_write_font(style, font: _ComFont) -> None:
+    """Set ``style``'s font from a ``_com_locate_font`` result.
+
+    Measured on AutoCAD 2026: ``fontFile = "isocp.shx"`` (an SHX on the
+    support path) is accepted and stored as given, so an SHX is written by
+    the name the caller gave. A bare TrueType name — ``"arial.ttf"``,
+    ``"isocpeur.ttf"``, bundled presets included — raises ``'Filer error'``
+    although the files exist; the full path is accepted but the STYLE record
+    then carries the machine path (``fontFile`` reads back
+    ``C:\\Windows\\Fonts\\arial.ttf``); ``SetFont("Arial", bold, italic, 0, 0)``
+    — AutoCAD's own STYLE-dialog route — is accepted and reads back as the
+    clean ``arial.ttf``. A TrueType font is therefore written by its typeface,
+    and ``SetFont`` refusing a face Windows has not installed (``'Invalid
+    input'``) is the one failure that can still land after ``Add``; the
+    caller removes the entry it added.
+    """
+    if font.face is None:
+        style.fontFile = font.font_file
+    else:
+        family, bold, italic = font.face
+        style.SetFont(family, bold, italic, 0, 0)
+
+
+def _com_delete_quietly(obj, what: str) -> None:
+    """Best-effort ``Delete`` of a half-made table entry on an error path."""
+    try:
+        obj.Delete()
+    except Exception as exc:
+        log.warning("could not remove half-made %s: %s", what, exc)
+
+
+def _com_create_textstyle(
+    doc, name: str, font_file: str, *, width: float, oblique_deg: float, height: float, key: str
+):
+    """``TextStyles.Add`` plus its font, width, oblique and height — or nothing.
+
+    The font is located first (``_com_locate_font``) so a refusal precedes
+    the ``Add``; a write that still fails removes the entry it added, because
+    a STYLE row with an empty font that blocks a retry as "already exists" is
+    exactly the half-made state measured before this helper existed.
+    """
+    font = _com_locate_font(key, font_file)
+    style = doc.TextStyles.Add(name)
+    try:
+        _com_write_font(style, font)
+        style.Width = float(width)
+        style.ObliqueAngle = deg2rad(oblique_deg)
+        style.Height = float(height)
+    except Exception:
+        _com_delete_quietly(style, f"text style {name!r}")
+        raise
+    return style
+
+
+def _com_require_arrowhead_blocks(doc, values: dict[str, Any]) -> None:
+    """Refuse a user arrowhead block the drawing does not define — before any write.
+
+    The live twin of the headless ``_require_arrowhead_blocks``: a built-in
+    (``ARROWHEAD_BLOCKS``) and closed filled (``""``) need no block, a user
+    name must be in ``doc.Blocks`` — AutoCAD's ``SetVariable("DIMBLK",
+    "NOSUCHBLOCK")`` raises ``DISP_E_EXCEPTION`` mid-write, after
+    ``DimStyles.Add`` and ``ActiveDimStyle`` (measured: the half-made style was
+    left *current*). The name is rewritten to the block table's own spelling,
+    the rule the headless engine follows.
+    """
+    from engineering.standards.dimstyles import ARROWHEAD_BLOCKS
+
+    for var in ("DIMBLK", "DIMBLK1", "DIMBLK2"):
+        name = values.get(var)
+        if not name or name in ARROWHEAD_BLOCKS:
+            continue
+        block = _com_named(doc.Blocks, name)
+        if block is None:
+            raise ValueError(
+                f"{var}: block {name!r} does not exist in this drawing; define it first "
+                "with block_define, or name one of AutoCAD's built-in arrowheads"
+            )
+        values[var] = str(block.Name)
+
+
+_MLEADERSTYLE_DICTIONARY = "ACAD_MLEADERSTYLE"
+_MLEADERSTYLE_CLASS = "AcDbMLeaderStyle"
+
+
+def _com_unnarrow(obj):
+    """Re-dispatch ``obj`` on its raw ``IDispatch`` so its *runtime* class is reachable.
+
+    acax25enu.tlb declares ``IAcadDictionaries.Item``, ``IAcadDictionary.Item``
+    and ``IAcadDictionary.AddObject`` as returning ``IAcadObject*``. Whenever a
+    makepy cache for the AutoCAD type library exists (it does on any machine
+    where ``win32com.client.gencache`` ever ran against AutoCAD), pywin32 wraps
+    such a return in the gen_py class of the *declared* type, and that wrapper
+    exposes only ``IAcadObject`` members: ``.Count`` / ``.Item`` / ``.GetName``
+    on the dictionary and ``.ArrowSize`` / ``.TextStyle`` on a leader style all
+    raise ``AttributeError`` even though the live object answers them. (The
+    rest of this backend never meets the problem: ``HandleToObject`` is declared
+    ``IDispatch*``, which keeps the concrete class, and ``ModelSpace.Item`` is
+    read only through ``IAcadEntity`` members.)
+
+    ``win32com.client.dynamic.Dispatch`` on the raw interface builds a
+    late-bound proxy from the object's own type info, so every member of the
+    concrete class resolves — verified live on AutoCAD 2026 — and, unlike
+    ``CastTo``, it never calls ``gencache.EnsureDispatch`` and never writes the
+    makepy cache. A wrapper whose ``_oleobj_`` is not a COM interface (the
+    fake in tests/test_styles.py) is unwrapped to that object as-is; anything
+    without ``_oleobj_`` is returned unchanged.
+    """
+    ole = getattr(obj, "_oleobj_", None)
+    if ole is None:
+        return obj
+    if _COM_IMPORTS_OK and isinstance(ole, pythoncom.TypeIIDs[pythoncom.IID_IDispatch]):
+        return win32com.client.dynamic.Dispatch(ole)
+    return ole
+
+
+def _com_mleaderstyle_dictionary(doc, *, create: bool = False):
+    """The ``ACAD_MLEADERSTYLE`` dictionary, or None when the drawing has none.
+
+    ActiveX exposes no ``MLeaderStyles`` *collection*, but the dictionary's
+    items are full ``IAcadMLeaderStyle`` objects (acax25enu.tlb: ``Name``,
+    ``ArrowSize``, ``LandingGap``, ``TextHeight``, ``TextStyle``, ...), and
+    ``IAcadDictionary.AddObject(keyword, "AcDbMLeaderStyle")`` — the
+    documented VBA route — creates one. Every drawing AutoCAD makes carries
+    the dictionary; ``create`` adds it to a foreign file that does not.
+
+    Every object this route hands over goes through ``_com_unnarrow`` (see
+    there): ``Dictionaries.Item`` is declared ``IAcadObject*`` and comes back
+    as a wrapper with no ``Count``. Verified live on AutoCAD 2026 (list and
+    create on a scratch document); scripts/smoke_settings_com.py re-runs it.
+    """
+    try:
+        dictionary = doc.Dictionaries.Item(_MLEADERSTYLE_DICTIONARY)
+    except Exception:
+        if not create:
+            return None
+        dictionary = doc.Dictionaries.Add(_MLEADERSTYLE_DICTIONARY)
+    return _com_unnarrow(dictionary)
+
+
+def _com_mleaderstyle_rows(dictionary) -> list[tuple[str, Any]]:
+    """``(name, AcadMLeaderStyle)`` for every item, named by the dictionary key.
+
+    Each ``Item(i)`` is un-narrowed: declared ``IAcadObject*``, it would
+    otherwise carry no ``ArrowSize``.
+    """
+    rows = []
+    for index in range(dictionary.Count):
+        style = _com_unnarrow(dictionary.Item(index))
+        rows.append((str(dictionary.GetName(style)), style))
+    return rows
+
+
+def _ensure_com_textstyle(doc, name: str, *, refusal_key: str) -> tuple[str, bool]:
+    """``(name as AutoCAD spells it, created)``; a preset is created, anything else missing is refused."""
+    from engineering.standards.textstyles import TEXT_PRESETS
+
+    existing = _com_named(doc.TextStyles, name)
+    if existing is not None:
+        return str(existing.Name), False
+    preset = TEXT_PRESETS.get(name.upper())
+    if preset is None:
+        raise ValueError(
+            f"{refusal_key}: text style {name!r} does not exist in this drawing and is not a "
+            f"bundled preset ({sorted(TEXT_PRESETS)}); create it first with textstyle_create"
+        )
+    font_file, width, oblique = preset
+    _com_create_textstyle(
+        doc, name.upper(), font_file, width=width, oblique_deg=oblique, height=0.0, key=refusal_key
+    )
+    return name.upper(), True
 
 
 def _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode="none", text_override=None):
@@ -4577,6 +5023,328 @@ class ComBackend(AutoCADBackend):
                 "ok": True,
                 "expression": expression,
                 "result": str(result) if result not in (None, "") else "nil",
+            }
+
+        return await self._run(_sync)
+
+    # ── styles (track E) ─────────────────────────────────────────────────────
+    #
+    # Fake-tested in tests/test_styles.py; executed live once by
+    # scripts/smoke_settings_com.py. See the module helper block for the
+    # ActiveX rules every method here relies on.
+
+    async def dimstyle_list(self) -> list[dict]:
+        from engineering.standards.dimstyles import PRESET_VARIABLES
+
+        def _sync():
+            doc = _acad_doc()
+            current = str(doc.ActiveDimStyle.Name)
+            rows = []
+            for index in range(doc.DimStyles.Count):
+                name = str(doc.DimStyles.Item(index).Name)
+                is_current = name.lower() == current.lower()
+                values = (
+                    {
+                        var: _com_dimvar_for_report(var, doc.GetVariable(var))
+                        for var in PRESET_VARIABLES
+                    }
+                    if is_current
+                    else None
+                )
+                rows.append(
+                    {
+                        "name": name,
+                        "current": is_current,
+                        "values": values,
+                        "values_available": is_current,
+                    }
+                )
+            rows.sort(key=lambda row: row["name"].lower())
+            return rows
+
+        return await self._run(_sync)
+
+    async def dimstyle_create(self, name: str, values: dict, set_current: bool = False) -> dict:
+        from engineering.standards.dimstyles import PRESET_VARIABLES, validate_overrides
+
+        clean = sanitize_symbol_name(name, kind="dimstyle")
+        typed = validate_overrides(values)
+        if not typed:
+            raise ValueError("dimstyle_create: values is empty; resolve a preset first")
+
+        def _sync():
+            doc = _acad_doc()
+            if _com_named(doc.DimStyles, clean) is not None:
+                raise ValueError(
+                    f"dimstyle_create: dimension style {clean!r} already exists; "
+                    "use dimstyle_modify to change it"
+                )
+            # Every refusal precedes the first write: a user arrowhead block
+            # must exist (SetVariable("DIMBLK", ...) would otherwise raise
+            # mid-loop, after Add and ActiveDimStyle), and the text style must
+            # exist before DIMTXSTY can name it.
+            _com_require_arrowhead_blocks(doc, typed)
+            txsty, textstyle_created = _ensure_com_textstyle(
+                doc, str(typed.get("DIMTXSTY", "Standard")), refusal_key="DIMTXSTY"
+            )
+            previous = doc.ActiveDimStyle
+            style = doc.DimStyles.Add(clean)
+            try:
+                doc.ActiveDimStyle = style
+                for var, value in {**typed, "DIMTXSTY": txsty}.items():
+                    doc.SetVariable(var, _com_dimvar_for_write(var, value))
+                style.CopyFrom(doc)
+                written = {
+                    var: _com_dimvar_for_report(var, doc.GetVariable(var))
+                    for var in PRESET_VARIABLES
+                }
+                if not set_current:
+                    doc.ActiveDimStyle = previous
+            except Exception:
+                # Restoring the previous style discards the unsaved overrides
+                # (AutoCAD's own Restore rule) and frees the new entry for
+                # Delete, so the drawing is left exactly as it was found —
+                # the half-made style is never the operator's current style.
+                doc.ActiveDimStyle = previous
+                _com_delete_quietly(style, f"dimension style {clean!r}")
+                if textstyle_created:
+                    created = _com_named(doc.TextStyles, txsty)
+                    if created is not None:
+                        _com_delete_quietly(created, f"text style {txsty!r}")
+                raise
+            _regen()
+            return {
+                "ok": True,
+                "name": clean,
+                "values": written,
+                "written": sorted(typed),
+                "current": bool(set_current),
+                "textstyle_created": textstyle_created,
+            }
+
+        return await self._run(_sync)
+
+    async def dimstyle_modify(self, name: str, values: dict) -> dict:
+        from engineering.standards.dimstyles import validate_overrides
+
+        typed = validate_overrides(values)
+        if not typed:
+            raise ValueError("dimstyle_modify: overrides is empty; name at least one DIM* variable")
+
+        def _sync():
+            doc = _acad_doc()
+            style = _com_named(doc.DimStyles, name)
+            if style is None:
+                raise ValueError(
+                    f"dimstyle_modify: dimension style {name!r} does not exist; "
+                    "dimstyle_list names the styles this drawing holds"
+                )
+            if "DIMTXSTY" in typed and _com_named(doc.TextStyles, typed["DIMTXSTY"]) is None:
+                raise ValueError(
+                    f"DIMTXSTY: text style {typed['DIMTXSTY']!r} does not exist in this drawing; "
+                    "create it first with textstyle_create"
+                )
+            _com_require_arrowhead_blocks(doc, typed)
+            previous = doc.ActiveDimStyle
+            switched = str(previous.Name).lower() != str(style.Name).lower()
+            if switched:
+                doc.ActiveDimStyle = style
+            try:
+                before = {var: _com_dimvar_for_report(var, doc.GetVariable(var)) for var in typed}
+                changed: dict[str, list] = {}
+                for var, value in typed.items():
+                    if _same_dimvar(before[var], value):
+                        continue
+                    doc.SetVariable(var, _com_dimvar_for_write(var, value))
+                    changed[var] = [before[var], value]
+                if changed:
+                    style.CopyFrom(doc)
+            except Exception:
+                # Re-activating a style discards its unsaved overrides, so a
+                # failed write leaves the target style as it was saved and the
+                # operator's current style as it was found.
+                doc.ActiveDimStyle = style if not switched else previous
+                raise
+            if switched:
+                doc.ActiveDimStyle = previous
+            using = _com_dimensions_using(doc, str(style.Name))
+            if changed:
+                _regen()
+            return {
+                "ok": True,
+                "name": str(style.Name),
+                "changed": changed,
+                "dimensions_using_style": using,
+                "rerender_required": False,  # AutoCAD re-renders on regen
+            }
+
+        return await self._run(_sync)
+
+    async def dimstyle_set_current(self, name: str) -> dict:
+        def _sync():
+            doc = _acad_doc()
+            style = _com_named(doc.DimStyles, name)
+            if style is None:
+                raise ValueError(
+                    f"dimstyle_set_current: dimension style {name!r} does not exist; "
+                    "dimstyle_list names the styles this drawing holds"
+                )
+            previous = str(doc.ActiveDimStyle.Name)
+            changed = previous.lower() != str(style.Name).lower()
+            if changed:
+                doc.ActiveDimStyle = style
+            return {
+                "ok": True,
+                "current": str(style.Name),
+                "previous": previous,
+                "changed": changed,
+            }
+
+        return await self._run(_sync)
+
+    async def textstyle_list(self) -> list[dict]:
+        def _sync():
+            doc = _acad_doc()
+            current = str(doc.ActiveTextStyle.Name)
+            rows = []
+            for index in range(doc.TextStyles.Count):
+                style = doc.TextStyles.Item(index)
+                rows.append(
+                    {
+                        "name": str(style.Name),
+                        "font": str(style.fontFile),
+                        "height": float(style.Height),
+                        "width_factor": float(style.Width),
+                        "oblique_deg": rad2deg(float(style.ObliqueAngle)),
+                        "current": str(style.Name).lower() == current.lower(),
+                    }
+                )
+            rows.sort(key=lambda row: row["name"].lower())
+            return rows
+
+        return await self._run(_sync)
+
+    async def textstyle_create(
+        self,
+        name: str,
+        font: str,
+        height: float = 0.0,
+        width_factor: float = 1.0,
+        oblique_deg: float = 0.0,
+        set_current: bool = False,
+    ) -> dict:
+        from engineering.standards.textstyles import validate_textstyle
+
+        spec = validate_textstyle(name, font, height, width_factor, oblique_deg)
+
+        def _sync():
+            doc = _acad_doc()
+            if _com_named(doc.TextStyles, spec["name"]) is not None:
+                raise ValueError(f"textstyle_create: text style {spec['name']!r} already exists")
+            # Unlike the headless engine, which stores a name nobody can find
+            # and says `font_resolved: false`, ActiveX refuses a font it
+            # cannot open — so the file is located before TextStyles.Add and
+            # a font AutoCAD cannot see is refused with nothing written.
+            style = _com_create_textstyle(
+                doc,
+                spec["name"],
+                spec["font_file"],
+                width=spec["width_factor"],
+                oblique_deg=spec["oblique_deg"],
+                height=spec["height"],
+                key="font",
+            )
+            if set_current:
+                doc.ActiveTextStyle = style
+            return {
+                "ok": True,
+                "name": spec["name"],
+                "font": spec["font_file"],
+                # Always true here: a font the live engine could not locate
+                # was refused above, never written.
+                "font_resolved": True,
+                "current": bool(set_current),
+            }
+
+        return await self._run(_sync)
+
+    async def textstyle_set_current(self, name: str) -> dict:
+        def _sync():
+            doc = _acad_doc()
+            style = _com_named(doc.TextStyles, name)
+            if style is None:
+                raise ValueError(
+                    f"textstyle_set_current: text style {name!r} does not exist; "
+                    "textstyle_list names the styles this drawing holds"
+                )
+            previous = str(doc.ActiveTextStyle.Name)
+            changed = previous.lower() != str(style.Name).lower()
+            if changed:
+                doc.ActiveTextStyle = style
+            return {
+                "ok": True,
+                "current": str(style.Name),
+                "previous": previous,
+                "changed": changed,
+            }
+
+        return await self._run(_sync)
+
+    async def mleaderstyle_list(self) -> list[dict]:
+        def _sync():
+            doc = _acad_doc()
+            dictionary = _com_mleaderstyle_dictionary(doc)
+            if dictionary is None:
+                return []
+            rows = []
+            for name, style in _com_mleaderstyle_rows(dictionary):
+                rows.append(
+                    {
+                        "name": name,
+                        "arrow_size": float(style.ArrowSize),
+                        "landing_gap": float(style.LandingGap),
+                        "text_style": str(style.TextStyle),
+                        "text_height": float(style.TextHeight),
+                        "values_available": True,
+                    }
+                )
+            rows.sort(key=lambda row: row["name"].lower())
+            return rows
+
+        return await self._run(_sync)
+
+    async def mleaderstyle_create(self, name: str, values: dict) -> dict:
+        from engineering.standards.mleaderstyles import validate_mleaderstyle
+
+        clean = sanitize_symbol_name(name, kind="mleaderstyle")
+        typed = validate_mleaderstyle(values)
+
+        def _sync():
+            doc = _acad_doc()
+            dictionary = _com_mleaderstyle_dictionary(doc, create=True)
+            wanted = clean.lower()
+            if any(
+                existing.lower() == wanted for existing, _ in _com_mleaderstyle_rows(dictionary)
+            ):
+                raise ValueError(f"mleaderstyle_create: leader style {clean!r} already exists")
+            # The text style must exist before TextStyle can name it — and a
+            # name that is neither present nor a preset is refused here,
+            # before AddObject, so a refusal leaves no half-made style behind.
+            text_style_name, textstyle_created = _ensure_com_textstyle(
+                doc, typed["text_style"], refusal_key="text_style"
+            )
+            # AddObject is declared IAcadObject* too: un-narrowed, or the
+            # first property write below raises AttributeError.
+            style = _com_unnarrow(dictionary.AddObject(clean, _MLEADERSTYLE_CLASS))
+            style.ArrowSize = typed["arrow_size"]
+            style.LandingGap = typed["landing_gap"]
+            style.TextHeight = typed["text_height"]
+            style.TextStyle = text_style_name
+            return {
+                "ok": True,
+                "name": clean,
+                "values": {**typed, "text_style": text_style_name},
+                "textstyle_created": textstyle_created,
             }
 
         return await self._run(_sync)
