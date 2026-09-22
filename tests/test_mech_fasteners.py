@@ -1,8 +1,11 @@
 """Provenance and coverage of the ISO fastener tables (the table rule, spec 5).
 
-Every value asserted here is a named row of a named table. A row that could not
-be verified against the standard is not in the module at all, so the coverage
-refusals below are as load-bearing as the values.
+Every value asserted here is a named row of a named table, and the converse holds
+too: the ``ISO*_ROWS`` literals below carry *every* dimension of *every* shipped
+size, and a completeness test asserts each table's key set equals its literal's.
+A row nobody pinned is exactly where a wrong across-flats would hide. A row that
+could not be verified against the standard is not in the module at all, so the
+coverage refusals below are as load-bearing as the values.
 """
 
 from __future__ import annotations
@@ -14,9 +17,11 @@ import pytest
 from engineering.mech.standards import standards
 from engineering.mech.standards.fasteners import (
     COARSE_PITCH,
+    HEX_HEAD,
     HEX_NUT,
     SOCKET_HEAD,
     SOURCE_ISO_4014,
+    WASHER,
     across_corners,
     hex_head,
     hex_nut,
@@ -28,18 +33,74 @@ from engineering.mech.standards.fasteners import (
     washer,
 )
 
+#: ISO 4014:2011 / ISO 4017:2014 Table 1 - every transcribed size, (s, k).
+ISO4014_ROWS: dict[str, tuple[float, float]] = {
+    "M5": (8.0, 3.5),
+    "M6": (10.0, 4.0),
+    "M8": (13.0, 5.3),
+    "M10": (16.0, 6.4),
+    "M12": (18.0, 7.5),
+    "M16": (24.0, 10.0),
+    "M20": (30.0, 12.5),
+    "M24": (36.0, 15.0),
+    "M30": (46.0, 18.7),
+    "M36": (55.0, 22.5),
+}
 
-def test_iso4014_named_rows_match_the_standard():
+#: ISO 4032:2012 Table 1 - every transcribed size, (s, m).
+ISO4032_ROWS: dict[str, tuple[float, float]] = {
+    "M5": (8.0, 4.7),
+    "M6": (10.0, 5.2),
+    "M8": (13.0, 6.8),
+    "M10": (16.0, 8.4),
+    "M12": (18.0, 10.8),
+    "M16": (24.0, 14.8),
+    "M20": (30.0, 18.0),
+    "M24": (36.0, 21.5),
+    "M30": (46.0, 25.6),
+    "M36": (55.0, 31.0),
+}
+
+#: ISO 7089:2000 Table 1 - every transcribed size, (d1, d2, h).
+ISO7089_ROWS: dict[str, tuple[float, float, float]] = {
+    "M5": (5.3, 10.0, 1.0),
+    "M6": (6.4, 12.0, 1.6),
+    "M8": (8.4, 16.0, 1.6),
+    "M10": (10.5, 20.0, 2.0),
+    "M12": (13.0, 24.0, 2.5),
+    "M16": (17.0, 30.0, 3.0),
+    "M20": (21.0, 37.0, 3.0),
+    "M24": (25.0, 44.0, 4.0),
+    "M30": (31.0, 56.0, 4.0),
+    "M36": (37.0, 66.0, 5.0),
+}
+
+#: ISO 4762:2004 Table 1 - every transcribed size, (dk, k, s, b).
+ISO4762_ROWS: dict[str, tuple[float, float, float, float]] = {
+    "M3": (5.5, 3.0, 2.5, 18.0),
+    "M4": (7.0, 4.0, 3.0, 20.0),
+    "M5": (8.5, 5.0, 4.0, 22.0),
+    "M6": (10.0, 6.0, 5.0, 24.0),
+    "M8": (13.0, 8.0, 6.0, 28.0),
+    "M10": (16.0, 10.0, 8.0, 32.0),
+    "M12": (18.0, 12.0, 10.0, 36.0),
+    "M16": (24.0, 16.0, 14.0, 44.0),
+    "M20": (30.0, 20.0, 17.0, 52.0),
+    "M24": (36.0, 24.0, 19.0, 60.0),
+}
+
+
+@pytest.mark.parametrize(("size", "expected"), sorted(ISO4014_ROWS.items()))
+def test_iso4014_named_rows_match_the_standard(size, expected):
     """ISO 4014:2011 Table 1 - width across flats s and head height k."""
-    assert (hex_head("M6")["s"], hex_head("M6")["k"]) == (10.0, 4.0)
-    assert (hex_head("M8")["s"], hex_head("M8")["k"]) == (13.0, 5.3)
-    assert (hex_head("M10")["s"], hex_head("M10")["k"]) == (16.0, 6.4)
-    assert (hex_head("M12")["s"], hex_head("M12")["k"]) == (18.0, 7.5)
-    assert (hex_head("M16")["s"], hex_head("M16")["k"]) == (24.0, 10.0)
-    assert (hex_head("M20")["s"], hex_head("M20")["k"]) == (30.0, 12.5)
-    assert (hex_head("M24")["s"], hex_head("M24")["k"]) == (36.0, 15.0)
-    assert (hex_head("M30")["s"], hex_head("M30")["k"]) == (46.0, 18.7)
-    assert (hex_head("M36")["s"], hex_head("M36")["k"]) == (55.0, 22.5)
+    row = hex_head(size)
+    assert (row["s"], row["k"]) == expected
+
+
+def test_every_iso4014_row_is_pinned_by_a_literal():
+    """No shipped size may escape the table above - that is where a wrong row hides."""
+    assert set(HEX_HEAD) == set(ISO4014_ROWS)
+    assert sizes("ISO 4014") == tuple(HEX_HEAD)
 
 
 def test_iso4017_shares_the_iso4014_head():
@@ -47,66 +108,39 @@ def test_iso4017_shares_the_iso4014_head():
     assert sizes("ISO 4017") == sizes("ISO 4014")
 
 
-def test_iso4032_named_rows_match_the_standard():
-    """ISO 4032:2012 Table 1 - nut height m (max)."""
-    assert hex_nut("M6")["m"] == 5.2
-    assert hex_nut("M8")["m"] == 6.8
-    assert hex_nut("M10")["m"] == 8.4
-    assert hex_nut("M12")["m"] == 10.8
-    assert hex_nut("M16")["m"] == 14.8
-    assert hex_nut("M20")["m"] == 18.0
-    assert hex_nut("M24")["m"] == 21.5
-    assert hex_nut("M30")["m"] == 25.6
-    assert hex_nut("M36")["m"] == 31.0
+@pytest.mark.parametrize(("size", "expected"), sorted(ISO4032_ROWS.items()))
+def test_iso4032_named_rows_match_the_standard(size, expected):
+    """ISO 4032:2012 Table 1 - width across flats s and nut height m (max)."""
+    row = hex_nut(size)
+    assert (row["s"], row["m"]) == expected
+
+
+def test_every_iso4032_row_is_pinned_and_shares_the_bolt_across_flats():
+    assert set(HEX_NUT) == set(ISO4032_ROWS)
     for size in HEX_NUT:
         assert hex_nut(size)["s"] == hex_head(size)["s"]
 
 
-def test_iso7089_named_rows_match_the_standard():
+@pytest.mark.parametrize(("size", "expected"), sorted(ISO7089_ROWS.items()))
+def test_iso7089_named_rows_match_the_standard(size, expected):
     """ISO 7089:2000 Table 1 - d1, d2, h (nominal), normal series, grade A."""
-    assert (washer("M6")["d1"], washer("M6")["d2"], washer("M6")["h"]) == (6.4, 12.0, 1.6)
-    assert (washer("M8")["d1"], washer("M8")["d2"], washer("M8")["h"]) == (8.4, 16.0, 1.6)
-    assert (washer("M10")["d1"], washer("M10")["d2"], washer("M10")["h"]) == (10.5, 20.0, 2.0)
-    assert (washer("M12")["d1"], washer("M12")["d2"], washer("M12")["h"]) == (13.0, 24.0, 2.5)
-    assert (washer("M16")["d1"], washer("M16")["d2"], washer("M16")["h"]) == (17.0, 30.0, 3.0)
-    assert (washer("M20")["d1"], washer("M20")["d2"], washer("M20")["h"]) == (21.0, 37.0, 3.0)
-    assert (washer("M24")["d1"], washer("M24")["d2"], washer("M24")["h"]) == (25.0, 44.0, 4.0)
-    assert (washer("M30")["d1"], washer("M30")["d2"], washer("M30")["h"]) == (31.0, 56.0, 4.0)
-    assert (washer("M36")["d1"], washer("M36")["d2"], washer("M36")["h"]) == (37.0, 66.0, 5.0)
+    row = washer(size)
+    assert (row["d1"], row["d2"], row["h"]) == expected
 
 
-def test_iso4762_named_rows_match_the_standard():
-    """ISO 4762:2004 Table 1 - head dk (max), socket s, thread length b."""
-    assert (
-        socket_head("M3")["dk"],
-        socket_head("M3")["s"],
-        socket_head("M3")["b"],
-    ) == (5.5, 2.5, 18.0)
-    assert (
-        socket_head("M5")["dk"],
-        socket_head("M5")["s"],
-        socket_head("M5")["b"],
-    ) == (8.5, 4.0, 22.0)
-    assert (
-        socket_head("M8")["dk"],
-        socket_head("M8")["s"],
-        socket_head("M8")["b"],
-    ) == (13.0, 6.0, 28.0)
-    assert (
-        socket_head("M12")["dk"],
-        socket_head("M12")["s"],
-        socket_head("M12")["b"],
-    ) == (18.0, 10.0, 36.0)
-    assert (
-        socket_head("M20")["dk"],
-        socket_head("M20")["s"],
-        socket_head("M20")["b"],
-    ) == (30.0, 17.0, 52.0)
-    assert (
-        socket_head("M24")["dk"],
-        socket_head("M24")["s"],
-        socket_head("M24")["b"],
-    ) == (36.0, 19.0, 60.0)
+def test_every_iso7089_row_is_pinned_by_a_literal():
+    assert set(WASHER) == set(ISO7089_ROWS)
+
+
+@pytest.mark.parametrize(("size", "expected"), sorted(ISO4762_ROWS.items()))
+def test_iso4762_named_rows_match_the_standard(size, expected):
+    """ISO 4762:2004 Table 1 - head dk (max), head height k (max), socket s, thread length b."""
+    row = socket_head(size)
+    assert (row["dk"], row["k"], row["s"], row["b"]) == expected
+
+
+def test_every_iso4762_row_is_pinned_and_its_head_height_equals_the_thread_diameter():
+    assert set(SOCKET_HEAD) == set(ISO4762_ROWS)
     # ISO 4762 head height equals the nominal thread diameter at every size here.
     for size in SOCKET_HEAD:
         assert socket_head(size)["k"] == nominal_diameter(size)
