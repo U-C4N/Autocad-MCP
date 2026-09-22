@@ -68,17 +68,23 @@ async def apply_standard(
     written. (The units loop used to run after both styles; on the live
     engine its INSUNITS read went through a member the ActiveX Application
     does not have, so the call failed with ISO-25 and ISOCP already created
-    and current.)
+    and current.) That first read is only the gate: making a dimension style
+    current restores every DIM* variable from the style (ezdxf syncs the
+    header; AutoCAD 2026 measured ``ActiveDimStyle = ISO-25`` with a style
+    DIMSCALE of 2.0 moving the document's DIMSCALE 1.0 -> 2.0), so each
+    variable is read again *after* the style switch and the write is decided
+    on that value. Deciding on the gate read skipped the DIMSCALE write
+    whenever a pre-existing ISO-25/ANSI carried another scale, and reported
+    ``changed: {}`` on a drawing left at the style's scale.
     """
     key, row = resolve_standard(standard)
     if not isinstance(layers, bool) or not isinstance(units, bool):
         raise TypeError("layers and units must be booleans")
 
-    current: dict[str, Any] = {}
-    if units:
+    if units:  # the refusal gate: every variable readable before anything is written
         for var, _value in STANDARD_SYSVARS:
             try:
-                current[var] = await backend.system_get_variable(var)
+                await backend.system_get_variable(var)
             except Exception as exc:
                 raise RuntimeError(
                     f"apply_standard: could not read {var} before writing "
@@ -104,7 +110,9 @@ async def apply_standard(
     changed: dict[str, list] = {}
     if units:
         for var, value in STANDARD_SYSVARS:
-            old = current[var]
+            # Re-read after the style switch: the gate value is stale for
+            # DIM* once another dimension style has been made current.
+            old = await backend.system_get_variable(var)
             if _same(old, value):
                 continue
             await backend.system_set_variable(var, value)

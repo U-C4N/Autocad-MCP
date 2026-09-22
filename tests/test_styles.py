@@ -1692,6 +1692,28 @@ async def test_second_apply_is_idempotent_and_reports_nothing_created(backend):
     assert backend._doc.header["$DIMSTYLE"] == "ISO-25"
 
 
+async def test_apply_writes_dimscale_1_when_the_existing_style_restores_another(backend):
+    """Regression: the units were decided on a read taken *before* the style
+    switch. Making ISO-25 current restores its DIMSCALE into the header, so a
+    pre-existing ISO-25 at scale 2 (any modified company template) left the
+    drawing at 2.0 while the report said ``changed: {}`` -- the spec promises
+    DIMSCALE 1. The gate read stays; the write is decided on a read after
+    the switch."""
+    from engineering.standards.apply import apply_standard
+
+    await backend.dimstyle_create("ISO-25", {"DIMSCALE": 2.0})
+    await backend.dimstyle_set_current("Standard")
+    assert await backend.system_get_variable("DIMSCALE") == 1.0
+    result = await apply_standard(backend, "iso", layers=False)
+    assert result["dimstyle"] == {"name": "ISO-25", "created": False, "current": True}
+    assert result["settings"]["changed"] == {"INSUNITS": [6, 4], "DIMSCALE": [2.0, 1.0]}
+    assert await backend.system_get_variable("DIMSCALE") == 1.0
+    assert backend._doc.header["$DIMSTYLE"] == "ISO-25"
+    # The style itself is used as found (dimstyle_modify changes one on purpose).
+    iso = next(r for r in await backend.dimstyle_list() if r["name"] == "ISO-25")
+    assert iso["values"]["DIMSCALE"] == 2.0
+
+
 async def test_apply_refuses_an_unknown_standard_before_writing(backend):
     from engineering.standards.apply import apply_standard
 
@@ -1726,17 +1748,32 @@ async def test_com_apply_standard_creates_both_styles_and_sets_units(com_backend
     assert result["dimstyle"]["created"] is True and result["textstyle"]["created"] is True
     assert result["settings"]["changed"] == {"INSUNITS": [1, 4], "LUNITS": [4, 2]}
     names = [call[0] for call in document.calls]
+    unit_vars = ["INSUNITS", "LUNITS", "AUNITS", "LTSCALE", "DIMSCALE"]
     assert names[:5] == ["GetVariable"] * 5, "every unit variable is read on the document first"
-    assert [c[1] for c in document.calls[:5]] == [
-        "INSUNITS",
-        "LUNITS",
-        "AUNITS",
-        "LTSCALE",
-        "DIMSCALE",
-    ]
+    assert [c[1] for c in document.calls[:5]] == unit_vars, "the gate: readable before any write"
     assert names[5] == "TextStyles.Add" and "DimStyles.Add" in names
     assert ("ActiveTextStyle", "ISOCP") in document.calls
     assert document.ActiveDimStyle.Name == "ISO-25"
+    # The writes are decided on a *second* read taken after the dimension
+    # style stage (ActiveDimStyle restores the style's DIM* variables), never
+    # on the gate read. The style stage ends with CopyFrom plus its report
+    # reads; the units stage then re-reads each variable in turn and writes
+    # only the ones that moved (the second read of a written variable is
+    # ``system_set_variable``'s own old-value read).
+    style_end = names.index("CopyFrom")
+    units_start = document.calls.index(("GetVariable", "INSUNITS"), style_end)
+    assert units_start > style_end
+    assert [c for c in document.calls[units_start:] if c[1] in unit_vars] == [
+        ("GetVariable", "INSUNITS"),
+        ("GetVariable", "INSUNITS"),
+        ("SetVariable", "INSUNITS", 4),
+        ("GetVariable", "LUNITS"),
+        ("GetVariable", "LUNITS"),
+        ("SetVariable", "LUNITS", 2),
+        ("GetVariable", "AUNITS"),
+        ("GetVariable", "LTSCALE"),
+        ("GetVariable", "DIMSCALE"),
+    ]
     assert document.variables["DIMDSEP"] == "," and document.variables["INSUNITS"] == 4
 
 
@@ -1750,6 +1787,35 @@ def _record_reads(document):
         return real_get(name)
 
     document.GetVariable = _get
+
+
+async def test_com_apply_standard_writes_dimscale_1_after_the_style_switch_restores_2(
+    com_backend,
+):
+    """Regression, measured live on AutoCAD 2026 (scratch Documents.Add()):
+    ISO-25 modified to DIMSCALE 2.0, Annotative current at 1.0 ->
+    ``apply_standard`` returned ``{'changed': {}, 'applied': True}`` and the
+    document read DIMSCALE 2.0 afterwards, because ``ActiveDimStyle = ISO-25``
+    restored the style's DIMSCALE after the gate read had seen 1.0. The write
+    is decided on a read after the switch; the report says what moved."""
+    from engineering.standards.apply import apply_standard
+
+    backend, document = com_backend
+    document.variables.update({"INSUNITS": 4, "LUNITS": 2, "AUNITS": 0, "LTSCALE": 1.0})
+    await backend.dimstyle_create("ISO-25", {"DIMSCALE": 2.0})  # not current: Standard stays
+    assert document.ActiveDimStyle.Name == "Standard" and document.variables["DIMSCALE"] == 1.0
+    document.calls.clear()
+    _record_reads(document)
+    result = await apply_standard(backend, "iso", layers=False)
+    assert result["dimstyle"] == {"name": "ISO-25", "created": False, "current": True}
+    assert result["settings"]["changed"] == {"DIMSCALE": [2.0, 1.0]}
+    assert document.ActiveDimStyle.Name == "ISO-25"
+    assert document.variables["DIMSCALE"] == 1.0, "the drawing is at the spec's DIMSCALE 1"
+    switch = document.calls.index(("ActiveDimStyle", "ISO-25"))
+    tail = document.calls[switch + 1 :]
+    assert ("GetVariable", "DIMSCALE") in tail and ("SetVariable", "DIMSCALE", 1.0) in tail
+    assert tail.index(("GetVariable", "DIMSCALE")) < tail.index(("SetVariable", "DIMSCALE", 1.0))
+    assert not any(c[0] == "CopyFrom" for c in document.calls), "the style is used as found"
 
 
 async def test_com_apply_standard_refuses_before_writing_when_a_sysvar_read_fails(com_backend):
