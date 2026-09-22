@@ -174,6 +174,460 @@ AutoCAD type library (a package directory holding only a `__pycache__`) — an
 environment fault, not a backend one; deleting `%TEMP%\gen_py\3.11` cleared
 it and no backend change was needed.
 
+### Live COM smoke — settings (track E)
+
+`scripts/smoke_settings_com.py --build-dwt`, AutoCAD 2026 (`25.1s (LMS Tech)`),
+Windows 11, 2026-09-22, in a new document (`Drawing27.dwg`) — styles →
+page setup → `batch_plot` (the PDF's own `/MediaBox`) → the five `.dwt` twins
+built and `iso_a3_mech.dwt` reopened → layer state round trip → named view →
+UCS → preferences (one reversible set) → SummaryInfo → prompt line, all
+through the COM engine, exit 0:
+
+```json
+{
+  "autocad": "25.1s (LMS Tech)",
+  "system_launch": {
+    "launched": false,
+    "attached": true,
+    "version": "25.1s (LMS Tech)",
+    "document": "Drawing9.dwg",
+    "visible": true,
+    "progid": "AutoCAD.Application",
+    "backend": "com"
+  },
+  "dwt_built": [
+    {
+      "name": "iso_a3_mech",
+      "path": "templates\\iso_a3_mech.dwt",
+      "bytes": 18240,
+      "magic": "AC1032",
+      "is_dwg_container": true,
+      "format": "dwt"
+    },
+    {
+      "name": "iso_a1_arch",
+      "path": "templates\\iso_a1_arch.dwt",
+      "bytes": 17281,
+      "magic": "AC1032",
+      "is_dwg_container": true,
+      "format": "dwt"
+    },
+    {
+      "name": "iso_a3_pid",
+      "path": "templates\\iso_a3_pid.dwt",
+      "bytes": 18528,
+      "magic": "AC1032",
+      "is_dwg_container": true,
+      "format": "dwt"
+    },
+    {
+      "name": "ansi_b_mech",
+      "path": "templates\\ansi_b_mech.dwt",
+      "bytes": 17250,
+      "magic": "AC1032",
+      "is_dwg_container": true,
+      "format": "dwt"
+    },
+    {
+      "name": "ansi_d_arch",
+      "path": "templates\\ansi_d_arch.dwt",
+      "bytes": 17278,
+      "magic": "AC1032",
+      "is_dwg_container": true,
+      "format": "dwt"
+    }
+  ],
+  "document": "Drawing27.dwg",
+  "styles": {
+    "dimstyle": {
+      "ok": true,
+      "name": "ISO-25-SMOKE",
+      "values": {
+        "DIMTXT": 2.5,
+        "DIMASZ": 2.5,
+        "DIMEXE": 1.25,
+        "DIMEXO": 0.625,
+        "DIMGAP": 0.625,
+        "DIMTAD": 1,
+        "DIMTIH": 0,
+        "DIMTOH": 0,
+        "DIMDEC": 2,
+        "DIMDSEP": ",",
+        "DIMLUNIT": 2,
+        "DIMZIN": 8,
+        "DIMBLK": "",
+        "DIMTXSTY": "ISOCP",
+        "DIMLWD": -2,
+        "DIMLWE": -2,
+        "DIMSCALE": 1.0
+      },
+      "written": [
+        "DIMASZ",
+        "DIMBLK",
+        "DIMDEC",
+        "DIMDSEP",
+        "DIMEXE",
+        "DIMEXO",
+        "DIMGAP",
+        "DIMLUNIT",
+        "DIMLWD",
+        "DIMLWE",
+        "DIMSCALE",
+        "DIMTAD",
+        "DIMTIH",
+        "DIMTOH",
+        "DIMTXSTY",
+        "DIMTXT",
+        "DIMZIN"
+      ],
+      "current": true,
+      "textstyle_created": true
+    },
+    "textstyle": {
+      "ok": true,
+      "name": "ISOCP-SMOKE",
+      "font": "isocp.shx",
+      "font_resolved": true,
+      "current": false
+    },
+    "mleaderstyle": {
+      "ok": true,
+      "name": "SMOKE",
+      "values": {
+        "arrow_size": 2.5,
+        "landing_gap": 1.0,
+        "text_style": "ISOCP",
+        "text_height": 2.5
+      },
+      "textstyle_created": false
+    },
+    "mleaderstyles_on_seat": [
+      "SMOKE",
+      "Standard"
+    ]
+  },
+  "page_setup": {
+    "applied": {
+      "paper": "ISO_A3",
+      "orientation": "landscape",
+      "size_mm": [
+        420.0,
+        297.0
+      ],
+      "canonical_media_name": "ISO_A3_(420.00_x_297.00_MM)",
+      "plot_style": "monochrome.ctb",
+      "plot_style_known": true,
+      "scale": "1:1",
+      "scale_factor": 1.0,
+      "scale_ratio": [
+        1.0,
+        1.0
+      ],
+      "dxf_standard_scale_type": 16,
+      "activex_standard_scale": 16,
+      "plot_area": "layout",
+      "plot_type": 5,
+      "device": "DWG To PDF.pc3",
+      "margins_mm": null,
+      "center": null,
+      "paper_units": "mm"
+    },
+    "changed": {
+      "paper": [
+        "",
+        "ISO_A3"
+      ],
+      "canonical_media_name": [
+        "",
+        "ISO_A3_(420.00_x_297.00_MM)"
+      ],
+      "size_mm": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          420.0,
+          297.0
+        ]
+      ],
+      "plot_style": [
+        "",
+        "monochrome.ctb"
+      ],
+      "device": [
+        "Microsoft Print to PDF",
+        "DWG To PDF.pc3"
+      ],
+      "margins_mm": [
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          17.0,
+          17.0,
+          5.0,
+          5.0
+        ]
+      ],
+      "paper_units": [
+        "inches",
+        "mm"
+      ]
+    },
+    "pdf": {
+      "layout": "Layout1",
+      "ok": true,
+      "path": "C:\\Users\\VECTOR\\AppData\\Local\\Temp\\acadmcp_settings_smoke_sapms54v\\Drawing27-Layout1.pdf",
+      "bytes": 2774,
+      "mediabox_mm": [
+        420.158,
+        297.039
+      ],
+      "paper": "ISO_A3"
+    },
+    "installed_plot_styles": [
+      "Autodesk-Color.stb",
+      "Autodesk-MONO.stb",
+      "DWF Virtual Pens.ctb",
+      "Fill Patterns.ctb",
+      "Grayscale.ctb",
+      "Screening 100%.ctb",
+      "Screening 25%.ctb",
+      "Screening 50%.ctb",
+      "Screening 75%.ctb",
+      "acad.ctb",
+      "acad.stb",
+      "monochrome.ctb",
+      "monochrome.stb"
+    ]
+  },
+  "template": {
+    "path": "C:\\Users\\VECTOR\\Documents\\GitHub\\Autocad-MCP\\templates\\iso_a3_mech.dwt",
+    "source": "bundled",
+    "document": "Drawing28.dwg",
+    "dimstyle_current": [
+      "ISO-25"
+    ],
+    "papers": [
+      "ISO_A3"
+    ]
+  },
+  "documents": [
+    {
+      "name": "Drawing9.dwg",
+      "path": null,
+      "active": false,
+      "saved": false,
+      "entity_count": 0
+    },
+    {
+      "name": "Drawing27.dwg",
+      "path": null,
+      "active": true,
+      "saved": false,
+      "entity_count": 0
+    }
+  ],
+  "layer_state": {
+    "saved": {
+      "ok": true,
+      "name": "SMOKE",
+      "layer_count": 3,
+      "replaced": false,
+      "chunks": 2,
+      "backend": "com"
+    },
+    "restored": {
+      "ok": true,
+      "name": "SMOKE",
+      "applied": {
+        "layers": 3,
+        "properties": [
+          "on",
+          "frozen",
+          "locked",
+          "color",
+          "linetype",
+          "lineweight",
+          "plot",
+          "current"
+        ],
+        "current_layer": "0"
+      },
+      "missing_layers": [],
+      "new_layers": [],
+      "backend": "com"
+    },
+    "deleted": {
+      "ok": true,
+      "deleted": "SMOKE",
+      "backend": "com"
+    }
+  },
+  "view": {
+    "saved": {
+      "ok": true,
+      "name": "SMOKE_VIEW",
+      "center": [
+        100.0,
+        50.0
+      ],
+      "height": 80.0,
+      "width": 160.9964412811388,
+      "replaced": false,
+      "backend": "com"
+    },
+    "restored": {
+      "ok": true,
+      "name": "SMOKE_VIEW",
+      "center": [
+        100.0,
+        50.0
+      ],
+      "height": 80.0,
+      "width": 160.9964412811388,
+      "applied": "zoom_window",
+      "backend": "com",
+      "viewctr": [
+        100.0,
+        50.0
+      ],
+      "viewsize": 80.0
+    }
+  },
+  "ucs": {
+    "set": {
+      "ok": true,
+      "name": "SMOKE_UCS",
+      "origin": [
+        10.0,
+        20.0,
+        0.0
+      ],
+      "x_axis": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "y_axis": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "replaced": false,
+      "current": true,
+      "backend": "com"
+    },
+    "world": {
+      "ok": true,
+      "name": "world",
+      "current": true,
+      "backend": "com"
+    }
+  },
+  "preferences": {
+    "cursor_size": 5,
+    "read_only": [
+      "Files.SupportPath",
+      "Files.TemplateDwgPath",
+      "Files.PrinterStyleSheetPath",
+      "Files.PrinterConfigPath"
+    ],
+    "template_dwg_path": "C:\\Users\\VECTOR\\AppData\\Local\\Autodesk\\AutoCAD 2026\\R25.1\\enu\\Template"
+  },
+  "properties": {
+    "set": {
+      "ok": true,
+      "summary_written": [
+        "author",
+        "title"
+      ],
+      "custom_written": [
+        "ACADMCP_SMOKE"
+      ],
+      "custom_deleted": [],
+      "backend": "com"
+    },
+    "get": {
+      "summary": {
+        "title": "ACADMCP settings smoke",
+        "subject": "",
+        "author": "smoke_settings_com.py",
+        "keywords": "",
+        "comments": ""
+      },
+      "summary_available": true,
+      "custom": {
+        "ACADMCP_SMOKE": "1"
+      },
+      "backend": "com"
+    }
+  },
+  "prompt_message": {
+    "ok": true,
+    "text": "ACADMCP settings smoke: done",
+    "backend": "com"
+  },
+  "failures": []
+}
+```
+
+The headless engine reports the identical `mediabox_mm` (to 1e-9: matplotlib
+writes an exact 420 × 297; AutoCAD's PDF driver writes 420.158 × 297.039,
+inside spec §9's ±0.5 mm), `layer_state.restored` and `properties.get.custom`
+on the same steps; `summary_available` is `false` headlessly and the five
+summary fields are `null` (capability `dwgprops`).
+
+What the run refused before the green one, each fixed in the backend and
+pinned by a fake-ActiveX test:
+
+- Three runs died with `RPC_E_CALL_REJECTED` (-2147418111) on the read that
+  follows a document switch — `Documents.Count` straight after
+  `Documents.Open`, after `Close(False)` inside `document_close`, and in
+  `_ensure_document_state` — AutoCAD's own message filter refusing the call
+  while it still switches documents. pywin32 has no
+  `CoRegisterMessageFilter`, so the backend now waits that window out itself
+  (`_wait_out_rejected_call`, read-only callables only, 0.25 s → 1 s pauses
+  inside a 20 s budget) at those sites; any other error is not retried.
+- `layer_list` on the reopened template raised `AttributeError: 'IAcadLayer'
+  object has no attribute 'Color'. Did you mean: 'color'?`. The type library
+  spells `IAcadEntity` / `IAcadLayer` `color` and `Lineweight`; late-bound
+  dispatch resolved `.Color` / `.LineWeight` case-insensitively, but once a
+  makepy cache exists (this machine's was regenerated on 2026-09-17) every
+  object a method returns is a generated wrapper and the lookup is exact. The
+  backend now spells both members as the type library does (works on both
+  wrappers) and the fakes model the measured names.
+- `layer_state_restore` raised `'IAcadObject' object has no attribute
+  'Count'`: `Dictionaries.Item` and `IAcadDictionary.Item` are declared
+  `IAcadObject*` (the narrowing `_com_unnarrow` already handled for MLEADER
+  styles); the save before it went through the typed `Dictionaries.Add`, so
+  only the reopen paths failed. Both now un-narrow.
+- A state saved with layer `0` current came back with two warnings and `0`
+  unapplied: the `Freeze` put on layer `0` raises 'Invalid layer' whatever
+  the value, even `False` while thawed (measured on a scratch document;
+  `color` / `Linetype` / `Lineweight` / `Plottable` / `LayerOn` / `Lock` /
+  `ActiveLayer` all fine on it). `Freeze` is now written only when it would
+  change the layer.
+- Two of the smoke's own expectations predated the merged tree and were
+  corrected to it: `mleaderstyle_create` is implemented on COM through the
+  `ACAD_MLEADERSTYLE` dictionary (spec §4: no `mleaderstyle` key exists), so
+  the smoke now asserts the created style is listed with `arrow_size` 2.5;
+  and `plot_style_list` marks catalogue rows with `installed: true` (the
+  `source: "installed"` rows are files the catalogue does not know), so the
+  `monochrome.ctb` check reads that flag.
+
+`--interactive` (`user_pick_point`) was not run in this session: the seat is
+shared with other agents and nobody was confirmed at the keyboard, and an
+unanswered `Utility.GetPoint` holds AutoCAD's command line — every COM client
+gets `RPC_E_CALL_REJECTED` — until someone presses Esc, past the 60 s timeout.
+The pick path was executed live earlier in the track (Task 23's measurement:
+`GetPoint` answers in WCS while `GetEntity` answers in the current UCS). Each
+plot also dropped AutoCAD's `plot.log` into the repo root; it is ignored now.
+
 ## [1.5.1] — 2026-08-06
 
 A patch for three defects found *after* 1.5.0 went to PyPI, two of them by the

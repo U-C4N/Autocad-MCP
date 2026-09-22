@@ -26,7 +26,7 @@ listed by `drawing_template_list`. Start from one with
 - `<name>.dwt` — the live twin, used by `drawing_new(template=…)` on the COM
   backend. AutoCAD's DWT is a DWG container, which no headless library
   writes, so these are produced **on the live machine** by
-  `uv run --frozen python scripts/smoke_settings_com.py --build-dwt` (Task 24's
+  `uv run --frozen python scripts/smoke_settings_com.py --build-dwt` (Task 25's
   smoke): it opens each DXF over COM and calls `drawing_template_save(…dwt)`
   (`SaveAs(path, ac2018_Template)`), then the files are committed once. While
   a `.dwt` is missing, `resolve_template` falls back to the DXF and reports
@@ -43,3 +43,9 @@ to CRLF so a checkout on any platform equals a fresh build.
 Rebuild after changing anything the build depends on (layer sets, the title
 block, the dimension presets, the settings facade) and commit the result
 together with the change — the reproducibility test is the gate.
+
+The `.dwt` twins were built on 2026-09-22 on AutoCAD 2026 by
+`scripts/smoke_settings_com.py --build-dwt` — each DXF opened over COM and
+saved as a template (`AcSaveAsType` 66, `ac2018_Template`). Rebuild them the
+same way after changing a DXF; `scripts/build_templates.py --check` gates the
+DXF side only.

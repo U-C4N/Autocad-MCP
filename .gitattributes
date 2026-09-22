@@ -2,3 +2,5 @@
 * text=auto
 templates/*.dxf text eol=crlf
 templates/*.dwt binary
+*.dwt binary
+*.dwg binary

@@ -60,3 +60,7 @@ benchmarks/.competitors/
 # committed one was stale and unvetted — but CI now installs from it with
 # `uv sync --locked`, so ignoring it would silently disarm every locked lane.
 # Regenerate with `uv lock` whenever pyproject.toml dependencies change.
+
+# AutoCAD writes its plot-and-publish log into the cwd of the plotting process
+# (scripts/smoke_settings_com.py plots from the repo root).
+plot.log
