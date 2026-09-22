@@ -93,7 +93,7 @@ $TRACEWID
   9
 $TEXTSTYLE
   7
-Standard
+ISOCP
   9
 $CLAYER
   8
@@ -333,7 +333,7 @@ $DIMALTTD
   9
 $DIMTXSTY
   7
-Standard
+ISOCP
   9
 $DIMAUNIT
  70
@@ -489,7 +489,7 @@ $SKPOLY
   9
 $TDCREATE
  40
-2461305.9345486113
+2461306.528125
   9
 $TDUCREATE
  40
@@ -497,7 +497,7 @@ $TDUCREATE
   9
 $TDUPDATE
  40
-2461305.9345486113
+2461306.528125
   9
 $TDUUPDATE
  40
@@ -549,7 +549,7 @@ $SPLINESEGS
   9
 $HANDSEED
   5
-62
+64
   9
 $SURFTAB1
  70
@@ -929,11 +929,11 @@ $PSTYLEMODE
   9
 $FINGERPRINTGUID
   2
-{6791163C-4461-4A1B-8F3F-5AD608DBCCCE}
+{522C5F29-75D3-427F-A718-E45B971550C2}
   9
 $VERSIONGUID
   2
-{9A1CD7BF-015F-4598-B3DB-2BDBFBCC12FA}
+{CF5A954B-3734-4AD2-B15E-F6411516FB5E}
   9
 $EXTNAMES
 290
@@ -2011,7 +2011,7 @@ STYLE
 100
 AcDbSymbolTable
  70
-1
+2
   0
 STYLE
   5
@@ -2038,6 +2038,34 @@ Standard
 2.5
   3
 txt
+  4
+
+  0
+STYLE
+  5
+3D
+330
+5
+100
+AcDbSymbolTableRecord
+100
+AcDbTextStyleTableRecord
+  2
+ISOCP
+ 70
+0
+ 40
+0.0
+ 41
+1.0
+ 50
+0.0
+ 71
+0
+ 42
+2.5
+  3
+isocp.shx
   4
 
   0
@@ -2099,7 +2127,7 @@ ACAD
   0
 APPID
   5
-5F
+61
 330
 3
 100
@@ -2113,7 +2141,7 @@ HATCHBACKGROUNDCOLOR
   0
 APPID
   5
-60
+62
 330
 3
 100
@@ -2137,7 +2165,7 @@ DIMSTYLE
 100
 AcDbSymbolTable
  70
-1
+2
 100
 AcDbDimStyleTable
   0
@@ -2272,6 +2300,144 @@ Standard
 3
 290
 0
+371
+-2
+372
+-2
+  0
+DIMSTYLE
+105
+3E
+330
+4
+100
+AcDbSymbolTableRecord
+100
+AcDbDimStyleTableRecord
+  2
+ISO-25
+ 70
+0
+ 40
+1.0
+ 41
+2.5
+ 42
+0.625
+ 43
+3.75
+ 44
+1.25
+ 45
+0.0
+ 46
+0.0
+ 47
+0.0
+ 48
+0.0
+ 49
+2.5
+140
+2.5
+141
+2.5
+142
+0.0
+143
+0.03937007874
+144
+1.0
+145
+0.0
+146
+1.0
+147
+0.625
+148
+0.0
+ 69
+0
+ 70
+0
+ 71
+0
+ 72
+0
+ 73
+0
+ 74
+0
+ 75
+0
+ 76
+0
+ 77
+1
+ 78
+8
+ 79
+3
+170
+0
+171
+3
+172
+1
+173
+0
+174
+0
+175
+0
+176
+0
+177
+0
+178
+0
+179
+2
+271
+2
+272
+2
+273
+2
+274
+3
+275
+0
+276
+0
+277
+2
+278
+44
+279
+0
+280
+0
+281
+0
+282
+0
+283
+0
+284
+8
+285
+0
+286
+0
+288
+0
+289
+3
+290
+0
+340
+3D
 371
 -2
 372
@@ -2423,74 +2589,6 @@ ENTITIES
   0
 LWPOLYLINE
   5
-3D
-330
-1B
-100
-AcDbEntity
- 67
-1
-  8
-TITLEBLOCK
-100
-AcDbPolyline
- 90
-4
- 70
-1
- 10
-0.0
- 20
-0.0
- 10
-420.0
- 20
-0.0
- 10
-420.0
- 20
-297.0
- 10
-0.0
- 20
-297.0
-  0
-LWPOLYLINE
-  5
-3E
-330
-1B
-100
-AcDbEntity
- 67
-1
-  8
-TITLEBLOCK
-100
-AcDbPolyline
- 90
-4
- 70
-1
- 10
-20.0
- 20
-10.0
- 10
-410.0
- 20
-10.0
- 10
-410.0
- 20
-287.0
- 10
-20.0
- 20
-287.0
-  0
-LWPOLYLINE
-  5
 3F
 330
 1B
@@ -2507,23 +2605,23 @@ AcDbPolyline
  70
 1
  10
-230.0
+0.0
  20
-10.0
+0.0
  10
-410.0
+420.0
  20
-10.0
+0.0
  10
-410.0
+420.0
  20
-70.0
+297.0
  10
-230.0
+0.0
  20
-70.0
+297.0
   0
-LINE
+LWPOLYLINE
   5
 40
 330
@@ -2535,21 +2633,29 @@ AcDbEntity
   8
 TITLEBLOCK
 100
-AcDbLine
+AcDbPolyline
+ 90
+4
+ 70
+1
  10
-230.0
+20.0
  20
-20.0
- 30
-0.0
- 11
+10.0
+ 10
 410.0
- 21
+ 20
+10.0
+ 10
+410.0
+ 20
+287.0
+ 10
 20.0
- 31
-0.0
+ 20
+287.0
   0
-LINE
+LWPOLYLINE
   5
 41
 330
@@ -2561,19 +2667,27 @@ AcDbEntity
   8
 TITLEBLOCK
 100
-AcDbLine
+AcDbPolyline
+ 90
+4
+ 70
+1
  10
 230.0
  20
-35.0
- 30
-0.0
- 11
+10.0
+ 10
 410.0
- 21
-35.0
- 31
-0.0
+ 20
+10.0
+ 10
+410.0
+ 20
+70.0
+ 10
+230.0
+ 20
+70.0
   0
 LINE
   5
@@ -2591,13 +2705,13 @@ AcDbLine
  10
 230.0
  20
-50.0
+20.0
  30
 0.0
  11
 410.0
  21
-50.0
+20.0
  31
 0.0
   0
@@ -2615,15 +2729,15 @@ TITLEBLOCK
 100
 AcDbLine
  10
-320.0
+230.0
  20
 35.0
  30
 0.0
  11
-320.0
+410.0
  21
-50.0
+35.0
  31
 0.0
   0
@@ -2641,13 +2755,13 @@ TITLEBLOCK
 100
 AcDbLine
  10
-365.0
+230.0
  20
-35.0
+50.0
  30
 0.0
  11
-365.0
+410.0
  21
 50.0
  31
@@ -2667,15 +2781,15 @@ TITLEBLOCK
 100
 AcDbLine
  10
-290.0
+320.0
  20
-20.0
+35.0
  30
 0.0
  11
-290.0
+320.0
  21
-35.0
+50.0
  31
 0.0
   0
@@ -2693,15 +2807,15 @@ TITLEBLOCK
 100
 AcDbLine
  10
-350.0
+365.0
  20
-20.0
+35.0
  30
 0.0
  11
-350.0
+365.0
  21
-35.0
+50.0
  31
 0.0
   0
@@ -2719,6 +2833,58 @@ TITLEBLOCK
 100
 AcDbLine
  10
+290.0
+ 20
+20.0
+ 30
+0.0
+ 11
+290.0
+ 21
+35.0
+ 31
+0.0
+  0
+LINE
+  5
+48
+330
+1B
+100
+AcDbEntity
+ 67
+1
+  8
+TITLEBLOCK
+100
+AcDbLine
+ 10
+350.0
+ 20
+20.0
+ 30
+0.0
+ 11
+350.0
+ 21
+35.0
+ 31
+0.0
+  0
+LINE
+  5
+49
+330
+1B
+100
+AcDbEntity
+ 67
+1
+  8
+TITLEBLOCK
+100
+AcDbLine
+ 10
 275.0
  20
 10.0
@@ -2733,7 +2899,7 @@ AcDbLine
   0
 LINE
   5
-48
+4A
 330
 1B
 100
@@ -2759,7 +2925,7 @@ AcDbLine
   0
 LINE
   5
-49
+4B
 330
 1B
 100
@@ -2785,7 +2951,7 @@ AcDbLine
   0
 TEXT
   5
-4A
+4C
 330
 1B
 100
@@ -2806,12 +2972,14 @@ AcDbText
 5.0
   1
 ISO A3 MECHANICAL PART DRAWING
+  7
+ISOCP
 100
 AcDbText
   0
 TEXT
   5
-4B
+4D
 330
 1B
 100
@@ -2832,12 +3000,14 @@ AcDbText
 2.0
   1
 DWG NO
+  7
+ISOCP
 100
 AcDbText
   0
 TEXT
   5
-4C
+4E
 330
 1B
 100
@@ -2858,12 +3028,14 @@ AcDbText
 3.5
   1
 TEMPLATE
+  7
+ISOCP
 100
 AcDbText
   0
 TEXT
   5
-4D
+4F
 330
 1B
 100
@@ -2884,12 +3056,14 @@ AcDbText
 2.0
   1
 REV
+  7
+ISOCP
 100
 AcDbText
   0
 TEXT
   5
-4E
+50
 330
 1B
 100
@@ -2910,12 +3084,14 @@ AcDbText
 3.5
   1
 A
+  7
+ISOCP
 100
 AcDbText
   0
 TEXT
   5
-4F
+51
 330
 1B
 100
@@ -2936,12 +3112,14 @@ AcDbText
 2.0
   1
 SHEET
+  7
+ISOCP
 100
 AcDbText
   0
 TEXT
   5
-50
+52
 330
 1B
 100
@@ -2962,12 +3140,14 @@ AcDbText
 3.5
   1
 1/1
+  7
+ISOCP
 100
 AcDbText
   0
 TEXT
   5
-51
+53
 330
 1B
 100
@@ -2988,12 +3168,14 @@ AcDbText
 2.0
   1
 PART NO
+  7
+ISOCP
 100
 AcDbText
   0
 TEXT
   5
-52
+54
 330
 1B
 100
@@ -3014,12 +3196,14 @@ AcDbText
 3.5
   1
 
+  7
+ISOCP
 100
 AcDbText
   0
 TEXT
   5
-53
+55
 330
 1B
 100
@@ -3040,12 +3224,14 @@ AcDbText
 2.0
   1
 MATERIAL
+  7
+ISOCP
 100
 AcDbText
   0
 TEXT
   5
-54
+56
 330
 1B
 100
@@ -3066,12 +3252,14 @@ AcDbText
 3.5
   1
 
+  7
+ISOCP
 100
 AcDbText
   0
 TEXT
   5
-55
+57
 330
 1B
 100
@@ -3092,12 +3280,14 @@ AcDbText
 2.0
   1
 SCALE
+  7
+ISOCP
 100
 AcDbText
   0
 TEXT
   5
-56
+58
 330
 1B
 100
@@ -3118,12 +3308,14 @@ AcDbText
 3.5
   1
 1:1
+  7
+ISOCP
 100
 AcDbText
   0
 TEXT
   5
-57
+59
 330
 1B
 100
@@ -3144,12 +3336,14 @@ AcDbText
 2.0
   1
 DRAWN
+  7
+ISOCP
 100
 AcDbText
   0
 TEXT
   5
-58
+5A
 330
 1B
 100
@@ -3170,12 +3364,14 @@ AcDbText
 3.5
   1
 
+  7
+ISOCP
 100
 AcDbText
   0
 TEXT
   5
-59
+5B
 330
 1B
 100
@@ -3196,12 +3392,14 @@ AcDbText
 2.0
   1
 CHECKED
+  7
+ISOCP
 100
 AcDbText
   0
 TEXT
   5
-5A
+5C
 330
 1B
 100
@@ -3222,12 +3420,14 @@ AcDbText
 3.5
   1
 
+  7
+ISOCP
 100
 AcDbText
   0
 TEXT
   5
-5B
+5D
 330
 1B
 100
@@ -3248,12 +3448,14 @@ AcDbText
 2.0
   1
 DATE
+  7
+ISOCP
 100
 AcDbText
   0
 TEXT
   5
-5C
+5E
 330
 1B
 100
@@ -3274,12 +3476,14 @@ AcDbText
 3.5
   1
 
+  7
+ISOCP
 100
 AcDbText
   0
 TEXT
   5
-5D
+5F
 330
 1B
 100
@@ -3300,12 +3504,14 @@ AcDbText
 2.0
   1
 COMPANY
+  7
+ISOCP
 100
 AcDbText
   0
 TEXT
   5
-5E
+60
 330
 1B
 100
@@ -3326,6 +3532,8 @@ AcDbText
 3.5
   1
 Anka-Makine
+  7
+ISOCP
 100
 AcDbText
   0
@@ -4321,7 +4529,7 @@ CREATED_BY_EZDXF
   3
 WRITTEN_BY_EZDXF
 350
-61
+63
   0
 DICTIONARYVAR
   5
@@ -4333,11 +4541,11 @@ DictionaryVariables
 280
 0
   1
-1.4.4 @ 2026-09-21T19:25:45.743145+00:00
+1.4.4 @ 2026-09-22T09:40:30.742891+00:00
   0
 DICTIONARYVAR
   5
-61
+63
 330
 2D
 100
@@ -4345,7 +4553,7 @@ DictionaryVariables
 280
 0
   1
-1.4.4 @ 2026-09-21T19:25:45.772937+00:00
+1.4.4 @ 2026-09-22T09:40:30.898227+00:00
   0
 ENDSEC
   0
