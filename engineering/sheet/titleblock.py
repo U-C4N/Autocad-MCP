@@ -15,9 +15,10 @@ Data fields      ISO 7200:2004 -- the mandatory fields are the legal owner
                  shop draws (`part_no`, `material`, `scale`, `units`). ISO
                  7200's full list of optional fields is NOT transcribed -- only
                  the fields this block has a cell for.
-Projection angle ISO 128-30 / ISO 5456-2 -- the truncated-cone symbol; see
-                 `projection_symbol_prims` for the arrangement and where it
-                 comes from.
+Projection angle The truncated-cone symbol of ISO 5456-2 / ISO 128-30. ISO's
+                 own figure is paywalled and was NOT read here; the arrangement
+                 is transcribed from reproductions of it, measured, and named
+                 in `projection_symbol_prims`.
 
 The row heights (20 / 15 / 15 / 10 mm) and the cell splits are this
 repository's layout, not ISO 7200 values: the standard fixes the *data*, not
@@ -160,34 +161,63 @@ def titleblock_origin(size: str, *, orientation: str = "landscape") -> Pt:
 
 
 def projection_symbol_prims(at: Pt, angle: str = "first") -> tuple[Prim, ...]:
-    """The ISO 128-30 projection-angle symbol, centred on `at`.
+    """The ISO 5456-2 / ISO 128-30 projection-angle symbol, centred on `at`.
 
-    Arrangement, and where it comes from. The symbol is a truncated cone with a
-    horizontal axis and its small end facing left. The first- and third-angle
-    symbols are mirror images about a vertical axis, and which is which follows
-    from the projection rule itself: first-angle projection puts the view seen
-    from the left ON THE RIGHT, and the view of this cone seen from the left is
-    the small circle inside the large one. So FIRST angle draws the cone on the
-    left and the concentric circles on the right; THIRD angle is its mirror.
+    ARRANGEMENT -- transcribed, not derived. The symbol is a truncated cone
+    drawn in two views: the cone in elevation (a trapezoid) and the end view
+    (two concentric circles). Which side the end view sits on is what makes the
+    symbol mean *first* or *third* angle, and it is a convention that has to be
+    read off the standard's figure: the projection rule alone cannot pick it,
+    because the same picture is a legal drawing of the mirrored object seen
+    from the other side.
+
+    ISO 5456-2's own figure is behind ISO's paywall and was not read. Two
+    independent reproductions of it were downloaded and measured instead, and
+    they agree on every landmark used here:
+
+    * FreeCAD's ISO 5457 sheet template, first-angle symbol
+      (`src/Mod/TechDraw/Templates/ISO/A3_Landscape_ISO5457_advanced.svg`,
+      ids `first_angle_trapezoid` / `first_angle_*_circle`): the trapezoid is
+      `m 389,222 -10,2.5 v 5 l 10,2.5 z` -- a 5-unit side at x = 379 and a
+      10-unit side at x = 389 -- and the circles (r 2.5 and r 5) are at
+      cx = 396. Short side LEFT; end view to the RIGHT of the cone.
+    * Wikimedia Commons `Convention placement vues dessin technique.svg`, which
+      draws both symbols side by side, labelled FR and US. FR (first angle):
+      trapezoid 35.856 units tall at x = 13.343 and 66.135 at x = 81.869,
+      circles at x = 148.005. US (third angle): trapezoid 35.856 at
+      x = 380.275 and 66.135 at x = 448.801, circles at x = 314.140.
+
+    So, in both symbols alike, the trapezoid's SHORT side is on the left; only
+    the end view changes side:
+
+        first angle   cone, then the circles to its RIGHT
+        third angle   the circles, then the cone to their RIGHT
+
+    which is the same thing as the rule the standard is usually quoted by --
+    the short side points AWAY from the circles in first angle and TOWARDS
+    them in third. `tests/test_sheet_titleblock.py` pins the ordering against
+    the measured figures above, so this cannot be "fixed" back by eye.
 
     The proportions (large circle diameter 8, small 4, cone 8 mm long) are this
-    module's; ISO 5456-2's proportion table is not transcribed. The arrangement
-    is the part that can be *wrong* on a drawing, and it is derived above.
+    module's; ISO 5456-2's proportion table is not transcribed. They keep the
+    1:2 small-to-large ratio both reference figures' circles have.
     """
     if angle not in PROJECTION_ANGLES:
         raise ValueError(f"projection angle must be one of {PROJECTION_ANGLES}, got {angle!r}")
     cx, cy = float(at[0]), float(at[1])
     half = (PROJECTION_CONE_LENGTH + PROJECTION_GAP + 2 * PROJECTION_R) / 2.0
+    # The end view sits right of the cone in first angle, left of it in third.
     sign = 1.0 if angle == "first" else -1.0
-    cone_far = -half * sign
-    cone_near = cone_far + sign * PROJECTION_CONE_LENGTH
     circles_x = (half - PROJECTION_R) * sign
+    # The trapezoid itself is the same picture in both symbols: short side left.
+    cone_left = -half if angle == "first" else half - PROJECTION_CONE_LENGTH
+    cone_right = cone_left + PROJECTION_CONE_LENGTH
     cone = Poly(
         points=(
-            (cx + cone_far, cy - PROJECTION_SMALL_R),
-            (cx + cone_near, cy - PROJECTION_R),
-            (cx + cone_near, cy + PROJECTION_R),
-            (cx + cone_far, cy + PROJECTION_SMALL_R),
+            (cx + cone_left, cy - PROJECTION_SMALL_R),
+            (cx + cone_right, cy - PROJECTION_R),
+            (cx + cone_right, cy + PROJECTION_R),
+            (cx + cone_left, cy + PROJECTION_SMALL_R),
         ),
         closed=True,
     )

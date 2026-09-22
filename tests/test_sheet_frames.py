@@ -266,3 +266,36 @@ async def test_a_missing_layout_is_refused_before_anything_is_drawn(backend):
     assert "NoSuchSheet" in str(excinfo.value)
     assert "layout_create" in str(excinfo.value)
     assert len(await backend.entity_list()) == before
+
+
+@pytest.mark.asyncio
+async def test_the_frame_puts_the_caller_back_on_the_tab_it_found_them_on(backend):
+    await backend.layout_create("SheetA")
+    await backend.layout_create("SheetB")
+    await backend.layout_set_current("SheetB")
+    await draw_sheet_frame(backend, "A3", zones=False, marks=False, layout="SheetA")
+    assert (await backend.layout_list())["current"] == "SheetB"
+
+
+@pytest.mark.asyncio
+async def test_the_caller_s_tab_is_read_from_the_listing_not_a_private_attribute(
+    backend, backend_without_private_state
+):
+    """`_current_space` exists on EzdxfBackend only. ComBackend keeps the live
+    tab in AutoCAD, so reading the private attribute there fell through to the
+    ``getattr`` default and dropped a live caller onto Model after every
+    border -- measured on AutoCAD 2026. `layout_list()["current"]` is the value
+    both engines really report, and `enter_layout` already had it in hand.
+    """
+    await backend.layout_create("SheetA")
+    await backend.layout_create("SheetB")
+    await backend.layout_set_current("SheetB")
+    with pytest.raises(AttributeError):
+        _ = backend_without_private_state._current_space
+
+    result = await draw_sheet_frame(
+        backend_without_private_state, "A3", zones=False, marks=False, layout="SheetA"
+    )
+
+    assert result["layout"] == "SheetA"
+    assert (await backend.layout_list())["current"] == "SheetB"

@@ -40,3 +40,31 @@ async def backend():
     await b.drawing_new()
     yield b
     await b.disconnect()
+
+
+class WithoutPrivateState:
+    """The real backend with its ezdxf-only private attributes taken away.
+
+    ``EzdxfBackend`` tracks the current tab in ``self._current_space``;
+    ``ComBackend`` does not -- the live tab lives in AutoCAD
+    (``doc.ActiveLayout``), so there is nothing of that name on it. Shared code
+    that reaches for the private attribute therefore silently takes the
+    ``getattr`` default on every live seat, and no ezdxf-backed test can see
+    it. Wrapping the real backend (rather than writing a fake that owns members
+    the real object never had) keeps every other call honest.
+    """
+
+    def __init__(self, inner, hide=("_current_space",)):
+        object.__setattr__(self, "_inner", inner)
+        object.__setattr__(self, "_hidden", frozenset(hide))
+
+    def __getattr__(self, name):
+        if name in self._hidden:
+            raise AttributeError(f"{type(self._inner).__name__} has no attribute {name!r}")
+        return getattr(self._inner, name)
+
+
+@pytest_asyncio.fixture
+async def backend_without_private_state(backend):
+    """`backend`, minus the private attributes only the headless engine has."""
+    return WithoutPrivateState(backend)

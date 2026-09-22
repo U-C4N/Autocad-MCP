@@ -250,7 +250,12 @@ async def enter_layout(backend: AutoCADBackend, layout: str | None, *, caller: s
             f"{caller}: layout {layout!r} does not exist "
             f"(have: {', '.join(sorted(names))}). Create it with layout_create first."
         )
-    previous = getattr(backend, "_current_space", "Model")
+    # The caller's tab comes from the listing that was just read -- both engines
+    # report it there (ezdxf from $TILEMODE / the active layout, COM from
+    # ``doc.ActiveLayout.Name``). A private attribute would not: only
+    # EzdxfBackend has ``_current_space``, so reading it left a live caller
+    # standing on Model after every border.
+    previous = str(listing.get("current") or "Model")
     switched = await backend.layout_set_current(layout)
     if not switched.get("ok", True):
         raise RuntimeError(f"{caller}: {switched.get('error')}")

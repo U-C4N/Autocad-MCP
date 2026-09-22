@@ -107,29 +107,87 @@ def test_projection_none_draws_no_symbol_and_first_draws_one():
     assert len(first) == len(plain) + 4
 
 
-def test_first_angle_puts_the_circles_to_the_right_of_the_cone():
+#: The ISO 5456-2 / ISO 128-30 projection symbol, transcribed from two
+#: independent reproductions of the standard's figure (ISO's own is paywalled
+#: and was not read). Each entry is that source's OWN coordinates, measured off
+#: the file, and the landmark order left-to-right is what the symbol means.
+#:
+#: 1. FreeCAD's ISO 5457 sheet template, first-angle symbol --
+#:    src/Mod/TechDraw/Templates/ISO/A3_Landscape_ISO5457_advanced.svg,
+#:    ids `first_angle_trapezoid`, `first_angle_inner circle`,
+#:    `first_angle_outer circle`.
+#: 2. Wikimedia Commons `Convention placement vues dessin technique.svg`, which
+#:    draws both symbols side by side, labelled FR (first) and US (third).
+#:
+#: A test that read these numbers out of `projection_symbol_prims` instead
+#: would pass whichever way round the symbol was drawn, which is exactly how
+#: the mirrored third-angle cone shipped in the first place.
+REFERENCE_FIGURES = {
+    "first": (
+        # source, short-side x, long-side x, end-view (circles) x
+        ("FreeCAD A3_Landscape_ISO5457_advanced.svg", 379.0, 389.0, 396.0),
+        ("Commons Convention placement vues dessin technique.svg (FR)", 13.343, 81.869, 148.005),
+    ),
+    "third": (
+        ("Commons Convention placement vues dessin technique.svg (US)", 380.275, 448.801, 314.140),
+    ),
+}
+
+
+#: The three landmarks, in the order `_landmarks` and REFERENCE_FIGURES list them.
+LANDMARKS = ("short", "long", "circles")
+
+
+def _landmarks(angle: str) -> tuple[float, float, float]:
+    """(short-side x, long-side x, end-view x) of the symbol this module draws."""
+    prims = projection_symbol_prims((0.0, 0.0), angle)
+    cone = next(p for p in prims if isinstance(p, Poly))
+    circles = [p for p in prims if isinstance(p, Circle)]
+    left_x = min(x for x, _ in cone.points)
+    right_x = max(x for x, _ in cone.points)
+    left_h = max(y for x, y in cone.points if x == left_x) * 2
+    right_h = max(y for x, y in cone.points if x == right_x) * 2
+    short_x, long_x = (left_x, right_x) if left_h < right_h else (right_x, left_x)
+    assert len({c.center[0] for c in circles}) == 1
+    return short_x, long_x, circles[0].center[0]
+
+
+@pytest.mark.parametrize("angle", ["first", "third"])
+def test_the_symbol_lands_the_landmarks_in_the_order_the_reference_figures_do(angle):
+    """The meaning of the symbol is the left-to-right order of three landmarks:
+    the cone's short side, its long side and the end view. Assert that order
+    against the measured figures, not against what the module computes."""
+    mine = _landmarks(angle)
+    for source, *reference in REFERENCE_FIGURES[angle]:
+        expected = [name for _x, name in sorted(zip(reference, LANDMARKS, strict=True))]
+        got = [name for _x, name in sorted(zip(mine, LANDMARKS, strict=True))]
+        assert got == expected, f"{angle}-angle symbol disagrees with {source}"
+
+
+def test_the_short_side_points_away_from_the_circles_in_first_and_towards_in_third():
+    """The mirror-invariant half of the rule, and the one every source states
+    in words: Wikipedia's Multiview orthographic projection, Symbol --
+    "the first-angle symbol shows the trapezoid with its shortest side away
+    from the circles", "the third-angle symbol shows the trapezoid with its
+    shortest side towards the circles"."""
+    short_x, long_x, circles_x = _landmarks("first")
+    assert abs(short_x - circles_x) > abs(long_x - circles_x)
+    short_x, long_x, circles_x = _landmarks("third")
+    assert abs(short_x - circles_x) < abs(long_x - circles_x)
+
+
+def test_the_symbol_keeps_the_reference_figures_proportions_and_its_axis():
+    """Both reference figures draw the end view as two circles of ratio 1:2
+    (FreeCAD r 2.5 / r 5) on a centre line; the absolute size is this
+    module's."""
     first = projection_symbol_prims((0.0, 0.0), "first")
-    third = projection_symbol_prims((0.0, 0.0), "third")
-    cone_first = next(p for p in first if isinstance(p, Poly))
-    circles_first = [p for p in first if isinstance(p, Circle)]
-    assert max(x for x, _ in cone_first.points) < min(c.center[0] for c in circles_first)
-    cone_third = next(p for p in third if isinstance(p, Poly))
-    circles_third = [p for p in third if isinstance(p, Circle)]
-    assert min(x for x, _ in cone_third.points) > max(c.center[0] for c in circles_third)
-    assert {round(c.radius, 6) for c in circles_first} == {4.0, 2.0}
+    circles = [p for p in first if isinstance(p, Circle)]
+    assert {round(c.radius, 6) for c in circles} == {4.0, 2.0}
     assert any(isinstance(p, Line) and p.role == "center" for p in first)
 
 
-def test_the_cone_s_small_end_faces_the_circles_side_in_first_angle():
-    """The derivation only holds if the view drawn as circles really is the
-    view from the cone's small end."""
-    cone = next(p for p in projection_symbol_prims((0.0, 0.0), "first") if isinstance(p, Poly))
-    left_x = min(x for x, _ in cone.points)
-    right_x = max(x for x, _ in cone.points)
-    left_height = max(y for x, y in cone.points if x == left_x) * 2
-    right_height = max(y for x, y in cone.points if x == right_x) * 2
-    assert left_height == pytest.approx(4.0, abs=EPS)
-    assert right_height == pytest.approx(8.0, abs=EPS)
+def test_the_two_symbols_are_not_the_same_picture():
+    assert _landmarks("first") != _landmarks("third")
 
 
 def test_an_unknown_projection_angle_is_refused():
@@ -188,3 +246,19 @@ async def test_apply_titleblock_draws_every_size_with_its_symbol(backend):
         )
         assert result["ok"] is True and result["size"] == size
         assert len(result["projection_symbol"]) == 4
+
+
+@pytest.mark.asyncio
+async def test_the_titleblock_puts_the_caller_back_on_the_tab_it_found_them_on(
+    backend, backend_without_private_state
+):
+    """`apply_titleblock` routes through the same `enter_layout`, so the live
+    engine dropped the caller onto Model here too."""
+    await backend.layout_create("SheetA")
+    await backend.layout_create("SheetB")
+    await backend.layout_set_current("SheetB")
+    result = await apply_titleblock(
+        backend_without_private_state, size="A3", metadata=_meta(), layout="SheetA"
+    )
+    assert result["layout"] == "SheetA"
+    assert (await backend.layout_list())["current"] == "SheetB"
