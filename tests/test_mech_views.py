@@ -70,7 +70,10 @@ def coincident(view: View) -> dict:
 
 
 def test_the_engine_declares_three_orthographic_kinds_and_two_projections():
-    assert VIEW_KINDS == ("front", "side", "top")
+    # The three orthographic kinds come first; Task 5 appended the two cut kinds
+    # (tests/test_mech_sections.py pins the full tuple from the other side).
+    assert VIEW_KINDS[:3] == ("front", "side", "top")
+    assert VIEW_KINDS == ("front", "side", "top", "section", "detail")
     assert PROJECTIONS == ("first", "third")
 
 

@@ -24,10 +24,13 @@ import math
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
+from engineering.mech.features import Pocket as _PocketType
 from engineering.mech.features import mirror_about_x
 from engineering.mech.part import (
     PrismaticPart,
     RevolvedPart,
+    inner_radius_at,
+    outer_radius_at,
     outline_bbox,
     part_length,
     part_max_diameter,
@@ -44,7 +47,9 @@ from engineering.mech.primitives import (
     Pt,
     Text,
     bbox,
+    translate,
 )
+from engineering.mech.primitives import scale as scale_prims
 
 _EPS = 1e-9
 _SNAP = 6  # decimals used to match a corner vertex to a corner edit
@@ -52,13 +57,33 @@ _SNAP = 6  # decimals used to match a corner vertex to a corner edit
 #: than ``_EPS`` on purpose: it compares *measured* radii, not exact vertices.
 _TOL = 1e-6
 
-VIEW_KINDS: tuple[str, ...] = ("front", "side", "top")
+VIEW_KINDS: tuple[str, ...] = ("front", "side", "top", "section", "detail")
 PROJECTIONS: tuple[str, ...] = ("first", "third")
 SIDES: tuple[str, ...] = ("right", "left")
 
 #: How far the axis and the centre lines run past the material, as a fraction
 #: of the part's largest dimension (ISO 128-23 asks for a short, even overrun).
 AXIS_OVERRUN = 0.10
+
+#: The cutting-plane record `section_line` (Task 11, group A) produces and this
+#: engine consumes. `via` is optional and only meaningful for an offset plane.
+SECTION_PLANE = {
+    "p1": (0.0, 0.0),
+    "p2": (0.0, 0.0),
+    "label": "A",
+    "direction": (0.0, -1.0),
+    "style": "full",
+}
+
+SECTION_STYLES: tuple[str, ...] = ("full", "half", "offset", "revolved")
+
+#: A circular cut-face boundary has to be handed to the hatch as points. 180
+#: segments is a 2 degree chord: the boundary is never further than
+#: r * (1 - cos(1 deg)) = 0.015% of the radius from the true circle, and the
+#: area of the inscribed 180-gon is 0.0203% under the circle's. Both figures are
+#: stated rather than hidden, and the same loop is what the hatch and any area
+#: check read, so they cannot disagree with each other.
+CIRCLE_SEGMENTS = 180
 
 
 @dataclass(frozen=True)
@@ -543,7 +568,10 @@ def build_view(
     where = str(side or "right").strip().lower()
     if where not in SIDES:
         raise ValueError(f"build_view: side {side!r} is not one of {SIDES}.")
-    del plane, style, detail  # the orthographic kinds take no plane or detail
+    if name == "section":
+        return section_view(part, plane, style=style, scale=scale, side=where)
+    if name == "detail":
+        return detail_view(part, detail or {}, projection=projection, side=where)
 
     ctx = {"side": where, "scale": float(scale), "projection": str(projection)}
     prims: list[Prim] = []
@@ -647,4 +675,415 @@ def layout_origin(
     raise ValueError(
         f"layout_origin: kind {kind!r} has no projection position; expected "
         "'side', 'top', 'section' or 'detail'."
+    )
+
+
+# -- sections ----------------------------------------------------------------
+
+
+def normalise_plane(plane: dict | None) -> dict:
+    """Fill the `SECTION_PLANE` shape and refuse a plane that has no direction."""
+    if plane is None:
+        raise ValueError(
+            "section: a cutting plane is required - pass plane={'p1': ..., 'p2': ...}, "
+            "or take one from section_line()."
+        )
+    if not isinstance(plane, dict):
+        raise ValueError(f"plane: expected a dict, got {type(plane).__name__}.")
+    unknown = sorted(set(plane) - set(SECTION_PLANE) - {"via"})
+    if unknown:
+        raise ValueError(f"plane: unknown key(s) {unknown}; it takes {sorted(SECTION_PLANE)}.")
+    p1 = tuple(float(v) for v in plane.get("p1", SECTION_PLANE["p1"]))
+    p2 = tuple(float(v) for v in plane.get("p2", SECTION_PLANE["p2"]))
+    if math.dist(p1, p2) < 1e-6:
+        raise ValueError(f"plane: p1 and p2 are the same point, the plane has zero length ({p1}).")
+    style = str(plane.get("style", SECTION_PLANE["style"])).strip().lower()
+    if style not in SECTION_STYLES:
+        raise ValueError(f"plane.style: expected one of {SECTION_STYLES}, got {style!r}.")
+    via = tuple(tuple(float(v) for v in point) for point in plane.get("via", ()))
+    return {
+        "p1": p1,
+        "p2": p2,
+        "label": str(plane.get("label", SECTION_PLANE["label"])),
+        "direction": tuple(float(v) for v in plane.get("direction", SECTION_PLANE["direction"])),
+        "style": style,
+        "via": via,
+    }
+
+
+def _inner_path(bands: tuple[Band, ...]) -> list[Pt]:
+    points: list[Pt] = [(bands[0].x0, bands[0].r_in)]
+    for band in bands:
+        if math.dist(points[-1], (band.x0, band.r_in)) > _EPS:
+            points.append((band.x0, band.r_in))
+        points.append((band.x1, band.r_in))
+    return points
+
+
+def _circle_loop(radius: float, *, reverse: bool = False) -> tuple[Pt, ...]:
+    steps = range(CIRCLE_SEGMENTS - 1, -1, -1) if reverse else range(CIRCLE_SEGMENTS)
+    return tuple(
+        (
+            radius * math.cos(2.0 * math.pi * k / CIRCLE_SEGMENTS),
+            radius * math.sin(2.0 * math.pi * k / CIRCLE_SEGMENTS),
+        )
+        for k in steps
+    )
+
+
+def _is_longitudinal(plane: dict) -> bool:
+    """True when the cutting plane runs along the revolved axis (y = 0 at both ends)."""
+    return abs(plane["p1"][1]) < 1e-6 and abs(plane["p2"][1]) < 1e-6
+
+
+def _subtract(intervals: list[tuple[float, float]], cut: tuple[float, float]):
+    out: list[tuple[float, float]] = []
+    low, high = cut
+    for a, b in intervals:
+        if high <= a + _EPS or low >= b - _EPS:
+            out.append((a, b))
+            continue
+        if low > a + _EPS:
+            out.append((a, low))
+        if high < b - _EPS:
+            out.append((high, b))
+    return [(a, b) for a, b in out if b - a > 1e-9]
+
+
+def _chords(outline, p1: Pt, unit: Pt) -> list[tuple[float, float]]:
+    """Parameters along `unit` from `p1` where the line is inside the outline.
+
+    Crossings are paired in order, which is exact for a simple polygon whose
+    edges the line crosses transversally. A line that grazes a vertex produces
+    an odd crossing count and is refused by the caller rather than paired wrong.
+    """
+    ts: list[float] = []
+    count = len(outline)
+    for index in range(count):
+        ax, ay = outline[index]
+        bx, by = outline[(index + 1) % count]
+        ex, ey = bx - ax, by - ay
+        denominator = ex * unit[1] - ey * unit[0]
+        if abs(denominator) < 1e-12:
+            continue
+        s = ((p1[0] - ax) * unit[1] - (p1[1] - ay) * unit[0]) / denominator
+        if -1e-9 <= s <= 1.0 + 1e-9:
+            px, py = ax + s * ex, ay + s * ey
+            ts.append((px - p1[0]) * unit[0] + (py - p1[1]) * unit[1])
+    ts = sorted({round(t, 9) for t in ts})
+    if len(ts) % 2 != 0:
+        raise ValueError(
+            "section: the cutting plane grazes an outline vertex, so its crossings cannot be "
+            "paired. Move the plane off the vertex rather than accept a guessed cut face."
+        )
+    return [(ts[i], ts[i + 1]) for i in range(0, len(ts), 2)]
+
+
+def _box_span(box, p1: Pt, unit: Pt, normal: Pt):
+    xs = (box[0], box[2])
+    ys = (box[1], box[3])
+    corners = [(x, y) for x in xs for y in ys]
+    distances = [(x - p1[0]) * normal[0] + (y - p1[1]) * normal[1] for x, y in corners]
+    if min(distances) > 1e-9 or max(distances) < -1e-9:
+        return None
+    spans = [(x - p1[0]) * unit[0] + (y - p1[1]) * unit[1] for x, y in corners]
+    return (min(spans), max(spans))
+
+
+def _plane_legs(plane: dict) -> list[tuple[Pt, Pt]]:
+    """The cutting legs of an offset plane.
+
+    ISO 128-40: the offset itself is not drawn, so with ``via`` present the
+    odd-numbered legs are the transfer jogs and contribute nothing to the cut
+    face.
+    """
+    points = [plane["p1"], *plane["via"], plane["p2"]]
+    legs = [(points[i], points[i + 1]) for i in range(len(points) - 1)]
+    if plane["via"]:
+        legs = [leg for index, leg in enumerate(legs) if index % 2 == 0]
+    return legs
+
+
+def _prismatic_cut(part: PrismaticPart, plane: dict, style: str):
+    """``[(u0, u1, v0, v1, hatched), ...]`` - the cut rectangles along the plane."""
+    legs = _plane_legs(plane) if style == "offset" else [(plane["p1"], plane["p2"])]
+    thickness = float(part.thickness)
+    rectangles: list[tuple[float, float, float, float, bool]] = []
+    origin = 0.0
+    for start, end in legs:
+        length = math.dist(start, end)
+        if length < 1e-9:
+            continue
+        unit = ((end[0] - start[0]) / length, (end[1] - start[1]) / length)
+        normal = (-unit[1], unit[0])
+        intervals = _chords(part.outline, start, unit)
+        intervals = [(a, b) for a, b in intervals if b > -1e-9 and a < length + 1e-9]
+        intervals = [(max(a, 0.0), min(b, length)) for a, b in intervals]
+        intervals = [(a, b) for a, b in intervals if b - a > 1e-9]
+
+        pockets: list[tuple[tuple[float, float], float, bool]] = []
+        for feature in part.features:
+            box = feature.removal_box(part)
+            if box is None:
+                continue
+            span = _box_span(box, start, unit, normal)
+            if span is None:
+                continue
+            span = (max(span[0], 0.0), min(span[1], length))
+            if span[1] - span[0] <= 1e-9:
+                continue
+            if isinstance(feature, _PocketType):
+                pockets.append((span, thickness - float(feature.depth), feature.no_section_hatch))
+            else:
+                intervals = _subtract(intervals, span)
+
+        for pocket_span, floor, unhatched in pockets:
+            intervals = _subtract(intervals, pocket_span)
+            rectangles.append(
+                (origin + pocket_span[0], origin + pocket_span[1], 0.0, floor, not unhatched)
+            )
+        for a, b in intervals:
+            rectangles.append((origin + a, origin + b, 0.0, thickness, True))
+        origin += length
+    if rectangles:
+        # the section view has its own frame: u = 0 at the first cut.
+        shift = min(u0 for u0, _u1, _v0, _v1, _hatched in rectangles)
+        rectangles = [
+            (u0 - shift, u1 - shift, v0, v1, hatched) for u0, u1, v0, v1, hatched in rectangles
+        ]
+    return rectangles
+
+
+def cut_loops(part, plane: dict, *, style: str = "full"):
+    """The closed cut-face loops, each flagged with whether it is hatched."""
+    plane = normalise_plane(plane)
+    name = str(style or "full").strip().lower()
+    if name not in SECTION_STYLES:
+        raise ValueError(f"style: expected one of {SECTION_STYLES}, got {style!r}.")
+
+    if isinstance(part, RevolvedPart):
+        bands = radial_profile(part)
+        if _is_longitudinal(plane):
+            if name == "offset":
+                raise ValueError(
+                    "section: an offset plane has no meaning along a revolved part's axis; "
+                    "use style='full' (or a transverse plane for a cross section)."
+                )
+            upper = tuple(_outer_path(bands)) + tuple(reversed(_inner_path(bands)))
+            loops = [(upper, True)]
+            if name != "half":
+                loops.append((tuple((x, -y) for x, y in upper), True))
+            return tuple(loops)
+        if name == "half":
+            raise ValueError(
+                "section: a half section is defined on a longitudinal plane through the axis; "
+                "a transverse plane takes style='full' or 'revolved'."
+            )
+        station = plane["p1"][0]
+        r_out = outer_radius_at(part, station)
+        r_in = inner_radius_at(part, station)
+        loops = [(_circle_loop(r_out), True)]
+        if r_in > _EPS:
+            loops.append((_circle_loop(r_in, reverse=True), True))
+        return tuple(loops)
+
+    if name in ("half", "revolved"):
+        raise ValueError(
+            f"section: a {name} section is defined on a revolved part; a prismatic part takes "
+            "style='full' or 'offset'."
+        )
+    rectangles = _prismatic_cut(part, plane, name)
+    if not rectangles:
+        raise ValueError(
+            f"section: the plane {plane['p1']} -> {plane['p2']} does not cut {part.name!r}."
+        )
+    return tuple(
+        (((u0, v0), (u1, v0), (u1, v1), (u0, v1)), hatched)
+        for u0, u1, v0, v1, hatched in rectangles
+    )
+
+
+def section_view(
+    part, plane: dict, *, style: str = "full", scale: float = 1.0, side: str = "right"
+) -> View:
+    """A cut view: the cut faces as hatch areas, plus the geometry behind them."""
+    from engineering.mech.standards.materials import hatch_for
+
+    plane = normalise_plane(plane)
+    name = str(style or plane["style"]).strip().lower()
+    hatch_for(part.material)  # refuse an unknown material before anything is built
+    ctx = {"side": side, "scale": float(scale), "projection": "first", "plane": plane}
+
+    loops = cut_loops(part, plane, style=name)
+    prims: list[Prim] = []
+    omitted: list[dict] = []
+    dims: list[DimIntent] = []
+
+    if isinstance(part, RevolvedPart) and _is_longitudinal(plane):
+        body, unplaced = silhouette_prims(part)
+        prims.extend(body)
+        prims.extend(_axis_prims(part))
+        omitted.extend(unplaced)
+        for feature in part.features:
+            own = feature.cut_prims(part, plane, ctx)
+            if own and getattr(feature, "axisymmetric", False):
+                own = tuple(own) + mirror_about_x(own)
+            prims.extend(own)
+            dims.extend(feature.dims(part, "front", ctx))
+    elif isinstance(part, RevolvedPart):
+        role = "phantom" if name == "revolved" else "visible"
+        station = plane["p1"][0]
+        r_out = outer_radius_at(part, station)
+        r_in = inner_radius_at(part, station)
+        prims.append(Circle((0.0, 0.0), r_out, role))
+        if r_in > _EPS:
+            prims.append(Circle((0.0, 0.0), r_in, role))
+        over = r_out * (1.0 + AXIS_OVERRUN)
+        prims.append(Line((-over, 0.0), (over, 0.0), "center"))
+        prims.append(Line((0.0, -over), (0.0, over), "center"))
+    else:
+        for points, _hatched in loops:
+            xs = [p[0] for p in points]
+            ys = [p[1] for p in points]
+            prims.extend(_rectangle(min(xs), max(xs), min(ys), max(ys)))
+
+    hatched = [points for points, flag in loops if flag]
+    if isinstance(part, RevolvedPart) and not _is_longitudinal(plane):
+        # a transverse cut face is one region with the bore as its island
+        if hatched:
+            prims.append(HatchArea(tuple(hatched), part.material))
+    else:
+        for points in hatched:
+            prims.append(HatchArea((points,), part.material))
+
+    label = f"{plane['label']}-{plane['label']}"
+    return View(
+        kind="section",
+        prims=tuple(prims),
+        dims=tuple(dims),
+        omitted=tuple(omitted),
+        bbox=bbox(prims) if prims else (0.0, 0.0, 0.0, 0.0),
+        label=label,
+        scale=float(scale),
+    )
+
+
+# -- detail views ------------------------------------------------------------
+
+
+def _prim_bbox(prim) -> tuple[float, float, float, float]:
+    return bbox([prim])
+
+
+def _touches(prim, center: Pt, radius: float) -> bool:
+    x0, y0, x1, y1 = _prim_bbox(prim)
+    nearest_x = min(max(center[0], x0), x1)
+    nearest_y = min(max(center[1], y0), y1)
+    return math.dist((nearest_x, nearest_y), center) <= radius + 1e-9
+
+
+def _clip_segment(p1: Pt, p2: Pt, center: Pt, radius: float):
+    """The part of the segment inside the circle, or None."""
+    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+    fx, fy = p1[0] - center[0], p1[1] - center[1]
+    a = dx * dx + dy * dy
+    if a < 1e-18:
+        return (p1, p2) if math.dist(p1, center) <= radius + 1e-9 else None
+    b = 2.0 * (fx * dx + fy * dy)
+    c = fx * fx + fy * fy - radius * radius
+    discriminant = b * b - 4.0 * a * c
+    if discriminant <= 0.0:
+        return None
+    root = math.sqrt(discriminant)
+    t0 = max(0.0, (-b - root) / (2.0 * a))
+    t1 = min(1.0, (-b + root) / (2.0 * a))
+    if t1 - t0 <= 1e-9:
+        return None
+    return ((p1[0] + t0 * dx, p1[1] + t0 * dy), (p1[0] + t1 * dx, p1[1] + t1 * dy))
+
+
+def _clip_to_circle(prim, center: Pt, radius: float) -> tuple[Prim, ...]:
+    """Straight geometry is trimmed to the detail circle; curved geometry is kept
+    whole when it touches it.
+
+    Trimming an arc would mean solving its angular range against the circle, and
+    a detail that silently re-cuts an arc is worse than one that carries a
+    slightly long arc into the enlargement - so the rule is stated rather than
+    approximated, and a detail is meant to be drawn inside its circle.
+    """
+    if isinstance(prim, Line):
+        clipped = _clip_segment(prim.p1, prim.p2, center, radius)
+        return (Line(clipped[0], clipped[1], prim.role),) if clipped else ()
+    if isinstance(prim, Poly):
+        points = list(prim.points)
+        if prim.closed and points:
+            points.append(points[0])
+        out: list[Prim] = []
+        for index in range(len(points) - 1):
+            clipped = _clip_segment(points[index], points[index + 1], center, radius)
+            if clipped:
+                out.append(Line(clipped[0], clipped[1], prim.role))
+        return tuple(out)
+    return (prim,) if _touches(prim, center, radius) else ()
+
+
+def detail_marker_prims(detail: dict) -> tuple[Prim, ...]:
+    """ISO 128-34 detail circle and its letter, for the **parent** view."""
+    center = tuple(float(v) for v in detail["center"])
+    radius = float(detail["radius"])
+    label = str(detail.get("label", "A"))
+    return (
+        Circle(center, radius, "visible"),
+        Text((center[0] + radius + 2.0, center[1] + radius + 2.0), label, 5.0, 0.0, "text"),
+    )
+
+
+def detail_view(part, detail: dict, *, projection: str = "first", side: str = "right") -> View:
+    """A circular region of a parent view, enlarged, with the ISO 128-34 labels.
+
+    Straight geometry is trimmed to the circle and curved geometry that touches
+    it is kept whole (see :func:`_clip_to_circle`); every feature whose own
+    primitives all fall outside is reported in ``omitted``.
+    """
+    if not isinstance(detail, dict):
+        raise ValueError(f"detail: expected a dict, got {type(detail).__name__}.")
+    if "radius" not in detail:
+        raise ValueError("detail.radius: a detail needs the radius of its circle.")
+    center = tuple(float(v) for v in detail.get("center", (0.0, 0.0)))
+    radius = float(detail["radius"])
+    if radius <= _EPS:
+        raise ValueError(f"detail.radius: must be greater than zero, got {radius}.")
+    factor = float(detail.get("scale", 5.0))
+    if factor <= _EPS:
+        raise ValueError(f"detail.scale: must be greater than zero, got {factor}.")
+    label = str(detail.get("label", "A"))
+    of = str(detail.get("of", "front")).strip().lower()
+
+    parent = build_view(part, of, side=side, projection=projection)
+    kept: list[Prim] = []
+    for prim in parent.prims:
+        kept.extend(_clip_to_circle(prim, center, radius))
+    kept = tuple(kept)
+    if not kept:
+        raise ValueError(
+            f"detail: the circle at {center} r={radius} contains no geometry of the {of} view."
+        )
+
+    moved = translate(kept, -center[0], -center[1])
+    enlarged = scale_prims(moved, factor, (0.0, 0.0))
+
+    omitted = list(parent.omitted)
+    for feature in part.features:
+        own = feature.prims(part, of, {"side": side, "scale": 1.0, "projection": projection})
+        if own and not any(_touches(prim, center, radius) for prim in own):
+            omitted.append({"feature": feature.id, "reason": f"outside the detail circle {label}"})
+
+    return View(
+        kind="detail",
+        prims=tuple(enlarged),
+        dims=(),
+        omitted=tuple(omitted),
+        bbox=bbox(enlarged),
+        label=f"{label} ({factor:g}:1)",
+        scale=factor,
     )
