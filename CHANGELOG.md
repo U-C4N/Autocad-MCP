@@ -13,7 +13,67 @@ implements, six critique focuses that join `drawing_finalize`, and a
 `TOOL_PACKS` gate so a mechanical-only client never pays for the P&ID
 surface. Spec: `docs/superpowers/specs/2026-09-15-v1.6-pid-design.md`.
 
+Track E of 1.6: the environment a drawing lives in. 38 tools in three new
+sections — styles (18), page setup and templates (19), environment (20) —
+the `drawing_settings` facade grown, a system-variable catalog, five bundled
+templates, several open documents headlessly, portable layer states, named
+views and UCS, and the live-only group (launch, preferences, document
+properties, operator prompts) refused honestly headlessly. Spec:
+`docs/superpowers/specs/2026-09-16-v1.6-settings-design.md`.
+
 ### Added
+
+- **Styles — 10 tools, pack `core`.** `dimstyle_list/create/modify/set_current`,
+  `textstyle_list/create/set_current`, `mleaderstyle_list/create`,
+  `drawing_apply_standard`. ISO-25 and ANSI (metric) presets are authored data
+  pinned by `tests/test_standards_presets.py` against ISO 129-1 / ASME Y14.2
+  (DIMTXT 2.5 / 3.0, DIMASZ 2.5 / 3.0, DIMEXO 0.625 / 1.5, DIMDSEP `,` / `.`,
+  DIMTAD 1 / 0 …). `dimstyle_modify` accepts the 33-name whitelist only (the
+  17 preset variables plus 16 more — `DIM_VARIABLE_WHITELIST`) and
+  refuses an out-of-range value by name before writing; `changed` lists what
+  moved. A font neither bundled nor on the engine's font path is written and
+  reported `font_resolved: false`, never refused. `mleaderstyle_create` works
+  on both engines: ActiveX exposes no MLeaderStyle *collection*, but the
+  `ACAD_MLEADERSTYLE` dictionary holds full `IAcadMLeaderStyle` objects, so
+  the live engine creates the style through `AddObject` and the property
+  writes — no `mleaderstyle` capability key exists.
+- **Page setup & templates — 6 tools, pack `core`.** `page_setup_list/apply`
+  (`PAPER_SIZES` ISO A0–A4 / ANSI A–E, `CTB_CATALOG`, `SCALES`), `plot_style_list`
+  (catalog + installed), `batch_plot` — `mediabox_mm` parsed from each PDF's
+  `/MediaBox`, so `ISO_A3` landscape is 420 × 297 because the file says so —
+  `drawing_template_list`, `drawing_template_save` (`.dwt` refused headlessly,
+  capability `dwt_write`). Five bundled templates built by
+  `scripts/build_templates.py` through the server's own methods (`--check`
+  proves the DXFs byte-reproducible); their `.dwt` twins were built once on
+  AutoCAD 2026 by the smoke. `drawing_new(template="iso_a3_mech")` resolves the
+  bundled file and reports `{name, source}`.
+- **Environment — 22 tools, pack `settings`.** `document_list/activate/close`
+  on both engines (the headless backend keeps a document registry;
+  `drawing_close` is the active-document case); `layer_state_save/restore/
+  list/delete` as portable XRECORD snapshots — restore applies only the
+  requested `properties`, reports `missing_layers` (skipped, never created)
+  and `new_layers` (untouched), and the state survives save/reopen;
+  `view_named_save/restore/list`; `ucs_list/set/restore` (non-orthogonal axes
+  refused with the measured angle; tool coordinates stay WCS);
+  `system_variable_describe` over a 90-entry catalog (`known: false` + nearest
+  names on a miss); `drawing_properties_get/set` (custom properties on both
+  engines, summary fields COM-only: `dwgprops`); `system_launch`
+  (`live_application`), `system_preferences_get/set` (whitelisted keys with
+  ranges, read-only keys refused by name, `old`/`new` reported:
+  `preferences`), `user_pick_point/select` and `system_prompt_message`
+  (`interactive_prompt`; a cancelled pick is `{cancelled: true}`, a
+  `COM_CALL_TIMEOUT` overrun is `timed_out`).
+- **`drawing_settings` grows** by `limits`, `grid`/`grid_spacing`,
+  `snap`/`snap_spacing`, `ortho`, `polar`/`polar_angle`, `psltscale`,
+  `annotation_scale`, `linear_units`, `angular_units`, `dimstyle`,
+  `textstyle`; `system_set_variable` refuses an out-of-range value for a
+  catalogued name before writing.
+- **Benchmark evidence.** `benchmarks/tasks_v4.py` adds `page_setup_truth`;
+  the correctness suite grows to 32 with `settings_dimstyle_iso25_values`,
+  `settings_layer_state_roundtrip`, `settings_pdf_mediabox_a3`. A/B against
+  `v1.5.1`: **26 / 32 → 32 / 32, six `miss → pass`, zero regressed**.
+  `scripts/smoke_settings_com.py` runs the track once against the live seat
+  (record below).
 
 - **P&ID — 9 tools, pack `pid`.**
   - `pid_symbol_list` / `pid_symbol_insert`: a 43-symbol ISO 10628-2 /
@@ -93,6 +153,26 @@ surface. Spec: `docs/superpowers/specs/2026-09-15-v1.6-pid-design.md`.
 
 ### Fixed
 
+- **Track A hardening** (`tests/test_track_a_hardening.py`; the remaining
+  review findings are filed with a disposition each in
+  `docs/analysis/track-a-review-backlog.md`):
+  - `entity_create_block_ref` of an undefined block name is refused before
+    writing (it returned a handle to a dangling INSERT).
+  - `block_explode` keeps ATTRIB text: each ATTRIB becomes a TEXT entity on
+    both engines instead of being dropped.
+  - `pid_from_spec` refuses a NaN coordinate before the transaction opens and
+    rolls back on `BaseException`, not only `Exception`.
+  - A signal line no longer receives a fabricated line number and label; the
+    reader reports `line_number: null` for it.
+  - A bubble's exit point honours the first waypoint instead of the port
+    direction.
+  - A foreign or hand-edited `ACADMCP_PID` payload is read tolerantly, and an
+    existing polyline with a bulge is tested as its arc, not its chord, so a
+    line through a crossing jump counts as a crossing.
+  - `block_insert` attribute values are validated as strings; an int or None
+    is a `TypeError` naming the tag, not `str()`-coerced.
+  - `block_define` refuses a NaN base point and a layer that does not exist
+    in the drawing (it wrote both and `drawing_audit` repaired them later).
 - **Headless `block_insert(attributes=…)` lost its ATTRIBs.** The ezdxf path
   used `add_auto_blockref`, which wraps the INSERT in an anonymous `*U`
   block: the handle it returned reported `block_name` `*U1`, and
@@ -119,13 +199,21 @@ surface. Spec: `docs/superpowers/specs/2026-09-15-v1.6-pid-design.md`.
 
 ### Changed
 
-- **`TOOL_PACKS=all|core,pid`** (default `all`) advertises only the vertical
-  packs a client uses; `core` is always on and unknown names are ignored
-  with a warning. It composes with `TOOL_PROFILE=lean` (which now carries
-  `pid_symbol_insert`, `pid_line_draw` and `pid_graph`: 50 tools, 47 with
-  `TOOL_PACKS=core`) and `ENABLE_3D`; `system_about` reports `tool_packs`.
-  Measured idle cost: 161 tools / 44,930 tokens by default, 152 / 41,420
-  with `TOOL_PACKS=core`.
+- Three tool groups appear in `system_about` and `docs/tool-inventory.json`:
+  `styles` (10), `page_setup` (6), `environment` (22) — 204 tools in 23 groups;
+  `LEAN_TOOL_NAMES` 55; capability keys `dwgprops`, `dwt_write`,
+  `live_application`, `preferences`, `interactive_prompt`, `registry_sysvar`
+  and the `documents`, `named_views`, `ucs` and `layer_states`
+  (`mode: "xrecord"`) features in both maps.
+- **`TOOL_PACKS=all|core,pid,settings`** (default `all`) advertises only the
+  vertical packs a client uses; `core` is always on and unknown names are
+  ignored with a warning. It composes with `TOOL_PROFILE=lean` (which now
+  carries `pid_symbol_insert`, `pid_line_draw` and `pid_graph`, and the five
+  settings essentials: 55 tools, 52 with `TOOL_PACKS=core`) and `ENABLE_3D`;
+  `system_about` reports `tool_packs`. Measured idle cost: 199 tools /
+  59,315 tokens by default, 190 / 55,593 with `TOOL_PACKS=core,settings`,
+  168 / 48,825 with `TOOL_PACKS=core`, 55 / 16,360 lean, 2 / 356 in
+  discovery mode.
 - `PID_LAYERS` (`drawing_apply_iso_layers("pid")`) gains `PROCESS-LINE-TEXT`;
   `drawing_plan` / `drawing_preflight` report `LAYER_SET_INTENT_MISMATCH`
   when a P&ID intent is planned onto a non-`pid` layer set.
@@ -134,11 +222,11 @@ surface. Spec: `docs/superpowers/specs/2026-09-15-v1.6-pid-design.md`.
   primitives.
 - `CritiqueFocus` grows by the six `pid_*` values; benchmark matrix v4
   (`--matrix v3` / `v2` reproduce the earlier sets); correctness suite 29.
-- README release snapshot: 166 tools · 8 resources · 5 prompts · 2423
-  collected tests. The collected-test figure is this machine's; CI has not
-  run on this tree yet, and the pre-existing 1369-vs-1363 drift between the
-  README and Linux collection predates the track and is superseded by the
-  new figure.
+- README release snapshot: 204 tools · 8 resources · 5 prompts · 3284
+  collected tests (this machine; it was 166 · 2423 after track A). CI has
+  not run on this tree yet, and the pre-existing 1369-vs-1363 drift between
+  the README and Linux collection predates both tracks and is superseded by
+  the new figure.
 
 ### Live COM smoke
 

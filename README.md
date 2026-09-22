@@ -33,15 +33,16 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 
 ## Why this exists
 
-**A big MCP server is expensive to be connected to.** The full catalog costs a client **44,930 tokens** before it has asked for anything. Discovery mode replaces it with two tools and costs **356**.
+**A big MCP server is expensive to be connected to.** The full catalog costs a client **59,315 tokens** before it has asked for anything. Discovery mode replaces it with two tools and costs **356**.
 
-**A drafter searches for `FILLET`, not `entity_fillet`.** Those command names appeared in no tool name or description — `df = 0` against a stock index, not badly ranked but *absent*. The fix was data: an authored corpus of **162 AutoCAD command names and 731 synonym phrases** covering all 166 tools. A test refuses to let a tool exist without one.
+**A drafter searches for `FILLET`, not `entity_fillet`.** Those command names appeared in no tool name or description — `df = 0` against a stock index, not badly ranked but *absent*. The fix was data: an authored corpus of **186 AutoCAD command names and 933 synonym phrases** covering all 204 tools. A test refuses to let a tool exist without one.
 
 | Advertised surface | Tools seen | Idle cost |
 |---|---:|---:|
-| `TOOL_PROFILE=full` (default) | 161 | 44,930 tokens |
-| `TOOL_PACKS=core` (full profile) | 152 | 41,420 tokens |
-| `TOOL_PROFILE=lean` | 50 | 14,007 tokens |
+| `TOOL_PROFILE=full` (default) | 199 | 59,315 tokens |
+| `TOOL_PACKS=core,settings` (full profile) | 190 | 55,593 tokens |
+| `TOOL_PACKS=core` (full profile) | 168 | 48,825 tokens |
+| `TOOL_PROFILE=lean` | 55 | 16,360 tokens |
 | `DISCOVERY_MODE=search` | 2 | **356 tokens** |
 
 > [!NOTE]
@@ -101,11 +102,12 @@ Claude Desktop, Cursor, or any stdio MCP host. For HTTP: `autocad-mcp --transpor
 | Annotation | ISO 129 toleranced dimensions, ISO 286 fits (`fit="H7"`), TABLE, MLEADER, GD&T frames and datums (ISO 1101) |
 | Engineering generators | involute gears (front + section A-A), DIN 6885 keyed bores, ISO A3 title block |
 | P&ID | catalogue blocks with ports and tags (ISO 10628-2 / ISA-5.1), port-to-port lines with ISA-5.1 classes and line numbers, `pid_graph` reads any P&ID back with confidence, instrument index / line list / equipment list, `pid_from_spec` one-call sheets |
-| Discovery | `search_tools` ranked over an AutoCAD command and synonym corpus — `FILLET`, `BPOLY`, `QSELECT`, `WBLOCK`, `OVERKILL`, `CHSPACE` each rank **#1** of the 161-tool advertised catalog |
+| Styles & standards | ISO-25 / ANSI dimension styles, ISOCP / ROMANS text styles, ISO / ANSI leader styles from authored presets; `drawing_apply_standard("iso")` sets all of it plus units and the `mech` layers in one call; `changed` reports only what moved |
+| Discovery | `search_tools` ranked over an AutoCAD command and synonym corpus — `FILLET`, `BPOLY`, `QSELECT`, `WBLOCK`, `OVERKILL`, `CHSPACE` each rank **#1** of the 199-tool advertised catalog |
 | Batching | `cad_batch` runs a step list in one round trip; `fields=` projects 11 result-heavy tools |
 | Paper space | tab lifecycle, viewports, `entity_change_space` (CHSPACE), `page_setup_apply` (ISO 216 / ANSI Y14.1 paper, ctb, scale, device — on both engines), `batch_plot` with every sheet size read back from its PDF's `/MediaBox`, `drawing_export_pdf(layout=…)` |
-| Templates | five bundled templates built by the server's own tools and pinned reproducible (`iso_a3_mech`, `iso_a1_arch`, `iso_a3_pid`, `ansi_b_mech`, `ansi_d_arch`) — `drawing_new(template="iso_a3_mech")`, `drawing_template_list`, `drawing_template_save` (.dwt on live AutoCAD, `dwt_write` refused headlessly) |
-| Environment | `document_list/activate/close` — several drawings open at once on both engines; portable layer states (`ACADMCP_LAYERSTATES` XRECORDs — in the file, not in AutoCAD's Layer States Manager); named views; UCS stored and made current *(tool coordinates stay WCS)*; live only: launch/attach, a preference whitelist (`OPTIONS`), and operator prompts — pick a point, select on screen, a command-line message — where ESC is `cancelled`, not an error |
+| Page setup & templates | ISO 216 / ANSI Y14.1 sheets, ctb catalog, `batch_plot` verified by the PDF's own `/MediaBox`, five bundled templates built by the server's own tools and pinned reproducible (`drawing_new(template="iso_a3_mech")`, `iso_a1_arch`, `iso_a3_pid`, `ansi_b_mech`, `ansi_d_arch`), save any drawing as a template (`.dwt` on live AutoCAD, `dwt_write` refused headlessly) |
+| Environment | several open documents headlessly, portable layer states (`ACADMCP_LAYERSTATES` XRECORDs — in the file, not in AutoCAD's Layer States Manager), named views, UCS *(tool coordinates stay WCS)*, a system-variable catalog with ranges, document properties, and on a live seat: launch/attach, preferences, an operator prompt / pick / select — where ESC is `cancelled`, not an error |
 | Selection | window vs crossing stated back to the caller; a polygon tested against its own shape, not its bounding box |
 | Boundaries | `boundary_trace` (BOUNDARY/BPOLY) chains loose edges into one closed polyline, arcs kept as bulges *(headless)* |
 | Measurement | `analysis_measure_entity` measures what is *in* the drawing, by handle |
@@ -171,7 +173,7 @@ An earlier matrix scored this server 10/10, which carried no information: every 
 | Task | Verified against |
 |---|---|
 | `tool_discovery` | six AutoCAD command names, each ranking #1 |
-| `token_budget` | 44,930 → 356 tokens, against a ceiling fixed in advance |
+| `token_budget` | 59,315 → 356 tokens, against a ceiling fixed in advance |
 | `hatch_islands` | 300 filled with the island, 400 ignoring it |
 | `selection_filter` | window 1, crossing 2, bounding box 3, polygon 1 |
 | `measure_from_handle` | 139.2699 against the 100.0 a vertex shoelace gives |
@@ -206,6 +208,14 @@ A page that only lists strengths is a page that has not been measured.
 
 **Same-file only, DXF headlessly.** Off-page connectors link within one drawing; links across files are not resolved. The headless engine reads DXF; a DWG P&ID is read through the live backend. No DEXPI/Proteus export and no ISA-5.2 binary-logic symbols in this release, recorded in the spec so nobody re-derives the cut.
 
+### Known limitations of the settings track
+
+**Layer states are ours.** `layer_state_save` writes a portable snapshot into an `ACADMCP_LAYERSTATES` XRECORD. It survives save/reopen on both engines and travels with the DWG/DXF; it is **not** an AutoCAD `LAYERSTATE` and does not appear in the Layer States Manager. `system_capabilities` reports `layer_states` as `mode: "xrecord"` for that reason.
+
+**Six of the 22 environment tools need a live seat.** Preferences, launching, the operator prompts, and the five summary fields of document properties are refused headlessly with `preferences` / `dwgprops` / `live_application` / `interactive_prompt` — a refusal, not a stub. A `.dwt` template is the same case (`dwt_write`): a `.dwt` is a DWG container, so headlessly the template is saved as DXF. `mleaderstyle_create` is *not* such a case — ActiveX has no MLeaderStyle collection, but the `ACAD_MLEADERSTYLE` dictionary holds full `IAcadMLeaderStyle` objects, so both engines create leader styles.
+
+**A headless dimension does not re-render.** `dimstyle_modify` reports `dimensions_using_style` and `rerender_required: true` on the ezdxf engine; the DIMENSION keeps its rendered block until it is redrawn. AutoCAD regenerates on the next regen.
+
 ## Configuration
 
 Nothing loads a `.env` file — export these, or set them in your MCP client's `env` block.
@@ -217,7 +227,7 @@ Nothing loads a `.env` file — export these, or set them in your MCP client's `
 |---|---|---|
 | `AUTOCAD_MCP_BACKEND` | `auto` | `auto`, `com`, or `ezdxf` |
 | `CAD_PROGID` | `AutoCAD.Application` | COM ProgID the live backend attaches to |
-| `TOOL_PROFILE` | `full` | `lean` (50 curated tools) or `full` |
+| `TOOL_PROFILE` | `full` | `lean` (55 curated tools, 52 with `TOOL_PACKS=core`) or `full` |
 | `TOOL_PACKS` | `all` | Vertical packs to advertise: `core,pid,settings` (`core` always on) |
 | `DISCOVERY_MODE` | `off` | `search` replaces the catalog with `search_tools` + `call_tool` |
 | `ENABLE_3D` | `false` | Expose the opt-in `solid_*` tools (COM) |
