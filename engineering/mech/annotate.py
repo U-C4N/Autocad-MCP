@@ -45,8 +45,10 @@ weld annotation.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
+from engineering.layers import ENGINEERING_LAYERS
 from engineering.mech.primitives import (
     ROLE_LAYER,
     Arc,
@@ -73,6 +75,7 @@ __all__ = [
     "draw_annotation_prims",
     "draw_surface_texture",
     "draw_weld_symbol",
+    "ensure_annotation_layers",
     "leader_prims",
     "surface_texture_prims",
     "symbol_proportions",
@@ -312,8 +315,18 @@ def weld_symbol_prims(
     point a leader attaches to. The continuous reference line runs in +X; the
     dashed identification line runs parallel below it and is omitted for a
     symmetrical weld (`side="both"`), which ISO 2553:2019 permits. The
-    arrow-side symbol stands on the reference line, the other-side symbol
-    hangs below the identification line.
+    arrow-side symbol stands on the reference line and the other-side symbol
+    hangs below the identification line - except for a symmetrical weld, where
+    ISO 2553 places the two elementary symbols back-to-back on the continuous
+    reference line itself (an X butt weld is one symbol, not two detached
+    halves), so the lower one hangs from y = 0 and the pair is symmetric about
+    the reference line.
+
+    The size and the length/pitch are written beside the symbol they belong
+    to - size to its left, length to its right - which for an other-side weld
+    means beside the identification line, not above the reference line: a
+    throat dimension written on the arrow side of a joint with no arrow-side
+    weld tells a welder the wrong thing.
     """
     if kind not in WELD_KINDS:
         raise ValueError(
@@ -360,15 +373,24 @@ def weld_symbol_prims(
             prims.append(Line((x, ident_y), (x_end, ident_y), "dim"))
             x = x_end + gap
 
+    # A symmetrical weld has no identification line, so its other-side symbol
+    # stands on the reference line; otherwise it stands on the identification
+    # line. `sense=-1` then grows it downward from that baseline.
+    other_baseline = 0.0 if side == "both" else ident_y
     if side in ("arrow", "both"):
         prims.extend(_elementary_prims(kind, x_symbol, 0.0, 1.0, h))
     if side in ("other", "both"):
-        prims.extend(_elementary_prims(kind, x_symbol, ident_y, -1.0, h))
+        prims.extend(_elementary_prims(kind, x_symbol, other_baseline, -1.0, h))
 
+    # The dimensions sit beside their own symbol: 0.25h clear of the line the
+    # symbol stands on, on the symbol's side of it. For "both" that is the
+    # arrow-side symbol, which is where ISO 2553 writes a symmetrical weld's
+    # single set of dimensions.
+    text_y = ident_y - 1.25 * h if side == "other" else 0.25 * h
     if size_text:
-        prims.append(Text((x_size, 0.25 * h), size_text, h))
+        prims.append(Text((x_size, text_y), size_text, h))
     if right_text:
-        prims.append(Text((x_right, 0.25 * h), right_text, h))
+        prims.append(Text((x_right, text_y), right_text, h))
 
     if field_weld:
         top = FLAG_POLE_FACTOR * h
@@ -442,6 +464,48 @@ def leader_prims(
     )
 
 
+#: The layer definitions `ROLE_LAYER` names, so a layer this module creates
+#: gets the colour/linetype/lineweight `drawing_new` would have given it
+#: instead of a bare white Continuous one.
+_LAYER_DEFS: dict[str, tuple[int, str, float]] = {
+    name: (color, linetype, lineweight)
+    for name, color, linetype, lineweight, _desc in ENGINEERING_LAYERS
+}
+
+
+async def ensure_annotation_layers(
+    backend: AutoCADBackend, names: Iterable[str]
+) -> tuple[str, ...]:
+    """Create whichever of `names` the drawing does not have yet; return those.
+
+    MEASURED on AutoCAD 2026: assigning `entity.Layer = "DIM"` on a drawing
+    whose layer table is `['0']` raises `-0x7ffdfff7 ('Key not found')` -
+    ActiveX will not create the layer for you. The headless engine will
+    (`EzdxfBackend._apply_attrs` calls `doc.layers.add`), so without this step
+    the same annotation silently succeeds headless and dies live on the first
+    entity, having already written the ones before it. `drawing_open` runs no
+    bootstrap, so annotating a foreign drawing - the case the spec names - is
+    exactly when the layer is missing. Ensuring every target layer up front,
+    before any entity is created, is what makes the two engines agree and what
+    keeps a refusal from leaving half a symbol behind.
+    """
+    wanted: list[str] = []
+    for name in names:
+        if name not in wanted:
+            wanted.append(name)
+    if not wanted:
+        return ()
+    existing = {lyr.name.lower() for lyr in await backend.layer_list()}
+    created: list[str] = []
+    for name in wanted:
+        if name.lower() in existing:
+            continue
+        color, linetype, lineweight = _LAYER_DEFS.get(name, (7, "Continuous", 0.25))
+        await backend.layer_create(name=name, color=color, linetype=linetype, lineweight=lineweight)
+        created.append(name)
+    return tuple(created)
+
+
 async def draw_annotation_prims(
     backend: AutoCADBackend,
     prims,
@@ -454,7 +518,10 @@ async def draw_annotation_prims(
 
     Rotates about the symbol origin first, then translates to `at`, so every
     coordinate that reaches the backend is already WCS. Each primitive lands on
-    `ROLE_LAYER[role]` unless `layer` overrides it.
+    `ROLE_LAYER[role]` unless `layer` overrides it, and every target layer is
+    created first (`ensure_annotation_layers`) - live AutoCAD refuses an
+    assignment to a layer that is not in the table, and a foreign drawing that
+    was merely opened has no engineering layers at all.
     """
     placed = tuple(prims)
     for prim in placed:
@@ -467,9 +534,11 @@ async def draw_annotation_prims(
         placed = rotate(placed, float(rotation))
     placed = translate(placed, float(at[0]), float(at[1]))
 
+    targets = [layer or ROLE_LAYER[prim.role] for prim in placed]
+    created = await ensure_annotation_layers(backend, targets)
+
     handles: list[str] = []
-    for prim in placed:
-        target = layer or ROLE_LAYER[prim.role]
+    for prim, target in zip(placed, targets, strict=True):
         if isinstance(prim, Line):
             info = await backend.entity_create_line(
                 prim.p1[0], prim.p1[1], prim.p2[0], prim.p2[1], 0.0, 0.0, target
@@ -496,7 +565,12 @@ async def draw_annotation_prims(
                 prim.text, prim.at[0], prim.at[1], prim.height, prim.rotation, target
             )
         handles.append(info.handle)
-    return {"ok": True, "handles": handles, "count": len(handles)}
+    return {
+        "ok": True,
+        "handles": handles,
+        "count": len(handles),
+        "layers_created": list(created),
+    }
 
 
 async def draw_surface_texture(
@@ -538,6 +612,9 @@ async def draw_surface_texture(
         drawn = await draw_annotation_prims(backend, leader, layer=layer)
         result["handles"].extend(drawn["handles"])
         result["count"] = len(result["handles"])
+        result["layers_created"].extend(
+            name for name in drawn["layers_created"] if name not in result["layers_created"]
+        )
     result["standard"] = standard
     return result
 
@@ -581,6 +658,9 @@ async def draw_weld_symbol(
         drawn = await draw_annotation_prims(backend, leader, layer=layer)
         result["handles"].extend(drawn["handles"])
         result["count"] = len(result["handles"])
+        result["layers_created"].extend(
+            name for name in drawn["layers_created"] if name not in result["layers_created"]
+        )
     result["kind"] = kind
     result["side"] = side
     return result

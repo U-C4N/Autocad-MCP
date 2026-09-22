@@ -8,6 +8,7 @@ document through the `backend` fixture. No screenshots anywhere.
 from __future__ import annotations
 
 import math
+import types
 
 import pytest
 
@@ -199,16 +200,38 @@ async def test_the_reference_line_comes_first_and_the_identification_line_is_das
     assert dashes[-1].p2[0] <= length + EPS
 
 
-async def test_a_symmetrical_weld_omits_the_identification_line():
+async def test_a_symmetrical_weld_meets_back_to_back_on_the_reference_line():
+    """ISO 2553: no identification line, and the two elementary symbols share it.
+
+    The earlier version of this test asserted the lower V apex at -0.4h, i.e.
+    on the (omitted) identification line, which drew a double-V butt weld as
+    two detached halves that were not even symmetric about the reference line.
+    """
     prims = weld_symbol_prims(kind="v", side="both", height=3.5)
     assert not [
         p for p in prims if isinstance(p, Line) and p.p1[1] == pytest.approx(-0.4 * 3.5, abs=EPS)
     ]
-    # One V above the reference line, one V below the identification offset.
+    # One V above the reference line, one below it, both standing on y = 0.
     vees = [p for p in prims if isinstance(p, Poly) and len(p.points) == 3 and not p.closed]
     assert len(vees) == 2
-    assert vees[0].points[1][1] == pytest.approx(0.0, abs=EPS)
-    assert vees[1].points[1][1] == pytest.approx(-0.4 * 3.5, abs=EPS)
+    upper, lower = vees
+    assert upper.points[1][1] == pytest.approx(0.0, abs=EPS)
+    assert lower.points[1][1] == pytest.approx(0.0, abs=EPS)
+    # Mirror images of each other about y = 0, same x.
+    assert _flat(lower.points) == pytest.approx(
+        tuple(v if i % 2 == 0 else -v for i, v in enumerate(_flat(upper.points))), abs=EPS
+    )
+    ys = [y for _x, y in upper.points + lower.points]
+    assert (min(ys), max(ys)) == pytest.approx((-3.5, 3.5), abs=EPS)
+
+
+async def test_a_symmetrical_fillet_weld_is_the_double_fillet_not_two_halves():
+    prims = weld_symbol_prims(kind="fillet", side="both", height=3.5)
+    triangles = [p for p in prims if isinstance(p, Poly) and p.closed]
+    assert len(triangles) == 2
+    x0 = triangles[0].points[0][0]
+    assert _flat(triangles[0].points) == pytest.approx((x0, 0.0, x0, 3.5, x0 + 3.5, 0.0), abs=EPS)
+    assert _flat(triangles[1].points) == pytest.approx((x0, 0.0, x0, -3.5, x0 + 3.5, 0.0), abs=EPS)
 
 
 async def test_the_fillet_triangle_stands_on_the_line_with_its_leg_on_the_left():
@@ -226,6 +249,45 @@ async def test_the_other_side_symbol_hangs_below_the_identification_line():
     assert _flat(triangle.points) == pytest.approx(
         (x0, -1.4, x0, -1.4 - 3.5, x0 + 3.5, -1.4), abs=EPS
     )
+
+
+async def test_other_side_dimensions_are_written_beside_the_other_side_symbol():
+    """ISO 2553 writes the size left of the symbol and the length right of it.
+
+    For an other-side weld the symbol hangs from the identification line, so
+    both texts belong there too. Written above the reference line instead,
+    `a6` sits exactly where an arrow-side throat dimension sits - on a joint
+    that has no arrow-side weld.
+    """
+    prims = weld_symbol_prims(kind="fillet", side="other", size=6, length=50, height=3.5)
+    triangle = [p for p in prims if isinstance(p, Poly) and p.closed][0]
+    x_symbol = triangle.points[0][0]
+    texts = [p for p in prims if isinstance(p, Text)]
+    assert [t.text for t in texts] == ["a6", "50"]
+    # Beside the symbol: size to its left, length to its right.
+    assert texts[0].at[0] < x_symbol
+    assert texts[1].at[0] > x_symbol + 3.5
+    # Below the reference line, 0.25h clear of the identification line, so the
+    # whole text body lies between the identification line and the symbol's
+    # far edge - never above y = 0.
+    ident_y = -0.4 * 3.5
+    for t in texts:
+        assert t.at[1] == pytest.approx(ident_y - 1.25 * 3.5, abs=EPS)
+        assert t.at[1] + t.height < 0.0
+    # The arrow side is unchanged: its dimensions stay above the reference line.
+    arrow = [
+        p
+        for p in weld_symbol_prims(kind="fillet", side="arrow", size=6, length=50, height=3.5)
+        if isinstance(p, Text)
+    ]
+    assert all(t.at[1] == pytest.approx(0.25 * 3.5, abs=EPS) for t in arrow)
+    # A symmetrical weld carries one set, beside its arrow-side symbol.
+    both = [
+        p
+        for p in weld_symbol_prims(kind="fillet", side="both", size=6, length=50, height=3.5)
+        if isinstance(p, Text)
+    ]
+    assert all(t.at[1] == pytest.approx(0.25 * 3.5, abs=EPS) for t in both)
 
 
 async def test_the_u_symbol_is_a_half_circle_between_two_uprights():
@@ -302,6 +364,87 @@ from engineering.mech.annotate import (  # noqa: E402 - grouped with its own tes
     leader_prims,
 )
 from engineering.mech.primitives import ROLE_LAYER  # noqa: E402
+
+
+class _StrictLayerBackend:
+    """A backend that refuses an entity on a layer the drawing does not have.
+
+    MEASURED on AutoCAD 2026: `Documents.Add()` gives a layer table of `['0']`,
+    and `entity.Layer = "DIM"` on it raises
+    `AutoCAD COM error (-0x7ffdfff7) ('Key not found')` - live ActiveX never
+    auto-creates the layer, while `EzdxfBackend._apply_attrs` does. This fake
+    models that measured refusal (and only it: it has no member the real
+    `AutoCADBackend` lacks), so the headless suite fails the way the live
+    engine fails. Before the fix it recorded one LINE and then raised; the
+    drawing kept that orphan, which is the partial write the fix removes.
+    """
+
+    def __init__(self, layers=("0",)):
+        self.layers = {name.lower(): name for name in layers}
+        self.calls: list[tuple] = []
+        self._next = 0
+
+    async def layer_list(self):
+        self.calls.append(("layer_list",))
+        return [types.SimpleNamespace(name=name) for name in self.layers.values()]
+
+    async def layer_create(self, name, color=7, linetype="Continuous", lineweight=-3):
+        self.calls.append(("layer_create", name, color, linetype, lineweight))
+        self.layers[name.lower()] = name
+        return types.SimpleNamespace(name=name)
+
+    def _entity(self, kind, layer):
+        if layer is not None and layer.lower() not in self.layers:
+            raise RuntimeError(f"AutoCAD COM error (-0x7ffdfff7) ('Key not found'): {layer}")
+        self.calls.append((kind, layer))
+        self._next += 1
+        return types.SimpleNamespace(handle=f"{self._next:X}")
+
+    async def entity_create_line(self, x1, y1, x2, y2, z1=0.0, z2=0.0, layer=None, **kw):
+        return self._entity("LINE", layer)
+
+    async def entity_create_circle(self, cx, cy, radius, layer=None, **kw):
+        return self._entity("CIRCLE", layer)
+
+    async def entity_create_arc(self, cx, cy, radius, start_angle, end_angle, layer=None, **kw):
+        return self._entity("ARC", layer)
+
+    async def entity_create_polyline(self, points, closed=False, layer=None, **kw):
+        return self._entity("LWPOLYLINE", layer)
+
+    async def entity_create_text(self, text, x, y, height=2.5, rotation=0.0, layer=None, **kw):
+        return self._entity("TEXT", layer)
+
+
+async def test_every_target_layer_is_created_before_the_first_entity():
+    backend = _StrictLayerBackend()
+    result = await draw_surface_texture(
+        backend, at=(0.0, 0.0), ra=3.2, machining="required", lay="perpendicular", allowance=0.5
+    )
+    assert result["ok"] is True and result["count"] == 6
+    assert result["layers_created"] == [ROLE_LAYER["dim"], ROLE_LAYER["text"]]
+    # Nothing is drawn until every layer the symbol needs exists.
+    first_entity = next(
+        i
+        for i, call in enumerate(backend.calls)
+        if call[0] != "layer_list" and call[0] != "layer_create"
+    )
+    assert {call[1] for call in backend.calls[:first_entity] if call[0] == "layer_create"} == {
+        ROLE_LAYER["dim"],
+        ROLE_LAYER["text"],
+    }
+    # Created with their ENGINEERING_LAYERS definition, not a bare default.
+    dim_create = next(c for c in backend.calls if c[0] == "layer_create" and c[1] == "DIM")
+    assert dim_create[2:] == (2, "Continuous", 0.18)
+
+
+async def test_a_drawing_that_already_has_the_layers_is_not_rewritten():
+    backend = _StrictLayerBackend(layers=("0", "dim", "TEXT"))
+    result = await draw_weld_symbol(
+        backend, at=(0.0, 0.0), kind="fillet", size=5, length=50, leader_to=(-10.0, -10.0)
+    )
+    assert result["layers_created"] == []
+    assert not [c for c in backend.calls if c[0] == "layer_create"]
 
 
 async def _types_and_layers(backend, handles):
