@@ -54,11 +54,16 @@ class RefsContract(ABC):
         """One of :data:`XREF_ACTIONS` on one external reference.
 
         ``list`` ignores `name` and returns
-        ``{ok, xrefs: [{name, path, kind, inserts}], backend}``. ``path``
-        rewrites the saved path to `new_path` and returns the new one.
-        ``detach`` removes every insert of the xref and its definition, and
-        reports ``inserts_removed``. ``reload`` and ``bind`` need a live seat's
-        xref manager: the headless engine raises
+        ``{ok, xrefs: [{name, path, kind, inserts}], backend}``. ``kind`` and
+        ``inserts`` are ``None`` on a live seat -- ActiveX's ``IAcadBlock``
+        carries no overlay indicator and no per-xref insert count (measured on
+        the registered type library), and a constant would read as measured.
+        ``path`` rewrites the saved path to `new_path` and returns the new one.
+        ``detach`` removes every insert of the xref -- in *every* entity space,
+        model space and each paper-space layout, because an insert left behind
+        with no block definition is a corrupt drawing -- then the definition,
+        and reports ``inserts_removed``. ``inserts`` counts the same set.
+        ``reload`` and ``bind`` need a live seat's xref manager: the headless engine raises
         ``UnsupportedCapabilityError("xref_live", ...)`` rather than pretending,
         which is why the key exists; ``list``/``detach``/``path`` are *not*
         behind it.

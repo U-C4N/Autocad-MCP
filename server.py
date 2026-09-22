@@ -8635,8 +8635,11 @@ async def xref_manage(
     `capability: "xref_live"` rather than pretended, and the refusal says which
     engine does them. Other refusals: an action outside the five, an unknown
     xref name, a 'path' action with no `new_path`. On the live engine a listed
-    row's `inserts` is null — ActiveX reports no per-xref insert count and this
-    server does not invent one.
+    row's `inserts` and `kind` are both null — ActiveX's block interface
+    carries neither a per-xref insert count nor an overlay indicator, and this
+    server does not invent them. Headlessly both are measured: `inserts`
+    counts every insert in the drawing, model space and paper space alike, and
+    `detach` removes exactly those.
     """
     await ctx.info(f"Xref {action} {name or '(all)'}")
     validated = str(validate_path(new_path)) if new_path else None

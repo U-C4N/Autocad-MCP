@@ -156,6 +156,69 @@ async def test_path_rewrites_the_saved_path_and_detach_removes_the_block(
 
 
 @pytest.mark.asyncio
+async def test_an_xref_shown_on_a_sheet_is_counted_and_detached_with_it(backend, external):
+    """Model space is not the drawing.
+
+    An xref is most often *shown* on a paper-space sheet. Counting or deleting
+    over `doc.modelspace()` alone reported 1 insert where the drawing held 2
+    and then removed the definition with `safe=False`, leaving the sheet's
+    INSERT with no BLOCK behind it -- which ezdxf's own recover reports as
+    `FIX 103 UNDEFINED_BLOCK` and throws the geometry away.
+    """
+    await backend.xref_attach(external, (0.0, 0.0), 1.0, 0.0, "attach")
+    doc = backend._doc
+    doc.layout("Layout1").add_blockref("BASE", (10, 10))
+
+    listing = await backend.xref_manage("", "list", None)
+    assert listing["xrefs"][0]["inserts"] == 2
+
+    detached = await backend.xref_manage("BASE", "detach", None)
+    assert detached["inserts_removed"] == 2
+    assert "BASE" not in doc.blocks
+    assert [e for e in doc.layout("Layout1") if e.dxftype() == "INSERT"] == []
+
+
+@pytest.mark.asyncio
+async def test_detach_leaves_a_drawing_that_survives_a_round_trip(backend, external, tmp_path):
+    """The evidence a caller actually cares about: the saved file audits clean."""
+    import ezdxf.recover
+
+    await backend.xref_attach(external, (0.0, 0.0), 1.0, 0.0, "attach")
+    backend._doc.layout("Layout1").add_blockref("BASE", (10, 10))
+    await backend.xref_manage("BASE", "detach", None)
+
+    out = tmp_path / "detached.dxf"
+    backend._doc.saveas(out)
+    _, auditor = ezdxf.recover.readfile(str(out))
+    assert [f.message for f in auditor.fixes] == []
+    assert [e.message for e in auditor.errors] == []
+
+
+@pytest.mark.asyncio
+async def test_the_definition_is_dropped_with_the_in_use_check_on(backend, external):
+    """`safe=True` is the seatbelt, not decoration.
+
+    The broken version passed `safe=False`, the flag that *suppresses* the
+    in-use check, so a missed insert became a corrupt file instead of an
+    error. This pins the check: with the model-space insert gone but the
+    sheet's still there -- exactly the state the old victim scan produced --
+    `delete_block` refuses.
+    """
+    from ezdxf.lldxf.const import DXFBlockInUseError
+
+    await backend.xref_attach(external, (0.0, 0.0), 1.0, 0.0, "attach")
+    doc = backend._doc
+    doc.layout("Layout1").add_blockref("BASE", (10, 10))
+    msp = doc.modelspace()
+    for entity in [e for e in msp if e.dxftype() == "INSERT"]:
+        msp.delete_entity(entity)
+
+    with pytest.raises(DXFBlockInUseError):
+        doc.blocks.delete_block("BASE", safe=True)
+    assert "BASE" in doc.blocks
+
+
+@pytest.mark.asyncio
 async def test_reload_and_bind_refuse_headlessly_with_the_xref_live_key(backend, external):
     await backend.xref_attach(external, (0.0, 0.0), 1.0, 0.0, "attach")
     for action in ("reload", "bind"):
@@ -355,6 +418,74 @@ async def test_com_manage_uses_reload_bind_detach_on_the_block(monkeypatch):
     listing = await b.xref_manage("", "list", None)
     assert listing["xrefs"][0]["name"] == "BASE"
     assert listing["xrefs"][0]["path"] == "C:/refs/BASE.dwg"
+
+
+@pytest.mark.asyncio
+async def test_com_list_reports_kind_as_unknown_rather_than_inventing_attach(monkeypatch):
+    """IAcadBlock has no overlay indicator.
+
+    Measured from the seat's own registered type library (acax25*.tlb,
+    "AutoCAD 2025 Type Library", installed with AutoCAD 2026): the xref
+    members are IsXRef, Path, Name, Reload, Unload, Bind, Detach,
+    XRefDatabase -- nothing says attach-vs-overlay. The fake therefore has no
+    such member either (a fake that models one enshrines the bug), and the
+    honest row says `None`, the way `inserts` already does.
+    """
+    import backends.com_backend as cb
+
+    doc = _ComDoc([_Block("BASE", path="C:/refs/BASE.dwg")])
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
+    row = (await _com_backend().xref_manage("", "list", None))["xrefs"][0]
+    assert row["kind"] is None
+    assert row["inserts"] is None
+    for invented in ("IsOverlay", "Overlay", "XRefType"):
+        assert not hasattr(doc.Blocks.Item("BASE"), invented)
+
+
+@pytest.mark.asyncio
+async def test_com_attach_refuses_a_name_the_drawing_already_holds(monkeypatch, external):
+    """The refusal the contract and the tool docstring both promise.
+
+    It has to be on this engine too, and it has to fire *before*
+    AttachExternalReference is dispatched -- a second attach under a held name
+    re-points or half-writes the definition while the payload still claims the
+    new path was attached.
+    """
+    import backends.com_backend as cb
+
+    doc = _ComDoc([_Block("BASE", path="C:/other/BASE.dwg")])
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
+    with pytest.raises(ValueError) as excinfo:
+        await _com_backend().xref_attach(external, (0.0, 0.0), 1.0, 0.0, "attach")
+    assert "BASE" in str(excinfo.value)
+    assert "detach" in str(excinfo.value)
+    assert doc.ModelSpace.attached == []
+
+
+@pytest.mark.asyncio
+async def test_com_attach_refuses_a_plain_block_of_the_same_name_case_insensitively(
+    monkeypatch, external
+):
+    """AutoCAD symbol-table names are case-insensitive and a collision is a
+    collision whether or not the block in the way is itself an xref."""
+    import backends.com_backend as cb
+
+    doc = _ComDoc([_Block("Base", is_xref=False)])
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
+    with pytest.raises(ValueError):
+        await _com_backend().xref_attach(external, (0.0, 0.0), 1.0, 0.0, "attach")
+    assert doc.ModelSpace.attached == []
+
+
+@pytest.mark.asyncio
+async def test_com_attach_still_works_when_no_block_of_that_name_exists(monkeypatch, external):
+    import backends.com_backend as cb
+
+    doc = _ComDoc([_Block("OTHER", is_xref=True)])
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
+    result = await _com_backend().xref_attach(external, (0.0, 0.0), 1.0, 0.0, "attach")
+    assert result["ok"] is True and result["name"] == "BASE"
+    assert len(doc.ModelSpace.attached) == 1
 
 
 @pytest.mark.asyncio

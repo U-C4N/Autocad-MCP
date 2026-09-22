@@ -394,6 +394,24 @@ def _require_block_defined(doc, name):
     return block
 
 
+def _block_names(doc) -> set[str]:
+    """Every block name the drawing holds, lower-cased.
+
+    ``doc.Blocks.Count`` / ``doc.Blocks.Item(index)`` / ``block.Name`` are the
+    measured members ``xref_manage`` already walks. The set is lower-cased
+    because AutoCAD symbol-table names are case-insensitive, so ``BASE`` and
+    ``Base`` are one block and re-attaching under either name hits the same
+    definition.
+    """
+    names: set[str] = set()
+    for index in range(doc.Blocks.Count):
+        try:
+            names.add(str(doc.Blocks.Item(index).Name).lower())
+        except Exception:  # noqa: BLE001 - a block that cannot name itself cannot collide
+            continue
+    return names
+
+
 _BUILTIN_LINETYPES = {"continuous", "bylayer", "byblock"}
 
 #: `drawing_properties_*` field → `IAcadSummaryInfo` property.
@@ -1882,6 +1900,17 @@ class ComBackend(AutoCADBackend):
 
         def _sync():
             doc = _acad_doc()
+            # The contract and the tool docstring both promise this refusal,
+            # and the ezdxf engine has always had it (`if name in doc.blocks`).
+            # Without it a second attach under a name the drawing already holds
+            # either re-points the existing definition or fails inside AutoCAD,
+            # while the payload still claims the new `path` was attached.
+            # Block names are case-insensitive in AutoCAD, so the comparison is.
+            if name.lower() in _block_names(doc):
+                raise ValueError(
+                    f"xref_attach: the drawing already holds a block named {name!r}; "
+                    "detach it first with xref_manage(action='detach')"
+                )
             reference = doc.ModelSpace.AttachExternalReference(
                 str(source),
                 name,
@@ -1929,8 +1958,17 @@ class ComBackend(AutoCADBackend):
                 return found
 
             if action == "list":
+                # `kind` is null, not "attach". Measured from the seat's own
+                # registered type library (acax25*.tlb, "AutoCAD 2025 Type
+                # Library", shipped with AutoCAD 2026): IAcadBlock's xref
+                # members are exactly IsXRef, Path, Name, Reload, Unload,
+                # Bind, Detach, XRefDatabase -- there is no overlay indicator
+                # anywhere on the interface. An overlay (which xref_attach
+                # itself creates, kind='overlay' -> bOverlay=True) is
+                # therefore not knowable here, and a constant "attach" would
+                # read to the caller as measured. Same honesty as `inserts`.
                 rows = [
-                    {"name": b.Name, "path": str(b.Path or ""), "kind": "attach", "inserts": None}
+                    {"name": b.Name, "path": str(b.Path or ""), "kind": None, "inserts": None}
                     for b in _xref_blocks()
                 ]
                 rows.sort(key=lambda row: row["name"])

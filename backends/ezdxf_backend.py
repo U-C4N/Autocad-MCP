@@ -2455,6 +2455,30 @@ class EzdxfBackend(AutoCADBackend):
             # misses every overlay.
             xref_mask = const.BLK_XREF | const.BLK_XREF_OVERLAY
 
+            def _inserts_of(key: str):
+                """Every INSERT of `key`, paired with the layout that owns it.
+
+                Model space is *not* the drawing. `doc.blocks` is the one
+                iterable that reaches every entity space -- it yields the
+                block layouts behind model space and each paper-space tab as
+                well as the real block definitions -- and it is exactly what
+                ezdxf's own `delete_block(safe=True)` searches through
+                `doc.query("INSERT[name==...]i")`. Counting or deleting over
+                `doc.modelspace()` alone under-reports an xref shown on a
+                sheet and leaves that INSERT behind with no BLOCK definition.
+                The name comparison is case-insensitive for the same reason:
+                the `i` on that query string.
+                """
+                wanted = key.lower()
+                found = []
+                for layout in doc.blocks:
+                    for entity in layout:
+                        if entity.dxftype() != "INSERT":
+                            continue
+                        if str(entity.dxf.name).lower() == wanted:
+                            found.append((layout, entity))
+                return found
+
             def _rows():
                 rows = []
                 for block in doc.blocks:
@@ -2466,11 +2490,7 @@ class EzdxfBackend(AutoCADBackend):
                             "name": block.name,
                             "path": str(block.block.dxf.xref_path or ""),
                             "kind": "overlay" if flags & const.BLK_XREF_OVERLAY else "attach",
-                            "inserts": sum(
-                                1
-                                for entity in doc.modelspace()
-                                if entity.dxftype() == "INSERT" and entity.dxf.name == block.name
-                            ),
+                            "inserts": len(_inserts_of(block.name)),
                         }
                     )
                 rows.sort(key=lambda row: row["name"])
@@ -2491,14 +2511,15 @@ class EzdxfBackend(AutoCADBackend):
                 self._mark_dirty()
                 return {"ok": True, "name": key, "path": str(new_path), "backend": self.name}
 
-            victims = [
-                entity
-                for entity in doc.modelspace()
-                if entity.dxftype() == "INSERT" and entity.dxf.name == key
-            ]
-            for entity in victims:
-                doc.modelspace().delete_entity(entity)
-            doc.blocks.delete_block(key, safe=False)
+            victims = _inserts_of(key)
+            for layout, entity in victims:
+                layout.delete_entity(entity)
+            # safe=True, as the plan pins it: the in-use check is the only
+            # thing standing between a missed insert and a saved drawing whose
+            # INSERT has no BLOCK behind it (ezdxf's recover reports that as
+            # `FIX 103 UNDEFINED_BLOCK` and throws the geometry away). If the
+            # scan above ever misses one, this raises instead of corrupting.
+            doc.blocks.delete_block(key, safe=True)
             self._mark_dirty()
             return {
                 "ok": True,
