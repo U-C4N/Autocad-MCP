@@ -6,6 +6,22 @@ and alphabetical — keep every side's names.
 
 from __future__ import annotations
 
+from .part import (
+    PART_KINDS,
+    PrismaticPart,
+    RevolvedPart,
+    Segment,
+    build_part,
+    inner_radius_at,
+    outer_radius_at,
+    outline_bbox,
+    part_length,
+    part_max_diameter,
+    part_to_dict,
+    point_in_outline,
+    segment_bounds,
+    validate_part,
+)
 from .primitives import (
     ROLE_LAYER,
     ROLES,
@@ -28,6 +44,7 @@ from .primitives import (
 )
 
 __all__ = [
+    "PART_KINDS",
     "ROLES",
     "ROLE_LAYER",
     "Arc",
@@ -37,13 +54,26 @@ __all__ = [
     "Line",
     "Poly",
     "Prim",
+    "PrismaticPart",
     "Pt",
+    "RevolvedPart",
     "Role",
+    "Segment",
     "Text",
     "bbox",
+    "build_part",
+    "inner_radius_at",
     "layer_for",
+    "outer_radius_at",
+    "outline_bbox",
+    "part_length",
+    "part_max_diameter",
+    "part_to_dict",
+    "point_in_outline",
     "points_of",
     "rotate",
     "scale",
+    "segment_bounds",
     "translate",
+    "validate_part",
 ]
