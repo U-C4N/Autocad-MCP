@@ -690,6 +690,7 @@ async def _registered_tool_count() -> int | None:
 # entity/drawing tags. Tools whose tags match none fall into "other".
 _GROUP_TAG_PRIORITY = (
     "pid",
+    "mech",
     "style",
     "pagesetup",
     "environment",
@@ -718,6 +719,7 @@ _GROUP_TAG_PRIORITY = (
 # Map the winning tag to a human-readable group label for the breakdown.
 _GROUP_TAG_LABELS = {
     "pid": "pid",
+    "mech": "mech",
     "style": "styles",
     "pagesetup": "page_setup",
     "environment": "environment",
@@ -960,7 +962,7 @@ SOLID_TOOL_NAMES = frozenset(
 # mechanically should not pay for the P&ID surface, and a client that never
 # talks to a live seat should not pay for the environment surface. Styles and
 # page setup (SECTION 18/19) are drafting essentials and stay in core.
-TOOL_PACK_NAMES = ("core", "pid", "settings")
+TOOL_PACK_NAMES = ("core", "pid", "settings", "mech")
 PACK_TOOL_NAMES: dict[str, frozenset[str]] = {
     "pid": frozenset(
         {
@@ -1000,6 +1002,17 @@ PACK_TOOL_NAMES: dict[str, frozenset[str]] = {
             "user_pick_point",
             "user_select",
             "system_prompt_message",
+        }
+    ),
+    # SECTION 21 - the mechanical part model and its view engine (tracks B+G).
+    "mech": frozenset(
+        {
+            "mech_part_draw",
+            "mech_view_add",
+            "mech_dimension_part",
+            "mech_hole_pattern",
+            "mech_part_from_spec",
+            "mech_part_inspect",
         }
     ),
 }
@@ -8121,6 +8134,437 @@ async def drawing_properties_set(
     touched = [k for k, v in summary.items() if v is not None] + sorted(custom or {})
     await ctx.info(f"Setting drawing properties: {', '.join(touched) or 'nothing'}")
     return await _backend(ctx).drawing_properties_set(summary, custom)
+
+
+# ---------------------------------------------------------------------------
+# ── SECTION 21: Mechanical Parts (6 tools) ──────────────────────────────────
+# ---------------------------------------------------------------------------
+
+
+@cad_tool(
+    summary="Draw a machine part from a segment list or an outline plus typed features.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Mechanical: Draw Part", "destructiveHint": False},
+    tags={"mech", "create"},
+)
+async def mech_part_draw(
+    spec: Annotated[
+        dict,
+        Field(
+            description=(
+                "The part: {kind: 'revolved'|'prismatic', name, material, "
+                "segments:[{length, d_outer, d_inner, taper_to}] | outline:[[x,y]] + thickness, "
+                "features:[{kind, id, ...}]}"
+            )
+        ),
+    ],
+    at_x: Annotated[
+        float,
+        Field(
+            default=0.0,
+            description="WCS X of the first view's lower-left corner (the rotation pivot)",
+        ),
+    ] = 0.0,
+    at_y: Annotated[
+        float,
+        Field(
+            default=0.0,
+            description="WCS Y of the first view's lower-left corner (the rotation pivot)",
+        ),
+    ] = 0.0,
+    rotation: Annotated[
+        float,
+        Field(
+            default=0.0,
+            description="Degrees CCW; turns every view and its dimensions about (at_x, at_y)",
+        ),
+    ] = 0.0,
+    views: Annotated[
+        list[str] | None,
+        Field(
+            default=None,
+            description="Views to draw in order: front | side | top (default ['front'])",
+        ),
+    ] = None,
+    projection: Annotated[
+        str, Field(default="first", description="first (ISO 128-30, default) | third")
+    ] = "first",
+    dimension: Annotated[
+        bool, Field(default=True, description="Also dimension the part (ISO 129 + ISO 286 fits)")
+    ] = True,
+    style: Annotated[
+        str,
+        Field(default="chain", description="Axial dimension style: chain | baseline | ordinate"),
+    ] = "chain",
+    ctx: Context = None,
+) -> dict:
+    """One part model - a turned profile or a plate outline plus typed features - drawn as views.
+
+    The model is written onto the drawing as `ACADMCP_MECH` XDATA on an anchor
+    POINT, so `mech_view_add` can add a section months later without the caller
+    re-describing the part, and `mech_part_inspect` reads it back.
+
+    Refused **before anything is drawn**, by path: a non-finite or non-positive
+    number (`segments[2].d_outer`), a bore that is not smaller than its outside,
+    an outline with fewer than three distinct vertices or one that crosses
+    itself, an unknown material, a feature whose placement is off the part, two
+    features that would remove the same material (both names given), a thread
+    outside the transcribed ISO 261 table, a keyway outside DIN 6885's bore
+    range, gear teeth whose tip diameter disagrees with their segment. A DIN 509
+    undercut, a DIN 471/472 groove, a DIN 332 centre hole and an ISO 3601-2
+    O-ring groove need explicit dimensions in this build: those tables are not
+    transcribed and the lookup refuses by name rather than interpolate. A
+    feature that cannot be projected into a requested view is listed in
+    `omitted`, never dropped.
+    """
+    from engineering.mech.draw import draw_part
+    from engineering.mech.part import build_part
+
+    try:
+        part = build_part(spec)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+    await ctx.info(f"mech_part_draw: {part.name} at ({at_x}, {at_y})")
+    try:
+        return await draw_part(
+            _backend(ctx),
+            part,
+            at=(at_x, at_y),
+            rotation=rotation,
+            views=tuple(views or ("front",)),
+            projection=projection,
+            dimension=dimension,
+            style=style,
+        )
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@cad_tool(
+    summary="Add another view of a drawn part: side, top, section (full/half/offset) or detail.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Mechanical: Add View", "destructiveHint": False},
+    tags={"mech", "create"},
+)
+async def mech_view_add(
+    part_id: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Anchor handle from mech_part_draw; omit if the drawing holds one part",
+        ),
+    ] = None,
+    kind: Annotated[
+        str, Field(default="section", description="front | side | top | section | detail")
+    ] = "section",
+    side: Annotated[
+        str, Field(default="right", description="Which end an end view looks from: right | left")
+    ] = "right",
+    style: Annotated[
+        str,
+        Field(default="full", description="Section style: full | half | offset | revolved"),
+    ] = "full",
+    plane: Annotated[
+        dict | None,
+        Field(
+            default=None,
+            description="Cutting plane {p1:[x,y], p2:[x,y], label, direction:[dx,dy], via:[[x,y]]} - required for a section",
+        ),
+    ] = None,
+    detail: Annotated[
+        dict | None,
+        Field(
+            default=None,
+            description="Detail region {center:[x,y], radius, scale, label, of:'front'} - required for a detail",
+        ),
+    ] = None,
+    gap: Annotated[
+        float, Field(default=20.0, description="Gap between this view and its parent (mm)")
+    ] = 20.0,
+    scale: Annotated[
+        float,
+        Field(
+            default=1.0,
+            description=(
+                "Must be 1.0: views are drawn full size (a detail takes its scale in "
+                "detail.scale; a sheet scale is the viewport's)"
+            ),
+        ),
+    ] = 1.0,
+    ctx: Context = None,
+) -> dict:
+    """Another view of a part already on the drawing, laid out on its projection axis.
+
+    The part model comes back out of the drawing's `ACADMCP_MECH` XDATA, so the
+    caller never re-describes it, and the placement follows the projection angle
+    recorded when the part was drawn (first angle by default: the view from the
+    right goes to the left).
+
+    Refused by name: a section without a plane, or with a plane of zero length,
+    a plane that misses the part, or one that grazes an outline vertex so its
+    crossings cannot be paired; a half or offset section on the wrong kind of
+    plane (the message names the style that does apply); a detail without a
+    radius or with a scale of zero; an unknown part_id, and `part_id=None` on a
+    drawing that holds more than one part.
+    """
+    from engineering.mech.draw import add_view, read_part
+
+    backend = _backend(ctx)
+    try:
+        resolved = part_id or (await read_part(backend))["part_id"]
+        await ctx.info(f"mech_view_add: {kind} on {resolved}")
+        return await add_view(
+            backend,
+            resolved,
+            kind,
+            side=side,
+            style=style,
+            plane=plane,
+            detail=detail,
+            gap=gap,
+            scale=scale,
+        )
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@cad_tool(
+    summary="Dimension a drawn part: ISO 129 dimensions, ISO 286 fits, a hole table.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Mechanical: Dimension Part", "destructiveHint": False},
+    tags={"mech", "dimension"},
+)
+async def mech_dimension_part(
+    part_id: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Anchor handle from mech_part_draw; omit if the drawing holds one part",
+        ),
+    ] = None,
+    style: Annotated[
+        str,
+        Field(default="chain", description="Axial dimension style: chain | baseline | ordinate"),
+    ] = "chain",
+    hole_table_threshold: Annotated[
+        int,
+        Field(default=8, description="Above this many holes the diameters move into a hole table"),
+    ] = 8,
+    fits: Annotated[
+        dict | None,
+        Field(
+            default=None,
+            description="ISO 286 fit per feature id, e.g. {'bearing_seat': 'k6', 'bore': 'H7'}",
+        ),
+    ] = None,
+    views: Annotated[
+        list[int] | None,
+        Field(
+            default=None,
+            description=(
+                "View indices to dimension, in mech_part_inspect order "
+                "(default: every view not yet dimensioned)"
+            ),
+        ),
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """Every dimension the part and its features ask for, laid out without overlaps.
+
+    Axial lengths are chained, stacked from a baseline or measured from an
+    origin; diameters stack outside the silhouette; fillets get a radius. Each
+    measurement appears once (ISO 129-1): every view record carries a
+    `dimensioned` flag, so after a `mech_part_draw` that dimensioned the front
+    view and a `mech_view_add`, this call dimensions only the new view, and
+    `views` naming a view already dimensioned is refused by name. `fits` resolves an ISO 286 code
+    against the measured nominal through the repository's authored tables and
+    appends the code to the dimension text; an explicit `tol` on a feature's own
+    intent does the same through the ISO 129 path.
+
+    Refused by name: a fit together with an explicit tolerance, a fit outside
+    the authored ISO 286 range (over 1 mm to 500 mm, IT4-IT11), a fit on an
+    intent with no measurable nominal, an unknown style, an unknown part_id, a
+    call when every view is already dimensioned (the message lists them), and
+    `part_id=None` on a drawing that holds more than one part. An angular intent
+    is reported in `skipped` rather than drawn, because a DimIntent carries no
+    vertex.
+    """
+    from engineering.mech.draw import dimension_part, read_part
+
+    backend = _backend(ctx)
+    try:
+        resolved = part_id or (await read_part(backend))["part_id"]
+        await ctx.info(f"mech_dimension_part: {resolved} ({style})")
+        return await dimension_part(
+            backend,
+            resolved,
+            style=style,
+            hole_table_threshold=hole_table_threshold,
+            fits=fits,
+            views=views,
+        )
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@cad_tool(
+    summary="Draw a linear, grid or polar hole pattern with centre marks on any drawing.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Mechanical: Hole Pattern", "destructiveHint": False},
+    tags={"mech", "create"},
+)
+async def mech_hole_pattern(
+    pattern: Annotated[str, Field(description="linear | grid | polar")],
+    x: Annotated[float, Field(description="WCS X of the first hole (polar: the circle centre)")],
+    y: Annotated[float, Field(description="WCS Y of the first hole (polar: the circle centre)")],
+    diameter: Annotated[float, Field(description="Hole diameter in drawing units")],
+    count: Annotated[
+        int, Field(default=2, description="Holes along the pattern (polar: around the circle)")
+    ] = 2,
+    spacing: Annotated[
+        float, Field(default=0.0, description="Pitch between holes (linear, grid columns)")
+    ] = 0.0,
+    count_y: Annotated[int, Field(default=1, description="Rows, for a grid")] = 1,
+    spacing_y: Annotated[float, Field(default=0.0, description="Row pitch, for a grid")] = 0.0,
+    pcd: Annotated[
+        float, Field(default=0.0, description="Pitch-circle diameter, for a polar pattern")
+    ] = 0.0,
+    start_angle: Annotated[
+        float, Field(default=0.0, description="Angle of the first hole (polar), degrees CCW")
+    ] = 0.0,
+    angle: Annotated[
+        float, Field(default=0.0, description="Direction of a linear pattern, degrees CCW")
+    ] = 0.0,
+    layer: Annotated[
+        str | None, Field(default=None, description="Override the GEOMETRY layer for the circles")
+    ] = None,
+    centre_marks: Annotated[
+        bool, Field(default=True, description="Draw ISO 128-23 centre marks")
+    ] = True,
+    dimension: Annotated[
+        bool, Field(default=False, description="Add a '6x ⌀8' diameter callout")
+    ] = False,
+    ctx: Context = None,
+) -> dict:
+    """A hole pattern on any drawing - the part model is not required.
+
+    The same expansion `HolePattern` performs inside a part, exposed for a
+    drawing that was not built from the model.
+
+    Refused before anything is drawn: an unknown pattern, a count below 1 (below
+    2 for polar), a linear pattern with no spacing, a grid with more than one
+    column or row and no pitch for it, a polar pattern with no pitch-circle
+    diameter, and a non-finite or non-positive diameter.
+    """
+    from engineering.mech.draw import draw_hole_pattern
+
+    await ctx.info(f"mech_hole_pattern: {pattern} x{count}")
+    try:
+        return await draw_hole_pattern(
+            _backend(ctx),
+            pattern=pattern,
+            x=x,
+            y=y,
+            diameter=diameter,
+            count=count,
+            spacing=spacing,
+            count_y=count_y,
+            spacing_y=spacing_y,
+            pcd=pcd,
+            start_angle=start_angle,
+            angle=angle,
+            layer=layer,
+            centre_marks=centre_marks,
+            dimension=dimension,
+        )
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@cad_tool(
+    summary="Draw a whole mechanical sheet - several parts and their views - in one transaction.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Mechanical: Sheet From Spec", "destructiveHint": False},
+    tags={"mech", "create"},
+)
+async def mech_part_from_spec(
+    spec: Annotated[
+        dict,
+        Field(
+            description=(
+                "{sheet: {intent, sheet_size, scale, layer_set}, "
+                "parts: [{part: {...}, at: [x, y], rotation, views: ['front','side'], "
+                "projection, dimension, style}]}"
+            )
+        ),
+    ],
+    ctx: Context = None,
+) -> dict:
+    """Several parts, their views and their dimensions, drawn inside one transaction.
+
+    Every part is validated before the transaction opens, so a refusal leaves
+    the drawing untouched and names the offending path (`parts[1]:
+    segments[0].d_outer: ...`). If a draw fails or the request is cancelled
+    part-way, the transaction is rolled back under an anyio shield, so a
+    cancelled call cannot leave half a sheet inside an open transaction.
+
+    Refused by name: an empty `parts` list, any part refusal from
+    `mech_part_draw`, and a transaction that cannot be opened.
+    """
+    from engineering.mech.draw import draw_from_spec
+
+    await ctx.info(f"mech_part_from_spec: {len((spec or {}).get('parts') or [])} part(s)")
+    try:
+        return await draw_from_spec(_backend(ctx), spec)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@cad_tool(
+    summary="Read the part model back off the drawing: segments, features, views, omissions.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Mechanical: Inspect Part", "readOnlyHint": True},
+    tags={"mech", "query"},
+)
+async def mech_part_inspect(
+    part_id: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Anchor handle from mech_part_draw; omit if the drawing holds one part",
+        ),
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """The `ACADMCP_MECH` payload a drawn part carries, decoded.
+
+    Never modifies the drawing. Returns the part model exactly as
+    `mech_part_draw` accepts it (`part`), the views drawn so far with their
+    placements, and the payload version.
+
+    Refused by name: an unknown part_id, a handle that carries no
+    `ACADMCP_MECH` payload, a corrupt or foreign payload, and `part_id=None` on
+    a drawing that holds no part or more than one (the message lists the
+    handles).
+    """
+    from engineering.mech.draw import read_part
+
+    try:
+        return await read_part(_backend(ctx), part_id)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

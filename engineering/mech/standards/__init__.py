@@ -13,6 +13,12 @@ wrong row ships a wrong workshop drawing; a narrow table is merely narrow.
 variants at the same size (DIN 509 forms E and F, DIN 332 forms A/B/R). ``**kw``
 selects among those variants and is refused when it selects none or more than
 one — an ambiguous lookup never quietly picks the first row.
+
+``rows`` may be **empty**: that is a table whose structure, coverage and SOURCE
+ship before any row could be verified against the standard (DIN 509, DIN 471,
+DIN 472, DIN 332-1 and ISO 3601-2 in this build). Registering it keeps the
+later transcription a data edit, and every lookup against it is refused by
+name — which is exactly the table rule, not an exception to it.
 """
 
 from __future__ import annotations
@@ -62,8 +68,11 @@ def register(standard: str, rows: dict, coverage: Coverage, source: str) -> None
         raise ValueError("standards.register: standard must be a non-empty name")
     if standard in _REGISTRY:
         raise ValueError(f"standards.register: {standard!r} is already registered")
-    if not rows:
-        raise ValueError(f"standards.register: {standard!r} registered no rows")
+    if not isinstance(rows, dict):
+        raise ValueError(
+            f"standards.register: {standard!r} must register a rows dict; an empty one is "
+            "the table whose structure ships before its rows are transcribed"
+        )
     if not isinstance(source, str) or "table" not in source.lower():
         raise ValueError(
             f"standards.register: {standard!r} needs a SOURCE naming the standard, its "

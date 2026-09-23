@@ -86,7 +86,16 @@ LEAN_SETTINGS_ESSENTIALS = {
     "textstyle_set_current",
 }
 
-ALL_PACKS = ["core", "pid", "settings"]
+ALL_PACKS = ["core", "pid", "settings", "mech"]
+ALL_PACKS_SORTED = sorted(ALL_PACKS)
+MECH_TOOLS = {
+    "mech_part_draw",
+    "mech_view_add",
+    "mech_dimension_part",
+    "mech_hole_pattern",
+    "mech_part_from_spec",
+    "mech_part_inspect",
+}
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -97,8 +106,9 @@ async def _restore(monkeypatch):
 
 
 def test_pack_registry_names_real_tools_and_only_them():
-    assert server.TOOL_PACK_NAMES == ("core", "pid", "settings")
+    assert server.TOOL_PACK_NAMES == ("core", "pid", "settings", "mech")
     assert server.PACK_TOOL_NAMES["pid"] == frozenset(PID_TOOLS)
+    assert server.PACK_TOOL_NAMES["mech"] == frozenset(MECH_TOOLS)
     assert server.PACK_TOOL_NAMES["settings"] == frozenset(SETTINGS_TOOLS)
     assert len(SETTINGS_TOOLS) == 22
     assert not (server.PACK_TOOL_NAMES["settings"] & server.PACK_TOOL_NAMES["pid"])
@@ -137,7 +147,7 @@ async def test_all_is_the_default_and_enables_every_pack(monkeypatch):
     info = await server._apply_tool_profile("full")
     disabled = set(info["disabled_tools"])
     assert not ((PID_TOOLS | SETTINGS_TOOLS) & disabled)
-    assert info["tool_packs"]["enabled"] == ALL_PACKS
+    assert info["tool_packs"]["enabled"] == ALL_PACKS_SORTED
 
 
 async def test_unknown_pack_is_ignored_with_a_warning_and_core_cannot_be_dropped(
@@ -184,7 +194,8 @@ async def test_the_three_track_e_sections_file_under_their_own_groups():
     assert set(groups["styles"]) == STYLE_TOOLS
     assert set(groups["page_setup"]) == PAGE_SETUP_TOOLS
     assert set(groups["environment"]) == SETTINGS_TOOLS
-    assert len(groups) == 23
+    assert set(groups["mech"]) == MECH_TOOLS
+    assert len(groups) == 24
 
 
 async def test_system_about_reports_packs():
