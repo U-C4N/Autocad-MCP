@@ -94,8 +94,9 @@ class ToolAliases:
 #   REVCLOUD -- one command draws a bare cloud (entity_create_revcloud) or a
 #       revision cloud that also files a revision row (revision_add); a
 #       drafter typing it could mean either.
-#   TABLE -- one command makes an empty table (entity_create_table) or the
-#       ISO 7573 parts list (bom_table); both are correct destinations.
+#   TABLE -- one command makes an empty table (entity_create_table), the
+#       ISO 7573 parts list (bom_table) or a door / window / room schedule
+#       (arch_schedule); all three are correct destinations.
 #   SECTIONPLANE -- the section a drafter asks for is either a whole section
 #       view of a drawn part (mech_view_add) or the cutting-plane line and its
 #       labels on an existing view (section_line); tracks B+G groups M and A
@@ -2302,6 +2303,48 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "dis olcu",
             "aks ölçüsü",
             "aks olcusu",
+        ),
+    ),
+    # ── Architecture: rooms (SECTION 25, track F group R) ───────────────────
+    # AREA and BOUNDARY stay with analysis_measure_entity and boundary_trace:
+    # on a plain AutoCAD seat a drafter typing them means those tools, and
+    # sharing them would move the golden BPOLY / area cases. The room
+    # vocabulary below reaches these two without either command.
+    "arch_room": ToolAliases(
+        acad=(),
+        synonyms=(
+            "room label",
+            "label the room",
+            "room name and number",
+            "net floor area",
+            "measured room area",
+            "oda etiketi",
+            "oda alani",
+            "mahal adi",
+        ),
+    ),
+    "arch_rooms_detect": ToolAliases(
+        acad=(),
+        synonyms=(
+            "find the rooms",
+            "detect rooms in a plan",
+            "rooms of a floor plan",
+            "room areas of this plan",
+            "read rooms from lines",
+            "odalari bul",
+            "kat plani alanlari",
+        ),
+    ),
+    "arch_schedule": ToolAliases(
+        acad=("TABLE",),
+        synonyms=(
+            "door schedule",
+            "window schedule",
+            "room schedule",
+            "opening schedule",
+            "kapi cizelgesi",
+            "pencere cizelgesi",
+            "mahal listesi",
         ),
     ),
 }

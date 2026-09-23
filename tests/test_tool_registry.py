@@ -495,7 +495,7 @@ async def test_tool_groups_is_byte_identical_to_the_source_declared_grouping():
 
 
 async def test_tool_group_sizes_are_unchanged():
-    """Frozen snapshot of the surface (233 tools, 26 groups).
+    """Frozen snapshot of the surface (236 tools, 26 groups).
 
     Taken before @cad_tool landed at 131 tools; `batch` moved 2 -> 3 when
     v1.5.0's `cad_batch` joined `entity_batch_create`/`entity_batch_modify`, and
@@ -587,11 +587,18 @@ async def test_tool_group_sizes_are_unchanged():
     `arch_dimension_chains`); the `arch` tag is ranked directly after `mech` in
     `_GROUP_TAG_PRIORITY`, so those tools file under `architecture` rather
     than under their secondary `create` / `dimension` tags.
+
+    Track F group R opened SECTION 25 with the rooms: `arch_room` and
+    `arch_schedule` are tagged `arch` and `create`, `arch_rooms_detect` `arch`
+    and `query`. `arch` is not in `_GROUP_TAG_PRIORITY` on this branch, so they
+    file under their secondary tags: `entity_creation` 18 -> 20,
+    `entity_query` 9 -> 10. This snapshot is branch-local: the track F merge
+    task recomputes it once the walls, rooms and catalogue branches have landed.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
         "analysis": 12,
-        "architecture": 4,
+        "architecture": 7,
         "batch": 3,
         "blocks": 9,
         "corner_ops": 4,
@@ -617,4 +624,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 233
+    assert sum(sizes.values()) == 236

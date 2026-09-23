@@ -3,14 +3,14 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 233,
+    "tools": 236,
     "resources": 8,
     "prompts": 5,
     "groups": 26
   },
   "groups": {
     "analysis": 12,
-    "architecture": 4,
+    "architecture": 7,
     "batch": 3,
     "blocks": 9,
     "corner_ops": 4,
@@ -206,6 +206,48 @@
       ],
       "annotations": {
         "title": "Architecture: Door / Window",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "arch_room",
+      "group": "architecture",
+      "cost": "mutate",
+      "summary": "Label a room with its name, number and measured area.",
+      "tags": [
+        "arch",
+        "create"
+      ],
+      "annotations": {
+        "title": "Architecture: Label Room",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "arch_rooms_detect",
+      "group": "architecture",
+      "cost": "read",
+      "summary": "Find the rooms of any plan and measure them; never modifies it.",
+      "tags": [
+        "arch",
+        "query"
+      ],
+      "annotations": {
+        "title": "Architecture: Detect Rooms",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "arch_schedule",
+      "group": "architecture",
+      "cost": "mutate",
+      "summary": "Draw a door, window or room schedule from the plan records.",
+      "tags": [
+        "arch",
+        "create"
+      ],
+      "annotations": {
+        "title": "Architecture: Schedule",
         "destructiveHint": false
       }
     },

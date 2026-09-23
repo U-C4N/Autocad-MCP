@@ -13,6 +13,7 @@ from .dimension import (
     STEP_PAPER_MM,
     exterior_chains,
 )
+from .faces import DEFAULT_TOL, Face, face_containing, planar_faces, tagged_faces
 from .lang import LANGS, fmt_area_m2, fmt_number, tag_prefix, vocab
 from .layers import ARCH_LAYER_DEFS, ARCH_LAYER_ROLES, ARCH_LAYERS, ARCH_ROLE_LAYER
 from .materials import WALL_HATCH_TABLE, WALL_MATERIALS, wall_hatch
@@ -38,6 +39,15 @@ from .model import (
     wall_length,
 )
 from .openings import opening_prims
+from .rooms import (
+    detect_rooms,
+    label_room,
+    opening_closures,
+    read_records,
+    room_label_prims,
+    rooms_detect,
+)
+from .schedule import SCHEDULE_KINDS, draw_schedule, schedule_rows
 from .stairs import (
     ARROW_PAPER_MM,
     BLONDEL_RANGE,
@@ -65,13 +75,16 @@ __all__ = [
     "ARCH_ROLE_LAYER",
     "ARROW_PAPER_MM",
     "BLONDEL_RANGE",
+    "DEFAULT_TOL",
     "FIRST_OFFSET_PAPER_MM",
+    "Face",
     "KINDS",
     "LANGS",
     "MIN_JOIN_ANGLE_DEG",
     "Opening",
     "ROWS",
     "Room",
+    "SCHEDULE_KINDS",
     "SIDES",
     "STAIR_KINDS",
     "STEP_PAPER_MM",
@@ -85,20 +98,31 @@ __all__ = [
     "axis_segments",
     "blondel",
     "decode",
+    "detect_rooms",
+    "draw_schedule",
     "encode",
     "exterior_chains",
+    "face_containing",
     "face_offsets",
     "fmt_area_m2",
     "fmt_number",
     "from_payload",
+    "label_room",
+    "opening_closures",
     "opening_from_dict",
     "opening_prims",
+    "planar_faces",
+    "read_records",
     "room_from_dict",
+    "room_label_prims",
     "room_segments",
+    "rooms_detect",
+    "schedule_rows",
     "segment_of",
     "stair_from_dict",
     "stair_prims",
     "tag_prefix",
+    "tagged_faces",
     "to_payload",
     "to_values",
     "validate_openings",

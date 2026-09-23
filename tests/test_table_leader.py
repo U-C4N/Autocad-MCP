@@ -135,3 +135,77 @@ async def test_server_registers_table_and_mleader_tools():
     names = {tool.name for tool in await server._registered_tools()}
     assert "entity_create_table" in names
     assert "leader_create_mleader" in names
+
+
+class _MeasuredTable:
+    """The IAcadTable members a live AutoCAD 2026 seat exposes (measured).
+
+    MEASURED on AutoCAD 2026 (track F task 6): the table has no ``TextHeight``
+    property - pywin32 answers ``table.TextHeight = h`` with AttributeError -
+    and a table left alone keeps the Standard style's heights (title 6.0, header
+    and data 4.5). ``SetCellTextHeight(row, col, h)`` is the member that sets it.
+    A fake that accepted ``TextHeight`` would hide exactly that defect.
+    """
+
+    def __init__(self, rows, columns):
+        self.Handle = "A1"
+        self.Rows, self.Columns = rows, columns
+        self._heights = {
+            (r, c): (6.0 if r == 0 else 4.5) for r in range(rows) for c in range(columns)
+        }
+
+    def __setattr__(self, name, value):
+        if name == "TextHeight":
+            raise AttributeError(f"object has no attribute {name!r}")
+        object.__setattr__(self, name, value)
+
+    def SetColumnWidth(self, column, width):
+        pass
+
+    def SetRowHeight(self, row, height):
+        pass
+
+    def SetText(self, row, column, value):
+        pass
+
+    def SetCellTextHeight(self, row, column, height):
+        self._heights[(row, column)] = float(height)
+
+    def GetCellTextHeight(self, row, column):
+        return self._heights[(row, column)]
+
+
+async def test_com_table_sets_every_cell_text_height_through_the_measured_member():
+    backend = ComBackend()
+
+    async def run_inline(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    backend._run = run_inline
+    mspace = MagicMock()
+    made: list[_MeasuredTable] = []
+
+    def add_table(_point, rows, columns, _row_height, _column_width):
+        made.append(_MeasuredTable(rows, columns))
+        return made[-1]
+
+    mspace.AddTable.side_effect = add_table
+    info = EntityInfo("A1", "ACAD_TABLE", "TEXT", 256, "ByLayer", True, {})
+
+    with (
+        patch("backends.com_backend._msp", return_value=mspace),
+        patch("backends.com_backend._apoint", side_effect=lambda *p: tuple(p)),
+        patch("backends.com_backend._entity_info", return_value=info),
+        patch("backends.com_backend._apply_entity_attrs"),
+        patch("backends.com_backend._regen"),
+    ):
+        await backend.entity_create_table(
+            0, 50, [["A", "1"]], headers=["Name", "Qty"], title="BOM", text_height=125.0
+        )
+
+    (table,) = made
+    assert {
+        (row, column): table.GetCellTextHeight(row, column)
+        for row in range(table.Rows)
+        for column in range(table.Columns)
+    } == {(row, column): 125.0 for row in range(3) for column in range(2)}

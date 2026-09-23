@@ -9783,7 +9783,7 @@ async def drawing_export_dwg(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 25: Architecture (4 tools) ──────────────────────────────────────
+# ── SECTION 25: Architecture (7 tools) ──────────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -10067,6 +10067,161 @@ async def arch_dimension_chains(
 
 
 # ── arch: rooms (group R) ──
+
+
+@cad_tool(summary="Label a room with its name, number and measured area.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Architecture: Label Room", "destructiveHint": False},
+    tags={"arch", "create"},
+)
+async def arch_room(
+    name: Annotated[str, Field(description="Room name, e.g. LIVING / SALON.")],
+    x: Annotated[
+        float, Field(description="WCS X of a point inside the room; the label starts here.")
+    ],
+    y: Annotated[float, Field(description="WCS Y of a point inside the room.")],
+    number: Annotated[
+        str | None, Field(default=None, description="Room number, e.g. 01; omit for none.")
+    ] = None,
+    room_id: Annotated[
+        str | None,
+        Field(default=None, description="Record id; default is the first free R<n>."),
+    ] = None,
+    lang: Annotated[
+        str, Field(default="en", description="Label language: en | tr (tr writes 24,50 m²).")
+    ] = "en",
+    scale: Annotated[
+        float,
+        Field(default=50.0, gt=0, description="Plot-scale denominator: 50 is 1:50 (text x 50)."),
+    ] = 50.0,
+    ctx: Context = None,
+) -> dict:
+    """Label the room around (x, y) with its name, number and MEASURED area.
+
+    The area is never typed: the tool reads the wall faces on the `wall` layer
+    of the arch set (LINE and lightweight polyline, both engines; anything else
+    there is listed in `skipped`), finds the closed face
+    the point lies in and writes that face's area - net of the wall thickness
+    and of any column inside it - into the label and into an `ACADMCP_ARCH`
+    room record on the name text, which `arch_schedule` reads. A door or window
+    recorded on the drawing closes its gap along the wall faces, so two rooms
+    either side of a door stay two rooms.
+
+    Refused before anything is drawn: an unknown `lang` (named with en, tr), a
+    `number`/`name` the room model refuses, a `room_id` already labelled on the
+    drawing, a point in no closed face of the walls (draw or close them first,
+    or read a plan drawn by other means with `arch_rooms_detect`), a point
+    inside a wall body, and a point in a room that already carries a label (one
+    face, one room record - a retried call does not add a second area to the
+    schedule).
+    """
+    from engineering.arch.rooms import label_room
+
+    room = {"name": name, "number": number, "at": [x, y]}
+    if room_id:
+        room["id"] = room_id
+    await ctx.info(f"arch_room: {name!r} at ({x}, {y})")
+    try:
+        return await label_room(_backend(ctx), room, lang=lang, scale=scale)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@cad_tool(summary="Find the rooms of any plan and measure them; never modifies it.", cost="read")
+@mcp.tool(
+    annotations={"title": "Architecture: Detect Rooms", "readOnlyHint": True},
+    tags={"arch", "query"},
+)
+async def arch_rooms_detect(
+    layers: Annotated[
+        list[str] | None,
+        Field(
+            default=None,
+            description="Layers holding the walls; default: every layer whose name contains "
+            "WALL or DUVAR.",
+        ),
+    ] = None,
+    min_area: Annotated[
+        float,
+        Field(default=1.0e6, gt=0, description="Smallest room reported, mm² (1e6 = 1 m²)."),
+    ] = 1.0e6,
+    tol: Annotated[
+        float,
+        Field(default=1.0, gt=0, description="Endpoints closer than this (mm) are one corner."),
+    ] = 1.0,
+    ctx: Context = None,
+) -> dict:
+    """Read the rooms of a plan - ours or a foreign one made of plain lines.
+
+    Every LINE and lightweight polyline on the layers is split where lines
+    cross or touch, and the closed faces they bound are measured (mm², net of
+    nested pieces).
+    Faces under `min_area`, and thin faces (mean width under 600 mm - wall
+    bodies and reveals, this reader's heuristic) are left out. Each room
+    reports `confidence`: 1.0 when every edge lies on the arch wall layer, 0.6
+    when any edge is a plain line from elsewhere - read `confidence_min` before
+    trusting a foreign plan. Room labels already on the drawing are reported
+    in `labels` with the face they sit in; a face with more than one is listed
+    in `label_conflicts`.
+
+    Never modifies the drawing. Arcs and bulged polyline edges, old-style
+    POLYLINEs and block references are listed in `skipped` with their handle
+    and reason - never flattened into chords, never dropped silently. Read
+    `skipped` before trusting `count`. A foreign plan's open doorways are
+    not closed - two rooms joined by one read as one face. Refused: a named
+    layer the drawing does not have (with the list of the ones it has), and no
+    layer matching WALL or DUVAR when `layers` is omitted.
+    """
+    from engineering.arch.rooms import rooms_detect
+
+    try:
+        return await rooms_detect(_backend(ctx), layers=layers, min_area=min_area, tol=tol)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@cad_tool(summary="Draw a door, window or room schedule from the plan records.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Architecture: Schedule", "destructiveHint": False},
+    tags={"arch", "create"},
+)
+async def arch_schedule(
+    kind: Annotated[str, Field(description="doors | windows | rooms")],
+    x: Annotated[float, Field(description="WCS X of the table's top-left corner.")],
+    y: Annotated[float, Field(description="WCS Y of the table's top-left corner.")],
+    lang: Annotated[
+        str, Field(default="en", description="Headers and numbers: en | tr (decimal comma).")
+    ] = "en",
+    scale: Annotated[
+        float,
+        Field(default=50.0, gt=0, description="Plot-scale denominator: 50 is 1:50."),
+    ] = 50.0,
+    ctx: Context = None,
+) -> dict:
+    """Draw a door, window or room schedule as a real TABLE - a read of the drawing.
+
+    The rows come from the `ACADMCP_ARCH` records on the drawing (what
+    `arch_wall` / `arch_opening` / `arch_room` write), never from the caller:
+    doors by tag with width, height, swing, hand and wall; windows by tag with
+    width, height, sill and wall; rooms by number with name and the measured
+    area, plus a total. An opening drawn without a tag gets the next free D1 /
+    W1 (K1 / P1 in Turkish) in wall order; an explicit tag is kept. A value the
+    model does not carry is an empty cell, never a default. `representation`
+    reports what was drawn: `native` (ACAD_TABLE, live) or `composite` (rules
+    and MTEXT, headless).
+
+    Refused before anything is drawn: an unknown `kind` or `lang` (named with
+    the list), nothing of that kind on the drawing, and more rows than one
+    TABLE takes (198).
+    """
+    from engineering.arch.schedule import draw_schedule
+
+    await ctx.info(f"arch_schedule: {kind} at ({x}, {y})")
+    try:
+        return await draw_schedule(_backend(ctx), kind, at=(x, y), lang=lang, scale=scale)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
 
 # ── arch: catalogue (group C) ──
 
