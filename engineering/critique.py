@@ -412,6 +412,10 @@ from .pid.critique import PID_DISPATCH  # noqa: E402  (registered after the mech
 
 _FOCUS_DISPATCH.update(PID_DISPATCH)
 
+from .mech.critique import MECH_DISPATCH  # noqa: E402  (same reason: after the base focuses)
+
+_FOCUS_DISPATCH.update(MECH_DISPATCH)
+
 
 async def run_critique(
     backend: AutoCADBackend,

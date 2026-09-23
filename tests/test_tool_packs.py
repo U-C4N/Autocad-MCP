@@ -8,7 +8,9 @@ surface and nothing else.
 
 v1.6 tracks B+G add the `mech` pack: SECTION 21's six part-model tools and
 SECTION 22's three standard-parts tools and SECTION 23's five annotation
-symbols - 14 in all.
+symbols - 14 in all. SECTION 24 (the sheet: frames, title blocks, revisions,
+the parts list, balloons, xrefs, images, DWG) stays in `core` - universal
+drafting, not a vertical - and files under its own `sheet` group.
 """
 
 from __future__ import annotations
@@ -99,6 +101,28 @@ MECH_TOOLS = {
     "hatch_material",
 }
 
+SHEET_TOOLS = {
+    "sheet_frame",
+    "titleblock_apply",
+    "revision_add",
+    "bom_extract",
+    "bom_table",
+    "balloon_add",
+    "data_extract",
+    "xref_attach",
+    "xref_manage",
+    "image_attach",
+    "drawing_export_dwg",
+}
+
+LEAN_MECH_ESSENTIALS = {
+    "mech_part_draw",
+    "mech_view_add",
+    "mech_dimension_part",
+    "sheet_frame",
+    "titleblock_apply",
+}
+
 LEAN_SETTINGS_ESSENTIALS = {
     "drawing_apply_standard",
     "page_setup_apply",
@@ -130,6 +154,9 @@ def test_pack_registry_names_real_tools_and_only_them():
     assert not (server.PACK_TOOL_NAMES["settings"] & server.PACK_TOOL_NAMES["pid"])
     assert not (server.PACK_TOOL_NAMES["mech"] & server.PACK_TOOL_NAMES["pid"])
     assert not (server.PACK_TOOL_NAMES["mech"] & server.PACK_TOOL_NAMES["settings"])
+    assert not (SHEET_TOOLS & set().union(*server.PACK_TOOL_NAMES.values())), (
+        "SECTION 24 is core drafting, not a vertical pack"
+    )
 
 
 async def test_every_pack_member_is_a_registered_tool():
@@ -146,6 +173,7 @@ async def test_core_only_hides_pid_and_settings_but_keeps_styles_and_page_setup(
     assert PID_TOOLS <= disabled
     assert SETTINGS_TOOLS <= disabled
     assert MECH_TOOLS <= disabled
+    assert not (SHEET_TOOLS & disabled)
     assert not (STYLE_TOOLS & disabled), "styles are core drafting essentials"
     assert not (PAGE_SETUP_TOOLS & disabled), "page setup and templates are core"
     assert "block_define" not in disabled and "entity_set_xdata" not in disabled
@@ -194,16 +222,19 @@ async def test_lean_intersects_with_packs(monkeypatch):
 async def test_lean_carries_the_five_settings_essentials_and_nothing_from_the_settings_pack(
     monkeypatch,
 ):
-    """Spec §8.2: lean = 55. The five are core-pack tools, so `TOOL_PACKS=core`
-    leaves them on a lean surface; no environment tool is lean."""
+    """Spec §8.2: lean = 60 (55 + the five mechanical/sheet essentials). The
+    five settings essentials are core-pack tools, so `TOOL_PACKS=core` leaves
+    them on a lean surface; no environment tool is lean."""
     assert LEAN_SETTINGS_ESSENTIALS <= server.LEAN_TOOL_NAMES
+    assert LEAN_MECH_ESSENTIALS <= server.LEAN_TOOL_NAMES
     assert not (SETTINGS_TOOLS & server.LEAN_TOOL_NAMES)
-    assert len(server.LEAN_TOOL_NAMES) == 55
+    assert len(server.LEAN_TOOL_NAMES) == 60
     monkeypatch.setattr(config.settings, "tool_packs", "core")
     info = await server._apply_tool_profile("lean")
     disabled = set(info["disabled_tools"])
     assert not (LEAN_SETTINGS_ESSENTIALS & disabled)
-    assert info["enabled_count"] == 55 - 3, "lean minus the three pid tools"
+    assert not ({"sheet_frame", "titleblock_apply"} & disabled), "sheet tools are core"
+    assert info["enabled_count"] == 60 - 6, "lean minus the three pid and three mech tools"
 
 
 async def test_the_three_track_e_sections_file_under_their_own_groups():
@@ -213,8 +244,9 @@ async def test_the_three_track_e_sections_file_under_their_own_groups():
     assert set(groups["styles"]) == STYLE_TOOLS
     assert set(groups["page_setup"]) == PAGE_SETUP_TOOLS
     assert set(groups["environment"]) == SETTINGS_TOOLS
-    assert set(groups["mech"]) == MECH_TOOLS
-    assert len(groups) == 24
+    assert set(groups["mechanical"]) == MECH_TOOLS
+    assert set(groups["sheet"]) == SHEET_TOOLS
+    assert len(groups) == 25
 
 
 async def test_system_about_reports_packs():

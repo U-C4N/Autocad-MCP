@@ -1,6 +1,6 @@
 """Golden query set for tool discovery: English in, one right tool out.
 
-Eighty-one cases (66 tuning + 15 holdout) split into a **tuning** set and a
+Ninety-one cases (76 tuning + 15 holdout) split into a **tuning** set and a
 **holdout** set. The split is
 the point of the file. Ranking work is measured against
 :data:`TUNING_CASES` only; :data:`HOLDOUT_CASES` were written at the same time,
@@ -174,6 +174,22 @@ TUNING_CASES: tuple[GoldenCase, ...] = (
         "counting",
         risk="read",
     ),
+    # v1.6 tracks B + G — the mechanical part drawer and the sheet standard.
+    # Written before the merged alias records were measured against them; a
+    # miss here is fixed by adding vocabulary to that tool's record in
+    # discovery/aliases.py, never by moving the expectation. Two Turkish
+    # queries are in deliberately: this shop searches in Turkish, and the
+    # alias corpus is the only place that vocabulary can live.
+    GoldenCase("XATTACH", "xref_attach", "command"),
+    GoldenCase("IMAGEATTACH", "image_attach", "command"),
+    GoldenCase("draw a stepped shaft from a segment list", "mech_part_draw", "paraphrase"),
+    GoldenCase("add a section view of the part", "mech_view_add", "paraphrase"),
+    GoldenCase("kaynak sembolü", "weld_symbol", "synonym"),
+    GoldenCase("yüzey pürüzlülüğü", "surface_texture", "synonym"),
+    GoldenCase("iso 5457 sheet frame", "sheet_frame", "synonym"),
+    GoldenCase("put an m12 hex bolt on the drawing", "std_part_insert", "paraphrase"),
+    GoldenCase("draw the parts list table on the sheet", "bom_table", "paraphrase"),
+    GoldenCase("save this drawing as a dwg", "drawing_export_dwg", "paraphrase"),
 )
 
 

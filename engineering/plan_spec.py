@@ -27,6 +27,12 @@ CritiqueFocus = Literal[
     "pid_untagged_instrument",
     "pid_illegal_tag",
     "pid_unconnected_equipment",
+    "mech_missing_centreline",
+    "mech_unhatched_section",
+    "mech_view_misaligned",
+    "mech_duplicate_dimension",
+    "mech_thread_unrepresented",
+    "mech_bom_balloon_mismatch",
 ]
 SnapType = Literal["end", "mid", "center", "quad", "int", "perp", "near"]
 
@@ -44,6 +50,12 @@ ALL_CRITIQUE_FOCUSES: tuple[CritiqueFocus, ...] = (
     "pid_untagged_instrument",
     "pid_illegal_tag",
     "pid_unconnected_equipment",
+    "mech_missing_centreline",
+    "mech_unhatched_section",
+    "mech_view_misaligned",
+    "mech_duplicate_dimension",
+    "mech_thread_unrepresented",
+    "mech_bom_balloon_mismatch",
 )
 
 

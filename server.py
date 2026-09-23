@@ -691,6 +691,7 @@ async def _registered_tool_count() -> int | None:
 _GROUP_TAG_PRIORITY = (
     "pid",
     "mech",
+    "sheet",
     "style",
     "pagesetup",
     "environment",
@@ -719,7 +720,8 @@ _GROUP_TAG_PRIORITY = (
 # Map the winning tag to a human-readable group label for the breakdown.
 _GROUP_TAG_LABELS = {
     "pid": "pid",
-    "mech": "mech",
+    "mech": "mechanical",
+    "sheet": "sheet",
     "style": "styles",
     "pagesetup": "page_setup",
     "environment": "environment",
@@ -949,6 +951,17 @@ LEAN_TOOL_NAMES = frozenset(
         # them on the lean surface; with S's three above, lean is 55.
         "page_setup_apply",
         "batch_plot",
+        # Mechanical + sheet (tracks B/G) — the five a lean client needs to
+        # draw a part and put it on a sheet. The catalogue, the annotation
+        # symbols and the delivery tools stay full-profile: a lean client
+        # draws the part and leaves the paperwork to a full one. The first
+        # three are `mech`-pack tools, so TOOL_PACKS=core hides them from a
+        # lean surface too; sheet_frame and titleblock_apply are core.
+        "mech_part_draw",
+        "mech_view_add",
+        "mech_dimension_part",
+        "sheet_frame",
+        "titleblock_apply",
     }
 )
 
@@ -1004,8 +1017,10 @@ PACK_TOOL_NAMES: dict[str, frozenset[str]] = {
             "system_prompt_message",
         }
     ),
-    # SECTIONS 21-23 - the mechanical part model, standard parts and
-    # mechanical annotation (tracks B+G).
+    # SECTIONS 21-23 — the mechanical part drawer, the standard-parts catalogue
+    # and the ISO annotation symbols (spec §11). SECTION 24 (the sheet, the
+    # parts list, xrefs and DWG) stays in `core`: a frame, a title block, a
+    # parts list and an xref are universal drafting, not a vertical.
     "mech": frozenset(
         {
             "mech_part_draw",
@@ -5692,7 +5707,10 @@ async def drawing_finalize(
     (iso128, layer_color, dim_overlap, untrimmed_corner, duplicate_entities, construction_left,
     gdt, plus the P&ID focuses pid_dangling_line, pid_duplicate_tag,
     pid_incompatible_connection, pid_untagged_instrument, pid_illegal_tag,
-    pid_unconnected_equipment — silent on a sheet with no P&ID symbols),
+    pid_unconnected_equipment — silent on a sheet with no P&ID symbols, plus the
+    mechanical focuses mech_missing_centreline, mech_unhatched_section,
+    mech_view_misaligned, mech_duplicate_dimension, mech_thread_unrepresented,
+    mech_bom_balloon_mismatch — silent on a sheet with no mechanical part),
     then saves to disk, exports a screenshot, and returns the DWG path.
 
     Raises ToolError if any validator 'error' finding is present, or if critique reports an
@@ -5947,10 +5965,14 @@ async def drawing_critique(
         Field(
             default=None,
             description="Subset of: iso128, layer_color, dim_overlap, untrimmed_corner, "
-            "duplicate_entities, construction_left, gdt, and the P&ID focuses "
+            "duplicate_entities, construction_left, gdt, the P&ID focuses "
             "pid_dangling_line, pid_duplicate_tag, pid_incompatible_connection, "
             "pid_untagged_instrument, pid_illegal_tag, pid_unconnected_equipment "
-            "(silent on a drawing with no P&ID symbols). None = run all.",
+            "(silent on a drawing with no P&ID symbols), and the mechanical focuses "
+            "mech_missing_centreline, mech_unhatched_section, mech_view_misaligned, "
+            "mech_duplicate_dimension, mech_thread_unrepresented, "
+            "mech_bom_balloon_mismatch (silent on a drawing with no mechanical part). "
+            "None = run all.",
         ),
     ] = None,
     ctx: Context = None,
@@ -9576,7 +9598,7 @@ async def balloon_add(
 )
 @mcp.tool(
     annotations={"title": "Sheet: Attach Xref", "destructiveHint": False},
-    tags={"drawing", "block"},
+    tags={"sheet", "drawing", "block"},
 )
 async def xref_attach(
     path: Annotated[str, Field(description="Full path of the drawing to reference.")],
@@ -9612,7 +9634,7 @@ async def xref_attach(
 @cad_tool(summary="List, reload, bind, detach or repath an external reference.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Sheet: Manage Xrefs", "destructiveHint": True},
-    tags={"drawing", "block"},
+    tags={"sheet", "drawing", "block"},
 )
 async def xref_manage(
     action: Annotated[
@@ -9646,7 +9668,7 @@ async def xref_manage(
 @cad_tool(summary="Attach a raster image (PNG/JPG) as an underlay.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Sheet: Attach Image", "destructiveHint": False},
-    tags={"drawing", "create"},
+    tags={"sheet", "drawing", "create"},
 )
 async def image_attach(
     path: Annotated[str, Field(description="Full path of the raster image.")],
@@ -9720,7 +9742,7 @@ async def data_extract(
 @cad_tool(summary="Write the drawing as a real DWG at a chosen AutoCAD version.", cost="safe")
 @mcp.tool(
     annotations={"title": "Drawing: Export DWG", "destructiveHint": False},
-    tags={"drawing"},
+    tags={"sheet", "drawing"},
 )
 async def drawing_export_dwg(
     path: Annotated[str, Field(description="Full path of the .dwg to write.")],

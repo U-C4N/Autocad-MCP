@@ -495,7 +495,7 @@ async def test_tool_groups_is_byte_identical_to_the_source_declared_grouping():
 
 
 async def test_tool_group_sizes_are_unchanged():
-    """Frozen snapshot of the surface (229 tools, 24 groups).
+    """Frozen snapshot of the surface (229 tools, 25 groups).
 
     Taken before @cad_tool landed at 131 tools; `batch` moved 2 -> 3 when
     v1.5.0's `cad_batch` joined `entity_batch_create`/`entity_batch_modify`, and
@@ -565,26 +565,43 @@ async def test_tool_group_sizes_are_unchanged():
     are tagged `engineering` and `mech`; with `mech` ranked ahead of
     `engineering` in `_GROUP_TAG_PRIORITY` they file under `mech` (14 in all,
     exactly `PACK_TOOL_NAMES["mech"]`) and leave `engineering` untouched.
+
+    Two groups appeared with v1.6's tracks B and G — `mechanical` (14,
+    SECTIONS 21-23: the part drawer, the standard-parts catalogue and the ISO
+    annotation symbols) and `sheet` (11, SECTION 24: frames, title blocks,
+    revisions, the parts list, balloons, xrefs, images and DWG). Both tags are
+    ranked directly after `pid` in `_GROUP_TAG_PRIORITY`, so a part tool that
+    also carries `create` and an annotation tool that also carries `dimension`
+    file under their own section. `mechanical` is exactly
+    `PACK_TOOL_NAMES["mech"]` (the `mech` label above was renamed when the
+    integration task gave the section its full name); `sheet` is core-pack,
+    because a frame, a title block, a parts list and an xref are universal
+    drafting. The integration also tagged SECTION 24's last four tools
+    (`xref_attach`, `xref_manage`, `image_attach`, `drawing_export_dwg`) with
+    `sheet`, so pack, group and SECTION are one list again: `engineering`
+    returned 17 -> 10, `blocks` 11 -> 9, `entity_creation` 19 -> 18 and
+    `drawing` 12 -> 11 — every one of them its pre-SECTION-24 value.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
         "analysis": 12,
         "batch": 3,
-        "blocks": 11,
+        "blocks": 9,
         "corner_ops": 4,
         "dimensions": 5,
-        "drawing": 12,
-        "engineering": 17,
-        "entity_creation": 19,
+        "drawing": 11,
+        "engineering": 10,
+        "entity_creation": 18,
         "entity_modification": 16,
         "entity_query": 9,
         "environment": 22,
         "layers": 14,
         "layouts": 12,
-        "mech": 14,
+        "mechanical": 14,
         "page_setup": 6,
         "pid": 9,
         "premium": 12,
+        "sheet": 11,
         "solids": 5,
         "styles": 10,
         "system": 7,

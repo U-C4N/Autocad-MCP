@@ -6,26 +6,27 @@
     "tools": 229,
     "resources": 8,
     "prompts": 5,
-    "groups": 24
+    "groups": 25
   },
   "groups": {
     "analysis": 12,
     "batch": 3,
-    "blocks": 11,
+    "blocks": 9,
     "corner_ops": 4,
     "dimensions": 5,
-    "drawing": 12,
-    "engineering": 17,
-    "entity_creation": 19,
+    "drawing": 11,
+    "engineering": 10,
+    "entity_creation": 18,
     "entity_modification": 16,
     "entity_query": 9,
     "environment": 22,
     "layers": 14,
     "layouts": 12,
-    "mech": 14,
+    "mechanical": 14,
     "page_setup": 6,
     "pid": 9,
     "premium": 12,
+    "sheet": 11,
     "solids": 5,
     "styles": 10,
     "system": 7,
@@ -181,7 +182,7 @@
     },
     {
       "name": "balloon_add",
-      "group": "engineering",
+      "group": "sheet",
       "cost": "mutate",
       "summary": "Add an ISO 6433 balloon linked to its item row.",
       "tags": [
@@ -320,7 +321,7 @@
     },
     {
       "name": "bom_extract",
-      "group": "engineering",
+      "group": "sheet",
       "cost": "read",
       "summary": "Read the bill of materials out of the drawing's block references.",
       "tags": [
@@ -335,7 +336,7 @@
     },
     {
       "name": "bom_table",
-      "group": "engineering",
+      "group": "sheet",
       "cost": "mutate",
       "summary": "Draw the parts list as a real TABLE above the title block.",
       "tags": [
@@ -389,7 +390,7 @@
     },
     {
       "name": "centre_marks",
-      "group": "mech",
+      "group": "mechanical",
       "cost": "mutate",
       "summary": "Draw ISO 128-23 centre marks or centre lines on circles, read from the drawing.",
       "tags": [
@@ -431,7 +432,7 @@
     },
     {
       "name": "data_extract",
-      "group": "engineering",
+      "group": "sheet",
       "cost": "safe",
       "summary": "Write the bill of materials to a CSV file, or to XLSX when openpyxl is present.",
       "tags": [
@@ -729,11 +730,12 @@
     },
     {
       "name": "drawing_export_dwg",
-      "group": "drawing",
+      "group": "sheet",
       "cost": "safe",
       "summary": "Write the drawing as a real DWG at a chosen AutoCAD version.",
       "tags": [
-        "drawing"
+        "drawing",
+        "sheet"
       ],
       "annotations": {
         "title": "Drawing: Export DWG",
@@ -1680,7 +1682,7 @@
     },
     {
       "name": "hatch_material",
-      "group": "mech",
+      "group": "mechanical",
       "cost": "mutate",
       "summary": "Hatch a region with the ISO 128-50 section pattern for a named material.",
       "tags": [
@@ -1708,12 +1710,13 @@
     },
     {
       "name": "image_attach",
-      "group": "entity_creation",
+      "group": "sheet",
       "cost": "mutate",
       "summary": "Attach a raster image (PNG/JPG) as an underlay.",
       "tags": [
         "create",
-        "drawing"
+        "drawing",
+        "sheet"
       ],
       "annotations": {
         "title": "Sheet: Attach Image",
@@ -2084,7 +2087,7 @@
     },
     {
       "name": "mech_dimension_part",
-      "group": "mech",
+      "group": "mechanical",
       "cost": "mutate",
       "summary": "Dimension a drawn part: ISO 129 dimensions, ISO 286 fits, a hole table.",
       "tags": [
@@ -2098,7 +2101,7 @@
     },
     {
       "name": "mech_hole_pattern",
-      "group": "mech",
+      "group": "mechanical",
       "cost": "mutate",
       "summary": "Draw a linear, grid or polar hole pattern with centre marks on any drawing.",
       "tags": [
@@ -2112,7 +2115,7 @@
     },
     {
       "name": "mech_part_draw",
-      "group": "mech",
+      "group": "mechanical",
       "cost": "mutate",
       "summary": "Draw a machine part from a segment list or an outline plus typed features.",
       "tags": [
@@ -2126,7 +2129,7 @@
     },
     {
       "name": "mech_part_from_spec",
-      "group": "mech",
+      "group": "mechanical",
       "cost": "mutate",
       "summary": "Draw a whole mechanical sheet - several parts and their views - in one transaction.",
       "tags": [
@@ -2140,7 +2143,7 @@
     },
     {
       "name": "mech_part_inspect",
-      "group": "mech",
+      "group": "mechanical",
       "cost": "read",
       "summary": "Read the part model back off the drawing: segments, features, views, omissions.",
       "tags": [
@@ -2154,7 +2157,7 @@
     },
     {
       "name": "mech_view_add",
-      "group": "mech",
+      "group": "mechanical",
       "cost": "mutate",
       "summary": "Add another view of a drawn part: side, top, section (full/half/offset) or detail.",
       "tags": [
@@ -2412,7 +2415,7 @@
     },
     {
       "name": "revision_add",
-      "group": "engineering",
+      "group": "sheet",
       "cost": "mutate",
       "summary": "Append a revision row, with optional revision clouds and triangular tags.",
       "tags": [
@@ -2426,7 +2429,7 @@
     },
     {
       "name": "section_line",
-      "group": "mech",
+      "group": "mechanical",
       "cost": "mutate",
       "summary": "Draw an ISO 128-40 cutting-plane line and return the plane the section view uses.",
       "tags": [
@@ -2496,7 +2499,7 @@
     },
     {
       "name": "sheet_frame",
-      "group": "engineering",
+      "group": "sheet",
       "cost": "mutate",
       "summary": "Draw an ISO 5457 sheet frame with the zone grid and centring marks.",
       "tags": [
@@ -2575,7 +2578,7 @@
     },
     {
       "name": "std_feature_draw",
-      "group": "mech",
+      "group": "mechanical",
       "cost": "mutate",
       "summary": "Draw a standard feature - thread, undercut, ring or O-ring groove, centre hole - onto existing geometry.",
       "tags": [
@@ -2589,7 +2592,7 @@
     },
     {
       "name": "std_part_insert",
-      "group": "mech",
+      "group": "mechanical",
       "cost": "mutate",
       "summary": "Insert an ISO standard part - hex bolt, nut, washer, cap screw or ball bearing - as a tagged block.",
       "tags": [
@@ -2603,7 +2606,7 @@
     },
     {
       "name": "std_part_list",
-      "group": "mech",
+      "group": "mechanical",
       "cost": "read",
       "summary": "Search the standard-parts catalogue: ISO bolts, nuts, washers, cap screws, bearings.",
       "tags": [
@@ -2617,7 +2620,7 @@
     },
     {
       "name": "surface_texture",
-      "group": "mech",
+      "group": "mechanical",
       "cost": "mutate",
       "summary": "Draw an ISO 21920-1 surface-texture symbol: Ra/Rz, process, lay, allowance.",
       "tags": [
@@ -2895,7 +2898,7 @@
     },
     {
       "name": "titleblock_apply",
-      "group": "engineering",
+      "group": "sheet",
       "cost": "mutate",
       "summary": "Stamp an ISO 7200 title block (and frame) on any sheet from A4 to A0.",
       "tags": [
@@ -3216,7 +3219,7 @@
     },
     {
       "name": "weld_symbol",
-      "group": "mech",
+      "group": "mechanical",
       "cost": "mutate",
       "summary": "Draw an ISO 2553 weld symbol: reference line, identification line, size and pitch.",
       "tags": [
@@ -3230,12 +3233,13 @@
     },
     {
       "name": "xref_attach",
-      "group": "blocks",
+      "group": "sheet",
       "cost": "mutate",
       "summary": "Attach a DWG/DXF as an external reference (attachment or overlay).",
       "tags": [
         "block",
-        "drawing"
+        "drawing",
+        "sheet"
       ],
       "annotations": {
         "title": "Sheet: Attach Xref",
@@ -3244,12 +3248,13 @@
     },
     {
       "name": "xref_manage",
-      "group": "blocks",
+      "group": "sheet",
       "cost": "mutate",
       "summary": "List, reload, bind, detach or repath an external reference.",
       "tags": [
         "block",
-        "drawing"
+        "drawing",
+        "sheet"
       ],
       "annotations": {
         "title": "Sheet: Manage Xrefs",

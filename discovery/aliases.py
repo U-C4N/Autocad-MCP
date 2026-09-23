@@ -369,6 +369,7 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "machining symbol",
             "yuzey puruzlulugu",
             "yuzey isleme sembolu",
+            "yüzey pürüzlülüğü",
         ),
     ),
     "weld_symbol": ToolAliases(
@@ -382,6 +383,7 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "weld all around",
             "kaynak sembolu",
             "kose kaynagi",
+            "kaynak sembolü",
         ),
     ),
     "centre_marks": ToolAliases(
@@ -1077,6 +1079,7 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "materials table",
             "iso 7573 table",
             "parca listesi tablosu",
+            "draw the parts list table on the sheet",
         ),
     ),
     "balloon_add": ToolAliases(
@@ -1149,6 +1152,7 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "autocad 2018 format",
             "downgrade to r2000",
             "dwg olarak kaydet",
+            "save this drawing as a dwg",
         ),
     ),
     # ── Layers & linetypes ──────────────────────────────────────────────────
@@ -2202,6 +2206,7 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "somun",
             "rondela",
             "rulman",
+            "put an m12 hex bolt on the drawing",
         ),
     ),
     "std_feature_draw": ToolAliases(
