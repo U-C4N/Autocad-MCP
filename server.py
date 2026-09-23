@@ -9783,7 +9783,7 @@ async def drawing_export_dwg(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 25: Architecture (7 tools) ──────────────────────────────────────
+# ── SECTION 25: Architecture (11 tools) ─────────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -10224,6 +10224,241 @@ async def arch_schedule(
 
 
 # ── arch: catalogue (group C) ──
+
+
+@cad_tool(
+    summary="Search the furniture and sanitary catalogue in English or Turkish.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Architecture: Catalogue", "readOnlyHint": True},
+    tags={"arch", "query"},
+)
+async def arch_catalogue_list(
+    query: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description=(
+                "Words matched against the item name, family and its English or Turkish "
+                "label, ignoring case and Turkish diacritics - 'bed', 'yatak', 'klozet', "
+                "'buzdolabi'. Every word must match."
+            ),
+        ),
+    ] = None,
+    family: Annotated[
+        str | None,
+        Field(default=None, description="furniture | sanitary"),
+    ] = None,
+    lang: Annotated[
+        str,
+        Field(default="en", description="en | tr - the language of the 'label' column"),
+    ] = "en",
+    ctx: Context = None,
+) -> dict:
+    """Catalogue rows: name, family, both labels, nominal size [w, d] in mm, block name, layer.
+
+    Sizes are nominal catalogue dimensions - what a furniture or appliance
+    catalogue lists as a common size - and every row says so in `size_basis`;
+    they are not standards values. Twenty items: thirteen furniture, seven
+    sanitary. Refusals: a `family` other than furniture/sanitary and a `lang`
+    other than en/tr, each with the list.
+    """
+    from engineering.arch.catalogue import FAMILIES, SIZE_BASIS, catalogue
+
+    try:
+        rows = catalogue(query, family, lang=lang)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+    return {
+        "count": len(rows),
+        "families": list(FAMILIES),
+        "size_basis": SIZE_BASIS,
+        "items": list(rows),
+    }
+
+
+@cad_tool(
+    summary="Insert a furniture or sanitary item - bed, sofa, WC, basin, bathtub - as a block.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Architecture: Catalogue Insert", "readOnlyHint": False},
+    tags={"arch", "create"},
+)
+async def arch_catalogue_insert(
+    name: Annotated[
+        str,
+        Field(
+            description=(
+                "Catalogue name from arch_catalogue_list, e.g. 'double_bed', 'sofa_3_seat', "
+                "'wc', 'wall_basin', 'kitchen_counter'"
+            )
+        ),
+    ],
+    x: Annotated[float, Field(description="X (WCS) of the item's back-left corner")],
+    y: Annotated[float, Field(description="Y (WCS) of the item's back-left corner")],
+    rotation: Annotated[
+        float,
+        Field(
+            default=0.0,
+            description=(
+                "Degrees CCW about (x, y); 0 puts the item's back (its wall side) along +X "
+                "with the item extending towards +Y"
+            ),
+        ),
+    ] = 0.0,
+    ctx: Context = None,
+) -> dict:
+    """Define the item's block ARCH_<NAME> once, insert it on the furniture or sanitary layer.
+
+    The block carries an invisible ITEM attribute with the catalogue name. Its
+    size is a nominal catalogue dimension (reported with `size_basis`), not a
+    standards value; the outline is a plan symbol drawn inside that footprint.
+    The furniture / sanitary layer is created from the `arch` layer set when
+    the drawing lacks it. Refusals, all before any write: an unknown name
+    (with the nearest catalogue names) and a non-finite coordinate or rotation.
+    """
+    from engineering.arch.catalogue import insert_item
+
+    await ctx.info(f"arch catalogue: {name} at ({x}, {y})")
+    try:
+        return await insert_item(_backend(ctx), name, at=(x, y), rotation=rotation)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@cad_tool(
+    summary="Draw a structural grid: axis lines with numbered and lettered bubbles at both ends.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Architecture: Structural Grid", "destructiveHint": False},
+    tags={"arch", "create"},
+)
+async def arch_grid(
+    x_axes: Annotated[
+        list[float],
+        Field(description="X positions (WCS) of the vertical axes; numbered 1, 2, 3 left to right"),
+    ],
+    y_axes: Annotated[
+        list[float],
+        Field(
+            description="Y positions (WCS) of the horizontal axes; lettered A, B, C bottom to top"
+        ),
+    ],
+    labels: Annotated[
+        dict | None,
+        Field(
+            default=None,
+            description=(
+                "Override the labels: {'x': [...], 'y': [...]} (either key), one label per "
+                "position in the order the positions were given"
+            ),
+        ),
+    ] = None,
+    extension: Annotated[
+        float,
+        Field(
+            default=1500.0,
+            gt=0,
+            description="Drawing units each axis runs past the outermost crossing axis",
+        ),
+    ] = 1500.0,
+    scale: Annotated[
+        float,
+        Field(
+            default=50.0,
+            gt=0,
+            description="Plot-scale denominator (50 = 1:50): bubbles and labels are paper mm x scale",
+        ),
+    ] = 50.0,
+    ctx: Context = None,
+) -> dict:
+    """Axis lines on the arch grid layer (its CENTER linetype comes from the layer) and a
+    5 mm bubble with its label at both ends of each axis, on the symbol layer.
+
+    Numbers run along x and letters along y (A..Z, then AA, AB - no letter is
+    skipped) unless `labels` names them. The bubble and label sizes are this
+    server's declared drafting sizes in paper millimetres, not a standards value.
+    Refusals, all before any write: an empty axis list in either direction, a
+    non-finite or duplicate position, a label list whose length does not match
+    its positions, a duplicate or empty label, an unknown `labels` key, and a
+    non-positive `extension` or `scale`.
+    """
+    from engineering.arch.symbols import draw_grid
+
+    await ctx.info(f"arch grid: {len(x_axes)} x {len(y_axes)} axes at 1:{scale:g}")
+    try:
+        return await draw_grid(
+            _backend(ctx), x_axes, y_axes, labels=labels, extension=extension, scale=scale
+        )
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@cad_tool(
+    summary="Draw a plan symbol: north arrow, section mark, level mark or elevation mark.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Architecture: Symbol", "destructiveHint": False},
+    tags={"arch", "create"},
+)
+async def arch_symbol(
+    kind: Annotated[
+        str,
+        Field(description="north_arrow | section_mark | level | elevation_mark"),
+    ],
+    x: Annotated[float, Field(description="Symbol origin X (WCS)")],
+    y: Annotated[float, Field(description="Symbol origin Y (WCS)")],
+    params: Annotated[
+        dict | None,
+        Field(
+            default=None,
+            description=(
+                "north_arrow: {rotation} (degrees CCW from +Y; 0 = north up). "
+                "section_mark: {p1, p2, label, side} - p1/p2 are [x, y] relative to (x, y), "
+                "side left|right is where the section looks, seen from p1 towards p2. "
+                "level: {value} in metres (0 -> '±0.00'). "
+                "elevation_mark: {label, directions} - directions from up|right|down|left"
+            ),
+        ),
+    ] = None,
+    lang: Annotated[
+        str,
+        Field(default="en", description="en | tr - the north letter and the decimal separator"),
+    ] = "en",
+    scale: Annotated[
+        float,
+        Field(
+            default=50.0,
+            gt=0,
+            description="Plot-scale denominator (50 = 1:50): symbol sizes are paper mm x scale",
+        ),
+    ] = 50.0,
+    ctx: Context = None,
+) -> dict:
+    """Draw one architectural symbol on the arch symbol layer.
+
+    Sizes are this server's declared drafting sizes in paper millimetres times
+    `scale` (a 16 mm north-arrow circle, 10 mm section and elevation bubbles),
+    not standards values. Refusals, all before any write: an unknown `kind`
+    (with the list), a parameter the kind does not take (with the ones it
+    does), a section mark without p1/p2, with an empty label, an unknown side
+    or a cut line too short for its two arrows, an elevation direction outside
+    up/right/down/left or named twice, a non-finite level value, and a `lang`
+    other than en/tr.
+    """
+    from engineering.arch.symbols import draw_symbol
+
+    await ctx.info(f"arch symbol: {kind} at ({x}, {y})")
+    try:
+        return await draw_symbol(
+            _backend(ctx), kind, (x, y), lang=lang, scale=scale, **(params or {})
+        )
+    except (TypeError, ValueError) as exc:
+        raise ToolError(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

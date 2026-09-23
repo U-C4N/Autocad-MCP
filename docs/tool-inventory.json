@@ -3,14 +3,14 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 236,
+    "tools": 240,
     "resources": 8,
     "prompts": 5,
     "groups": 26
   },
   "groups": {
     "analysis": 12,
-    "architecture": 7,
+    "architecture": 11,
     "batch": 3,
     "blocks": 9,
     "corner_ops": 4,
@@ -182,6 +182,34 @@
       }
     },
     {
+      "name": "arch_catalogue_insert",
+      "group": "architecture",
+      "cost": "mutate",
+      "summary": "Insert a furniture or sanitary item - bed, sofa, WC, basin, bathtub - as a block.",
+      "tags": [
+        "arch",
+        "create"
+      ],
+      "annotations": {
+        "title": "Architecture: Catalogue Insert",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "arch_catalogue_list",
+      "group": "architecture",
+      "cost": "read",
+      "summary": "Search the furniture and sanitary catalogue in English or Turkish.",
+      "tags": [
+        "arch",
+        "query"
+      ],
+      "annotations": {
+        "title": "Architecture: Catalogue",
+        "readOnlyHint": true
+      }
+    },
+    {
       "name": "arch_dimension_chains",
       "group": "architecture",
       "cost": "mutate",
@@ -192,6 +220,20 @@
       ],
       "annotations": {
         "title": "Architecture: Dimension Chains",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "arch_grid",
+      "group": "architecture",
+      "cost": "mutate",
+      "summary": "Draw a structural grid: axis lines with numbered and lettered bubbles at both ends.",
+      "tags": [
+        "arch",
+        "create"
+      ],
+      "annotations": {
+        "title": "Architecture: Structural Grid",
         "destructiveHint": false
       }
     },
@@ -262,6 +304,20 @@
       ],
       "annotations": {
         "title": "Architecture: Stair",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "arch_symbol",
+      "group": "architecture",
+      "cost": "mutate",
+      "summary": "Draw a plan symbol: north arrow, section mark, level mark or elevation mark.",
+      "tags": [
+        "arch",
+        "create"
+      ],
+      "annotations": {
+        "title": "Architecture: Symbol",
         "destructiveHint": false
       }
     },

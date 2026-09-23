@@ -495,7 +495,7 @@ async def test_tool_groups_is_byte_identical_to_the_source_declared_grouping():
 
 
 async def test_tool_group_sizes_are_unchanged():
-    """Frozen snapshot of the surface (236 tools, 26 groups).
+    """Frozen snapshot of the surface (240 tools, 26 groups).
 
     Taken before @cad_tool landed at 131 tools; `batch` moved 2 -> 3 when
     v1.5.0's `cad_batch` joined `entity_batch_create`/`entity_batch_modify`, and
@@ -594,11 +594,27 @@ async def test_tool_group_sizes_are_unchanged():
     file under their secondary tags: `entity_creation` 18 -> 20,
     `entity_query` 9 -> 10. This snapshot is branch-local: the track F merge
     task recomputes it once the walls, rooms and catalogue branches have landed.
+
+    Track F group C opened SECTION 25 with the furniture and sanitary
+    catalogue: `arch_catalogue_list` is tagged `arch` and `query`,
+    `arch_catalogue_insert` `arch` and `create`. `arch` is not in
+    `_GROUP_TAG_PRIORITY` on this branch, so they file under their secondary
+    tags: `entity_query` 9 -> 10, `entity_creation` 18 -> 19. This snapshot is
+    branch-local: the track F merge task recomputes it once the walls, rooms
+    and catalogue branches have landed.
+
+    Group C's second task added the structural grid and the plan symbols
+    (`arch_grid` / `arch_symbol`), both tagged `arch` and `create`:
+    `entity_creation` 19 -> 21, for the same branch-local reason.
+
+    After the track F merge all eleven SECTION 25 tools file under
+    `architecture` (the `arch` tag outranks `create` / `query` / `dimension`),
+    so `entity_creation` and `entity_query` are back at 18 and 9.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
         "analysis": 12,
-        "architecture": 7,
+        "architecture": 11,
         "batch": 3,
         "blocks": 9,
         "corner_ops": 4,
@@ -624,4 +640,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 236
+    assert sum(sizes.values()) == 240
