@@ -109,6 +109,7 @@ async def draw_prims(
     """Draw primitive descriptions, turned by ``rotation`` about their origin, then placed at ``at``."""
     placed = tuple(prims)
     _refuse_islands_without_edge_paths(backend, placed)
+    await _ensure_layers(backend, sorted({f"{layer_prefix}{layer_for(p)}" for p in placed}))
     if abs(float(rotation)) > 1e-12:
         placed = rotate(placed, float(rotation), (0.0, 0.0))
     if abs(float(at[0])) > 1e-12 or abs(float(at[1])) > 1e-12:
@@ -193,6 +194,23 @@ async def draw_prims(
         counts[key] = counts.get(key, 0) + 1
 
     return {"handles": handles, "counts": counts}
+
+
+async def _ensure_layers(backend, names) -> tuple[str, ...]:
+    """Create whichever target layers the drawing lacks, before the first entity.
+
+    MEASURED on AutoCAD 2026 by ``scripts/smoke_mech_com.py``: ``draw_part``
+    put its anchor POINT on ``MECH``, a layer no layer set creates, and
+    ActiveX answered ``entity.Layer = "MECH"`` with ``-0x7ffdfff7 ('Key not
+    found')`` - after every view had already been drawn. The headless engine
+    creates a missing layer on assignment, so the same call passed every test.
+    Group A measured the same refusal for annotation layers; this is the same
+    cure (``ensure_annotation_layers``) at the places every mechanical drawing
+    path passes through.
+    """
+    from engineering.mech.annotate import ensure_annotation_layers
+
+    return await ensure_annotation_layers(backend, [str(name) for name in names if name])
 
 
 def _refuse_islands_without_edge_paths(backend, prims) -> None:
@@ -515,6 +533,7 @@ async def draw_part(
         if index == 0:
             parent, parent_offset = view, offset
 
+    await _ensure_layers(backend, [ANCHOR_LAYER])
     anchor = await backend.entity_create_point(origin[0], origin[1], layer=ANCHOR_LAYER)
     payload = {
         "v": PAYLOAD_VERSION,
@@ -839,6 +858,7 @@ async def dimension_part(
     skipped: list[dict] = []
     table_handle: str | None = None
 
+    await _ensure_layers(backend, [ROLE_LAYER["dim"]])
     for index, view, placed in planned:
         record = records[index]
         offset = record["offset"]
@@ -963,6 +983,7 @@ async def draw_hole_pattern(
             prims.append(Line((hole.x - reach, hole.y), (hole.x + reach, hole.y), "center"))
             prims.append(Line((hole.x, hole.y - reach), (hole.x, hole.y + reach), "center"))
     drawn = await draw_prims(backend, prims)
+    await _ensure_layers(backend, [layer, ROLE_LAYER["dim"] if dimension else None])
     if layer:
         # the role map owns the layers; an explicit override moves the circles
         # only, so the ISO 128-23 centre marks stay on CENTER.

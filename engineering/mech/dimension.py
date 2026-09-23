@@ -423,6 +423,13 @@ def segment_key(index: int, *, bore: bool = False) -> str:
 
 
 def _revolved_diameters(part: RevolvedPart) -> list[DimIntent]:
+    """Each segment's outside diameter and bore, measured across the axis.
+
+    ``p1`` is the upper chord end: a diameter's text stands beyond ``p1`` (the
+    ActiveX ``AddDimDiametric`` ChordPoint rule, which both engines follow), so
+    every front-view diameter is annotated above the view, clear of the axial
+    chain rows below it.
+    """
     intents: list[DimIntent] = []
     bounds = zip(segment_bounds(part), part.segments, strict=True)
     for index, ((x0, x1), segment) in enumerate(bounds):

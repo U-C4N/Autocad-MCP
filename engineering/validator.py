@@ -27,6 +27,22 @@ DIMENSION_LIKE_TEXT = re.compile(
     re.IGNORECASE,
 )
 
+# A standard-part designation (ISO 4014 - M12x60, DIN 912 - M8x20) names a
+# part, it does not measure one: the "12x60" in it is the thread and the
+# nominal length the standard's designation grammar spells that way. A parts
+# list drawn as text carries one per row, so the designation is taken out
+# before DIMENSION_LIKE_TEXT looks - a hand-typed "Ø78" beside it still flags.
+STANDARD_DESIGNATION = re.compile(
+    r"\b(?:ISO|DIN|EN)\s*\d+(?:-\d+)?\s*-\s*M\d+(?:\.\d+)?(?:\s*[x×]\s*\d+(?:\.\d+)?)?",
+    re.IGNORECASE,
+)
+
+
+def looks_like_dimension(text: str) -> bool:
+    """Is this TEXT/MTEXT content masquerading as a dimension?"""
+    return bool(DIMENSION_LIKE_TEXT.search(STANDARD_DESIGNATION.sub(" ", text or "")))
+
+
 # R27 — match SPUR / HELICAL as whole words (not substrings of e.g.
 # "SPURIOUS") when checking title/helix consistency.
 _SPUR_RE = re.compile(r"\bSPUR\b", re.IGNORECASE)
@@ -92,7 +108,7 @@ class DrawingValidator:
                 e
                 for e in ents
                 if e.type in ("TEXT", "MTEXT")
-                and DIMENSION_LIKE_TEXT.search(getattr(e, "properties", {}).get("text", "") or "")
+                and looks_like_dimension(getattr(e, "properties", {}).get("text", "") or "")
             ]
             real_dims = [e for e in ents if e.type in REAL_DIMENSION_TYPES]
             if text_likes:

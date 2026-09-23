@@ -5550,7 +5550,15 @@ class EzdxfBackend(AutoCADBackend):
             cx = (x1f + x2f) / 2
             cy = (y1f + y2f) / 2
             radius = math.sqrt((x2f - x1f) ** 2 + (y2f - y1f) ** 2) / 2
-            angle_rad = math.atan2(y2f - y1f, x2f - x1f)
+            # The text stands `leader_length` beyond the FIRST chord point, the
+            # ActiveX rule: AddDimDiametric(ChordPoint, FarChordPoint,
+            # LeaderLength) measured on AutoCAD 2026 put a 50 mm diameter drawn
+            # from (x, 170) to (x, 220) with its text at (x, 160). This engine
+            # used to put it beyond the second point, so the same call annotated
+            # opposite sides of a part on the two engines - and the mechanical
+            # drawer's front-view diameters landed on their own chain dimensions
+            # headlessly while clearing them live.
+            angle_rad = math.atan2(y1f - y2f, x1f - x2f)
             leader = float(leader_length)
             # The measured size comes from `radius`; `location` only places the
             # text. This used to pass centre + (radius + leader) as `mpoint`,

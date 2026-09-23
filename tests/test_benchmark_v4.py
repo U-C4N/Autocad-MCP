@@ -48,7 +48,8 @@ def test_correctness_suite_has_the_settings_checks():
         "settings_pdf_mediabox_a3",
     ):
         assert CHECKS[name][1] == "Settings"
-    assert len(CHECKS) == 32
+    # v4 left the suite at 32; tracks B + G grew it to 39 (tests/test_benchmark_v5.py).
+    assert len(CHECKS) == 39
 
 
 @pytest.mark.asyncio  # asyncio_mode is strict; the four tests above are sync

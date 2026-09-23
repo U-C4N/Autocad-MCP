@@ -57,6 +57,17 @@ async def test_a_diameter_dimension_measures_the_diameter(backend):
     assert dim.get_measurement() == pytest.approx(40.0)
 
 
+async def test_the_text_stands_beyond_the_first_chord_point_as_activex_puts_it(backend):
+    """AddDimDiametric(ChordPoint, FarChordPoint, LeaderLength), measured on
+    AutoCAD 2026: a 50 mm diameter from (x, 170) to (x, 220) with leader 10
+    had its text at (x, 160) - beyond the FIRST point. Both engines follow it."""
+    info = await backend.dimension_diameter(0, 25, 0, -25, leader_length=10.0)
+    dim = backend._doc.entitydb.get(info.handle)
+    text = dim.dxf.text_midpoint
+    assert text.y == pytest.approx(35.0)
+    assert text.x == pytest.approx(0.0)
+
+
 async def test_the_leader_length_moves_the_text_not_the_measurement(backend):
     """The regression in one assertion: leader_length must not be measurable."""
     near = await backend.dimension_diameter(-20, 0, 20, 0, leader_length=5.0)

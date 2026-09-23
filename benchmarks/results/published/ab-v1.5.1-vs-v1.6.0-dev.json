@@ -1,12 +1,12 @@
 {
   "summary": {
     "baseline_ref": "v1.5.1",
-    "total": 32,
+    "total": 39,
     "old_pass": 26,
-    "new_pass": 32,
-    "old_pct": 81.2,
+    "new_pass": 39,
+    "old_pct": 66.7,
     "new_pct": 100.0,
-    "fixed": 6,
+    "fixed": 13,
     "regressed": 0
   },
   "rows": [
@@ -199,6 +199,48 @@
     {
       "check": "settings_pdf_mediabox_a3",
       "category": "Settings",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "mech_part_roundtrip",
+      "category": "Mechanical",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "mech_section_hatch_area",
+      "category": "Mechanical",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "mech_iso286_on_dimension",
+      "category": "Mechanical",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "mech_thread_unrepresented_is_caught",
+      "category": "Mechanical",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "std_part_iso4014_m12",
+      "category": "Mechanical",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "sheet_frame_iso5457_a3",
+      "category": "Sheet",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "bom_balloon_link",
+      "category": "Sheet",
       "old": "miss",
       "new": "pass"
     }

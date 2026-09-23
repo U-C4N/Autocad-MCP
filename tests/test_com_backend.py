@@ -546,6 +546,27 @@ def _gate_valve_block():
     return _Block([body_left, body_right, tag])
 
 
+def test_a_dimension_reports_where_its_text_stands():
+    """The dim_overlap critique reads `text_position`; without it a diameter
+    dimension's reference point was its bounding-box centre - the circle's
+    centre - and every outside diameter collided with its own bore on the live
+    engine (measured by scripts/smoke_mech_com.py, AutoCAD 2026)."""
+    from backends.com_backend import _entity_info
+
+    outside = _Entity(
+        "AcDbDiametricDimension",
+        GetBoundingBox=lambda: ((178.0, 170.0, 0.0), (184.0, 233.0, 0.0)),
+        TextPosition=(181.0, 230.0, 0.0),
+        Handle="1C1",
+        Layer="DIM",
+        color=256,
+        Linetype="ByLayer",
+        Visible=True,
+    )
+    props = _entity_info(outside).properties
+    assert props["text_position"] == [181.0, 230.0]
+
+
 def test_com_geometry_bbox_is_the_drawn_body_without_the_attribute():
     from backends.com_backend import _entity_info
 

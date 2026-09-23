@@ -41,13 +41,13 @@ Unsupported tasks remain in the fixed-matrix denominator with score zero,
 preventing partial implementations from receiving an inflated score.
 
 ```bash
-python -m benchmarks.run_competitors --list --matrix v4
-python -m benchmarks.run_competitors --server autocad-mcp-pro --backend ezdxf --matrix v4 --json
+python -m benchmarks.run_competitors --list --matrix v5
+python -m benchmarks.run_competitors --server autocad-mcp-pro --backend ezdxf --matrix v5 --json
 python -m benchmarks.run_competitors --task table_mleader --task hatch_islands --json
 ```
 
-The release-machine ezdxf self-check is **17/17 (100.0)** on the v4 matrix
-(`--matrix v3` / `--matrix v2` reproduce the earlier sets).
+The release-machine ezdxf self-check is **18/18 (100.0)** on the v5 matrix
+(`--matrix v4` / `--matrix v3` / `--matrix v2` reproduce the earlier sets).
 Repository stars and raw tool counts do not contribute to the score. Adapter
 registration lives in `competitors.yaml`.
 
@@ -99,6 +99,23 @@ fail on their own:
 
 The competitor reports carry no result for either, for the same reason they
 carry none for the v3 five. `--matrix v3` reproduces the v1.5 set exactly.
+
+### Matrix v5 (v1.6) — the mechanical sheet
+
+`tasks_v5.py` keeps the v4 seventeen unchanged and adds roadmap criterion 3:
+
+| Task | Category | Verified against |
+|---|---|---|
+| `mech_assembly` | mech | a flange-coupling A3 sheet built through the code the tools call — `apply_titleblock` (ISO 5457 frame with zones and marks, ISO 7200 title block), a hub drawn by `draw_part` with a full section by `add_view` and chain dimensions by `dimension_part`, a flange with its bolt-circle end view, two ISO 4014 M12x60 bolts and two ISO 4032 M12 nuts by `insert_std_part`, the ISO 7573 parts list *read off the drawing* by `extract_records` and drawn by `draw_bom_table`, and one balloon per row linked to that row's inserts by `add_balloon`. The sheet is saved, then gated on two numbers that cannot be negotiated: `run_critique(focus=None)` returns **zero** issues and `combine(validator, critique)` scores at least **90**. The focuses that fired come back in the metrics, and `tests/test_benchmark_v5.py` drops one balloon to prove the gate fails and names `mech_bom_balloon_mismatch` |
+
+Nothing in the task tidies up after the tools: the view engine draws the ISO
+128-23 centre lines of every circle it emits, so the sheet is clean because it
+was drawn clean. Building it found four defects that every headless test had
+missed — the headless diameter text on the wrong side of the chord, the
+validator reading a fastener designation (`M12x60`) as a fake dimension, and on
+the live seat a missing `MECH` layer and a parts list that could not see a
+`BLOCKREFERENCE`; each is fixed with a test. The competitor reports carry no
+result for it.
 
 ## Live competitor lane (v1.4)
 
@@ -217,15 +234,29 @@ python benchmarks/compare_versions.py --json results.json
 
 ### Result — this branch (1.6.0-dev) vs v1.5.1 (release gate)
 
-32 checks, ezdxf backend, one subprocess per check. Machine-readable report:
+39 checks, ezdxf backend, one subprocess per check. Machine-readable report:
 [`results/published/ab-v1.5.1-vs-v1.6.0-dev.json`](results/published/ab-v1.5.1-vs-v1.6.0-dev.json).
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---------|----------------|-----------|-------|-----------|
-| **v1.5.1** (baseline)     | 26 / 32 | 81.2 % | — | — |
-| **v1.6.0-dev** (this branch) | 32 / 32 | 100 % | 6 | **0** |
+| **v1.5.1** (baseline)     | 26 / 39 | 66.7 % | — | — |
+| **v1.6.0-dev** (this branch) | 39 / 39 | 100 % | 13 | **0** |
 
-The six are all `miss → pass` — v1.5.1 has none of the methods: the three
+The thirteen are all `miss → pass` — v1.5.1 has none of the methods. Seven
+are tracks B and G: `mech_part_roundtrip` (a part read back from its own
+`ACADMCP_MECH` XDATA equals the part drawn), `mech_section_hatch_area` (a
+sleeve 60 long, ⌀40 outside, ⌀20 bore: a full section cuts two 60 × 10 faces,
+1200 mm² exactly, measured out of the drawing by `entity_measure` — never from
+the code that drew it), `mech_iso286_on_dimension` (ISO 286-1: 40 H7 is
++0.025 / 0, and the fit survives `layout_dimensions`),
+`mech_thread_unrepresented_is_caught` (the ISO 6410 focus fires on a thread
+drawn as a plain circle and stops firing once the thin ¾ arc is there — the
+mechanical twin of `dim_overlap_critique_fires`), `std_part_iso4014_m12` (ISO
+4014:2011 table 1, M12: s = 18, k = 7.5, matched by value; the inserted block
+carries its designation back), `sheet_frame_iso5457_a3` (the frame runs 20,10
+to 410,287 inside the 420 × 297 trimmed sheet) and `bom_balloon_link` (two
+identical bolts collapse into one row of quantity 2 with a stable item number,
+and that row's balloon carries it). The other six are the three
 P&ID checks track A added (`pid_block_define_attdef_roundtrip`,
 `pid_tag_parse_fic`, `pid_graph_edge_count`) and the three settings checks of
 track E (`settings_dimstyle_iso25_values`: the ISO-25 preset reaches the
@@ -234,7 +265,7 @@ through the lister; `settings_layer_state_roundtrip`: save → change → restor
 puts the layer table back and the state survives save/reopen as an XRECORD in
 the file; `settings_pdf_mediabox_a3`: the plotted PDF's own `/MediaBox` reads
 420 × 297 mm). Every one of the 26 checks it was released on still passes, so
-the two tracks added capability without moving a number it had already earned.
+the four tracks added capability without moving a number it had already earned.
 
 ### Result — v1.5.1 vs v1.5.0
 

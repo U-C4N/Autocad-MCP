@@ -161,13 +161,25 @@ def test_the_cache_arithmetic_follows_the_published_multipliers():
 # -- lane 1: idle cost ------------------------------------------------------
 
 
-def test_the_idle_lane_covers_the_three_advertised_surfaces(report):
+def test_the_idle_lane_covers_the_four_advertised_surfaces(report):
+    """Default, lean, search - and TOOL_PACKS=core,mech, the mechanical client
+    that never opens a P&ID or a live seat: the default surface minus exactly
+    the pid and settings packs."""
     variants = {row["variant"]: row for row in report["idle"]}
-    assert set(variants) == {"default", "lean", "search"}
+    assert set(variants) == {"default", "lean", "packs_core_mech", "search"}
     assert variants["default"]["advertised_tools"] > 100
     assert variants["lean"]["advertised_tools"] == len(server.LEAN_TOOL_NAMES)
     assert variants["search"]["advertised_tools"] == 2
-    assert variants["default"]["chars"] > variants["lean"]["chars"] > variants["search"]["chars"]
+    dropped = len(server.PACK_TOOL_NAMES["pid"]) + len(server.PACK_TOOL_NAMES["settings"])
+    assert variants["packs_core_mech"]["advertised_tools"] == (
+        variants["default"]["advertised_tools"] - dropped
+    )
+    assert (
+        variants["default"]["chars"]
+        > variants["packs_core_mech"]["chars"]
+        > variants["lean"]["chars"]
+        > variants["search"]["chars"]
+    )
 
 
 def test_the_idle_lane_separates_the_wire_payload_from_what_the_model_pays(report):

@@ -101,6 +101,21 @@ async def test_validator_catches_fake_dimension_text(backend, tmp_path):
     assert "fake_dimension_text" in _codes(result)
 
 
+async def test_a_standard_part_designation_is_not_a_fake_dimension():
+    """A parts-list row names a part: "ISO 4014 - M12x60" is the ISO 4014
+    designation grammar, not a measurement. Found by the v5 mech_assembly
+    benchmark, where every text parts list cost the sheet a warning. The
+    exemption is the designation only - a measurement beside it still flags."""
+    from engineering.validator import looks_like_dimension
+
+    assert not looks_like_dimension("ISO 4014 - M12x60")
+    assert not looks_like_dimension("DIN 912 - M8x20")
+    assert not looks_like_dimension("ISO 4032 - M12")
+    assert looks_like_dimension("ISO 4014 - M12x60  Ø78")
+    assert looks_like_dimension("40x60")
+    assert looks_like_dimension("Ø78")
+
+
 async def test_validator_catches_hidden_orphans(backend, tmp_path):
     await ensure_standard_linetypes(backend)
     await ensure_engineering_layers(backend)

@@ -1346,6 +1346,18 @@ def _entity_info(entity) -> EntityInfo:
             geometry_bbox = _com_geometry_bbox(entity)
             if geometry_bbox is not None:
                 props["geometry_bbox"] = geometry_bbox
+        elif "Dimension" in obj_name:
+            # ezdxf parity: where the dimension's text stands. Without it the
+            # dim_overlap critique fell back to the bounding-box centre, which
+            # for a diameter dimension is the circle's centre - so an outside
+            # diameter and its bore, whose texts stand 15 mm apart, read as
+            # "0.00 mm apart" (measured on AutoCAD 2026 by
+            # scripts/smoke_mech_com.py; TextPosition read live on
+            # AcDbDiametricDimension, WCS). ModelSpace.Item hands the entity
+            # over narrowed to IAcadEntity, which has no TextPosition - measured
+            # AttributeError - so it is read through the concrete class.
+            text = _com_unnarrow(entity).TextPosition
+            props["text_position"] = [text[0], text[1]]
     except Exception as exc:
         log.debug("Type-specific entity properties extraction failed: %s", exc)
 

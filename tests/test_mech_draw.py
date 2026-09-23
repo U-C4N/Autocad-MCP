@@ -492,3 +492,65 @@ async def test_a_transaction_that_cannot_open_is_a_value_error(backend, monkeypa
     monkeypatch.setattr(backend, "transaction_begin", busy)
     with pytest.raises(ValueError, match="could not open a transaction"):
         await draw_from_spec(backend, {"parts": [{"part": PLATE, "at": [0.0, 0.0]}]})
+
+
+async def test_a_single_step_disk_dimensions_without_a_text_collision(backend):
+    """The largest diameter's text used to land on its own segment's chain text.
+
+    The front-view diameters start at the upper chord end, and ActiveX puts a
+    diameter's text beyond that FIRST point - above the view, clear of the
+    chain rows (measured on AutoCAD 2026). The headless engine put it beyond
+    the second point instead, so ⌀90 landed exactly on the "15" of a 15 mm
+    disk and ``dim_overlap`` fired on every single-step part the default
+    ``mech_part_draw`` produced headlessly. Found by the v5 ``mech_assembly``
+    benchmark and the live smoke together.
+    """
+    from engineering.critique import run_critique
+
+    disk = build_part(
+        {
+            "kind": "revolved",
+            "name": "FLANGE",
+            "material": "cast_iron",
+            "segments": [{"length": 15.0, "d_outer": 90.0, "d_inner": 40.0}],
+        }
+    )
+    await draw_part(backend, disk, at=(0.0, 0.0), views=("front",), dimension=True)
+    assert await run_critique(backend, ["dim_overlap"]) == []
+
+
+async def test_every_layer_exists_before_an_entity_is_put_on_it(backend, monkeypatch):
+    """ActiveX will not create a layer on assignment - the headless engine will.
+
+    Measured on AutoCAD 2026 by scripts/smoke_mech_com.py: ``entity.Layer =
+    "MECH"`` raised ``-0x7ffdfff7 ('Key not found')`` after every view of the
+    part had been drawn, so ``mech_part_draw`` could not finish on a live
+    seat. This backend is made as strict as ActiveX, and the whole part -
+    views, anchor, dimensions - has to draw on it.
+    """
+    creators = (
+        "entity_create_point",
+        "entity_create_line",
+        "entity_create_circle",
+        "entity_create_arc",
+        "entity_create_polyline",
+        "entity_create_text",
+        "entity_create_hatch",
+    )
+    for name in creators:
+        real = getattr(backend, name)
+
+        async def strict(*args, _real=real, **kwargs):
+            layer = kwargs.get("layer")
+            known = {row.name.lower() for row in await backend.layer_list()}
+            if layer and layer.lower() not in known:
+                raise RuntimeError(f"Key not found: layer {layer!r}")
+            return await _real(*args, **kwargs)
+
+        monkeypatch.setattr(backend, name, strict)
+
+    drawn = await draw_part(
+        backend, build_part(SHAFT), at=(0.0, 0.0), views=("front", "side"), dimension=True
+    )
+    assert drawn["part_id"]
+    assert ANCHOR_LAYER.lower() in {row.name.lower() for row in await backend.layer_list()}

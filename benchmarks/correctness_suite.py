@@ -417,6 +417,231 @@ async def settings_pdf_mediabox_a3():
     )
 
 
+# ── Mechanical parts and the sheet (tracks B + G) ───────────────────────────
+
+
+def _field(row: dict, *names):
+    """A row's value under whichever of these names it carries.
+
+    The parts-list column spelling belongs to the sheet module; what this
+    suite pins is the numbers, so it reads by meaning rather than by name.
+    """
+    for name in names:
+        if name in row:
+            return row[name]
+    return None
+
+
+def _inserted_handle(result: dict):
+    return result.get("handle") or (result.get("handles") or [None])[0]
+
+
+async def mech_part_roundtrip():
+    """Draw a part, read it back from its own ACADMCP_MECH XDATA, compare.
+
+    Segments and material only: a feature's parameter spelling belongs to
+    `engineering/mech/features.py` and its own tests, and a check that guessed
+    at it would fail for the wrong reason.
+    """
+    from engineering.mech.draw import draw_part, read_part
+    from engineering.mech.part import build_part, part_to_dict
+
+    b = await _b()
+    spec = {
+        "kind": "revolved",
+        "name": "SHAFT",
+        "material": "steel",
+        "segments": [
+            {"length": 40.0, "d_outer": 30.0},
+            {"length": 20.0, "d_outer": 50.0, "d_inner": 10.0},
+        ],
+    }
+    part = build_part(spec)
+    drawn = await draw_part(b, part, at=(0.0, 0.0), views=("front",), dimension=False)
+    back = await read_part(b, drawn["part_id"])
+    return part_to_dict(build_part(back["part"])) == part_to_dict(part)
+
+
+async def mech_section_hatch_area():
+    """The hatched cut area of a full section, measured against a hand number.
+
+    A plain sleeve: length 60, outside diameter 40, bore 20. A full
+    longitudinal section cuts two faces, each 60 x 10, so the hatch fills
+    60 * (40 - 20) = 1200 mm^2 exactly. The number is read out of the drawing
+    through entity_measure (the tool's analysis_measure_entity), never from the
+    code that drew it — which is why it cannot be faked.
+    """
+    from engineering.mech.draw import add_view, draw_part
+    from engineering.mech.part import build_part
+
+    b = await _b()
+    part = build_part(
+        {
+            "kind": "revolved",
+            "name": "SLEEVE",
+            "material": "steel",
+            "segments": [{"length": 60.0, "d_outer": 40.0, "d_inner": 20.0}],
+        }
+    )
+    drawn = await draw_part(b, part, at=(0.0, 0.0), views=("front",), dimension=False)
+    await add_view(
+        b,
+        drawn["part_id"],
+        "section",
+        plane={"p1": [0.0, 0.0], "p2": [60.0, 0.0], "label": "A"},
+        style="full",
+    )
+    total = 0.0
+    for ent in await b.entity_list(type_filter="HATCH", limit=500):
+        total += float((await b.entity_measure(ent.handle))["area"])
+    return abs(total - 1200.0) < 0.01
+
+
+async def mech_iso286_on_dimension():
+    """A 40 H7 bore dimension carries ISO 286's +0.025 / 0 through the layout.
+
+    ISO 286-1 table 1: the 30-50 mm step has IT7 = 25 um, and H fixes the lower
+    deviation at 0. The fit has to survive `layout_dimensions`, or the number
+    is right in the table and wrong on the sheet.
+    """
+    from engineering.fits import fit_lookup
+    from engineering.mech.dimension import layout_dimensions
+    from engineering.mech.primitives import Circle, DimIntent
+    from engineering.mech.views import View
+
+    deviation = fit_lookup("H7", 40.0)
+    if abs(deviation.upper_mm - 0.025) > 1e-9 or abs(deviation.lower_mm) > 1e-9:
+        return False
+    intent = DimIntent("diameter", (-20.0, 0.0), (20.0, 0.0), fit="H7", feature="bore")
+    view = View(
+        kind="front",
+        prims=(Circle((0.0, 0.0), 20.0),),
+        dims=(intent,),
+        omitted=(),
+        bbox=(-20.0, -20.0, 20.0, 20.0),
+    )
+    placed = layout_dimensions(view, [intent])
+    return len(placed) == 1 and placed[0].fit == "H7" and placed[0].feature == "bore"
+
+
+async def mech_thread_unrepresented_is_caught():
+    """The ISO 6410 focus fires on a thread drawn as a plain circle.
+
+    A quality gate that never fires is not a gate; this is the mechanical twin
+    of `dim_overlap_critique_fires`.
+    """
+    from engineering.mech.critique import build_index, issues_for
+    from engineering.mech.xdata import APP_ID, to_values
+
+    b = await _b()
+    payload = {
+        "v": 1,
+        "kind": "part",
+        "id": "P1",
+        "view": "side",
+        "part": {
+            "name": "STUD",
+            "material": "steel",
+            "segments": [{"length": 60.0, "d_outer": 20.0}],
+            "features": [{"kind": "thread", "id": "t1", "designation": "M20x1.5"}],
+        },
+    }
+    anchor = await b.entity_create_circle(0.0, 0.0, 0.5, layer="0")
+    await b.entity_set_xdata(anchor.handle, APP_ID, to_values(payload))
+    await b.entity_create_circle(0.0, 0.0, 10.0, layer="GEOMETRY")
+    before = issues_for("mech_thread_unrepresented", await build_index(b))
+    await b.entity_create_arc(0.0, 0.0, 8.0, 0.0, 270.0, layer="GEOMETRY")
+    after = issues_for("mech_thread_unrepresented", await build_index(b))
+    return len(before) == 1 and after == []
+
+
+async def sheet_frame_iso5457_a3():
+    """ISO 5457 A3: 420 x 297 trimmed, a 20 mm filing margin on the left and
+    10 mm on the other three edges, so the frame runs (20, 10) to (410, 287)
+    and the drawing space is 390 x 277. The trimmed sheet edge is drawn too
+    (ISO 5457 4.1), so the outermost extent is the sheet, 0,0 to 420,297 -
+    and nothing may reach past it."""
+    from engineering.mech.primitives import points_of
+    from engineering.sheet.frames import SHEETS, frame_prims
+
+    if tuple(float(v) for v in SHEETS["A3"]) != (297.0, 420.0):
+        return False
+    prims = frame_prims("A3", orientation="landscape", zones=False, marks=False)
+    points = {
+        (round(float(x), 6), round(float(y), 6)) for prim in prims for x, y in points_of(prim)
+    }
+    frame = {(20.0, 10.0), (410.0, 10.0), (410.0, 287.0), (20.0, 287.0)}
+    sheet = {(0.0, 0.0), (420.0, 0.0), (420.0, 297.0), (0.0, 297.0)}
+    xs = [x for x, _y in points]
+    ys = [y for _x, y in points]
+    extent = (min(xs), min(ys), max(xs), max(ys))
+    return frame <= points and sheet <= points and extent == (0.0, 0.0, 420.0, 297.0)
+
+
+async def bom_balloon_link():
+    """Two identical bolts collapse into one row of quantity 2, the item number
+    is stable across a rerun, and the balloon drawn for that row carries it."""
+    from engineering.mech.stdparts import insert_std_part
+    from engineering.mech.xdata import APP_ID, decode
+    from engineering.sheet.bom import balloon_prims, rows_from_records
+
+    b = await _b()
+    records = []
+    for x in (0.0, 60.0):
+        result = await insert_std_part(b, "ISO 4014 - M12x60", at=(x, 0.0), view="side")
+        raw = await b.entity_get_xdata(_inserted_handle(result), APP_ID)
+        records.append(decode(raw["xdata"][APP_ID]))
+    rows = rows_from_records(records)
+    again = rows_from_records(records)
+    if len(rows) != 1 or len(again) != 1:
+        return False
+    item = _field(rows[0], "item", "no", "pos")
+    if item is None or item != _field(again[0], "item", "no", "pos"):
+        return False
+    if int(_field(rows[0], "qty", "quantity") or 0) != 2:
+        return False
+    texts = [
+        p.text for p in balloon_prims(int(item), (0.0, 40.0), (0.0, 5.0)) if hasattr(p, "text")
+    ]
+    return texts == [str(int(item))]
+
+
+async def std_part_iso4014_m12():
+    """ISO 4014's M12 row and the block it becomes.
+
+    ISO 4014:2011 table 1, M12: width across flats s = 18 mm, head height
+    k = 7.5 mm. The row is matched by value rather than by column name — the
+    spelling is the catalogue's business, the numbers are the standard's — and
+    the inserted block has to carry its designation back in ACADMCP_MECH.
+    The catalogue nests a row's sizes one level down (``dims``), so the
+    values are read one level deep.
+    """
+    from engineering.mech.stdparts import catalogue, insert_std_part
+    from engineering.mech.xdata import APP_ID, decode
+
+    rows = [row for row in catalogue("M12") if any("4014" in str(value) for value in row.values())]
+    if not rows:
+        return False
+    values = [
+        inner
+        for row in rows
+        for value in row.values()
+        for inner in (value.values() if isinstance(value, dict) else (value,))
+    ]
+    numbers = {
+        round(float(value), 3)
+        for value in values
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    }
+    if not {18.0, 7.5} <= numbers:
+        return False
+    b = await _b()
+    result = await insert_std_part(b, "ISO 4014 - M12x60", at=(0.0, 0.0), view="side")
+    raw = await b.entity_get_xdata(_inserted_handle(result), APP_ID)
+    payload = decode(raw["xdata"][APP_ID])
+    return payload["kind"] == "std_part" and "M12" in str(payload["designation"])
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -450,6 +675,13 @@ CHECKS = {
     "settings_dimstyle_iso25_values": (settings_dimstyle_iso25_values, "Settings"),
     "settings_layer_state_roundtrip": (settings_layer_state_roundtrip, "Settings"),
     "settings_pdf_mediabox_a3": (settings_pdf_mediabox_a3, "Settings"),
+    "mech_part_roundtrip": (mech_part_roundtrip, "Mechanical"),
+    "mech_section_hatch_area": (mech_section_hatch_area, "Mechanical"),
+    "mech_iso286_on_dimension": (mech_iso286_on_dimension, "Mechanical"),
+    "mech_thread_unrepresented_is_caught": (mech_thread_unrepresented_is_caught, "Mechanical"),
+    "std_part_iso4014_m12": (std_part_iso4014_m12, "Mechanical"),
+    "sheet_frame_iso5457_a3": (sheet_frame_iso5457_a3, "Sheet"),
+    "bom_balloon_link": (bom_balloon_link, "Sheet"),
 }
 
 

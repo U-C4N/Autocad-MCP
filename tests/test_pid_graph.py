@@ -896,3 +896,14 @@ def test_com_block_reference_reports_mirrored_from_its_normal():
     assert _entity_info(blockref(Normal=(0.0, 0.0, -1.0))).properties["mirrored"] is True
     assert _entity_info(blockref(Normal=(0.0, 0.0, 1.0))).properties["mirrored"] is False
     assert _entity_info(blockref()).properties["mirrored"] is False
+
+
+def test_a_line_the_engine_could_not_read_is_not_an_edge():
+    """The live reader keeps a LINE whose point read AutoCAD refused, without
+    ``start``/``end`` (measured by scripts/smoke_mech_com.py on AutoCAD 2026);
+    the graph must leave it out instead of raising KeyError mid-critique."""
+    from backends.base import EntityInfo
+    from engineering.pid.graph import _vertices
+
+    blind = EntityInfo("1F", "LINE", "GEOMETRY", 256, "ByLayer", True, properties={})
+    assert _vertices(blind) == []

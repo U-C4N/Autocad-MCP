@@ -21,6 +21,14 @@ views and UCS, and the live-only group (launch, preferences, document
 properties, operator prompts) refused honestly headlessly. Spec:
 `docs/superpowers/specs/2026-09-16-v1.6-settings-design.md`.
 
+Tracks B and G of 1.6: the complete mechanical 2D part drawer and the sheet
+standard. 25 tools in four new sections — mechanical parts (21), standard
+parts (22), mechanical annotation (23) and sheet and delivery (24) — one part
+model and one view engine instead of a zoo of per-part generators, a new
+`mech` pack, six `mech_*` critique focuses and four new contract members
+(`xref_attach`, `xref_manage`, `image_attach`, `drawing_export_dwg`). Spec:
+`docs/superpowers/specs/2026-09-22-v1.6-mech-design.md`.
+
 ### Added
 
 - **Styles — 10 tools, pack `core`.** `dimstyle_list/create/modify/set_current`,
@@ -74,6 +82,28 @@ properties, operator prompts) refused honestly headlessly. Spec:
   `v1.5.1`: **26 / 32 → 32 / 32, six `miss → pass`, zero regressed**.
   `scripts/smoke_settings_com.py` runs the track once against the live seat
   (record below).
+- **Benchmark evidence for tracks B and G.** `benchmarks/tasks_v5.py` (18
+  tasks, the default matrix; v4 / v3 / v2 stay addressable) adds
+  `mech_assembly`: a flange-coupling A3 sheet built through the code the tools
+  call — frame and title block, a hub with a full section and chain
+  dimensions, a flange with its bolt-circle end view, ISO 4014 bolts and ISO
+  4032 nuts, the parts list read off the drawing and linked balloons — gated on
+  `drawing_critique(focus=None)` returning zero issues and a finalize score of
+  at least 90 (it scores 100); a test drops one balloon and watches the gate
+  fail by name. The correctness suite grows to 39 with `mech_part_roundtrip`,
+  `mech_section_hatch_area` (1200 mm² read back out of the drawing),
+  `mech_iso286_on_dimension`, `mech_thread_unrepresented_is_caught`,
+  `std_part_iso4014_m12`, `sheet_frame_iso5457_a3` and `bom_balloon_link`.
+  A/B against `v1.5.1`: **26 / 39 → 39 / 39, thirteen `miss → pass`, zero
+  regressed**. The token suite measures a `TOOL_PACKS=core,mech` row: 193
+  tools / 61,673 tokens against 224 / 72,163 by default.
+- **Live COM smoke.** `scripts/smoke_mech_com.py` executed once on AutoCAD
+  2026 (`25.1s (LMS Tech)`): the A3 frame and ISO 7200 title block, a two-step
+  shaft with a full section and 12 chain dimensions, an ISO 4014 M12x60 block
+  carrying 1 ACADMCP_MECH chunk, an ISO 7573 parts list read off the drawing
+  with its linked balloon, an xref attached and detached, and a real
+  31687-byte `.dwg` written by ActiveX `SaveAs` — `drawing_critique(focus=None)`
+  returned 0 issues (record below).
 
 - **P&ID — 9 tools, pack `pid`.**
   - `pid_symbol_list` / `pid_symbol_insert`: a 43-symbol ISO 10628-2 /
@@ -153,6 +183,33 @@ properties, operator prompts) refused honestly headlessly. Spec:
 
 ### Fixed
 
+- **Found by the tracks B + G evidence** (each with a test that fails on the
+  old code):
+  - `dimension_diameter` put its text beyond the *second* chord point
+    headlessly and beyond the *first* on AutoCAD (`AddDimDiametric`'s
+    ChordPoint, measured: a ⌀50 from (x, 170) to (x, 220) annotated at
+    (x, 160)). The two engines annotated opposite sides of the same part, and
+    headlessly every front-view diameter of `mech_part_draw` stood on its own
+    chain dimension — `dim_overlap` fired on any single-step disk. The
+    headless engine now follows ActiveX.
+  - On a live seat `mech_part_draw` died after drawing every view: its anchor
+    POINT goes on `MECH`, and ActiveX refuses `entity.Layer` on a missing
+    layer (`Key not found`) where ezdxf creates it. Every mechanical draw
+    path now ensures its target layers before the first entity.
+  - `bom_extract` returned nothing live: ActiveX names a block reference
+    `BLOCKREFERENCE`, and the parts list filtered on `INSERT` only. Both
+    names are read.
+  - The live `_entity_info` reported no `text_position` for a dimension (the
+    entity arrives narrowed to `IAcadEntity`, which has no `TextPosition`),
+    so `dim_overlap` compared bounding-box centres — a diameter and its bore
+    read "0.00 mm apart". It is read through the concrete class now.
+  - `pid_graph` raised `KeyError: 'start'` inside `drawing_critique(focus=None)`
+    on a LINE whose point read AutoCAD had refused while busy; such a line is
+    left out instead.
+  - The validator's `fake_dimension_text` read a standard-part designation
+    (`ISO 4014 - M12x60`) as a hand-typed dimension, so every parts list
+    drawn as text cost its sheet a warning. The designation is exempt; a
+    measurement beside it still flags.
 - **Track A hardening** (`tests/test_track_a_hardening.py`; the remaining
   review findings are filed with a disposition each in
   `docs/analysis/track-a-review-backlog.md`):
@@ -715,6 +772,53 @@ gets `RPC_E_CALL_REJECTED` — until someone presses Esc, past the 60 s timeout.
 The pick path was executed live earlier in the track (Task 23's measurement:
 `GetPoint` answers in WCS while `GetEntity` answers in the current UCS). Each
 plot also dropped AutoCAD's `plot.log` into the repo root; it is ignored now.
+
+### Live COM smoke — mechanical parts and the sheet (tracks B + G)
+
+`scripts/smoke_mech_com.py`, AutoCAD 2026 (`25.1s (LMS Tech)`), Windows 11,
+2026-09-23, in new documents only (an xref source saved and closed first, then
+the sheet) — `apply_layer_set("mech")` → `apply_titleblock` (A3, zones, marks)
+→ `draw_part` → `add_view(section)` → `dimension_part` → `insert_std_part` →
+`weld_symbol_prims` → `extract_records` → `draw_bom_table` → `add_balloon` →
+`xref_attach` / `xref_manage("list")` / `xref_manage("detach")` →
+`run_critique(focus=None)` → `drawing_export_dwg("R2018")`, all through the COM
+engine, exit 0, every scratch document closed afterwards:
+
+```json
+{
+  "autocad": "25.1s (LMS Tech)",
+  "part_id": "103",
+  "views": 2,
+  "section_omitted": [],
+  "dimensions": 12,
+  "bolt_handle": "2F7",
+  "xdata_chunks": 1,
+  "parts_list_rows": 1,
+  "parts_list_representation": "native",
+  "balloon": "31A",
+  "xref_attached": "XREF_SOURCE",
+  "xref_listed": 1,
+  "xref_detached": true,
+  "xrefs_after_detach": 0,
+  "dwg": {
+    "path": "%TEMP%\\mech_smoke_*\\mech_smoke.dwg",
+    "exists": true,
+    "bytes": 31687,
+    "magic": "AC1032"
+  },
+  "critique_issues": 0,
+  "critique": []
+}
+```
+
+The first runs found the four live defects listed under **Fixed** (the `MECH`
+layer, `BLOCKREFERENCE`, the dimension `text_position`, the refused LINE read)
+and one harness fault: the first call after `Documents.Add` can be refused with
+`RPC_E_CALL_REJECTED` while the new document initialises, and a refused
+cleanup then left the scratch document open. The smoke retries refused calls
+for up to 90 s (a refused call was not executed) and tracks its documents by
+the document list rather than by an assumed name, because `SaveAs` renames the
+document it writes.
 
 ## [1.5.1] — 2026-08-06
 

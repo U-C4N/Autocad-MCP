@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from benchmarks.tasks_v4 import TASKS_V4
+from benchmarks.tasks_v5 import TASKS_V5
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INPUT_DIR = ROOT / "benchmarks" / "results" / "published"
@@ -66,8 +66,8 @@ def render_chart(reports: list[dict[str, Any]], output: Path) -> None:
 
     matplotlib.rcParams["svg.hashsalt"] = "autocad-mcp-taskmatrix-v1"
 
-    task_ids = [task.task_id for task in TASKS_V4]
-    task_labels = [f"{task.task_id}  ({task.category})" for task in TASKS_V4]
+    task_ids = [task.task_id for task in TASKS_V5]
+    task_labels = [f"{task.task_id}  ({task.category})" for task in TASKS_V5]
     servers = [report["adapter"] for report in reports]
     status_by_server = {
         report["adapter"]: {item["task_id"]: item["status"] for item in report["results"]}

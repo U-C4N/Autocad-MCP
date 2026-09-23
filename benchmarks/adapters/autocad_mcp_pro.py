@@ -1,4 +1,4 @@
-"""Reference adapter for this repository, covering the v4 task matrix.
+"""Reference adapter for this repository, covering the v5 task matrix.
 
 Every task verifies against a value worked out independently of the code under
 test — a closed-form area, a count of entities placed on purpose, a token
@@ -12,7 +12,7 @@ import math
 from pathlib import Path
 
 from benchmarks.adapters.base import BenchmarkAdapter, TaskResult
-from benchmarks.tasks_v4 import TaskSpec
+from benchmarks.tasks_v5 import TaskSpec
 from engineering.delivery import deliver_drawing
 from engineering.layers import ensure_engineering_layers, ensure_standard_linetypes
 from engineering.refiner import refine_drawing
@@ -512,6 +512,174 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
                 "plot_style_known": applied["plot_style_known"],
             },
             [str(row_before["path"]), str(row["path"])],
+        )
+
+    async def _task_mech_assembly(self):
+        """A flange-coupling sheet built from the part model and the sheet standard.
+
+        Roadmap criterion 3. Two parts (a hub with a bore and a flange), a full
+        section through the hub, four standard fasteners with their parts-list
+        rows and balloons, an ISO 5457 A3 frame and an ISO 7200 title block.
+        Every step goes through the code the tools call: the frame and title
+        block through ``apply_titleblock``, the parts list is *read* off the
+        drawing by ``extract_records`` and drawn by ``draw_bom_table``, and each
+        balloon is linked to its row's inserts by ``add_balloon``.
+
+        The gate is two numbers, and both are asserted rather than reported:
+        ``run_critique(focus=None)`` must return zero issues, and the score the
+        finalize gate computes - ``combine(validator.summary, critique)`` over
+        the saved sheet - must be at least 90. A regression in either fails the
+        task; the focuses that fired come back in the metrics so the failure
+        names itself.
+
+        No step here repairs what the critique would flag: the view engine
+        draws the ISO 128-23 centre lines of every circle it emits (the end
+        view's bore and bolt holes included), so the sheet is clean because
+        the tools drew it clean, not because the benchmark tidied up after them.
+        """
+        from engineering import DrawingValidator
+        from engineering.critique import run_critique
+        from engineering.layers import apply_layer_set
+        from engineering.mech.draw import add_view, dimension_part, draw_part
+        from engineering.mech.part import build_part
+        from engineering.mech.stdparts import insert_std_part
+        from engineering.scoring import combine
+        from engineering.sheet.bom import (
+            add_balloon,
+            draw_bom_table,
+            extract_records,
+            rows_from_records,
+        )
+        from engineering.sheet.titleblock import (
+            TB_HEIGHT,
+            TitleBlockMetadata,
+            apply_titleblock,
+            titleblock_origin,
+        )
+
+        await apply_layer_set(self.backend, "mech")
+        await apply_titleblock(
+            self.backend,
+            size="A3",
+            metadata=TitleBlockMetadata(
+                title="FLANGE COUPLING",
+                drawing_no="MA-001",
+                drawn_by="autocad-mcp-pro",
+                scale="1:1",
+                material="S235JR",
+            ),
+            projection="first",
+            frame=True,
+            zones=True,
+            marks=True,
+        )
+
+        hub = build_part(
+            {
+                "kind": "revolved",
+                "name": "HUB",
+                "material": "steel",
+                "segments": [
+                    {"length": 40.0, "d_outer": 40.0, "d_inner": 20.0},
+                    {"length": 15.0, "d_outer": 90.0, "d_inner": 20.0},
+                ],
+            }
+        )
+        flange = build_part(
+            {
+                "kind": "revolved",
+                "name": "FLANGE",
+                "material": "cast_iron",
+                "segments": [{"length": 15.0, "d_outer": 90.0, "d_inner": 40.0}],
+                # Four M12 clearance holes (ISO 273 medium, 13.5) on a 65 PCD.
+                "features": [
+                    {
+                        "kind": "hole_circle",
+                        "id": "bolts",
+                        "x": 7.5,
+                        "pcd": 65.0,
+                        "count": 4,
+                        "diameter": 13.5,
+                        "start_angle": 45.0,
+                    }
+                ],
+            }
+        )
+        # A3 landscape: the frame runs (20, 10)-(410, 287) and the title block
+        # fills its lower-right corner, 180 x 60. First angle throughout: the
+        # hub's front view sits at x = 125 so its section lands left of it
+        # inside the frame; the flange's front view stands at x = 345 so its
+        # end view (the bolt circle) lands between the two parts; the
+        # fasteners take the free band below, left of the title block.
+        drawn_hub = await draw_part(
+            self.backend, hub, at=(125.0, 160.0), views=("front",), dimension=False
+        )
+        # A full longitudinal section along the hub's axis (part-local frame).
+        await add_view(
+            self.backend,
+            drawn_hub["part_id"],
+            "section",
+            plane={"p1": [0.0, 0.0], "p2": [55.0, 0.0], "label": "A"},
+            style="full",
+        )
+        await dimension_part(self.backend, drawn_hub["part_id"], style="chain")
+        await draw_part(
+            self.backend, flange, at=(345.0, 160.0), views=("front", "side"), dimension=True
+        )
+
+        # Two bolt-and-nut pairs: each nut sits on the thread of its bolt.
+        stations = (60.0, 110.0, 160.0, 210.0)
+        fasteners = []
+        for index, x in enumerate(stations):
+            designation = "ISO 4014 - M12x60" if index % 2 == 0 else "ISO 4032 - M12"
+            fasteners.append(
+                await insert_std_part(self.backend, designation, at=(x, 90.0), view="side")
+            )
+
+        # The parts list is a read of the drawing, not a list typed beside it.
+        records = await extract_records(self.backend)
+        rows = rows_from_records(records)
+        tb_x, tb_y = titleblock_origin("A3")
+        await draw_bom_table(self.backend, rows, at=(tb_x, tb_y + TB_HEIGHT))
+        station_of = {
+            str(result.get("handle")): x for result, x in zip(fasteners, stations, strict=True)
+        }
+        for row in rows:
+            targets = [str(handle) for handle in row.get("handles") or ()]
+            x = station_of.get(targets[0], stations[0]) if targets else stations[0]
+            await add_balloon(
+                self.backend,
+                item=int(row["item"]),
+                at=(x, 135.0),
+                leader_to=(x, 95.0),
+                targets=targets,
+            )
+
+        # drawing_finalize saves before it validates; so does the benchmark,
+        # or the validator's not_saved/no_path findings would grade the
+        # harness instead of the sheet.
+        sheet = self.artifact_dir / "mech_assembly.dxf"
+        await self.backend.drawing_save_as(str(sheet))
+        issues = await run_critique(self.backend, None)
+        validation = await DrawingValidator().run(self.backend)
+        summary = {"error": 0, "warning": 0, "info": 0}
+        for issue in issues:
+            summary[issue.severity] = summary.get(issue.severity, 0) + 1
+        score = combine(validation.summary, summary)
+        passed = len(issues) == 0 and float(score["score"]) >= 90.0
+        return (
+            passed,
+            {
+                "critique_issues": len(issues),
+                "critique_focuses": sorted({issue.focus for issue in issues}),
+                "score": float(score["score"]),
+                "grade": score["grade"],
+                "invalidity_ratio": score["invalidity_ratio"],
+                "parts_list_rows": len(rows),
+                "fasteners": len(fasteners),
+                "validator_findings": sorted(f.code for f in validation.findings),
+            },
+            [str(sheet)],
         )
 
     async def _task_auditable_delivery(self):

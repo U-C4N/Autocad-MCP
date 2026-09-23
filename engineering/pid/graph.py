@@ -209,8 +209,19 @@ class _Grid:
 
 
 def _vertices(info: EntityInfo) -> list[tuple[float, float]]:
+    """The entity's vertices, or ``[]`` when the engine could not report them.
+
+    MEASURED on AutoCAD 2026 by scripts/smoke_mech_com.py: the live engine's
+    entity reader drops a LINE's ``start``/``end`` when AutoCAD refuses the
+    point read (``RPC_E_CALL_REJECTED`` while busy) and keeps the entity, so
+    a subscript here crashed ``drawing_critique(focus=None)`` on a sheet with
+    no P&ID on it. A line without coordinates cannot be an edge; it is left
+    out rather than guessed at.
+    """
     if info.type in LINE_TYPES:
-        s, e = info.properties["start"], info.properties["end"]
+        s, e = info.properties.get("start"), info.properties.get("end")
+        if not s or not e:
+            return []
         return [(float(s[0]), float(s[1])), (float(e[0]), float(e[1]))]
     return [(float(p[0]), float(p[1])) for p in info.properties.get("points") or []]
 

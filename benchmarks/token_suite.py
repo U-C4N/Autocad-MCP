@@ -488,6 +488,7 @@ async def idle_lane(counter: Any, turns: int = SESSION_TURNS) -> list[dict[str, 
     """What a client pays on connect, for each advertised surface."""
     srv = _load_server()
     previous_profile = config.settings.tool_profile
+    previous_packs = config.settings.tool_packs
     rows: list[dict[str, Any]] = []
     try:
         config.settings.tool_profile = "full"
@@ -510,6 +511,17 @@ async def idle_lane(counter: Any, turns: int = SESSION_TURNS) -> list[dict[str, 
             )
         )
         config.settings.tool_profile = "full"
+        config.settings.tool_packs = "core,mech"
+        rows.append(
+            await _idle_row(
+                "packs_core_mech",
+                "TOOL_PACKS=core,mech - a mechanical client that never opens a "
+                "P&ID or a live seat.",
+                counter,
+                turns,
+            )
+        )
+        config.settings.tool_packs = previous_packs
         srv._apply_discovery_mode("search")
         rows.append(
             await _idle_row(
@@ -523,6 +535,9 @@ async def idle_lane(counter: Any, turns: int = SESSION_TURNS) -> list[dict[str, 
     finally:
         srv._apply_discovery_mode("off")
         config.settings.tool_profile = previous_profile
+        # restored here too, so a failed measurement cannot leave the process
+        # on a narrowed surface
+        config.settings.tool_packs = previous_packs
         await srv._apply_tool_profile(previous_profile)
     return rows
 

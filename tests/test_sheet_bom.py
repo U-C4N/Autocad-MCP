@@ -225,6 +225,30 @@ async def test_extract_reads_the_xdata_payload_and_never_touches_the_drawing(bac
 
 
 @pytest.mark.asyncio
+async def test_extract_reads_a_block_reference_under_the_live_type_name(backend, monkeypatch):
+    """The live engine calls an INSERT by its ObjectName, BLOCKREFERENCE.
+
+    Measured on AutoCAD 2026 by scripts/smoke_mech_com.py: a filter on
+    "INSERT" found nothing, and the parts list of a sheet holding an ISO 4014
+    bolt came back empty. The listing is made to answer the way ActiveX does.
+    """
+    handle = await _place_bolt(backend, "a", 0.0)
+    real = backend.entity_list
+
+    async def live_names(type_filter=None, **kwargs):
+        if type_filter and type_filter.upper() == "INSERT":
+            return []
+        wanted = (
+            "INSERT" if type_filter and type_filter.upper() == "BLOCKREFERENCE" else type_filter
+        )
+        return await real(type_filter=wanted, **kwargs)
+
+    monkeypatch.setattr(backend, "entity_list", live_names)
+    records = await extract_records(backend)
+    assert [r["handle"] for r in records] == [handle]
+
+
+@pytest.mark.asyncio
 async def test_extract_falls_back_to_the_block_attributes_when_there_is_no_payload(backend):
     await backend.block_define(
         "PLATE",

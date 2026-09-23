@@ -111,6 +111,11 @@ COLUMN_SHARES: dict[str, float] = {
 PAGE_SIZE = 1000
 
 
+#: A block reference under either engine's type name: the DXF name headlessly,
+#: the ActiveX ObjectName (AcDbBlockReference) live.
+INSERT_TYPES = ("INSERT", "BLOCKREFERENCE")
+
+
 async def all_entities(backend: AutoCADBackend, *, type_filter=None, layer=None):
     """Every entity of a type in the CURRENT space -- not the first 200 of them.
 
@@ -361,7 +366,18 @@ async def extract_records(backend: AutoCADBackend, *, layer=None, limit: int | N
     """
     if limit is not None and int(limit) <= 0:
         raise ValueError(f"bom_extract: limit must be a positive number of records; got {limit!r}")
-    inserts = await all_entities(backend, type_filter="INSERT", layer=layer)
+    # MEASURED on AutoCAD 2026 by scripts/smoke_mech_com.py: the live engine
+    # names a block reference by its ObjectName, BLOCKREFERENCE, and filters on
+    # that name, so a filter on the DXF name INSERT found nothing and the parts
+    # list came back empty on a sheet holding an ISO 4014 bolt. Both names are
+    # read, the way engineering/pid/graph.py already does.
+    inserts: list = []
+    seen: set[str] = set()
+    for type_name in INSERT_TYPES:
+        for entity in await all_entities(backend, type_filter=type_name, layer=layer):
+            if entity.handle not in seen:
+                seen.add(entity.handle)
+                inserts.append(entity)
     records: list[dict] = []
     for entity in inserts:
         payload: dict = {}
