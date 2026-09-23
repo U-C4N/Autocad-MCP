@@ -14,10 +14,14 @@ memory only, never drawn - which is the convention a net floor area is measured
 to (the wall face, not the reveal). A plan without our records has no such
 lines, and `rooms_detect` says so rather than guessing where a door was.
 
-`rooms_detect` runs the same finder on any lines and polylines - a foreign
-plan - and reports each face with a confidence, the way `pid_graph` does:
-1.0 when every edge of the face lies on our wall layer, 0.6 when any edge is a
-plain line from somewhere else. It never modifies the drawing.
+`rooms_detect` runs the same finder on any lines and lightweight polylines -
+a foreign plan - and reports each face with a confidence, the way `pid_graph`
+does: 1.0 when every edge of the face lies on our wall layer, 0.6 when any
+edge is a plain line from somewhere else. It never modifies the drawing. What
+it cannot read - an arc, an old-style POLYLINE, walls inside a block
+reference - is listed in ``skipped`` with its handle, never dropped and never
+approximated, so a room it could not close is a room the answer says it
+missed, not a wrong area.
 
 DECLARED, not standard:
 
@@ -89,6 +93,40 @@ WALL_LAYER_KEYWORDS = ("WALL", "DUVAR")
 #: Entity types that bound a region with a curve; the finder reads straight
 #: segments only, so these are reported as skipped, never approximated.
 CURVE_TYPES = frozenset({"ARC", "CIRCLE", "ELLIPSE", "SPLINE"})
+#: Polylines whose ``points`` are the vertices on both engines: the headless
+#: LWPOLYLINE, and the live AcDbPolyline / AcDbLWPolyline (reported POLYLINE /
+#: LWPOLYLINE). A headless POLYLINE is the old-style one - it arrives with no
+#: ``points`` at all, and is skipped by that test.
+LIGHT_POLYLINE_TYPES = frozenset({"LWPOLYLINE", "POLYLINE"})
+#: Old-style polylines whose ``points`` are NOT to be trusted: the live
+#: AcDb2dPolyline hands its Coordinates over as x, y, z triples, which the
+#: backend reads two at a time (measured on AutoCAD 2026: a 4000 x 5000 outline
+#: came back as [[200, 200], [0, 4200], [200, 0], ...]), so a room read off them
+#: is a wrong number, not a missing one. Skipped, by name.
+HEAVY_POLYLINE_TYPES = frozenset({"2DPOLYLINE", "3DPOLYLINE", "POLYFACEMESH", "POLYGONMESH"})
+#: Block references on both engines (headless INSERT, live AcDbBlockReference).
+BLOCK_REFERENCE_TYPES = frozenset({"INSERT", "BLOCKREFERENCE", "MINSERTBLOCK"})
+#: Annotation and fills: they sit on wall layers (a poche hatch, a wall tag)
+#: without bounding anything, so they are passed over without a skipped entry.
+#: Every DIMENSION kind (the live engine names them ROTATEDDIMENSION, ...) is
+#: matched by name below.
+NON_BOUNDARY_TYPES = frozenset(
+    {
+        "TEXT",
+        "MTEXT",
+        "ATTDEF",
+        "ATTRIBUTEDEFINITION",
+        "ATTRIB",
+        "POINT",
+        "HATCH",
+        "LEADER",
+        "MLEADER",
+        "MULTILEADER",
+        "TOLERANCE",
+        "FCF",
+    }
+)
+_ARC_REASON = "the face finder reads straight segments only and does not approximate an arc"
 
 
 def _check_lang(lang: str) -> str:
@@ -283,23 +321,39 @@ async def read_records(backend: AutoCADBackend) -> dict:
 async def read_segments(backend: AutoCADBackend, layers) -> tuple[list, list[dict]]:
     """Straight segments on ``layers`` as ``(p1, p2, layer)``, and what was skipped.
 
-    LINE and (LW)POLYLINE are read by their properties, which is the same on
-    both engines (the live one names a polyline POLYLINE, the headless one
-    LWPOLYLINE). A bulged polyline edge or an ARC/CIRCLE/ELLIPSE/SPLINE is an
-    arc, and the finder reads straight segments only: it is listed in the
-    second return value with its handle, never flattened into chords.
+    Read: LINE, and the lightweight polyline by its ``points`` (the live engine
+    names it POLYLINE, the headless one LWPOLYLINE). Everything else that can
+    bound a room is listed in the second return value with its handle, type and
+    reason - never dropped, never guessed:
+
+    * an ARC/CIRCLE/ELLIPSE/SPLINE or a bulged polyline edge is an arc, and the
+      finder reads straight segments only - it is never flattened into chords;
+    * an old-style POLYLINE (``HEAVY_POLYLINE_TYPES`` live; a headless POLYLINE
+      reports no vertices) is not read, because its vertices do not reach this
+      reader correctly on either engine;
+    * a block reference is not exploded: walls inside a block are not read;
+    * any other type is listed as not a line.
+
+    Text, dimensions, leaders, points and hatches (``NON_BOUNDARY_TYPES``)
+    bound nothing and are passed over without an entry.
     """
     from engineering.sheet.bom import all_entities  # lazy: sheet imports stay out of arch
 
     segments: list = []
     skipped: list[dict] = []
+
+    def skip(entity, kind: str, reason: str) -> None:
+        skipped.append({"handle": entity.handle, "type": kind, "reason": reason})
+
     for layer in layers:
         for entity in await all_entities(backend, layer=layer):
             props = entity.properties or {}
             kind = str(entity.type).upper()
-            if "start" in props and "end" in props and "center" not in props:
+            if kind in NON_BOUNDARY_TYPES or "DIMENSION" in kind:
+                continue
+            if kind == "LINE" and "start" in props and "end" in props:
                 segments.append((tuple(props["start"][:2]), tuple(props["end"][:2]), entity.layer))
-            elif "points" in props:
+            elif kind in LIGHT_POLYLINE_TYPES and props.get("points"):
                 points = [tuple(p[:2]) for p in props["points"]]
                 bulges = list(props.get("bulges") or [])
                 count = len(points)
@@ -310,22 +364,29 @@ async def read_segments(backend: AutoCADBackend, layers) -> tuple[list, list[dic
                         continue
                     segments.append((points[i], points[(i + 1) % count], entity.layer))
                 if arcs:
-                    skipped.append(
-                        {
-                            "handle": entity.handle,
-                            "type": kind,
-                            "reason": f"{arcs} arc segment(s): the face finder reads straight "
-                            "segments only and does not approximate an arc",
-                        }
-                    )
+                    skip(entity, kind, f"{arcs} arc segment(s): {_ARC_REASON}")
             elif kind in CURVE_TYPES:
-                skipped.append(
-                    {
-                        "handle": entity.handle,
-                        "type": kind,
-                        "reason": "a curve: the face finder reads straight segments only "
-                        "and does not approximate an arc",
-                    }
+                skip(entity, kind, f"a curve: {_ARC_REASON}")
+            elif kind in HEAVY_POLYLINE_TYPES or kind == "POLYLINE":
+                skip(
+                    entity,
+                    kind,
+                    "an old-style polyline: its vertices are not read reliably by this "
+                    "reader on either engine, so its edges are not counted; convert it to a "
+                    "lightweight polyline (CONVERTPOLY) or explode it to lines",
+                )
+            elif kind in BLOCK_REFERENCE_TYPES:
+                skip(
+                    entity,
+                    kind,
+                    "a block reference: walls inside a block are not read; explode it "
+                    "(block_explode) to count them",
+                )
+            else:
+                skip(
+                    entity,
+                    kind,
+                    "not a LINE or a lightweight polyline: the face finder does not read it",
                 )
     return segments, skipped
 
@@ -342,8 +403,10 @@ async def label_room(
     Refused before anything is drawn: an ``area`` in the request (areas are
     measured, never typed), an unknown ``lang``, a non-positive ``scale``, an
     ``id`` already labelled on the drawing, a point that lies in no closed face
-    of the wall layer, and a point inside a wall body. ``id`` defaults to the
-    first free ``R<n>``.
+    of the wall layer, a point inside a wall body, and a point in a face that
+    already holds a room record (one face, one room: a second record would be
+    counted twice by every schedule total). ``id`` defaults to the first free
+    ``R<n>``.
     """
     if not isinstance(room_dict, dict):
         raise ValueError(
@@ -391,6 +454,18 @@ async def label_room(
             f"room.at: ({x:g}, {y:g}) lies inside a wall body (a face {width:.0f} mm wide on "
             f"average, under the {MIN_ROOM_WIDTH:.0f} mm a room is taken to need), not in a room"
         )
+    # One face is one room: a second record on it would be a second area in
+    # every schedule total (a retried call after a timeout is the usual way in).
+    already = [r for r in records["rooms"] if face_containing(faces, r.at) is face]
+    if already:
+        held = ", ".join(
+            f"{r.id} {r.name!r} (label {records['room_handles'][r.id]})" for r in already
+        )
+        raise ValueError(
+            f"room.at: ({x:g}, {y:g}) lies in a room that is already labelled - {held}; "
+            "one face carries one room record, so its area is counted once. Delete that "
+            "label to relabel the room, or place this one in another room"
+        )
 
     measured = replace(room, area=face.area)
     from engineering.mech.draw import draw_prims  # lazy: mech.draw imports the arch layer set
@@ -437,6 +512,12 @@ async def rooms_detect(
     the ones it does. Our own opening records, when there are any, close door
     and window gaps exactly as `label_room` does; a foreign plan's gaps stay
     open, and two rooms joined by an open doorway read as one face.
+
+    Each room reports ``labels`` - every room record whose point lies in its
+    face - and ``label``, the first of them or None. A face carrying more than
+    one record is listed in ``label_conflicts``, because a schedule reading the
+    records would count its area once per record. What `read_segments` could
+    not read is in ``skipped``, with its handle and why.
     """
     min_area = _positive(min_area, "min_area")
     tol = _positive(tol, "tol")
@@ -469,18 +550,25 @@ async def rooms_detect(
     rooms = detect_rooms([*segments, *extra], min_area=min_area, tol=tol)
 
     out: list[dict] = []
+    conflicts: list[dict] = []
     for room in rooms:
         face = Face(
             loop=room["loop"], area=room["area"], centroid=room["centroid"], holes=room["holes"]
         )
-        label = next(
-            (
-                {"id": r.id, "name": r.name, "number": r.number, "area": r.area}
-                for r in records["rooms"]
-                if face_containing((face,), r.at) is not None
-            ),
-            None,
-        )
+        labels = [
+            {"id": r.id, "name": r.name, "number": r.number, "area": r.area}
+            for r in records["rooms"]
+            if face_containing((face,), r.at) is not None
+        ]
+        if len(labels) > 1:
+            conflicts.append(
+                {
+                    "labels": [label["id"] for label in labels],
+                    "centroid": [room["centroid"][0], room["centroid"][1]],
+                    "reason": f"one face carries {len(labels)} room records; a schedule "
+                    f"would count its {room['area'] / 1.0e6:.2f} m2 {len(labels)} times",
+                }
+            )
         out.append(
             {
                 "loop": _wcs_loop(room["loop"]),
@@ -489,7 +577,8 @@ async def rooms_detect(
                 "area_m2": room["area"] / 1.0e6,
                 "centroid": [room["centroid"][0], room["centroid"][1]],
                 "confidence": room["confidence"],
-                "label": label,
+                "label": labels[0] if labels else None,
+                "labels": labels,
             }
         )
     return {
@@ -501,6 +590,7 @@ async def rooms_detect(
         "count": len(out),
         "rooms": out,
         "confidence_min": min((room["confidence"] for room in out), default=None),
+        "label_conflicts": conflicts,
         "skipped": skipped,
         "omitted": list(omitted),
         "min_area": min_area,

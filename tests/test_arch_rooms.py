@@ -347,3 +347,200 @@ async def test_an_arc_on_a_wall_layer_is_reported_skipped_never_approximated(bac
     result = await rooms_detect(backend)
     assert [r["area"] for r in result["rooms"]] == [20_000_000.0]
     assert [s["handle"] for s in result["skipped"]] == [arc.handle]
+
+
+# ── what the reader cannot read is skipped, by name ─────────────────────────
+
+
+def outline(x0, y0, x1, y1):
+    return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+
+
+@pytest.mark.asyncio
+async def test_an_old_style_polyline_is_skipped_by_name_not_dropped(backend):
+    # one room of old-style 2D POLYLINEs next to one of lightweight polylines;
+    # the headless engine reports the old-style kind with no vertices at all
+    msp = backend._doc.modelspace()
+    heavy = [
+        msp.add_polyline2d(outline(*box), close=True, dxfattribs={"layer": "WALLS"}).dxf.handle
+        for box in ((0.0, 0.0, 4400.0, 5400.0), (200.0, 200.0, 4200.0, 5200.0))
+    ]
+    for box in ((10000.0, 0.0, 14400.0, 5400.0), (10200.0, 200.0, 14200.0, 5200.0)):
+        await backend.entity_create_polyline([list(p) for p in outline(*box)], True, layer="WALLS")
+    result = await rooms_detect(backend)
+    assert [r["area"] for r in result["rooms"]] == [20_000_000.0]
+    assert [(s["handle"], s["type"]) for s in result["skipped"]] == [
+        (heavy[0], "POLYLINE"),
+        (heavy[1], "POLYLINE"),
+    ]
+    assert "old-style polyline" in result["skipped"][0]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_walls_inside_a_block_reference_are_skipped_and_annotation_is_passed_over(
+    backend,
+):
+    await draw_lines(backend, rect(0.0, 0.0, 4000.0, 5000.0), "WALLS")
+    block = backend._doc.blocks.new("ROOMBLK")
+    for (x1, y1), (x2, y2) in [
+        *rect(0.0, 0.0, 4400.0, 5400.0),
+        *rect(200.0, 200.0, 4200.0, 5200.0),
+    ]:
+        block.add_line((x1, y1), (x2, y2))
+    insert = backend._doc.modelspace().add_blockref(
+        "ROOMBLK", (20000.0, 0.0), dxfattribs={"layer": "WALLS"}
+    )
+    await backend.entity_create_text("W1", 100.0, 100.0, 100.0, layer="WALLS")
+    result = await rooms_detect(backend)
+    assert [r["area"] for r in result["rooms"]] == [20_000_000.0]
+    assert [(s["handle"], s["type"]) for s in result["skipped"]] == [(insert.dxf.handle, "INSERT")]
+    assert "walls inside a block are not read" in result["skipped"][0]["reason"]
+
+
+class LiveRows:
+    """A backend that answers with the EntityInfo rows a live seat produced.
+
+    The rows are the ones `backends.com_backend._entity_info` returned on
+    AutoCAD 2026 (2026-09-23) for three closed ``ModelSpace.AddPolyline``
+    outlines on WALLS - outer 0..8600 x 0..5400, rooms 200..4200 and
+    4400..8400 x 200..5200 - whose ``Coordinates`` came back as x, y, z
+    triples and were read two at a time; plus an ``AddLightWeightPolyline``
+    pair (AcDbPolyline, reported POLYLINE) and a block reference. Read
+    through, the old-style rows gave five faces of 2.6 to 6.9 m².
+    """
+
+    def __init__(self):
+        from backends.base import EntityInfo, LayerInfo
+
+        def row(handle, kind, points=None):
+            props = {} if points is None else {"points": points, "closed": True}
+            if points is not None:
+                props["bulges"] = [0.0] * len(points)
+            return EntityInfo(handle, kind, "WALLS", 256, "ByLayer", True, props)
+
+        self.rows = [
+            row(
+                "2A1",
+                "2DPOLYLINE",
+                [
+                    [0.0, 0.0],
+                    [0.0, 8600.0],
+                    [0.0, 0.0],
+                    [8600.0, 5400.0],
+                    [0.0, 0.0],
+                    [5400.0, 0.0],
+                ],
+            ),
+            row(
+                "2A2",
+                "2DPOLYLINE",
+                [
+                    [200.0, 200.0],
+                    [0.0, 4200.0],
+                    [200.0, 0.0],
+                    [4200.0, 5200.0],
+                    [0.0, 200.0],
+                    [5200.0, 0.0],
+                ],
+            ),
+            row(
+                "2A3",
+                "2DPOLYLINE",
+                [
+                    [4400.0, 200.0],
+                    [0.0, 8400.0],
+                    [200.0, 0.0],
+                    [8400.0, 5200.0],
+                    [0.0, 4400.0],
+                    [5200.0, 0.0],
+                ],
+            ),
+            row("2A4", "POLYLINE", [list(p) for p in outline(10000.0, 0.0, 14400.0, 5400.0)]),
+            row("2A5", "POLYLINE", [list(p) for p in outline(10200.0, 200.0, 14200.0, 5200.0)]),
+            row("2A6", "BLOCKREFERENCE"),
+        ]
+        self.layers = [
+            LayerInfo(name, 7, "Continuous", 0.25, True, False, False, name == "0")
+            for name in ("0", "WALLS")
+        ]
+
+    async def layer_list(self):
+        return self.layers
+
+    async def entity_list(self, type_filter=None, layer_filter=None, limit=200, offset=0):
+        rows = [r for r in self.rows if layer_filter is None or r.layer == layer_filter]
+        return rows[offset : offset + limit]
+
+    async def entity_get_xdata(self, handle, app_id):
+        return {"xdata": {}}
+
+
+@pytest.mark.asyncio
+async def test_live_old_style_polylines_are_skipped_not_read_as_their_garbled_points():
+    result = await rooms_detect(LiveRows())
+    # only the lightweight pair is a room; the garbled rows make no faces at all
+    assert [r["area"] for r in result["rooms"]] == [20_000_000.0]
+    assert result["confidence_min"] == CONFIDENCE_FOREIGN
+    assert [(s["handle"], s["type"]) for s in result["skipped"]] == [
+        ("2A1", "2DPOLYLINE"),
+        ("2A2", "2DPOLYLINE"),
+        ("2A3", "2DPOLYLINE"),
+        ("2A6", "BLOCKREFERENCE"),
+    ]
+
+
+# ── one face, one room record ───────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_second_label_in_a_labelled_room_is_refused_and_draws_nothing(backend):
+    await draw_lines(
+        backend, [*rect(0.0, 0.0, 4400.0, 5400.0), *rect(200.0, 200.0, 4200.0, 5200.0)], WALL
+    )
+    first = await label_room(backend, {"name": "LIVING", "at": [1000.0, 3000.0]})
+    before = await backend.entity_count()
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            f"room.at: (2000, 3000) lies in a room that is already labelled - "
+            f"R1 'LIVING' (label {first['handle']})"
+        ),
+    ):
+        await label_room(backend, {"name": "LIVING2", "at": [2000.0, 3000.0]})
+    assert await backend.entity_count() == before
+    result = await rooms_detect(backend)
+    assert [r["labels"] for r in result["rooms"]] == [
+        [{"id": "R1", "name": "LIVING", "number": None, "area": 20_000_000.0}]
+    ]
+    assert result["label_conflicts"] == []
+
+
+@pytest.mark.asyncio
+async def test_the_other_room_can_still_be_labelled(backend):
+    await draw_lines(backend, two_rooms(), WALL)
+    await label_room(backend, {"name": "A", "at": [2200.0, 2700.0]})
+    second = await label_room(backend, {"name": "B", "at": [6400.0, 2700.0]})
+    assert second["room"]["id"] == "R2"
+    assert second["room"]["area"] == pytest.approx(20_000_000.0, abs=EPS)
+
+
+@pytest.mark.asyncio
+async def test_rooms_detect_reports_every_record_in_a_face_and_the_conflict(backend):
+    # two records already on one face (written by other means than arch_room)
+    await draw_lines(backend, two_rooms(), WALL)
+    for rid in ("R1", "R2"):
+        room = Room(id=rid, name=rid, number=None, at=(2200.0, 2700.0), area=20_000_000.0)
+        await write_record(backend, room, ROOM)
+    result = await rooms_detect(backend)
+    first, second = result["rooms"]
+    assert [label["id"] for label in first["labels"]] == ["R1", "R2"]
+    assert first["label"]["id"] == "R1"
+    assert second["labels"] == [] and second["label"] is None
+    assert result["label_conflicts"] == [
+        {
+            "labels": ["R1", "R2"],
+            "centroid": [2200.0, 2700.0],
+            "reason": "one face carries 2 room records; a schedule would count its "
+            "20.00 m2 2 times",
+        }
+    ]

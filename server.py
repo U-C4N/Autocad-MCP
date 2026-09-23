@@ -9818,7 +9818,8 @@ async def arch_room(
     """Label the room around (x, y) with its name, number and MEASURED area.
 
     The area is never typed: the tool reads the wall faces on the `wall` layer
-    of the arch set (LINE and polyline, both engines), finds the closed face
+    of the arch set (LINE and lightweight polyline, both engines; anything else
+    there is listed in `skipped`), finds the closed face
     the point lies in and writes that face's area - net of the wall thickness
     and of any column inside it - into the label and into an `ACADMCP_ARCH`
     room record on the name text, which `arch_schedule` reads. A door or window
@@ -9828,8 +9829,10 @@ async def arch_room(
     Refused before anything is drawn: an unknown `lang` (named with en, tr), a
     `number`/`name` the room model refuses, a `room_id` already labelled on the
     drawing, a point in no closed face of the walls (draw or close them first,
-    or read a plan drawn by other means with `arch_rooms_detect`), and a point
-    inside a wall body.
+    or read a plan drawn by other means with `arch_rooms_detect`), a point
+    inside a wall body, and a point in a room that already carries a label (one
+    face, one room record - a retried call does not add a second area to the
+    schedule).
     """
     from engineering.arch.rooms import label_room
 
@@ -9869,17 +9872,21 @@ async def arch_rooms_detect(
 ) -> dict:
     """Read the rooms of a plan - ours or a foreign one made of plain lines.
 
-    Every LINE and polyline on the layers is split where lines cross or touch,
-    and the closed faces they bound are measured (mm², net of nested pieces).
+    Every LINE and lightweight polyline on the layers is split where lines
+    cross or touch, and the closed faces they bound are measured (mm², net of
+    nested pieces).
     Faces under `min_area`, and thin faces (mean width under 600 mm - wall
     bodies and reveals, this reader's heuristic) are left out. Each room
     reports `confidence`: 1.0 when every edge lies on the arch wall layer, 0.6
     when any edge is a plain line from elsewhere - read `confidence_min` before
-    trusting a foreign plan. A room label already on the drawing is reported
-    with the face it sits in.
+    trusting a foreign plan. Room labels already on the drawing are reported
+    in `labels` with the face they sit in; a face with more than one is listed
+    in `label_conflicts`.
 
-    Never modifies the drawing. Arcs and bulged polyline edges are listed in
-    `skipped`, never flattened into chords. A foreign plan's open doorways are
+    Never modifies the drawing. Arcs and bulged polyline edges, old-style
+    POLYLINEs and block references are listed in `skipped` with their handle
+    and reason - never flattened into chords, never dropped silently. Read
+    `skipped` before trusting `count`. A foreign plan's open doorways are
     not closed - two rooms joined by one read as one face. Refused: a named
     layer the drawing does not have (with the list of the ones it has), and no
     layer matching WALL or DUVAR when `layers` is omitted.
