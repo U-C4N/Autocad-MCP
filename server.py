@@ -8161,13 +8161,25 @@ async def mech_part_draw(
         ),
     ],
     at_x: Annotated[
-        float, Field(default=0.0, description="WCS X of the first view's lower-left")
+        float,
+        Field(
+            default=0.0,
+            description="WCS X of the first view's lower-left corner (the rotation pivot)",
+        ),
     ] = 0.0,
     at_y: Annotated[
-        float, Field(default=0.0, description="WCS Y of the first view's lower-left")
+        float,
+        Field(
+            default=0.0,
+            description="WCS Y of the first view's lower-left corner (the rotation pivot)",
+        ),
     ] = 0.0,
     rotation: Annotated[
-        float, Field(default=0.0, description="Degrees CCW applied to every view")
+        float,
+        Field(
+            default=0.0,
+            description="Degrees CCW; turns every view and its dimensions about (at_x, at_y)",
+        ),
     ] = 0.0,
     views: Annotated[
         list[str] | None,
@@ -8274,7 +8286,14 @@ async def mech_view_add(
         float, Field(default=20.0, description="Gap between this view and its parent (mm)")
     ] = 20.0,
     scale: Annotated[
-        float, Field(default=1.0, description="View scale recorded on the view")
+        float,
+        Field(
+            default=1.0,
+            description=(
+                "Must be 1.0: views are drawn full size (a detail takes its scale in "
+                "detail.scale; a sheet scale is the viewport's)"
+            ),
+        ),
     ] = 1.0,
     ctx: Context = None,
 ) -> dict:
@@ -8344,20 +8363,34 @@ async def mech_dimension_part(
             description="ISO 286 fit per feature id, e.g. {'bearing_seat': 'k6', 'bore': 'H7'}",
         ),
     ] = None,
+    views: Annotated[
+        list[int] | None,
+        Field(
+            default=None,
+            description=(
+                "View indices to dimension, in mech_part_inspect order "
+                "(default: every view not yet dimensioned)"
+            ),
+        ),
+    ] = None,
     ctx: Context = None,
 ) -> dict:
     """Every dimension the part and its features ask for, laid out without overlaps.
 
     Axial lengths are chained, stacked from a baseline or measured from an
     origin; diameters stack outside the silhouette; fillets get a radius. Each
-    measurement appears once (ISO 129-1). `fits` resolves an ISO 286 code
+    measurement appears once (ISO 129-1): every view record carries a
+    `dimensioned` flag, so after a `mech_part_draw` that dimensioned the front
+    view and a `mech_view_add`, this call dimensions only the new view, and
+    `views` naming a view already dimensioned is refused by name. `fits` resolves an ISO 286 code
     against the measured nominal through the repository's authored tables and
     appends the code to the dimension text; an explicit `tol` on a feature's own
     intent does the same through the ISO 129 path.
 
     Refused by name: a fit together with an explicit tolerance, a fit outside
     the authored ISO 286 range (over 1 mm to 500 mm, IT4-IT11), a fit on an
-    intent with no measurable nominal, an unknown style, an unknown part_id, and
+    intent with no measurable nominal, an unknown style, an unknown part_id, a
+    call when every view is already dimensioned (the message lists them), and
     `part_id=None` on a drawing that holds more than one part. An angular intent
     is reported in `skipped` rather than drawn, because a DimIntent carries no
     vertex.
@@ -8374,6 +8407,7 @@ async def mech_dimension_part(
             style=style,
             hole_table_threshold=hole_table_threshold,
             fits=fits,
+            views=views,
         )
     except ValueError as exc:
         raise ToolError(str(exc)) from exc

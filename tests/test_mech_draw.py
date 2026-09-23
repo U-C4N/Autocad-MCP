@@ -281,3 +281,214 @@ async def test_draw_from_spec_rolls_back_when_a_draw_fails_midway(backend, monke
     monkeypatch.undo()
     assert not await entities(backend, type_filter="POINT", layer=ANCHOR_LAYER)
     assert not await entities(backend, type_filter="LINE")
+
+
+# -- review round: rotation, single dimensioning, honest refusals -------------
+
+TWO_STEP = {
+    "kind": "revolved",
+    "name": "shaft",
+    "material": "steel",
+    "segments": [{"length": 20.0, "d_outer": 25.0}, {"length": 40.0, "d_outer": 30.0}],
+    "features": [],
+}
+
+TUBE = {
+    "kind": "revolved",
+    "name": "tube",
+    "material": "steel",
+    "segments": [{"length": 30.0, "d_outer": 60.0, "d_inner": 40.0}],
+    "features": [],
+}
+
+
+def _geometry_bbox(backend):
+    xs: list[float] = []
+    ys: list[float] = []
+    for e in backend._doc.modelspace():
+        if e.dxftype() == "LINE":
+            xs += [e.dxf.start.x, e.dxf.end.x]
+            ys += [e.dxf.start.y, e.dxf.end.y]
+    return [min(xs), min(ys), max(xs), max(ys)]
+
+
+def _defpoints(backend):
+    return sorted(
+        (round(e.dxf.get(name).x, 6), round(e.dxf.get(name).y, 6))
+        for e in backend._doc.modelspace().query("DIMENSION")
+        for name in ("defpoint2", "defpoint3")
+        if e.dxf.hasattr(name)
+    )
+
+
+def _turn90(point, about):
+    return (round(about[0] - (point[1] - about[1]), 6), round(about[1] + (point[0] - about[0]), 6))
+
+
+async def test_rotation_turns_geometry_record_and_dimensions_about_at(backend):
+    """rotation=90 about at=(100, 100): the part, its recorded box and every
+    DIMENSION defpoint are the rotation=0 drawing turned about `at`."""
+    from backends.ezdxf_backend import EzdxfBackend
+
+    flat = EzdxfBackend()
+    await flat.connect()
+    await flat.drawing_new()
+    try:
+        await draw_part(flat, build_part(TWO_STEP), at=(100.0, 100.0), rotation=0.0)
+        expected = sorted(_turn90(p, (100.0, 100.0)) for p in _defpoints(flat))
+    finally:
+        await flat.disconnect()
+
+    result = await draw_part(backend, build_part(TWO_STEP), at=(100.0, 100.0), rotation=90.0)
+    geometry = _geometry_bbox(backend)
+    assert geometry == pytest.approx([70.0, 100.0, 100.0, 172.0])
+    assert result["views"][0]["bbox"] == pytest.approx(geometry)
+    read = await read_part(backend, result["part_id"])
+    assert read["views"][0]["bbox"] == pytest.approx(geometry)
+    assert read["views"][0]["frame_bbox"] == pytest.approx([100.0, 100.0, 172.0, 130.0])
+    assert expected
+    assert _defpoints(backend) == expected
+
+
+async def test_a_view_added_to_a_rotated_part_turns_with_it(backend):
+    drawn = await draw_part(
+        backend, build_part(TWO_STEP), at=(0.0, 0.0), rotation=90.0, dimension=False
+    )
+    added = await add_view(backend, drawn["part_id"], "side")
+    # first angle: the side view sits left of the front in the part's frame,
+    # which is BELOW it once the sheet is turned 90 degrees CCW
+    front, side = drawn["views"][0]["bbox"], added["view"]["bbox"]
+    assert side[3] <= front[1] + 1e-6
+
+
+async def test_draw_then_add_view_then_dimension_never_duplicates(backend):
+    drawn = await draw_part(backend, build_part(SHAFT), at=(0.0, 0.0), dimension=True)
+    before = len(await entities(backend, type_filter="DIMENSION"))
+    assert before == drawn["dimensions"] > 0
+    await add_view(backend, drawn["part_id"], "side")
+    result = await dimension_part(backend, drawn["part_id"])
+    assert result["views_dimensioned"] == [1]
+    after = len(await entities(backend, type_filter="DIMENSION"))
+    assert after == before + result["count"]
+    assert result["count"] > 0
+
+    with pytest.raises(ValueError, match="already dimensioned"):
+        await dimension_part(backend, drawn["part_id"])
+    with pytest.raises(ValueError, match=r"0 \(front\) already dimensioned"):
+        await dimension_part(backend, drawn["part_id"], views=[0])
+    assert len(await entities(backend, type_filter="DIMENSION")) == after
+
+
+async def test_dimension_part_twice_is_refused_not_stacked(backend):
+    drawn = await draw_part(backend, build_part(PLATE), at=(0.0, 0.0), dimension=False)
+    first = await dimension_part(backend, drawn["part_id"])
+    with pytest.raises(ValueError, match="every view is already dimensioned"):
+        await dimension_part(backend, drawn["part_id"])
+    assert len(await entities(backend, type_filter="DIMENSION")) == first["count"]
+
+
+async def test_a_view_the_dimension_layer_cannot_dimension_is_reported_not_flagged(backend):
+    drawn = await draw_part(backend, build_part(SHAFT), at=(0.0, 0.0))
+    await add_view(
+        backend,
+        drawn["part_id"],
+        "detail",
+        detail={"center": [20.0, 12.5], "radius": 8.0, "scale": 5.0, "label": "D"},
+    )
+    result = await dimension_part(backend, drawn["part_id"])
+    assert result["views_dimensioned"] == []
+    assert any(row.get("kind") == "detail" for row in result["skipped"])
+    assert result["count"] == 0
+
+
+async def test_an_island_that_does_not_attach_removes_the_hatch_and_raises(backend, monkeypatch):
+    drawn = await draw_part(backend, build_part(TUBE), at=(0.0, 0.0), dimension=False)
+    real = backend.hatch_add_boundary
+
+    async def refuse(handle, edges):
+        return await real(handle, [])
+
+    monkeypatch.setattr(backend, "hatch_add_boundary", refuse)
+    with pytest.raises(ValueError, match="did not attach"):
+        await add_view(
+            backend,
+            drawn["part_id"],
+            "section",
+            plane={"p1": [15.0, -40.0], "p2": [15.0, 40.0], "label": "B"},
+        )
+    assert not await entities(backend, type_filter="HATCH")
+
+
+async def test_an_engine_without_hatch_edge_paths_refuses_before_drawing(backend, monkeypatch):
+    from backends.base import CapabilityMap, FeatureCapability
+    from backends.capability import UnsupportedCapabilityError
+
+    drawn = await draw_part(backend, build_part(TUBE), at=(0.0, 0.0), dimension=False)
+    count = len(await entities(backend))
+    monkeypatch.setattr(
+        backend,
+        "capabilities",
+        lambda: CapabilityMap(
+            "com", {"hatch_edge_paths": FeatureCapability(False, reason="measured")}
+        ),
+    )
+    with pytest.raises(UnsupportedCapabilityError) as excinfo:
+        await add_view(
+            backend,
+            drawn["part_id"],
+            "section",
+            plane={"p1": [15.0, -40.0], "p2": [15.0, 40.0], "label": "B"},
+        )
+    assert excinfo.value.capability == "hatch_edge_paths"
+    assert len(await entities(backend)) == count
+
+
+async def test_a_scale_that_would_only_be_recorded_is_refused(backend):
+    with pytest.raises(ValueError, match="full size"):
+        await draw_part(backend, build_part(PLATE), scale=0.5)
+    drawn = await draw_part(backend, build_part(PLATE), dimension=False)
+    with pytest.raises(ValueError, match="full size"):
+        await add_view(backend, drawn["part_id"], "side", scale=2.0)
+
+
+async def test_a_second_added_view_steps_along_its_own_projection_axis(backend):
+    drawn = await draw_part(
+        backend, build_part(PLATE), at=(0.0, 0.0), dimension=False, projection="third"
+    )
+    side = await add_view(backend, drawn["part_id"], "side")
+    section = await add_view(
+        backend,
+        drawn["part_id"],
+        "section",
+        plane={"p1": [0.0, 25.0], "p2": [80.0, 25.0], "label": "A"},
+    )
+    front = drawn["views"][0]["bbox"]
+    # third angle puts both to the RIGHT; the second steps further right,
+    # never back onto the front view
+    assert section["view"]["bbox"][0] >= side["view"]["bbox"][2] + 20.0 - 1e-6
+    assert section["view"]["bbox"][0] > front[2]
+
+
+async def test_a_top_view_sharing_the_x_range_is_not_shoved(backend):
+    drawn = await draw_part(backend, build_part(PLATE), at=(0.0, 0.0), dimension=False)
+    await add_view(backend, drawn["part_id"], "side")
+    top = await add_view(backend, drawn["part_id"], "top", gap=25.0)
+    front = drawn["views"][0]["bbox"]
+    assert top["view"]["bbox"][0] == pytest.approx(front[0])
+    assert top["view"]["bbox"][2] == pytest.approx(front[2])
+
+
+@pytest.mark.parametrize("at", [[], [5.0], {"x": 1}, "0,0", [1.0, "a"]])
+async def test_a_malformed_at_is_refused_with_its_part_path(backend, at):
+    with pytest.raises(ValueError, match=r"parts\[0\]: at"):
+        await draw_from_spec(backend, {"parts": [{"part": PLATE, "at": at}]})
+    assert not await entities(backend, type_filter="POINT", layer=ANCHOR_LAYER)
+
+
+async def test_a_transaction_that_cannot_open_is_a_value_error(backend, monkeypatch):
+    async def busy():
+        return {"ok": False, "error": "a transaction is already open"}
+
+    monkeypatch.setattr(backend, "transaction_begin", busy)
+    with pytest.raises(ValueError, match="could not open a transaction"):
+        await draw_from_spec(backend, {"parts": [{"part": PLATE, "at": [0.0, 0.0]}]})
