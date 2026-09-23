@@ -36,7 +36,8 @@ async def test_the_four_tools_are_registered_under_the_architecture_group():
     tools = {tool.name: tool for tool in await server._registered_tools()}
     assert ARCH_TOOLS <= set(tools)
     groups = await server._tool_groups()
-    assert set(groups["architecture"]) == ARCH_TOOLS
+    # SECTION 25 holds the rooms and catalogue tools too since the track F merge.
+    assert ARCH_TOOLS <= set(groups["architecture"])
     for name in ARCH_TOOLS:
         card = (tools[name].meta or {})["cad"]
         assert card["cost"] == "mutate"
