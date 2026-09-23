@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 229,
+    "tools": 231,
     "resources": 8,
     "prompts": 5,
     "groups": 25
@@ -16,9 +16,9 @@
     "dimensions": 5,
     "drawing": 11,
     "engineering": 10,
-    "entity_creation": 18,
+    "entity_creation": 19,
     "entity_modification": 16,
-    "entity_query": 9,
+    "entity_query": 10,
     "environment": 22,
     "layers": 14,
     "layouts": 12,
@@ -177,6 +177,34 @@
       ],
       "annotations": {
         "title": "Select Entities By Type",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "arch_room",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Label a room with its name, number and measured area.",
+      "tags": [
+        "arch",
+        "create"
+      ],
+      "annotations": {
+        "title": "Architecture: Label Room",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "arch_rooms_detect",
+      "group": "entity_query",
+      "cost": "read",
+      "summary": "Find the rooms of any plan and measure them; never modifies it.",
+      "tags": [
+        "arch",
+        "query"
+      ],
+      "annotations": {
+        "title": "Architecture: Detect Rooms",
         "readOnlyHint": true
       }
     },

@@ -2230,6 +2230,36 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "punta deligi",
         ),
     ),
+    # ── Architecture: rooms (SECTION 25, track F group R) ───────────────────
+    # AREA and BOUNDARY stay with analysis_measure_entity and boundary_trace:
+    # on a plain AutoCAD seat a drafter typing them means those tools, and
+    # sharing them would move the golden BPOLY / area cases. The room
+    # vocabulary below reaches these two without either command.
+    "arch_room": ToolAliases(
+        acad=(),
+        synonyms=(
+            "room label",
+            "label the room",
+            "room name and number",
+            "net floor area",
+            "measured room area",
+            "oda etiketi",
+            "oda alani",
+            "mahal adi",
+        ),
+    ),
+    "arch_rooms_detect": ToolAliases(
+        acad=(),
+        synonyms=(
+            "find the rooms",
+            "detect rooms in a plan",
+            "rooms of a floor plan",
+            "room areas of this plan",
+            "read rooms from lines",
+            "odalari bul",
+            "kat plani alanlari",
+        ),
+    ),
 }
 
 
