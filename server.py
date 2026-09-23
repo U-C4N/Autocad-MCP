@@ -6138,13 +6138,19 @@ async def drawing_apply_iso_layers(
         str,
         Field(
             default="mech",
-            description="Layer set: mech (DIN/ISO mechanical), pid (P&ID), iso13567 (CAD layer naming).",
+            description=(
+                "Layer set: mech (DIN/ISO mechanical), pid (P&ID), iso13567 (CAD layer naming), "
+                "arch (ISO 13567-style architectural: walls, poche, doors, windows, stairs, "
+                "furniture, sanitary, grid, rooms, dimensions, symbols, overhead)."
+            ),
         ),
     ] = "mech",
     ctx: Context = None,
 ) -> dict:
     """Bootstrap a full ISO-conformant layer set with correct colors and lineweights.
     Idempotent — existing layers are not modified.
+
+    Refused by name: a standard that is not one of mech, pid, iso13567, arch.
     """
     return await _backend(ctx).drawing_apply_iso_layers(standard)
 

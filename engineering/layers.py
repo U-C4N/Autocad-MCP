@@ -120,7 +120,7 @@ async def apply_layer_set(
     backend: AutoCADBackend,
     standard: str = "mech",
 ) -> dict[str, str]:
-    """Idempotently apply a named layer set ('mech', 'pid', 'iso13567')."""
+    """Idempotently apply a named layer set ('mech', 'pid', 'iso13567', 'arch')."""
     layer_set = LAYER_SET_REGISTRY.get(standard)
     if layer_set is None:
         raise RuntimeError(
@@ -150,3 +150,16 @@ async def apply_layer_set(
         except Exception as exc:
             results[name] = f"failed: {exc}"
     return results
+
+
+# ── the architectural set (track F) ─────────────────────────────────────────
+# The rows live with the plan model (engineering/arch/layers.py), where
+# ARCH_ROLE_LAYER maps each role onto them. Registered last, after every name
+# above exists: importing engineering.arch runs its package __init__, which
+# pulls in the mechanical codec - and, once track F is merged, the wall engine
+# - and those import from this module. A partially initialised
+# engineering.layers must already hold every name they ask for.
+from engineering.arch.layers import ARCH_LAYER_ROLES, ARCH_LAYERS  # noqa: E402
+
+LAYER_SET_REGISTRY["arch"] = ARCH_LAYERS
+LAYER_ROLES["arch"] = dict(ARCH_LAYER_ROLES)

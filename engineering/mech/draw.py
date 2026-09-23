@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Mapping
 from typing import Any
 
 import anyio
@@ -98,6 +99,49 @@ def _number(value, where: str, *, positive: bool = True) -> float:
 # -- primitives to entities --------------------------------------------------
 
 
+#: The keys a role map may carry for a HatchArea, which has no role of its own:
+#: ``hatch`` (a general map) or ``wall_hatch`` (the architectural map, whose
+#: only hatch is wall poche). The first one the map carries wins.
+_HATCH_ROLES: tuple[str, ...] = ("hatch", "wall_hatch")
+
+
+def _layer_of(prim, role_layer: Mapping[str, str] | None) -> str:
+    """The layer a primitive lands on: the mechanical ROLE_LAYER, or ``role_layer``."""
+    if role_layer is None:
+        return layer_for(prim)
+    if isinstance(prim, HatchArea):
+        for key in _HATCH_ROLES:
+            if key in role_layer:
+                return role_layer[key]
+        raise ValueError(
+            "draw_prims: this role map has no hatch layer (a 'hatch' or 'wall_hatch' key); "
+            f"its roles are {', '.join(role_layer)}."
+        )
+    role = getattr(prim, "role", "visible")
+    try:
+        return role_layer[role]
+    except KeyError:
+        raise ValueError(
+            f"draw_prims: unknown role {role!r}; this role map has {', '.join(role_layer)}."
+        ) from None
+
+
+def _hatch_style(material: str, role_layer: Mapping[str, str] | None) -> dict:
+    """The pattern a HatchArea is filled with.
+
+    The architectural map (the one that carries ``wall_hatch``) resolves wall
+    materials through ``engineering/arch/materials.py::wall_hatch`` - brick,
+    aac, reinforced concrete ... at plan scale. Every other map, and no map,
+    keeps the mechanical ISO 128-50 section map, so a mechanical caller is
+    unchanged.
+    """
+    if role_layer is not None and "wall_hatch" in role_layer:
+        from engineering.arch.materials import wall_hatch
+
+        return wall_hatch(material)
+    return hatch_for(material)
+
+
 async def draw_prims(
     backend,
     prims,
@@ -105,11 +149,22 @@ async def draw_prims(
     at: tuple[float, float] = (0.0, 0.0),
     rotation: float = 0.0,
     layer_prefix: str = "",
+    role_layer: Mapping[str, str] | None = None,
 ) -> dict:
-    """Draw primitive descriptions, turned by ``rotation`` about their origin, then placed at ``at``."""
+    """Draw primitive descriptions, turned by ``rotation`` about their origin, then placed at ``at``.
+
+    ``role_layer`` maps ``Prim.role`` to a layer; ``None`` keeps the mechanical
+    ``ROLE_LAYER``. Every role and every hatch material is resolved - and every
+    target layer ensured - before the first entity, so an unknown role or
+    material refuses with nothing drawn.
+    """
     placed = tuple(prims)
     _refuse_islands_without_edge_paths(backend, placed)
-    await _ensure_layers(backend, sorted({f"{layer_prefix}{layer_for(p)}" for p in placed}))
+    targets = [f"{layer_prefix}{_layer_of(p, role_layer)}" for p in placed]
+    for prim in placed:
+        if isinstance(prim, HatchArea):
+            _hatch_style(prim.material, role_layer)
+    await _ensure_layers(backend, sorted(set(targets)))
     if abs(float(rotation)) > 1e-12:
         placed = rotate(placed, float(rotation), (0.0, 0.0))
     if abs(float(at[0])) > 1e-12 or abs(float(at[1])) > 1e-12:
@@ -118,8 +173,7 @@ async def draw_prims(
     handles: list[str] = []
     counts: dict[str, int] = {}
 
-    for prim in placed:
-        layer = f"{layer_prefix}{layer_for(prim)}"
+    for prim, layer in zip(placed, targets, strict=True):
         if isinstance(prim, Line):
             info = await backend.entity_create_line(
                 prim.p1[0], prim.p1[1], prim.p2[0], prim.p2[1], layer=layer
@@ -151,7 +205,7 @@ async def draw_prims(
                 layer=layer,
             )
         elif isinstance(prim, HatchArea):
-            style = hatch_for(prim.material)
+            style = _hatch_style(prim.material, role_layer)
             info = await backend.entity_create_hatch(
                 style["pattern"],
                 [[x, y] for x, y in prim.loops[0]],
@@ -207,10 +261,32 @@ async def _ensure_layers(backend, names) -> tuple[str, ...]:
     Group A measured the same refusal for annotation layers; this is the same
     cure (``ensure_annotation_layers``) at the places every mechanical drawing
     path passes through.
+
+    A layer of the ``arch`` set is created with its own ``ARCH_LAYERS`` row -
+    a grid on CENTER at 0.18 mm, a wall outline at 0.50 mm - rather than as a
+    bare white Continuous layer; every other name goes through
+    ``ensure_annotation_layers`` exactly as before.
     """
+    from engineering.arch.layers import ARCH_LAYER_DEFS
     from engineering.mech.annotate import ensure_annotation_layers
 
-    return await ensure_annotation_layers(backend, [str(name) for name in names if name])
+    wanted = [str(name) for name in names if name]
+    architectural = [name for name in wanted if name in ARCH_LAYER_DEFS]
+    created: list[str] = []
+    if architectural:
+        existing = {lyr.name.lower() for lyr in await backend.layer_list()}
+        for name in architectural:
+            if name.lower() in existing:
+                continue
+            color, linetype, lineweight = ARCH_LAYER_DEFS[name]
+            await backend.layer_create(
+                name=name, color=color, linetype=linetype, lineweight=lineweight
+            )
+            existing.add(name.lower())
+            created.append(name)
+    rest = [name for name in wanted if name not in ARCH_LAYER_DEFS]
+    created.extend(await ensure_annotation_layers(backend, rest))
+    return tuple(created)
 
 
 def _refuse_islands_without_edge_paths(backend, prims) -> None:

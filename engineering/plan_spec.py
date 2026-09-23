@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 SheetSize = Literal["A4", "A3", "A2", "A1", "A0"]
-LayerSetId = Literal["iso13567", "mech", "pid"]
+LayerSetId = Literal["iso13567", "mech", "pid", "arch"]
 DimStyle = Literal["chain", "baseline", "ordinate", "mixed"]
 CritiqueFocus = Literal[
     "iso128",

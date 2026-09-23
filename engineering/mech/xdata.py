@@ -15,6 +15,12 @@ written, and both the writer and every reader test them literally:
     {"v": 1, "kind": "std_part", "designation": "ISO 4014 - M12x60",
      "standard": "ISO 4014", "size": "M12x60", "qty": 1, "material": "8.8"}
     {"v": 1, "kind": "balloon",  "item": 3, "targets": ["1A2B", ...]}
+
+The codec is shared: ``app_id=`` / ``kinds=`` let another application write
+its own payloads through the same chunking and the same refusals (track F
+writes ``ACADMCP_ARCH`` with the kinds wall / opening / stair / room through
+`engineering/arch/model.py`). The defaults are the mechanical ones, so every
+mechanical caller is unchanged.
 """
 
 from __future__ import annotations
@@ -30,46 +36,48 @@ CHUNK = 255
 KINDS: tuple[str, ...] = ("part", "std_part", "balloon")
 
 
-def _validate(payload: dict) -> dict:
+def _validate(payload: dict, app_id: str, kinds: Sequence[str]) -> dict:
     if not isinstance(payload, dict):
-        raise TypeError(f"{APP_ID}: a payload must be a dict, got {type(payload).__name__}")
+        raise TypeError(f"{app_id}: a payload must be a dict, got {type(payload).__name__}")
     version = payload.get("v", PAYLOAD_VERSION)
     if version != PAYLOAD_VERSION:
         raise ValueError(
-            f"{APP_ID}: payload version {version!r}; this build writes and reads "
+            f"{app_id}: payload version {version!r}; this build writes and reads "
             f"version {PAYLOAD_VERSION}"
         )
     kind = payload.get("kind")
-    if kind not in KINDS:
-        raise ValueError(f"{APP_ID}: unknown payload kind {kind!r}; kinds are {', '.join(KINDS)}")
+    if kind not in kinds:
+        raise ValueError(f"{app_id}: unknown payload kind {kind!r}; kinds are {', '.join(kinds)}")
     return {**payload, "v": PAYLOAD_VERSION}
 
 
-def encode(payload: dict) -> list[tuple[int, str]]:
-    """``[(1001, APP_ID), (1000, chunk), ...]`` — refused before anything is written."""
-    checked = _validate(payload)
+def encode(
+    payload: dict, *, app_id: str = APP_ID, kinds: Sequence[str] = KINDS
+) -> list[tuple[int, str]]:
+    """``[(1001, app_id), (1000, chunk), ...]`` — refused before anything is written."""
+    checked = _validate(payload, app_id, kinds)
     text = json.dumps(checked, separators=(",", ":"), sort_keys=True, ensure_ascii=True)
-    rows: list[tuple[int, str]] = [(1001, APP_ID)]
+    rows: list[tuple[int, str]] = [(1001, app_id)]
     rows.extend((1000, text[i : i + CHUNK]) for i in range(0, len(text), CHUNK))
-    size = app_size(APP_ID, [(code, value) for code, value in rows if code != 1001])
+    size = app_size(app_id, [(code, value) for code, value in rows if code != 1001])
     if size > MAX_BYTES:
         raise ValueError(
-            f"{APP_ID}: payload encodes to {size} bytes; the limit is 16 KB per entity "
+            f"{app_id}: payload encodes to {size} bytes; the limit is 16 KB per entity "
             "across every application"
         )
     return rows
 
 
-def to_values(payload: dict) -> list[str]:
-    """Just the chunk strings — what ``entity_set_xdata(handle, APP_ID, values)`` takes."""
-    return [value for code, value in encode(payload) if code == 1000]
+def to_values(payload: dict, *, app_id: str = APP_ID, kinds: Sequence[str] = KINDS) -> list[str]:
+    """Just the chunk strings — what ``entity_set_xdata(handle, app_id, values)`` takes."""
+    return [value for code, value in encode(payload, app_id=app_id, kinds=kinds) if code == 1000]
 
 
-def decode(rows: Sequence) -> dict:
+def decode(rows: Sequence, *, app_id: str = APP_ID, kinds: Sequence[str] = KINDS) -> dict:
     """``rows`` may be ``(code, value)`` pairs or the bare value list a backend
     returns from ``entity_get_xdata``. Raises ValueError on anything foreign."""
     if not rows:
-        raise ValueError(f"{APP_ID}: empty XDATA")
+        raise ValueError(f"{app_id}: empty XDATA")
     parts: list[str] = []
     for row in rows:
         if isinstance(row, str):
@@ -78,20 +86,20 @@ def decode(rows: Sequence) -> dict:
         try:
             code, value = row
         except (TypeError, ValueError):
-            raise ValueError(f"{APP_ID}: {row!r} is not an XDATA (code, value) row") from None
+            raise ValueError(f"{app_id}: {row!r} is not an XDATA (code, value) row") from None
         if code == 1001:
-            if str(value) != APP_ID:
+            if str(value) != app_id:
                 raise ValueError(
-                    f"{APP_ID}: this XDATA belongs to application {value!r}, not to us"
+                    f"{app_id}: this XDATA belongs to application {value!r}, not to us"
                 )
             continue
         if code != 1000:
-            raise ValueError(f"{APP_ID}: group code {code} is not a payload chunk")
+            raise ValueError(f"{app_id}: group code {code} is not a payload chunk")
         parts.append(str(value))
     try:
         payload = json.loads("".join(parts))
     except json.JSONDecodeError as exc:
-        raise ValueError(f"{APP_ID}: the chunk stream is not JSON ({exc.msg})") from exc
+        raise ValueError(f"{app_id}: the chunk stream is not JSON ({exc.msg})") from exc
     if not isinstance(payload, dict):
-        raise ValueError(f"{APP_ID}: the payload decoded to {type(payload).__name__}, not a dict")
-    return _validate(payload)
+        raise ValueError(f"{app_id}: the payload decoded to {type(payload).__name__}, not a dict")
+    return _validate(payload, app_id, kinds)
