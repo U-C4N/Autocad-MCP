@@ -7,7 +7,11 @@ segments meet:
 
 * **L and straight joins** - two segment ends at one point. Each face is met by
   the face of its neighbour and both are trimmed or extended to their
-  intersection, so the corner is a clean mitre.
+  intersection, so the corner is a clean mitre. A near-straight join whose
+  faces are offset from each other (a thickness or justification change, or a
+  rounding kink between two such walls) would mitre kilometres away; past
+  ``_MITRE_REACH`` thicknesses it steps instead: both faces stop on the line
+  bisecting the join and a short face closes the step.
 * **T** - a segment ends *inside* another wall. Its axis is carried to the
   crossing axis, the crossing segment is split there, and the same rule stops
   the stem's faces on the crossing wall's near face. That face is cut where
@@ -53,6 +57,14 @@ from engineering.mech.primitives import HatchArea, Line, Pt
 #: the junction is refused rather than drawn as a spike. A drafting limit of
 #: this engine, not a building rule.
 MIN_JOIN_ANGLE_DEG = 5.0
+
+#: How far from its node, in thicknesses of the thicker wall, the face mitre of
+#: a near-straight join may lie. Two faces at equal offsets meet within 1.42
+#: thicknesses of the node at any kink up to 90 degrees; faces at different
+#: offsets (a thickness or justification change) meet at offset / sin(kink),
+#: kilometres away for a rounding kink, so past this reach the join steps
+#: instead of flaring.
+_MITRE_REACH = 2.0
 
 _EPS = 1e-9
 #: Decimals a point is rounded to when face lines are matched end to end.
@@ -123,7 +135,9 @@ def _polygon(points: Sequence[Pt]) -> tuple[Pt, ...] | None:
 
     Every caller builds its ring counter-clockwise - a piece as right face out,
     left face back; a hub in the angular order of its corners - so the ring is
-    not turned here. The area is `engineering.measure`'s, not a second shoelace.
+    not turned here; a ring that comes out clockwise is inside out, and the
+    callers refuse it (`_counter_clockwise`). The area is
+    `engineering.measure`'s, not a second shoelace.
     """
     kept: list[Pt] = []
     for p in points:
@@ -135,6 +149,12 @@ def _polygon(points: Sequence[Pt]) -> tuple[Pt, ...] | None:
         return None
     area, _perimeter = polygon_area_perimeter([(x, y, 0.0) for x, y in kept], True)
     return tuple(kept) if area > _EPS else None
+
+
+def _counter_clockwise(ring: Sequence[Pt]) -> bool:
+    """The ring's turning sense - the sign `polygon_area_perimeter` folds away."""
+    twice = sum(_cross(p, q) for p, q in zip(ring, (*ring[1:], ring[0]), strict=True))
+    return twice > 0.0
 
 
 def _key(p: Pt) -> tuple[float, float]:
@@ -179,7 +199,10 @@ class _Seg:
     vb: tuple[int, int]
     left: float
     right: float
-    cuts: list[float] = field(default_factory=list)
+    #: Where other axes stop on or cross this one, as points, never as distances:
+    #: a distance is measured from the segment's start, and that start may still
+    #: be carried onto a third wall later in the same pass.
+    cuts: list[Pt] = field(default_factory=list)
 
 
 @dataclass
@@ -296,7 +319,7 @@ def _resolve_tees(walls, pos, segs, tol: float) -> None:
                 pos[vertex] = b
             else:
                 pos[vertex] = x
-                other.cuts.append(sx)
+                other.cuts.append(x)
             break
 
 
@@ -319,8 +342,9 @@ def _resolve_crossings(walls, pos, segs, tol: float) -> None:
             l2 = math.hypot(*q)
             if tol < t * l1 < l1 - tol and tol < w * l2 < l2 - tol:
                 _refuse_shallow(walls, one, other, _unit(a1, b1), _unit(a2, b2))
-                one.cuts.append(t * l1)
-                other.cuts.append(w * l2)
+                crossing = _add(a1, _mul(r, t))
+                one.cuts.append(crossing)
+                other.cuts.append(crossing)
 
 
 def _pieces(walls, pos, segs, tol: float) -> list[_Piece]:
@@ -335,7 +359,7 @@ def _pieces(walls, pos, segs, tol: float) -> list[_Piece]:
             )
         u = _unit(a, b)
         stops: list[float] = []
-        for cut in sorted(seg.cuts):
+        for cut in sorted(_dot(_sub(point, a), u) for point in seg.cuts):
             if tol < cut < length - tol and (not stops or cut - stops[-1] > tol):
                 stops.append(cut)
         bounds = [0.0, *stops, length]
@@ -362,8 +386,8 @@ def _canonical(end: int, side: str) -> str:
     return "right" if side == "left" else "left"
 
 
-def _foot(node: Pt, p: Pt, u: Pt) -> Pt:
-    return _add(p, _mul(u, _dot(_sub(node, p), u)))
+def _thickness(piece: _Piece) -> float:
+    return piece.seg.left - piece.seg.right
 
 
 def _build(walls: Sequence[Wall], openings: Sequence[Opening], join_tol: float) -> dict:
@@ -405,7 +429,7 @@ def _build(walls: Sequence[Wall], openings: Sequence[Opening], join_tol: float) 
             jambs.append((Line(pl, pr, "wall"), walls[piece.seg.wall].id))
             continue
         ordered = sorted(members, key=lambda m: _heading(_outgoing(*m)[1]))
-        hub: list[Pt] = []
+        pairs: list[list] = []
         for idx, (pi, ei) in enumerate(ordered):
             pj, ej = ordered[(idx + 1) % len(ordered)]
             oi, ui, ni, li, _ri = _outgoing(pi, ei)
@@ -419,15 +443,33 @@ def _build(walls: Sequence[Wall], openings: Sequence[Opening], join_tol: float) 
                 )
             face_i = _add(oi, _mul(ni, li))
             face_j = _add(oj, _mul(nj, rj))
-            if abs(_cross(ui, uj)) <= 1e-12:
-                ci = _foot(node, face_i, ui)
-                cj = _foot(node, face_j, uj)
+            mitre = None
+            if abs(_cross(ui, uj)) > 1e-12:
+                mitre = _meet(face_i, ui, face_j, uj)
+                reach = _MITRE_REACH * max(_thickness(pi), _thickness(pj))
+                if _dot(ui, uj) < 0.0 and math.dist(mitre, node) > reach:
+                    mitre = None  # a near-straight join whose faces are offset: a step
+            pairs.append([pi, ei, pj, ej, face_i, ui, face_j, uj, mitre])
+        if len(pairs) == 2 and any(pair[8] is None for pair in pairs):
+            # both sides of one straight-through join step on the same cut line,
+            # or the two pieces would leave a sliver between their ends
+            for pair in pairs:
+                pair[8] = None
+        hub: list[Pt] = []
+        for pi, ei, pj, ej, face_i, ui, face_j, uj, mitre in pairs:
+            if mitre is not None:
+                ci = cj = mitre
+            else:
+                # the step: both faces stop on the line through the node that
+                # bisects the join - square across a straight join, and the line
+                # every equal-offset mitre of this node lies on anyway
+                cut = _left(_sub(ui, uj))
+                ci = _meet(face_i, ui, node, cut)
+                cj = _meet(face_j, uj, node, cut)
                 if math.dist(ci, cj) <= _EPS:
                     cj = ci
                 else:
                     faces.append((Line(ci, cj, "wall"), walls[pi.seg.wall].id))
-            else:
-                ci = cj = _meet(face_i, ui, face_j, uj)
             pi.corners[(ei, _canonical(ei, "left"))] = ci
             pj.corners[(ej, _canonical(ej, "right"))] = cj
             hub.append(ci)
@@ -435,6 +477,11 @@ def _build(walls: Sequence[Wall], openings: Sequence[Opening], join_tol: float) 
                 hub.append(cj)
         if len(ordered) >= 3:
             polygon = _polygon(hub)
+            if polygon and not _counter_clockwise(polygon):
+                raise ValueError(
+                    f"the junction at ({node[0]:g}, {node[1]:g}) cannot be resolved into a "
+                    "clean outline - its middle turns inside out; move the walls' ends apart."
+                )
             if polygon:
                 owner = min(piece.seg.wall for piece, _end in ordered)
                 regions.append((polygon, walls[owner].id))
@@ -522,7 +569,7 @@ def _build(walls: Sequence[Wall], openings: Sequence[Opening], join_tol: float) 
             if math.dist(sr, er) > _EPS:
                 faces.append((Line(sr, er, "wall"), owner))
             polygon = _polygon((sr, er, el, sl))
-            if polygon and is_self_intersecting(polygon):
+            if polygon and (is_self_intersecting(polygon) or not _counter_clockwise(polygon)):
                 raise ValueError(
                     f"{_name(walls, seg.wall)}: segment {seg.index} is too short for the "
                     "junctions at its ends - its outline would cross itself; lengthen it "

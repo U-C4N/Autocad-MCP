@@ -9,6 +9,9 @@ the stem's axis.
 
 from __future__ import annotations
 
+import itertools
+import math
+
 import pytest
 
 from engineering.arch.model import Opening, Wall
@@ -132,6 +135,117 @@ def test_every_region_is_counter_clockwise():
     assert all(signed_area(r) > 0 for r in geo.regions)
 
 
+# -- straight joins whose faces do not line up ---------------------------------------
+
+
+def test_a_justification_change_on_a_straight_axis_steps_across_the_node():
+    geo = wall_geometry(
+        [
+            wall("a", (0, 0), (3000, 0), justification="left"),
+            wall("b", (3000, 0), (6000, 0), justification="right"),
+        ]
+    )
+    assert segs(geo.faces) == {
+        S(0, 0, 3000, 0),
+        S(0, 200, 3000, 200),
+        S(3000, 200, 3000, 0),  # the step: each face of a stops on the square cut
+        S(3000, 0, 3000, -200),  # through the node, and so does b's
+        S(3000, 0, 6000, 0),
+        S(3000, -200, 6000, -200),
+    }
+    assert {ring(r) for r in geo.regions} == {
+        ring([(0, 0), (3000, 0), (3000, 200), (0, 200)]),
+        ring([(3000, -200), (6000, -200), (6000, 0), (3000, 0)]),
+    }
+
+
+def test_a_rounding_kink_steps_like_the_straight_join_instead_of_mitring_kilometres_away():
+    # 0.5 mm over 3 m: the faces 200 mm apart would meet at x = 1 203 000
+    geo = wall_geometry(
+        [
+            wall("a", (0, 0), (3000, 0), justification="left"),
+            wall("b", (3000, 0), (6000, 0.5), justification="right"),
+        ]
+    )
+    points = [p for line in geo.faces for p in (line.p1, line.p2)]
+    # b's free end is square to its own axis: 200 * sin(0.5 / 3000) past x = 6000
+    assert max(abs(x) for x, _y in points) <= 6000.0 + 0.04
+    assert max(abs(y) for _x, y in points) <= 200.5 + 1e-6
+    assert all(signed_area(r) > 0 for r in geo.regions)
+    assert sorted(signed_area(r) for r in geo.regions) == pytest.approx([600000, 600000], abs=50)
+
+
+def test_a_thickness_change_at_a_small_kink_steps_at_the_node_and_does_not_flare():
+    kink = math.radians(2.0)
+    geo = wall_geometry(
+        [
+            wall("a", (0, 0), (3000, 0), thickness=100.0),
+            wall(
+                "b",
+                (3000, 0),
+                (3000 + 3000 * math.cos(kink), 3000 * math.sin(kink)),
+                thickness=300.0,
+            ),
+        ]
+    )
+    a_faces = [line for line in geo.faces if abs(line.p1[1] - line.p2[1]) < 1e-9]
+    # a's two 100 mm faces stop at the node (the bisector of a 2 degree join), not
+    # 2865 mm into b where they would meet b's 300 mm faces
+    assert {round(y, 6) for line in a_faces for y in (line.p1[1], line.p2[1])} == {50.0, -50.0}
+    assert max(x for line in a_faces for x in (line.p1[0], line.p2[0])) < 3002.0
+    assert all(signed_area(r) > 0 for r in geo.regions)
+    assert sorted(signed_area(r) for r in geo.regions) == pytest.approx([300000, 900000], abs=1)
+
+
+def test_a_rounded_rotated_thickness_change_draws_the_same_step_as_the_exact_one():
+    c, s = math.cos(math.radians(30)), math.sin(math.radians(30))
+
+    def along(d, digits=None):
+        x, y = d * c, d * s
+        return (round(x, digits), round(y, digits)) if digits is not None else (x, y)
+
+    exact = wall_geometry(
+        [
+            wall("a", along(0), along(3000), thickness=100.0),
+            wall("b", along(3000), along(6000), thickness=300.0),
+        ]
+    )
+    rounded = wall_geometry(
+        [
+            wall("a", along(0, 2), along(3000, 2), thickness=100.0),
+            wall("b", along(3000, 2), along(6000, 2), thickness=300.0),
+        ]
+    )
+    assert len(rounded.faces) == len(exact.faces) == 6
+    for mine, theirs in zip(
+        sorted(seg(line) for line in rounded.faces),
+        sorted(seg(line) for line in exact.faces),
+        strict=True,
+    ):
+        assert math.dist(mine[0], theirs[0]) < 0.05 and math.dist(mine[1], theirs[1]) < 0.05
+
+
+@pytest.mark.parametrize("kink", [0.0, 0.01, 0.5, 2.0, 8.0, 20.0, 45.0, -2.0, -30.0])
+@pytest.mark.parametrize("justs", list(itertools.product(("center", "left", "right"), repeat=2)))
+@pytest.mark.parametrize("thicknesses", [(200.0, 200.0), (100.0, 300.0)])
+def test_a_straight_or_kinked_join_stays_near_its_node_and_every_region_is_ccw(
+    kink, justs, thicknesses
+):
+    turn = math.radians(30.0 + kink)
+    p1 = (round(3000 * math.cos(math.radians(30)), 2), round(3000 * math.sin(math.radians(30)), 2))
+    p2 = (round(p1[0] + 3000 * math.cos(turn), 2), round(p1[1] + 3000 * math.sin(turn), 2))
+    geo = wall_geometry(
+        [
+            wall("a", (0, 0), p1, thickness=thicknesses[0], justification=justs[0]),
+            wall("b", p1, p2, thickness=thicknesses[1], justification=justs[1]),
+        ]
+    )
+    reach = 6000 + 2 * max(thicknesses)
+    assert all(math.hypot(*p) < reach for line in geo.faces for p in (line.p1, line.p2))
+    assert len(geo.regions) == 2
+    assert all(signed_area(r) > 0 for r in geo.regions)
+
+
 # -- T -----------------------------------------------------------------------------
 
 
@@ -161,6 +275,47 @@ def test_a_stem_drawn_to_the_face_is_carried_to_the_axis():
     touching = wall_geometry([wall("a", (-3000, 0), (3000, 0)), wall("b", (0, 100), (0, 2500))])
     on_axis = wall_geometry([wall("a", (-3000, 0), (3000, 0)), wall("b", (0, 0), (0, 2500))])
     assert segs(touching.faces) == segs(on_axis.faces)
+
+
+# c runs along y = 0; a is drawn to c's face (its start is carried from y = 100
+# down to c's axis) and b is a T into a's middle at y = 2000. The T on a must not
+# depend on whether a's start has been carried yet when b is resolved.
+T_ON_A_CARRIED_WALL = {
+    S(-1000, -100, 5000, -100),  # c's far face, whole
+    S(-1000, 100, 1900, 100),  # c's near face, cut by a
+    S(2100, 100, 5000, 100),
+    S(1900, 100, 1900, 1900),  # a's near face to b, cut by b at 1900 / 2100
+    S(1900, 2100, 1900, 4000),
+    S(2100, 100, 2100, 4000),  # a's far face to b, whole
+    S(0, 1900, 1900, 1900),  # b stops on a's near face
+    S(0, 2100, 1900, 2100),
+}
+
+
+@pytest.mark.parametrize("order", list(itertools.permutations("cab")))
+def test_a_t_into_a_carried_wall_does_not_depend_on_the_order_of_the_walls(order):
+    walls = {
+        "c": wall("c", (-1000, 0), (5000, 0)),
+        "a": wall("a", (2000, 100), (2000, 4000)),
+        "b": wall("b", (0, 2000), (2000, 2000)),
+    }
+    geo = wall_geometry([walls[name] for name in order])
+    assert segs(geo.faces) == T_ON_A_CARRIED_WALL
+    assert segs(geo.jambs) == {
+        S(-1000, -100, -1000, 100),
+        S(5000, -100, 5000, 100),
+        S(1900, 4000, 2100, 4000),
+        S(0, 1900, 0, 2100),  # b's free end - and no jamb inside wall a
+    }
+    assert {ring(r) for r in geo.regions} == {
+        ring([(-1000, -100), (2000, -100), (1900, 100), (-1000, 100)]),
+        ring([(2000, -100), (5000, -100), (5000, 100), (2100, 100)]),
+        ring([(2100, 100), (1900, 100), (2000, -100)]),  # the hub on c
+        ring([(2100, 100), (2100, 2000), (1900, 1900), (1900, 100)]),  # a, split at y = 2000
+        ring([(2100, 2000), (2100, 4000), (1900, 4000), (1900, 2100)]),
+        ring([(1900, 2100), (1900, 1900), (2100, 2000)]),  # the hub on a
+        ring([(0, 1900), (1900, 1900), (1900, 2100), (0, 2100)]),
+    }
 
 
 # -- X -----------------------------------------------------------------------------
