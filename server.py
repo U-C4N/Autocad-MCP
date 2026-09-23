@@ -9781,7 +9781,7 @@ async def drawing_export_dwg(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 25: Architecture (2 tools) ──────────────────────────────────────
+# ── SECTION 25: Architecture (3 tools) ──────────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -9895,6 +9895,49 @@ async def arch_rooms_detect(
 
     try:
         return await rooms_detect(_backend(ctx), layers=layers, min_area=min_area, tol=tol)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@cad_tool(summary="Draw a door, window or room schedule from the plan records.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Architecture: Schedule", "destructiveHint": False},
+    tags={"arch", "create"},
+)
+async def arch_schedule(
+    kind: Annotated[str, Field(description="doors | windows | rooms")],
+    x: Annotated[float, Field(description="WCS X of the table's top-left corner.")],
+    y: Annotated[float, Field(description="WCS Y of the table's top-left corner.")],
+    lang: Annotated[
+        str, Field(default="en", description="Headers and numbers: en | tr (decimal comma).")
+    ] = "en",
+    scale: Annotated[
+        float,
+        Field(default=50.0, gt=0, description="Plot-scale denominator: 50 is 1:50."),
+    ] = 50.0,
+    ctx: Context = None,
+) -> dict:
+    """Draw a door, window or room schedule as a real TABLE - a read of the drawing.
+
+    The rows come from the `ACADMCP_ARCH` records on the drawing (what
+    `arch_wall` / `arch_opening` / `arch_room` write), never from the caller:
+    doors by tag with width, height, swing, hand and wall; windows by tag with
+    width, height, sill and wall; rooms by number with name and the measured
+    area, plus a total. An opening drawn without a tag gets the next free D1 /
+    W1 (K1 / P1 in Turkish) in wall order; an explicit tag is kept. A value the
+    model does not carry is an empty cell, never a default. `representation`
+    reports what was drawn: `native` (ACAD_TABLE, live) or `composite` (rules
+    and MTEXT, headless).
+
+    Refused before anything is drawn: an unknown `kind` or `lang` (named with
+    the list), nothing of that kind on the drawing, and more rows than one
+    TABLE takes (198).
+    """
+    from engineering.arch.schedule import draw_schedule
+
+    await ctx.info(f"arch_schedule: {kind} at ({x}, {y})")
+    try:
+        return await draw_schedule(_backend(ctx), kind, at=(x, y), lang=lang, scale=scale)
     except ValueError as exc:
         raise ToolError(str(exc)) from exc
 

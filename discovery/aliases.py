@@ -94,8 +94,9 @@ class ToolAliases:
 #   REVCLOUD -- one command draws a bare cloud (entity_create_revcloud) or a
 #       revision cloud that also files a revision row (revision_add); a
 #       drafter typing it could mean either.
-#   TABLE -- one command makes an empty table (entity_create_table) or the
-#       ISO 7573 parts list (bom_table); both are correct destinations.
+#   TABLE -- one command makes an empty table (entity_create_table), the
+#       ISO 7573 parts list (bom_table) or a door / window / room schedule
+#       (arch_schedule); all three are correct destinations.
 #   SECTIONPLANE -- the section a drafter asks for is either a whole section
 #       view of a drawn part (mech_view_add) or the cutting-plane line and its
 #       labels on an existing view (section_line); tracks B+G groups M and A
@@ -2258,6 +2259,18 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "read rooms from lines",
             "odalari bul",
             "kat plani alanlari",
+        ),
+    ),
+    "arch_schedule": ToolAliases(
+        acad=("TABLE",),
+        synonyms=(
+            "door schedule",
+            "window schedule",
+            "room schedule",
+            "opening schedule",
+            "kapi cizelgesi",
+            "pencere cizelgesi",
+            "mahal listesi",
         ),
     ),
 }

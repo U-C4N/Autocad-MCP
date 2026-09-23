@@ -4792,14 +4792,15 @@ class ComBackend(AutoCADBackend):
             )
             for column, width in enumerate(layout.column_widths):
                 table.SetColumnWidth(column, width)
+            # MEASURED on AutoCAD 2026: IAcadTable has no TextHeight property
+            # (the old `table.TextHeight = h` raised and was swallowed, leaving
+            # the Standard style's 6.0 / 4.5 - illegible at 1:50). The member
+            # is SetCellTextHeight(row, col, h), set per cell.
             for row_index, row in enumerate(layout.cells):
                 table.SetRowHeight(row_index, layout.row_height)
                 for column_index, value in enumerate(row):
                     table.SetText(row_index, column_index, value)
-            try:
-                table.TextHeight = layout.text_height
-            except Exception as exc:
-                log.debug("setting table TextHeight failed: %s", exc)
+                    table.SetCellTextHeight(row_index, column_index, layout.text_height)
             _apply_entity_attrs(table, layer, None, None)
             _regen()
             info = _entity_info(table)

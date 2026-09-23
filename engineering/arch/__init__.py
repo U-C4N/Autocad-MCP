@@ -39,6 +39,7 @@ from .rooms import (
     room_label_prims,
     rooms_detect,
 )
+from .schedule import SCHEDULE_KINDS, draw_schedule, schedule_rows
 
 __all__ = [
     "APP_ID",
@@ -52,6 +53,7 @@ __all__ = [
     "LANGS",
     "Opening",
     "Room",
+    "SCHEDULE_KINDS",
     "Stair",
     "WALL_HATCH_TABLE",
     "WALL_MATERIALS",
@@ -59,6 +61,7 @@ __all__ = [
     "axis_segments",
     "decode",
     "detect_rooms",
+    "draw_schedule",
     "encode",
     "face_containing",
     "fmt_area_m2",
@@ -72,6 +75,7 @@ __all__ = [
     "room_from_dict",
     "room_label_prims",
     "rooms_detect",
+    "schedule_rows",
     "segment_of",
     "stair_from_dict",
     "tag_prefix",
