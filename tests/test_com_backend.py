@@ -1089,3 +1089,82 @@ async def test_drawing_audit_restores_auditctl_when_the_command_raises(sysvar_se
         await backend.drawing_audit()
     assert doc.variables["AUDITCTL"] == 0
     assert doc.calls[-1] == ("SetVariable", "AUDITCTL", 0)
+
+
+# ── type filters speak the DXF names on the live engine too ─────────────────
+
+
+def _typed_modelspace(monkeypatch, object_names):
+    """A ComBackend whose model space holds one entity per ActiveX ObjectName."""
+    import backends.com_backend as cb
+
+    members = [
+        _Entity(
+            name,
+            Handle=f"{i + 1:X}",
+            Layer="0",
+            color=256,
+            Linetype="ByLayer",
+            Visible=True,
+            GetBoundingBox=lambda: ((0.0, 0.0, 0.0), (1.0, 1.0, 0.0)),
+        )
+        for i, name in enumerate(object_names)
+    ]
+    space = SimpleNamespace(Count=len(members), Item=lambda i: members[i])
+    monkeypatch.setattr(cb, "_msp", lambda: space)
+    backend = ComBackend()
+
+    async def _run_inline(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(backend, "_run", _run_inline)
+    return backend
+
+
+# The ObjectNames measured on AutoCAD 2026 (25.1s) for each kind of entity a
+# tool filters by its DXF name: a block reference, a lightweight polyline and
+# every dimension subclass ActiveX creates.
+_LIVE_NAMES = [
+    "AcDbBlockReference",
+    "AcDbPolyline",
+    "AcDbRotatedDimension",
+    "AcDbAlignedDimension",
+    "AcDbDiametricDimension",
+    "AcDbRadialDimension",
+    "AcDb2LineAngularDimension",
+    "AcDbOrdinateDimension",
+    "AcDbLine",
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("dxf_name", "expected"),
+    [
+        ("INSERT", 1),
+        ("LWPOLYLINE", 1),
+        ("DIMENSION", 6),
+        ("LINE", 1),
+    ],
+)
+async def test_a_dxf_type_filter_finds_what_activex_names_differently(
+    monkeypatch, dxf_name, expected
+):
+    """block_find_references asks entity_list for INSERTs; ActiveX calls the
+    same entity AcDbBlockReference, so on the live seat the filter matched
+    nothing and every block reported zero references. The DXF name a tool
+    passes must find the entity on both engines."""
+    backend = _typed_modelspace(monkeypatch, _LIVE_NAMES)
+    listed = await backend.entity_list(type_filter=dxf_name, limit=100)
+    assert len(listed) == expected
+    assert await backend.entity_count(type_filter=dxf_name) == expected
+
+
+@pytest.mark.asyncio
+async def test_the_activex_type_names_still_filter_as_before(monkeypatch):
+    """The reported type names do not change, so a caller already filtering by
+    the ActiveX spelling keeps getting exactly what it got."""
+    backend = _typed_modelspace(monkeypatch, _LIVE_NAMES)
+    assert len(await backend.entity_list(type_filter="BLOCKREFERENCE")) == 1
+    assert len(await backend.entity_list(type_filter="POLYLINE")) == 1
+    assert len(await backend.entity_list(type_filter="ROTATEDDIMENSION")) == 1

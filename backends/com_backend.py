@@ -1245,6 +1245,26 @@ def _com_geometry_bbox(entity) -> dict | None:
 _COM_LWPOLYLINE_NAMES = ("AcDbPolyline", "AcDbLWPolyline")
 
 
+# A tool filters by the DXF entity name; ActiveX names three of them differently
+# (measured on AutoCAD 2026: AcDbBlockReference, AcDbPolyline and one class per
+# dimension kind). The reported type stays the ActiveX spelling, so a caller
+# already filtering by it is unaffected; the DXF name simply finds them too.
+_DXF_TYPE_ALIASES: dict[str, frozenset[str]] = {
+    "INSERT": frozenset({"BLOCKREFERENCE", "MINSERTBLOCK"}),
+    "LWPOLYLINE": frozenset({"POLYLINE"}),
+}
+
+
+def _type_filter_matches(type_filter: str, ent_type: str) -> bool:
+    """True when an entity whose ActiveX type is ``ent_type`` answers ``type_filter``."""
+    wanted = type_filter.upper()
+    if ent_type == wanted or ent_type in _DXF_TYPE_ALIASES.get(wanted, ()):
+        return True
+    # DXF has one DIMENSION entity; ActiveX has AcDbRotatedDimension,
+    # AcDbAlignedDimension, AcDbDiametricDimension, AcDb2LineAngularDimension, …
+    return wanted == "DIMENSION" and ent_type.endswith("DIMENSION")
+
+
 def _entity_info(entity) -> EntityInfo:
     """Convert a COM entity object to EntityInfo dataclass."""
     try:
@@ -5275,7 +5295,7 @@ class ComBackend(AutoCADBackend):
                     ent_type = ent.ObjectName.replace("AcDb", "").upper()
                     ent_layer = ent.Layer
 
-                    if type_filter and type_filter.upper() != ent_type:
+                    if type_filter and not _type_filter_matches(type_filter, ent_type):
                         continue
                     if layer_filter and layer_filter.lower() != ent_layer.lower():
                         continue
@@ -5307,9 +5327,8 @@ class ComBackend(AutoCADBackend):
             for i in range(mspace.Count):
                 try:
                     ent = mspace.Item(i)
-                    if (
-                        type_filter
-                        and type_filter.upper() != ent.ObjectName.replace("AcDb", "").upper()
+                    if type_filter and not _type_filter_matches(
+                        type_filter, ent.ObjectName.replace("AcDb", "").upper()
                     ):
                         continue
                     if layer_filter and layer_filter.lower() != ent.Layer.lower():
