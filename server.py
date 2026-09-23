@@ -9121,6 +9121,635 @@ async def hatch_material(
 
 
 # ---------------------------------------------------------------------------
+# ── SECTION 24: Sheet & Delivery (11 tools) ─────────────────────────────────
+# ---------------------------------------------------------------------------
+
+
+@cad_tool(
+    summary="Draw an ISO 5457 sheet frame with the zone grid and centring marks.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Sheet: ISO 5457 Frame", "destructiveHint": False},
+    tags={"engineering", "sheet"},
+)
+async def sheet_frame(
+    size: Annotated[
+        str, Field(default="A3", description="ISO 216 sheet: A4, A3, A2, A1 or A0.")
+    ] = "A3",
+    orientation: Annotated[
+        str, Field(default="landscape", description="'landscape' or 'portrait'.")
+    ] = "landscape",
+    zones: Annotated[
+        bool,
+        Field(
+            default=True,
+            description="Draw the ISO 5457 grid reference system: letters down the vertical "
+            "edges from the top, numbers along the horizontal edges from the left.",
+        ),
+    ] = True,
+    marks: Annotated[
+        bool,
+        Field(
+            default=True,
+            description="Draw the four centring marks and the eight corner trimming rectangles.",
+        ),
+    ] = True,
+    origin_x: Annotated[
+        float, Field(default=0.0, description="X of the sheet's lower-left corner (WCS).")
+    ] = 0.0,
+    origin_y: Annotated[
+        float, Field(default=0.0, description="Y of the sheet's lower-left corner (WCS).")
+    ] = 0.0,
+    layout: Annotated[
+        str,
+        Field(
+            default="",
+            description="Paper-space layout to draw the sheet on (create it with "
+            "layout_create). Empty draws in the current space.",
+        ),
+    ] = "",
+    ctx: Context = None,
+) -> dict:
+    """ISO 5457 drawing frame for A4-A0: a 20 mm filing margin, 10 mm on the
+    other three edges, the grid reference system and the centring/trimming marks.
+
+    Borders, rules and marks land on TITLEBLOCK; the zone lettering on TEXT.
+    Refusals, all before the first entity is drawn: a size outside A4-A0 is
+    refused by name and the five covered sizes are listed; an orientation that
+    is neither 'landscape' nor 'portrait'; a `layout` that does not exist. The
+    zone divisions drawn are equal -- ISO 5457's shorter corner fields are not
+    implemented -- while the division counts are the standard's.
+    """
+    from engineering.sheet.frames import draw_sheet_frame
+
+    await ctx.info(f"Sheet frame {size} {orientation}")
+    return await draw_sheet_frame(
+        _backend(ctx),
+        size,
+        orientation=orientation,
+        zones=zones,
+        marks=marks,
+        origin=(origin_x, origin_y),
+        layout=layout or None,
+    )
+
+
+@cad_tool(
+    summary="Stamp an ISO 7200 title block (and frame) on any sheet from A4 to A0.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Sheet: ISO 7200 Title Block", "destructiveHint": False},
+    tags={"engineering", "sheet"},
+)
+async def titleblock_apply(
+    title: Annotated[str, Field(description="Drawing title (verbatim, no transformation).")],
+    drawing_no: Annotated[str, Field(description="Identification number, e.g. 'AM-2026-001'.")],
+    size: Annotated[
+        str, Field(default="A3", description="ISO 216 sheet: A4, A3, A2, A1 or A0.")
+    ] = "A3",
+    orientation: Annotated[
+        str, Field(default="landscape", description="'landscape' or 'portrait'.")
+    ] = "landscape",
+    projection: Annotated[
+        str,
+        Field(
+            default="first",
+            description="Projection-angle symbol: 'first' (ISO/European, the default), "
+            "'third' (ANSI), or '' for no symbol.",
+        ),
+    ] = "first",
+    part_no: Annotated[str, Field(default="")] = "",
+    material: Annotated[str, Field(default="")] = "",
+    scale: Annotated[str, Field(default="1:1")] = "1:1",
+    units: Annotated[str, Field(default="mm")] = "mm",
+    drawn_by: Annotated[str, Field(default="")] = "",
+    checked_by: Annotated[str, Field(default="")] = "",
+    date: Annotated[str, Field(default="")] = "",
+    sheet: Annotated[str, Field(default="1/1")] = "1/1",
+    revision: Annotated[str, Field(default="A")] = "A",
+    company: Annotated[str, Field(default="Anka-Makine")] = "Anka-Makine",
+    frame: Annotated[
+        bool, Field(default=True, description="Also draw the ISO 5457 frame around the block.")
+    ] = True,
+    zones: Annotated[
+        bool, Field(default=False, description="Add the zone grid to that frame.")
+    ] = False,
+    marks: Annotated[
+        bool, Field(default=False, description="Add the centring and trimming marks.")
+    ] = False,
+    origin_x: Annotated[float, Field(default=0.0)] = 0.0,
+    origin_y: Annotated[float, Field(default=0.0)] = 0.0,
+    layout: Annotated[
+        str,
+        Field(
+            default="",
+            description="Paper-space layout to draw the sheet on; empty draws in the "
+            "current space.",
+        ),
+    ] = "",
+    ctx: Context = None,
+) -> dict:
+    """ISO 7200 title block, 180 mm wide, in the lower-right corner of any
+    A4-A0 sheet. The title text is used verbatim.
+
+    Carries the ISO 128-30 projection-angle symbol: 'first' draws the cone on
+    the left and the concentric circles on the right, 'third' is its mirror.
+    Refusals, all before the first entity: an unknown size (the five covered
+    sizes are listed), an unknown orientation, a projection that is not
+    'first'/'third'/'', a `layout` that does not exist. `titleblock_apply_iso_a3`
+    is this tool with size='A3' and no symbol, kept so no caller breaks.
+    """
+    from engineering.sheet.titleblock import TitleBlockMetadata, apply_titleblock
+
+    await ctx.info(f"Title block {size} {orientation}: {title}")
+    metadata = TitleBlockMetadata(
+        title=title,
+        drawing_no=drawing_no,
+        part_no=part_no,
+        material=material,
+        scale=scale,
+        units=units,
+        drawn_by=drawn_by,
+        checked_by=checked_by,
+        date=date,
+        sheet=sheet,
+        revision=revision,
+        company=company,
+    )
+    return await apply_titleblock(
+        _backend(ctx),
+        size=size,
+        metadata=metadata,
+        origin=(origin_x, origin_y),
+        orientation=orientation,
+        projection=projection or None,
+        frame=frame,
+        zones=zones,
+        marks=marks,
+        layout=layout or None,
+    )
+
+
+@cad_tool(
+    summary="Append a revision row, with optional revision clouds and triangular tags.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Sheet: Add Revision", "destructiveHint": False},
+    tags={"engineering", "sheet"},
+)
+async def revision_add(
+    rev: Annotated[
+        str, Field(description="Revision code: one to three capitals or digits (A, B, 01).")
+    ],
+    description: Annotated[str, Field(description="What changed, verbatim.")],
+    date: Annotated[str, Field(default="", description="Issue date, verbatim.")] = "",
+    by: Annotated[str, Field(default="", description="Who issued it.")] = "",
+    clouds: Annotated[
+        list[list[float]] | None,
+        Field(
+            default=None,
+            description="Regions to cloud, each [x0, y0, x1, y1] in WCS. Refused before "
+            "anything is written on an engine without the revcloud capability.",
+        ),
+    ] = None,
+    tags: Annotated[
+        list[list[float]] | None,
+        Field(default=None, description="Points [x, y] to put a triangular revision tag at."),
+    ] = None,
+    size: Annotated[
+        str, Field(default="A3", description="Sheet the block is placed on: A4-A0.")
+    ] = "A3",
+    orientation: Annotated[str, Field(default="landscape")] = "landscape",
+    origin_x: Annotated[float, Field(default=0.0)] = 0.0,
+    origin_y: Annotated[float, Field(default=0.0)] = 0.0,
+    cloud_segment: Annotated[
+        float, Field(default=8.0, gt=0, description="Revision-cloud arc segment length (mm).")
+    ] = 8.0,
+    layout: Annotated[str, Field(default="")] = "",
+    ctx: Context = None,
+) -> dict:
+    """Append one row to the revision block, creating the block on first use.
+
+    Idempotent per revision code: a code the drawing already carries returns
+    `created=false` and draws nothing, so re-running a revision pass cannot
+    stack duplicates. The block defaults to the upper-right corner of the
+    drawing frame, growing downwards, so it does not collide with the ISO 7573
+    parts list above the title block. Refusals, all before the first entity: a
+    malformed code, a cloud region that is not [x0, y0, x1, y1], and any
+    request for clouds on a backend whose `revcloud` capability is false (the
+    COM engine — REVCLOUD has no ActiveX member) — that one carries
+    `capability: "revcloud"`.
+    """
+    from engineering.sheet.revision import add_revision
+
+    await ctx.info(f"Revision {rev}: {description}")
+    return await add_revision(
+        _backend(ctx),
+        rev=rev,
+        description=description,
+        date=date,
+        by=by,
+        clouds=clouds or (),
+        tags=tags or (),
+        size=size,
+        orientation=orientation,
+        origin=(origin_x, origin_y),
+        cloud_segment=cloud_segment,
+        layout=layout or None,
+    )
+
+
+@cad_tool(
+    summary="Read the bill of materials out of the drawing's block references.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Sheet: Extract Bill of Materials", "readOnlyHint": True},
+    tags={"engineering", "sheet", "query"},
+)
+async def bom_extract(
+    layer: Annotated[
+        str, Field(default="", description="Only read INSERTs on this layer; empty reads all.")
+    ] = "",
+    group_by: Annotated[
+        str,
+        Field(
+            default="designation",
+            description="Field to group identical parts by: designation, standard, material, "
+            "or '' for one row per insert.",
+        ),
+    ] = "designation",
+    columns: Annotated[
+        list[str] | None,
+        Field(
+            default=None,
+            description="Columns to return; default item, qty, designation, standard, material.",
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        Field(
+            default=0,
+            ge=0,
+            description="Stop after this many item records; 0 (the default) reads the whole "
+            "drawing. `truncated` says whether the cap cut the list.",
+        ),
+    ] = 0,
+    ctx: Context = None,
+) -> dict:
+    """Walk the INSERTs and return the ISO 7573 item rows. Never modifies the
+    drawing. `bom_table` is what draws them.
+
+    Each row's source is reported: `xdata` when the ACADMCP_MECH payload
+    supplied it (what `std_part_insert` writes), `attributes` when the block's
+    own ATTRIBs did. A block with neither a payload nor a DESIGNATION attribute
+    is skipped rather than guessed at, and `skipped` counts them.
+
+    The whole drawing is read by default — `entity_list`'s 200-entity page is
+    paged through, not taken as a cap, because an item list that stops at the
+    200th INSERT prints a wrong QTY rather than a shorter one. Pass `limit` to
+    cap it deliberately; `truncated` is then true if and only if the cap cut
+    the list. Refusals: an unknown column or group_by field, named with the
+    list of the ones there are.
+    """
+    from engineering.sheet.bom import extract_records, rows_from_records
+
+    backend = _backend(ctx)
+    cap = int(limit) or None
+    # One record past the cap, so `truncated` is measured rather than guessed:
+    # exactly `cap` records on the drawing is not a truncation.
+    records = await extract_records(
+        backend, layer=layer or None, limit=None if cap is None else cap + 1
+    )
+    truncated = cap is not None and len(records) > cap
+    if truncated:
+        records = records[:cap]
+    rows = rows_from_records(records, columns=columns, group_by=group_by or None)
+    return {
+        "ok": True,
+        "standard": "ISO 7573",
+        "rows": [dict(row) | {"handles": list(row["handles"])} for row in rows],
+        "records": len(records),
+        "limit": cap,
+        "truncated": truncated,
+        "group_by": group_by or None,
+    }
+
+
+@cad_tool(summary="Draw the parts list as a real TABLE above the title block.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Sheet: Draw Parts List", "destructiveHint": False},
+    tags={"engineering", "sheet"},
+)
+async def bom_table(
+    rows: Annotated[
+        list[dict] | None,
+        Field(
+            default=None,
+            description="Rows to draw; omit to extract them from the drawing first.",
+        ),
+    ] = None,
+    size: Annotated[str, Field(default="A3", description="Sheet the list is placed on.")] = "A3",
+    orientation: Annotated[str, Field(default="landscape")] = "landscape",
+    origin_x: Annotated[float, Field(default=0.0)] = 0.0,
+    origin_y: Annotated[float, Field(default=0.0)] = 0.0,
+    at_x: Annotated[
+        float | None,
+        Field(default=None, description="Override the anchor X; default is the title block's."),
+    ] = None,
+    at_y: Annotated[float | None, Field(default=None)] = None,
+    direction: Annotated[
+        str,
+        Field(
+            default="up",
+            description="'up' (ISO 7573 on a drawing: heading at the bottom, items ascending) "
+            "or 'down'.",
+        ),
+    ] = "up",
+    columns: Annotated[list[str] | None, Field(default=None)] = None,
+    row_height: Annotated[float, Field(default=7.0, gt=0)] = 7.0,
+    layout: Annotated[str, Field(default="")] = "",
+    ctx: Context = None,
+) -> dict:
+    """Draw the ISO 7573 item list as a real TABLE entity, 180 mm wide (the
+    title-block width), growing upwards from directly above the title block.
+
+    With `direction="up"` the heading row sits against the title block and item
+    1 is the row above it, so the list extends upwards as parts are added —
+    which is what ISO 7573 asks for on a drawing. Pass `rows` to draw a list
+    you already have, or omit it and the tool runs `bom_extract` first.
+    `representation` reports what was drawn: `native` (a real ACAD_TABLE on the
+    live engine) or `composite` (rules and MTEXT headlessly, whose `handle` is
+    the first child). Refusals: no rows to draw, an unknown column, an unknown
+    direction, a `layout` that does not exist.
+    """
+    from engineering.sheet.bom import (
+        draw_bom_table,
+        extract_records,
+        rows_from_records,
+    )
+    from engineering.sheet.titleblock import TB_HEIGHT, titleblock_origin
+
+    backend = _backend(ctx)
+    if rows is None:
+        rows = list(rows_from_records(await extract_records(backend), columns=columns))
+    tb_x, tb_y = titleblock_origin(size, orientation=orientation)
+    anchor = (
+        origin_x + tb_x if at_x is None else at_x,
+        origin_y + tb_y + TB_HEIGHT if at_y is None else at_y,
+    )
+    await ctx.info(f"Parts list: {len(rows)} rows at {anchor}")
+    return await draw_bom_table(
+        backend,
+        rows,
+        at=anchor,
+        direction=direction,
+        columns=columns,
+        row_height=row_height,
+        layout=layout or None,
+    )
+
+
+@cad_tool(summary="Add an ISO 6433 balloon linked to its item row.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Sheet: Add Balloon", "destructiveHint": False},
+    tags={"engineering", "sheet"},
+)
+async def balloon_add(
+    item: Annotated[
+        int, Field(ge=1, description="Item reference number, as bom_extract numbers it.")
+    ],
+    x: Annotated[float, Field(description="Balloon centre X (WCS).")],
+    y: Annotated[float, Field(description="Balloon centre Y (WCS).")],
+    leader_x: Annotated[float, Field(description="X of the dot on the item.")],
+    leader_y: Annotated[float, Field(description="Y of the dot on the item.")],
+    targets: Annotated[
+        list[str] | None,
+        Field(
+            default=None,
+            description="Handles of the INSERTs this item is; the link a rerun renumbers by.",
+        ),
+    ] = None,
+    radius: Annotated[
+        float,
+        Field(
+            default=4.0,
+            gt=0,
+            description="Balloon radius (mm). The numeral is 1.4x this, so a sheet "
+            "dimensioned at 3.5 mm wants 5.0 to satisfy ISO 6433.",
+        ),
+    ] = 4.0,
+    layer: Annotated[str, Field(default="DIM")] = "DIM",
+    layout: Annotated[str, Field(default="")] = "",
+    ctx: Context = None,
+) -> dict:
+    """One ISO 6433 item reference: a numbered balloon, a leader, and a dot on
+    the item.
+
+    The balloon carries an ACADMCP_MECH payload naming its targets, so running
+    the balloon pass again after the bill of materials is regrouped *renumbers*
+    the existing balloon (`renumbered: true`) instead of drawing a second one.
+    Refusals, all before the first entity: an item number below 1, a leader
+    target inside the balloon, and an item number already used by another
+    balloon for different targets — named with that balloon's handle.
+    """
+    from engineering.sheet.bom import add_balloon
+
+    await ctx.info(f"Balloon {item} at ({x}, {y})")
+    return await add_balloon(
+        _backend(ctx),
+        item=item,
+        at=(x, y),
+        leader_to=(leader_x, leader_y),
+        targets=tuple(targets or ()),
+        radius=radius,
+        layer=layer,
+        layout=layout or None,
+    )
+
+
+@cad_tool(
+    summary="Attach a DWG/DXF as an external reference (attachment or overlay).", cost="mutate"
+)
+@mcp.tool(
+    annotations={"title": "Sheet: Attach Xref", "destructiveHint": False},
+    tags={"drawing", "block"},
+)
+async def xref_attach(
+    path: Annotated[str, Field(description="Full path of the drawing to reference.")],
+    x: Annotated[float, Field(default=0.0, description="Insertion X (WCS).")] = 0.0,
+    y: Annotated[float, Field(default=0.0, description="Insertion Y (WCS).")] = 0.0,
+    scale: Annotated[float, Field(default=1.0, gt=0, description="Uniform scale.")] = 1.0,
+    rotation: Annotated[
+        float, Field(default=0.0, description="Rotation in degrees, CCW from +X.")
+    ] = 0.0,
+    kind: Annotated[
+        str,
+        Field(
+            default="attach",
+            description="'attach' (the reference's own xrefs come with it) or 'overlay' "
+            "(they do not, so a circular reference cannot form).",
+        ),
+    ] = "attach",
+    ctx: Context = None,
+) -> dict:
+    """Attach an external reference and insert it once. Both engines.
+
+    The block takes the referenced file's stem as its name. Refusals, all
+    before anything is written: a `kind` that is not 'attach' or 'overlay', a
+    file that does not exist, a non-positive or non-finite scale, and a block
+    name the drawing already holds — detach it first with
+    `xref_manage(action='detach')`.
+    """
+    validated = validate_path(path)
+    await ctx.info(f"Xref {kind}: {validated}")
+    return await _backend(ctx).xref_attach(str(validated), (x, y), scale, rotation, kind)
+
+
+@cad_tool(summary="List, reload, bind, detach or repath an external reference.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Sheet: Manage Xrefs", "destructiveHint": True},
+    tags={"drawing", "block"},
+)
+async def xref_manage(
+    action: Annotated[
+        str,
+        Field(description="list | reload | bind | detach | path."),
+    ],
+    name: Annotated[str, Field(default="", description="Xref name; ignored by 'list'.")] = "",
+    new_path: Annotated[
+        str, Field(default="", description="Required by 'path': the reference's new location.")
+    ] = "",
+    ctx: Context = None,
+) -> dict:
+    """One operation on one external reference.
+
+    `list`, `detach` and `path` work on both engines. `reload` and `bind` need
+    a live AutoCAD seat's xref manager: headlessly they are refused with
+    `capability: "xref_live"` rather than pretended, and the refusal says which
+    engine does them. Other refusals: an action outside the five, an unknown
+    xref name, a 'path' action with no `new_path`. On the live engine a listed
+    row's `inserts` and `kind` are both null — ActiveX's block interface
+    carries neither a per-xref insert count nor an overlay indicator, and this
+    server does not invent them. Headlessly both are measured: `inserts`
+    counts every insert in the drawing, model space and paper space alike, and
+    `detach` removes exactly those.
+    """
+    await ctx.info(f"Xref {action} {name or '(all)'}")
+    validated = str(validate_path(new_path)) if new_path else None
+    return await _backend(ctx).xref_manage(name, action, validated)
+
+
+@cad_tool(summary="Attach a raster image (PNG/JPG) as an underlay.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Sheet: Attach Image", "destructiveHint": False},
+    tags={"drawing", "create"},
+)
+async def image_attach(
+    path: Annotated[str, Field(description="Full path of the raster image.")],
+    x: Annotated[float, Field(default=0.0, description="Insertion X (WCS).")] = 0.0,
+    y: Annotated[float, Field(default=0.0, description="Insertion Y (WCS).")] = 0.0,
+    scale: Annotated[
+        float,
+        Field(
+            default=1.0,
+            gt=0,
+            description="Drawing units per pixel: an 800x400 image at 0.1 is 80x40 mm.",
+        ),
+    ] = 1.0,
+    rotation: Annotated[float, Field(default=0.0, description="Rotation in degrees.")] = 0.0,
+    ctx: Context = None,
+) -> dict:
+    """Attach a raster underlay at the file's own aspect ratio. Both engines.
+
+    `scale` is drawing units per pixel, so the placed size is the image's pixel
+    size times `scale` and the payload reports both. Refusals, all before
+    anything is written: a file that does not exist, a file no image reader can
+    open (named), a non-positive or non-finite scale.
+    """
+    validated = validate_path(path)
+    await ctx.info(f"Image underlay: {validated}")
+    return await _backend(ctx).image_attach(str(validated), (x, y), scale, rotation)
+
+
+@cad_tool(
+    summary="Write the bill of materials to a CSV file, or to XLSX when openpyxl is present.",
+    cost="safe",
+)
+@mcp.tool(
+    annotations={"title": "Sheet: Extract Data", "destructiveHint": False},
+    tags={"engineering", "sheet", "query"},
+)
+async def data_extract(
+    path: Annotated[str, Field(description="File to write, ending .csv or .xlsx.")],
+    fmt: Annotated[
+        str,
+        Field(default="csv", description="'csv' (always available) or 'xlsx' (needs openpyxl)."),
+    ] = "csv",
+    layer: Annotated[
+        str, Field(default="", description="Only read INSERTs on this layer; empty reads all.")
+    ] = "",
+    group_by: Annotated[
+        str,
+        Field(default="designation", description="Group identical parts by this field, or ''."),
+    ] = "designation",
+    columns: Annotated[list[str] | None, Field(default=None)] = None,
+    ctx: Context = None,
+) -> dict:
+    """The same rows `bom_extract` returns, written to a file.
+
+    Refusals: a format that is not 'csv' or 'xlsx'; a drawing with nothing to
+    itemise (nothing is written); and `fmt='xlsx'` without openpyxl, which
+    carries `capability: "xlsx_write"` and names both the package to install
+    and the CSV route that always works.
+    """
+    from engineering.sheet.bom import extract_records, rows_from_records
+    from engineering.sheet.extract import write_rows
+
+    backend = _backend(ctx)
+    validated = validate_path(path, allow_write=True)
+    records = await extract_records(backend, layer=layer or None)
+    rows = rows_from_records(records, columns=columns, group_by=group_by or None)
+    await ctx.info(f"Data extract: {len(rows)} rows -> {validated}")
+    return write_rows(rows, str(validated), columns=columns, fmt=fmt)
+
+
+@cad_tool(summary="Write the drawing as a real DWG at a chosen AutoCAD version.", cost="safe")
+@mcp.tool(
+    annotations={"title": "Drawing: Export DWG", "destructiveHint": False},
+    tags={"drawing"},
+)
+async def drawing_export_dwg(
+    path: Annotated[str, Field(description="Full path of the .dwg to write.")],
+    version: Annotated[
+        str,
+        Field(
+            default="R2018",
+            description="R2000 | R2004 | R2007 | R2010 | R2013 | R2018.",
+        ),
+    ] = "R2018",
+    ctx: Context = None,
+) -> dict:
+    """Write a real DWG — not a DXF under a .dwg name.
+
+    On a live AutoCAD seat this is `Document.SaveAs` with the matching
+    AcSaveAsType, which (as AutoCAD's own SaveAs does) leaves the session bound
+    to the file it just wrote. Headlessly it needs the ODA File Converter; when
+    that is absent the call is refused with `capability: "dwg_write"` and the
+    refusal names the install route and `drawing_export_dxf`, which writes a
+    DXF AutoCAD opens unchanged. Check `system_capabilities` first: the ezdxf
+    flag is re-evaluated at call time, so installing the converter changes it
+    without a restart. An unknown version is refused by name with the six.
+    """
+    validated = validate_path(path, allow_write=True)
+    await ctx.info(f"DWG export {version}: {validated}")
+    return await _backend(ctx).drawing_export_dwg(str(validated), version)
+
+
+# ---------------------------------------------------------------------------
 # ── RESOURCES ───────────────────────────────────────────────────────────────
 # ---------------------------------------------------------------------------
 

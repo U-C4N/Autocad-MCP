@@ -45,6 +45,8 @@ from .preflight import (
     preflight_drawing,
 )
 from .refiner import RefineResult, RefineRound, RepairAction, refine_drawing
+from .sheet.frames import draw_sheet_frame, frame_metrics, frame_prims
+from .sheet.titleblock import apply_titleblock, titleblock_prims
 from .titleblock import TitleBlockMetadata, apply_iso_a3_titleblock
 from .validator import DrawingValidator, ValidationFinding, ValidationResult
 
@@ -92,4 +94,9 @@ __all__ = [
     "RefineRound",
     "RepairAction",
     "refine_drawing",
+    "apply_titleblock",
+    "draw_sheet_frame",
+    "frame_metrics",
+    "frame_prims",
+    "titleblock_prims",
 ]

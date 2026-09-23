@@ -16,6 +16,7 @@ import time
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
@@ -155,6 +156,28 @@ def _apoint(x: float, y: float, z: float = 0.0):
         pythoncom.VT_ARRAY | pythoncom.VT_R8,
         [float(x), float(y), float(z)],
     )
+
+
+def _image_pixels(path: str) -> tuple[int, int]:
+    """Pixel size of a raster; the placed size is pixels x scale on both engines.
+
+    Copied from the ezdxf backend rather than imported: the two backends must
+    not depend on each other.
+    """
+    try:
+        from PIL import Image
+    except ImportError as exc:  # pragma: no cover - Pillow ships with [pdf]
+        raise ValueError(
+            "image_attach needs Pillow to read the image's pixel size; "
+            'install it with: pip install -e ".[pdf]"'
+        ) from exc
+    try:
+        with Image.open(path) as image:
+            return int(image.width), int(image.height)
+    except Exception as exc:
+        raise ValueError(
+            f"image_attach: {path} is not an image this server can read ({exc})"
+        ) from exc
 
 
 def _av(values: list[float]):
@@ -369,6 +392,24 @@ def _require_block_defined(doc, name):
     if is_layout:
         raise ValueError(f"block {name!r} is a layout block and cannot be inserted")
     return block
+
+
+def _block_names(doc) -> set[str]:
+    """Every block name the drawing holds, lower-cased.
+
+    ``doc.Blocks.Count`` / ``doc.Blocks.Item(index)`` / ``block.Name`` are the
+    measured members ``xref_manage`` already walks. The set is lower-cased
+    because AutoCAD symbol-table names are case-insensitive, so ``BASE`` and
+    ``Base`` are one block and re-attaching under either name hits the same
+    definition.
+    """
+    names: set[str] = set()
+    for index in range(doc.Blocks.Count):
+        try:
+            names.add(str(doc.Blocks.Item(index).Name).lower())
+        except Exception:  # noqa: BLE001 - a block that cannot name itself cannot collide
+            continue
+    return names
 
 
 _BUILTIN_LINETYPES = {"continuous", "bylayer", "byblock"}
@@ -1536,6 +1577,16 @@ class ComBackend(AutoCADBackend):
                 "interactive_prompt": FeatureCapability(
                     True, "native", reason="cancel_returns_cancelled_true;timeout_returns_timed_out"
                 ),
+                # Track G keys.
+                "dwg_write": FeatureCapability(True, "native", reason="document_saveas"),
+                "xref_live": FeatureCapability(
+                    True, "native", reason="block_reload_bind_detach_on_the_live_seat"
+                ),
+                "xlsx_write": (
+                    FeatureCapability(True, "openpyxl")
+                    if find_spec("openpyxl") is not None
+                    else FeatureCapability(False, reason="optional_dependency_missing:openpyxl")
+                ),
             },
         )
 
@@ -1804,6 +1855,196 @@ class ComBackend(AutoCADBackend):
 
     async def drawing_export_dxf(self, path: str) -> dict:
         return await self.drawing_save_as(path, "dxf")
+
+    # ── external references, rasters and DWG (v1.6 track G) ──────────────────
+    #
+    # Measured on AutoCAD 2026 (AutoCAD.Application 25.1s), from the live
+    # seat's type library:
+    #   ModelSpace.AttachExternalReference(PathName, Name, InsertionPoint,
+    #       Xscale, Yscale, Zscale, Rotation, bOverlay, Password)
+    #   ModelSpace.AddRaster(imageFileName, InsertionPoint, ScaleFactor,
+    #       RotationAngle)
+    #   Block: IsXRef, Path, Name, Reload(), Unload(), Bind(bPrefixName),
+    #       Detach(), XRefDatabase
+    #   Document.SaveAs(FullFileName, SaveAsType, vSecurityParams)
+    # ActiveX angles are radians; the tool boundary is degrees, so every
+    # rotation crosses here and nowhere else.
+
+    #: AcSaveAsType, read off the same type library.
+    _DWG_SAVE_AS = {
+        "R2000": 12,
+        "R2004": 24,
+        "R2007": 36,
+        "R2010": 48,
+        "R2013": 60,
+        "R2018": 64,
+    }
+
+    async def xref_attach(self, path, at, scale=1.0, rotation=0.0, kind="attach") -> dict:
+        from backends.contracts.refs import XREF_KINDS
+
+        if kind not in XREF_KINDS:
+            raise ValueError(f"xref kind must be one of {XREF_KINDS}, got {kind!r}")
+        source = Path(path)
+        if not source.is_file():
+            raise ValueError(f"xref_attach: {path} does not exist")
+        x, y = float(at[0]), float(at[1])
+        for label, value in (("at.x", x), ("at.y", y), ("scale", scale), ("rotation", rotation)):
+            if not math.isfinite(float(value)):
+                raise ValueError(f"xref_attach: {label} must be finite, got {value!r}")
+        if float(scale) <= 0:
+            raise ValueError(f"xref_attach: scale must be positive, got {scale!r}")
+        name = source.stem.upper()
+        factor = float(scale)
+        radians = math.radians(float(rotation))
+
+        def _sync():
+            doc = _acad_doc()
+            # The contract and the tool docstring both promise this refusal,
+            # and the ezdxf engine has always had it (`if name in doc.blocks`).
+            # Without it a second attach under a name the drawing already holds
+            # either re-points the existing definition or fails inside AutoCAD,
+            # while the payload still claims the new `path` was attached.
+            # Block names are case-insensitive in AutoCAD, so the comparison is.
+            if name.lower() in _block_names(doc):
+                raise ValueError(
+                    f"xref_attach: the drawing already holds a block named {name!r}; "
+                    "detach it first with xref_manage(action='detach')"
+                )
+            reference = doc.ModelSpace.AttachExternalReference(
+                str(source),
+                name,
+                _apoint(x, y),
+                factor,
+                factor,
+                factor,
+                radians,
+                kind == "overlay",
+            )
+            return {
+                "ok": True,
+                "name": name,
+                "path": str(source),
+                "kind": kind,
+                "handle": reference.Handle,
+                "at": [x, y],
+                "scale": factor,
+                "rotation": float(rotation),
+                "backend": self.name,
+            }
+
+        return await self._run(_sync)
+
+    async def xref_manage(self, name, action, new_path=None) -> dict:
+        from backends.contracts.refs import XREF_ACTIONS
+
+        if action not in XREF_ACTIONS:
+            raise ValueError(f"xref action must be one of {XREF_ACTIONS}, got {action!r}")
+        if action == "path" and not (new_path or "").strip():
+            raise ValueError("xref_manage(action='path') needs new_path")
+
+        def _sync():
+            doc = _acad_doc()
+
+            def _xref_blocks():
+                found = []
+                for index in range(doc.Blocks.Count):
+                    block = doc.Blocks.Item(index)
+                    try:
+                        if block.IsXRef:
+                            found.append(block)
+                    except Exception:  # noqa: BLE001 - a block that cannot answer is not an xref
+                        continue
+                return found
+
+            if action == "list":
+                # `kind` is null, not "attach". Measured from the seat's own
+                # registered type library (acax25*.tlb, "AutoCAD 2025 Type
+                # Library", shipped with AutoCAD 2026): IAcadBlock's xref
+                # members are exactly IsXRef, Path, Name, Reload, Unload,
+                # Bind, Detach, XRefDatabase -- there is no overlay indicator
+                # anywhere on the interface. An overlay (which xref_attach
+                # itself creates, kind='overlay' -> bOverlay=True) is
+                # therefore not knowable here, and a constant "attach" would
+                # read to the caller as measured. Same honesty as `inserts`.
+                rows = [
+                    {"name": b.Name, "path": str(b.Path or ""), "kind": None, "inserts": None}
+                    for b in _xref_blocks()
+                ]
+                rows.sort(key=lambda row: row["name"])
+                return {"ok": True, "xrefs": rows, "backend": self.name}
+
+            key = str(name).strip()
+            block = next((b for b in _xref_blocks() if b.Name == key), None)
+            if block is None:
+                raise ValueError(
+                    f"xref_manage: {key!r} is not an external reference in this drawing"
+                )
+            if action == "reload":
+                block.Reload()
+                return {"ok": True, "name": key, "action": action, "backend": self.name}
+            if action == "bind":
+                block.Bind(False)
+                return {"ok": True, "name": key, "action": action, "backend": self.name}
+            if action == "detach":
+                block.Detach()
+                return {"ok": True, "name": key, "inserts_removed": None, "backend": self.name}
+            block.Path = str(new_path)
+            return {"ok": True, "name": key, "path": str(new_path), "backend": self.name}
+
+        return await self._run(_sync)
+
+    async def image_attach(self, path, at, scale=1.0, rotation=0.0) -> dict:
+        source = Path(path)
+        if not source.is_file():
+            raise ValueError(f"image_attach: {path} does not exist")
+        x, y = float(at[0]), float(at[1])
+        for label, value in (("at.x", x), ("at.y", y), ("scale", scale), ("rotation", rotation)):
+            if not math.isfinite(float(value)):
+                raise ValueError(f"image_attach: {label} must be finite, got {value!r}")
+        if float(scale) <= 0:
+            raise ValueError(f"image_attach: scale must be positive, got {scale!r}")
+        px, py = _image_pixels(str(source))
+        factor = float(scale)
+        radians = math.radians(float(rotation))
+
+        def _sync():
+            doc = _acad_doc()
+            raster = doc.ModelSpace.AddRaster(str(source), _apoint(x, y), factor, radians)
+            return {
+                "ok": True,
+                "path": str(source),
+                "handle": raster.Handle,
+                "at": [x, y],
+                "scale": factor,
+                "rotation": float(rotation),
+                "pixels": [px, py],
+                "size_mm": [px * factor, py * factor],
+                "backend": self.name,
+            }
+
+        return await self._run(_sync)
+
+    async def drawing_export_dwg(self, path, version="R2018") -> dict:
+        from backends.contracts.refs import DWG_VERSIONS
+
+        if version not in DWG_VERSIONS:
+            raise ValueError(f"DWG version must be one of {DWG_VERSIONS}, got {version!r}")
+        save_as_type = self._DWG_SAVE_AS[version]
+
+        def _sync():
+            doc = _acad_doc()
+            doc.SaveAs(path, save_as_type)
+            target = Path(path)
+            return {
+                "ok": True,
+                "path": path,
+                "version": version,
+                "bytes": target.stat().st_size if target.exists() else None,
+                "backend": self.name,
+            }
+
+        return await self._run(_sync)
 
     async def drawing_export_pdf(self, path: str, layout: str | None = None) -> dict:
         """Plot one layout to PDF through ``Plot.PlotToFile`` and confirm the file.

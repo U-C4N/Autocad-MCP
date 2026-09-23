@@ -495,7 +495,7 @@ async def test_tool_groups_is_byte_identical_to_the_source_declared_grouping():
 
 
 async def test_tool_group_sizes_are_unchanged():
-    """Frozen snapshot of the surface (209 tools, 23 groups).
+    """Frozen snapshot of the surface (229 tools, 24 groups).
 
     Taken before @cad_tool landed at 131 tools; `batch` moved 2 -> 3 when
     v1.5.0's `cad_batch` joined `entity_batch_create`/`entity_batch_modify`, and
@@ -527,7 +527,26 @@ async def test_tool_group_sizes_are_unchanged():
     merge task tagged them, the four groups had filed those 28 tools under
     `layouts` / `templates` / `drawing` / `layers` / `view` / `system` by
     their secondary tags; those counts returned to their pre-track-E values
-    when the section tags landed.) Every other number here has been unchanged
+    when the section tags landed.)
+    `engineering` moved 10 -> 12 when v1.6's SECTION 24 opened with
+    `sheet_frame` and `titleblock_apply` (the ISO 5457 frame and the ISO 7200
+    title block for every size A4-A0). Both are tagged `engineering` and
+    `sheet`, and `sheet` is not in `_GROUP_TAG_PRIORITY`, so they file under
+    `engineering` beside `titleblock_apply_iso_a3` rather than opening a
+    group of their own.
+    It moved 12 -> 16 when `revision_add`, `bom_extract`, `bom_table` and
+    `balloon_add` joined the same section; `bom_extract` also carries `query`,
+    but `engineering` outranks it in `_GROUP_TAG_PRIORITY`.
+    The section's last five tools file elsewhere on purpose: they are
+    whole-drawing and entity operations, not sheet furniture, and
+    `_GROUP_TAG_PRIORITY` files them where a caller would look.
+    `xref_attach` and `xref_manage` carry `drawing` *and* `block`, and `block`
+    outranks `drawing`, so they file under `blocks` (9 -> 11) beside
+    `block_insert` -- which is where an xref belongs: it is a block definition
+    that lives in another file. `image_attach` carries `create`
+    (entity_creation 18 -> 19), `data_extract` carries `engineering`
+    (16 -> 17) and `drawing_export_dwg` carries `drawing` alone (11 -> 12).
+    Every other number here has been unchanged
     since the snapshot was taken.
 
     `mech` appeared when v1.6's tracks B+G landed. SECTION 21 opened it with
@@ -545,18 +564,18 @@ async def test_tool_group_sizes_are_unchanged():
     `weld_symbol` / `centre_marks` / `section_line` / `hatch_material`). They
     are tagged `engineering` and `mech`; with `mech` ranked ahead of
     `engineering` in `_GROUP_TAG_PRIORITY` they file under `mech` (14 in all,
-    exactly `PACK_TOOL_NAMES["mech"]`), and `engineering` stays at 10.
+    exactly `PACK_TOOL_NAMES["mech"]`) and leave `engineering` untouched.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
         "analysis": 12,
         "batch": 3,
-        "blocks": 9,
+        "blocks": 11,
         "corner_ops": 4,
         "dimensions": 5,
-        "drawing": 11,
-        "engineering": 10,
-        "entity_creation": 18,
+        "drawing": 12,
+        "engineering": 17,
+        "entity_creation": 19,
         "entity_modification": 16,
         "entity_query": 9,
         "environment": 22,
@@ -574,4 +593,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 218
+    assert sum(sizes.values()) == 229

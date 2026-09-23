@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 218,
+    "tools": 229,
     "resources": 8,
     "prompts": 5,
     "groups": 24
@@ -11,12 +11,12 @@
   "groups": {
     "analysis": 12,
     "batch": 3,
-    "blocks": 9,
+    "blocks": 11,
     "corner_ops": 4,
     "dimensions": 5,
-    "drawing": 11,
-    "engineering": 10,
-    "entity_creation": 18,
+    "drawing": 12,
+    "engineering": 17,
+    "entity_creation": 19,
     "entity_modification": 16,
     "entity_query": 9,
     "environment": 22,
@@ -180,6 +180,20 @@
       }
     },
     {
+      "name": "balloon_add",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Add an ISO 6433 balloon linked to its item row.",
+      "tags": [
+        "engineering",
+        "sheet"
+      ],
+      "annotations": {
+        "title": "Sheet: Add Balloon",
+        "destructiveHint": false
+      }
+    },
+    {
       "name": "batch_plot",
       "group": "page_setup",
       "cost": "mutate",
@@ -305,6 +319,35 @@
       }
     },
     {
+      "name": "bom_extract",
+      "group": "engineering",
+      "cost": "read",
+      "summary": "Read the bill of materials out of the drawing's block references.",
+      "tags": [
+        "engineering",
+        "query",
+        "sheet"
+      ],
+      "annotations": {
+        "title": "Sheet: Extract Bill of Materials",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "bom_table",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Draw the parts list as a real TABLE above the title block.",
+      "tags": [
+        "engineering",
+        "sheet"
+      ],
+      "annotations": {
+        "title": "Sheet: Draw Parts List",
+        "destructiveHint": false
+      }
+    },
+    {
       "name": "boundary_from_entities",
       "group": "analysis",
       "cost": "mutate",
@@ -383,6 +426,21 @@
       ],
       "annotations": {
         "title": "Construction: XLine (infinite reference)",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "data_extract",
+      "group": "engineering",
+      "cost": "safe",
+      "summary": "Write the bill of materials to a CSV file, or to XLSX when openpyxl is present.",
+      "tags": [
+        "engineering",
+        "query",
+        "sheet"
+      ],
+      "annotations": {
+        "title": "Sheet: Extract Data",
         "destructiveHint": false
       }
     },
@@ -667,6 +725,19 @@
       "annotations": {
         "title": "Drawing: Deliver Auditable Bundle",
         "destructiveHint": true
+      }
+    },
+    {
+      "name": "drawing_export_dwg",
+      "group": "drawing",
+      "cost": "safe",
+      "summary": "Write the drawing as a real DWG at a chosen AutoCAD version.",
+      "tags": [
+        "drawing"
+      ],
+      "annotations": {
+        "title": "Drawing: Export DWG",
+        "destructiveHint": false
       }
     },
     {
@@ -1636,6 +1707,20 @@
       }
     },
     {
+      "name": "image_attach",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Attach a raster image (PNG/JPG) as an underlay.",
+      "tags": [
+        "create",
+        "drawing"
+      ],
+      "annotations": {
+        "title": "Sheet: Attach Image",
+        "destructiveHint": false
+      }
+    },
+    {
       "name": "keyway_draw_keyed_bore",
       "group": "engineering",
       "cost": "mutate",
@@ -2326,6 +2411,20 @@
       }
     },
     {
+      "name": "revision_add",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Append a revision row, with optional revision clouds and triangular tags.",
+      "tags": [
+        "engineering",
+        "sheet"
+      ],
+      "annotations": {
+        "title": "Sheet: Add Revision",
+        "destructiveHint": false
+      }
+    },
+    {
       "name": "section_line",
       "group": "mech",
       "cost": "mutate",
@@ -2393,6 +2492,20 @@
       "annotations": {
         "title": "Select by Window",
         "readOnlyHint": true
+      }
+    },
+    {
+      "name": "sheet_frame",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Draw an ISO 5457 sheet frame with the zone grid and centring marks.",
+      "tags": [
+        "engineering",
+        "sheet"
+      ],
+      "annotations": {
+        "title": "Sheet: ISO 5457 Frame",
+        "destructiveHint": false
       }
     },
     {
@@ -2781,6 +2894,20 @@
       }
     },
     {
+      "name": "titleblock_apply",
+      "group": "engineering",
+      "cost": "mutate",
+      "summary": "Stamp an ISO 7200 title block (and frame) on any sheet from A4 to A0.",
+      "tags": [
+        "engineering",
+        "sheet"
+      ],
+      "annotations": {
+        "title": "Sheet: ISO 7200 Title Block",
+        "destructiveHint": false
+      }
+    },
+    {
       "name": "titleblock_apply_iso_a3",
       "group": "engineering",
       "cost": "mutate",
@@ -3099,6 +3226,34 @@
       "annotations": {
         "title": "Weld Symbol (ISO 2553)",
         "destructiveHint": false
+      }
+    },
+    {
+      "name": "xref_attach",
+      "group": "blocks",
+      "cost": "mutate",
+      "summary": "Attach a DWG/DXF as an external reference (attachment or overlay).",
+      "tags": [
+        "block",
+        "drawing"
+      ],
+      "annotations": {
+        "title": "Sheet: Attach Xref",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "xref_manage",
+      "group": "blocks",
+      "cost": "mutate",
+      "summary": "List, reload, bind, detach or repath an external reference.",
+      "tags": [
+        "block",
+        "drawing"
+      ],
+      "annotations": {
+        "title": "Sheet: Manage Xrefs",
+        "destructiveHint": true
       }
     }
   ],

@@ -91,6 +91,11 @@ class ToolAliases:
 #   OPTIONS -- one dialog both reads and writes a preference; the server
 #       splits read (system_preferences_get) and write (system_preferences_set),
 #       the SETVAR precedent.
+#   REVCLOUD -- one command draws a bare cloud (entity_create_revcloud) or a
+#       revision cloud that also files a revision row (revision_add); a
+#       drafter typing it could mean either.
+#   TABLE -- one command makes an empty table (entity_create_table) or the
+#       ISO 7573 parts list (bom_table); both are correct destinations.
 #   SECTIONPLANE -- the section a drafter asks for is either a whole section
 #       view of a drawn part (mech_view_add) or the cutting-plane line and its
 #       labels on an existing view (section_line); tracks B+G groups M and A
@@ -116,10 +121,12 @@ SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
         "PLINE",
         "PLOT",
         "QSELECT",
+        "REVCLOUD",
         "SAVEAS",
         "SECTIONPLANE",
         "SETVAR",
         "STYLE",
+        "TABLE",
         "UCS",
         "VIEW",
         "ZOOM",
@@ -992,6 +999,156 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "iso 7200",
             "a3 sheet",
             "drawing header",
+        ),
+    ),
+    "sheet_frame": ToolAliases(
+        acad=("MVSETUP",),
+        synonyms=(
+            "sheet frame",
+            "drawing frame",
+            "drawing border",
+            "iso 5457",
+            "zone grid",
+            "grid reference system",
+            "centring marks",
+            "trimming marks",
+            "sheet margins",
+            "filing margin",
+            "pafta",
+            "cizim cercevesi",
+        ),
+    ),
+    "titleblock_apply": ToolAliases(
+        synonyms=(
+            "title block",
+            "iso 7200",
+            "drawing header",
+            "sheet title block",
+            "a0 title block",
+            "a1 title block",
+            "a2 title block",
+            "a4 title block",
+            "projection angle symbol",
+            "first angle symbol",
+            "third angle symbol",
+            "antet",
+            "baslik blogu",
+        ),
+    ),
+    "revision_add": ToolAliases(
+        acad=("REVCLOUD",),
+        synonyms=(
+            "revision",
+            "revision block",
+            "revision cloud",
+            "revision table",
+            "change note",
+            "engineering change",
+            "as built change",
+            "revizyon",
+            "degisiklik",
+        ),
+    ),
+    "bom_extract": ToolAliases(
+        synonyms=(
+            "bill of materials",
+            # Deliberately NOT "parts list" or "count the parts": the bare
+            # "parts list" query belongs to the tool that DRAWS one
+            # (entity_create_table / bom_table), and every extra "parts"/"list"
+            # token here moved this reader above it on plain BM25 mass.
+            "read the bom",
+            "bom",
+            "item list",
+            "what is on this drawing",
+            "iso 7573",
+            "parca listesi",
+            "malzeme listesi",
+        ),
+    ),
+    "bom_table": ToolAliases(
+        acad=("TABLE",),
+        synonyms=(
+            # Every phrase here names a TABLE. The bare "parts list" query is
+            # `entity_create_table`'s (the generic table that a parts list is
+            # one use of); this tool answers when the drafter asks for the
+            # ISO 7573 one by name.
+            "bom table",
+            "item list table",
+            "materials table",
+            "iso 7573 table",
+            "parca listesi tablosu",
+        ),
+    ),
+    "balloon_add": ToolAliases(
+        synonyms=(
+            "balloon",
+            "item reference",
+            "item number",
+            "position number",
+            "iso 6433",
+            "number the items",
+            "balon",
+            "pozisyon numarasi",
+        ),
+    ),
+    "xref_attach": ToolAliases(
+        acad=("XATTACH",),
+        synonyms=(
+            "attach an xref",
+            "external reference",
+            "xref",
+            "reference another drawing",
+            "overlay a drawing",
+            "harici referans",
+        ),
+    ),
+    "xref_manage": ToolAliases(
+        acad=("XREF", "XBIND"),
+        synonyms=(
+            "list the xrefs",
+            "reload an xref",
+            "bind an xref",
+            "detach an xref",
+            "repath an xref",
+            "xref manager",
+            "broken xref path",
+        ),
+    ),
+    "image_attach": ToolAliases(
+        acad=("IMAGEATTACH",),
+        synonyms=(
+            "attach an image",
+            "raster underlay",
+            "insert a png",
+            "background image",
+            "scanned drawing",
+            "resim ekle",
+        ),
+    ),
+    "data_extract": ToolAliases(
+        acad=("DATAEXTRACTION", "EATTEXT"),
+        synonyms=(
+            # Not the bare phrase "parts list": that is the golden query for
+            # `entity_create_table`, and a file writer must not outrank the
+            # tool that draws the thing. This one is asked for by its
+            # destination -- a file -- which is what distinguishes it.
+            "export the bill of materials",
+            "extract attributes",
+            "bom to csv",
+            "bom to excel",
+            "data extraction",
+            "excele aktar",
+        ),
+    ),
+    "drawing_export_dwg": ToolAliases(
+        acad=("SAVEAS",),
+        synonyms=(
+            "export dwg",
+            "save as dwg",
+            "write a dwg",
+            "autocad 2018 format",
+            "downgrade to r2000",
+            "dwg olarak kaydet",
         ),
     ),
     # ── Layers & linetypes ──────────────────────────────────────────────────
