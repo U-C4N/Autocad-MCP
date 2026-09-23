@@ -2230,6 +2230,40 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "punta deligi",
         ),
     ),
+    # ── Architecture: catalogue (SECTION 25, track F group C) ───────────────
+    "arch_catalogue_list": ToolAliases(
+        acad=("ADCENTER", "TOOLPALETTES"),
+        synonyms=(
+            "furniture catalogue",
+            "furniture library",
+            "sanitary fixtures",
+            "bathroom fixtures",
+            "what furniture is there",
+            "mobilya kutuphanesi",
+            "vitrifiye listesi",
+        ),
+    ),
+    "arch_catalogue_insert": ToolAliases(
+        acad=("INSERT",),
+        synonyms=(
+            "place furniture",
+            "put a bed in the room",
+            "insert a sofa",
+            "add a wc",
+            "place a toilet",
+            "wash basin",
+            "bathtub",
+            "kitchen sink",
+            "wardrobe",
+            "dining table",
+            "yatak",
+            "koltuk",
+            "klozet",
+            "lavabo",
+            "kuvet",
+            "mobilya yerlestir",
+        ),
+    ),
 }
 
 

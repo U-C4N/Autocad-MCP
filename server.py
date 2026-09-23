@@ -9781,6 +9781,114 @@ async def drawing_export_dwg(
 
 
 # ---------------------------------------------------------------------------
+# ── SECTION 25: Architecture (2 tools) ──────────────────────────────────────
+# ---------------------------------------------------------------------------
+# ── arch: catalogue (group C) ──
+
+
+@cad_tool(
+    summary="Search the furniture and sanitary catalogue in English or Turkish.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Architecture: Catalogue", "readOnlyHint": True},
+    tags={"arch", "query"},
+)
+async def arch_catalogue_list(
+    query: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description=(
+                "Words matched against the item name, family and its English or Turkish "
+                "label, ignoring case and Turkish diacritics - 'bed', 'yatak', 'klozet', "
+                "'buzdolabi'. Every word must match."
+            ),
+        ),
+    ] = None,
+    family: Annotated[
+        str | None,
+        Field(default=None, description="furniture | sanitary"),
+    ] = None,
+    lang: Annotated[
+        str,
+        Field(default="en", description="en | tr - the language of the 'label' column"),
+    ] = "en",
+    ctx: Context = None,
+) -> dict:
+    """Catalogue rows: name, family, both labels, nominal size [w, d] in mm, block name, layer.
+
+    Sizes are nominal catalogue dimensions - what a furniture or appliance
+    catalogue lists as a common size - and every row says so in `size_basis`;
+    they are not standards values. Twenty items: thirteen furniture, seven
+    sanitary. Refusals: a `family` other than furniture/sanitary and a `lang`
+    other than en/tr, each with the list.
+    """
+    from engineering.arch.catalogue import FAMILIES, SIZE_BASIS, catalogue
+
+    try:
+        rows = catalogue(query, family, lang=lang)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+    return {
+        "count": len(rows),
+        "families": list(FAMILIES),
+        "size_basis": SIZE_BASIS,
+        "items": list(rows),
+    }
+
+
+@cad_tool(
+    summary="Insert a furniture or sanitary item - bed, sofa, WC, basin, bathtub - as a block.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Architecture: Catalogue Insert", "readOnlyHint": False},
+    tags={"arch", "create"},
+)
+async def arch_catalogue_insert(
+    name: Annotated[
+        str,
+        Field(
+            description=(
+                "Catalogue name from arch_catalogue_list, e.g. 'double_bed', 'sofa_3_seat', "
+                "'wc', 'wall_basin', 'kitchen_counter'"
+            )
+        ),
+    ],
+    x: Annotated[float, Field(description="X (WCS) of the item's back-left corner")],
+    y: Annotated[float, Field(description="Y (WCS) of the item's back-left corner")],
+    rotation: Annotated[
+        float,
+        Field(
+            default=0.0,
+            description=(
+                "Degrees CCW about (x, y); 0 puts the item's back (its wall side) along +X "
+                "with the item extending towards +Y"
+            ),
+        ),
+    ] = 0.0,
+    ctx: Context = None,
+) -> dict:
+    """Define the item's block ARCH_<NAME> once, insert it on the furniture or sanitary layer.
+
+    The block carries an invisible ITEM attribute with the catalogue name. Its
+    size is a nominal catalogue dimension (reported with `size_basis`), not a
+    standards value; the outline is a plan symbol drawn inside that footprint.
+    The furniture / sanitary layer is created from the `arch` layer set when
+    the drawing lacks it. Refusals, all before any write: an unknown name
+    (with the nearest catalogue names) and a non-finite coordinate or rotation.
+    """
+    from engineering.arch.catalogue import insert_item
+
+    await ctx.info(f"arch catalogue: {name} at ({x}, {y})")
+    try:
+        return await insert_item(_backend(ctx), name, at=(x, y), rotation=rotation)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
 # ── RESOURCES ───────────────────────────────────────────────────────────────
 # ---------------------------------------------------------------------------
 

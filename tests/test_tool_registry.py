@@ -495,7 +495,7 @@ async def test_tool_groups_is_byte_identical_to_the_source_declared_grouping():
 
 
 async def test_tool_group_sizes_are_unchanged():
-    """Frozen snapshot of the surface (229 tools, 25 groups).
+    """Frozen snapshot of the surface (231 tools, 25 groups).
 
     Taken before @cad_tool landed at 131 tools; `batch` moved 2 -> 3 when
     v1.5.0's `cad_batch` joined `entity_batch_create`/`entity_batch_modify`, and
@@ -581,6 +581,14 @@ async def test_tool_group_sizes_are_unchanged():
     `sheet`, so pack, group and SECTION are one list again: `engineering`
     returned 17 -> 10, `blocks` 11 -> 9, `entity_creation` 19 -> 18 and
     `drawing` 12 -> 11 — every one of them its pre-SECTION-24 value.
+
+    Track F group C opened SECTION 25 with the furniture and sanitary
+    catalogue: `arch_catalogue_list` is tagged `arch` and `query`,
+    `arch_catalogue_insert` `arch` and `create`. `arch` is not in
+    `_GROUP_TAG_PRIORITY` on this branch, so they file under their secondary
+    tags: `entity_query` 9 -> 10, `entity_creation` 18 -> 19. This snapshot is
+    branch-local: the track F merge task recomputes it once the walls, rooms
+    and catalogue branches have landed.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
@@ -591,9 +599,9 @@ async def test_tool_group_sizes_are_unchanged():
         "dimensions": 5,
         "drawing": 11,
         "engineering": 10,
-        "entity_creation": 18,
+        "entity_creation": 19,
         "entity_modification": 16,
-        "entity_query": 9,
+        "entity_query": 10,
         "environment": 22,
         "layers": 14,
         "layouts": 12,
@@ -610,4 +618,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 229
+    assert sum(sizes.values()) == 231
