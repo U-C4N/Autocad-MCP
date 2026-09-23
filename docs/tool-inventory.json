@@ -3,14 +3,14 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 240,
+    "tools": 241,
     "resources": 8,
     "prompts": 5,
     "groups": 26
   },
   "groups": {
     "analysis": 12,
-    "architecture": 11,
+    "architecture": 12,
     "batch": 3,
     "blocks": 9,
     "corner_ops": 4,
@@ -248,6 +248,20 @@
       ],
       "annotations": {
         "title": "Architecture: Door / Window",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "arch_plan_from_spec",
+      "group": "architecture",
+      "cost": "mutate",
+      "summary": "Draw a whole floor plan - walls, doors, windows, stairs, rooms, chains, schedules - in one transaction.",
+      "tags": [
+        "arch",
+        "create"
+      ],
+      "annotations": {
+        "title": "Architecture: Plan From Spec",
         "destructiveHint": false
       }
     },

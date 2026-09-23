@@ -33,6 +33,9 @@ CritiqueFocus = Literal[
     "mech_duplicate_dimension",
     "mech_thread_unrepresented",
     "mech_bom_balloon_mismatch",
+    "arch_room_unlabelled",
+    "arch_wall_gap",
+    "arch_opening_clash",
 ]
 SnapType = Literal["end", "mid", "center", "quad", "int", "perp", "near"]
 
@@ -56,6 +59,9 @@ ALL_CRITIQUE_FOCUSES: tuple[CritiqueFocus, ...] = (
     "mech_duplicate_dimension",
     "mech_thread_unrepresented",
     "mech_bom_balloon_mismatch",
+    "arch_room_unlabelled",
+    "arch_wall_gap",
+    "arch_opening_clash",
 )
 
 

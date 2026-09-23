@@ -495,7 +495,7 @@ async def test_tool_groups_is_byte_identical_to_the_source_declared_grouping():
 
 
 async def test_tool_group_sizes_are_unchanged():
-    """Frozen snapshot of the surface (240 tools, 26 groups).
+    """Frozen snapshot of the surface (241 tools, 26 groups).
 
     Taken before @cad_tool landed at 131 tools; `batch` moved 2 -> 3 when
     v1.5.0's `cad_batch` joined `entity_batch_create`/`entity_batch_modify`, and
@@ -582,39 +582,20 @@ async def test_tool_group_sizes_are_unchanged():
     returned 17 -> 10, `blocks` 11 -> 9, `entity_creation` 19 -> 18 and
     `drawing` 12 -> 11 — every one of them its pre-SECTION-24 value.
 
-    `architecture` appeared with v1.6's track F: SECTION 25 opened with the
-    plan model's wall engine (`arch_wall` / `arch_opening` / `arch_stair` /
-    `arch_dimension_chains`); the `arch` tag is ranked directly after `mech` in
-    `_GROUP_TAG_PRIORITY`, so those tools file under `architecture` rather
-    than under their secondary `create` / `dimension` tags.
-
-    Track F group R opened SECTION 25 with the rooms: `arch_room` and
-    `arch_schedule` are tagged `arch` and `create`, `arch_rooms_detect` `arch`
-    and `query`. `arch` is not in `_GROUP_TAG_PRIORITY` on this branch, so they
-    file under their secondary tags: `entity_creation` 18 -> 20,
-    `entity_query` 9 -> 10. This snapshot is branch-local: the track F merge
-    task recomputes it once the walls, rooms and catalogue branches have landed.
-
-    Track F group C opened SECTION 25 with the furniture and sanitary
-    catalogue: `arch_catalogue_list` is tagged `arch` and `query`,
-    `arch_catalogue_insert` `arch` and `create`. `arch` is not in
-    `_GROUP_TAG_PRIORITY` on this branch, so they file under their secondary
-    tags: `entity_query` 9 -> 10, `entity_creation` 18 -> 19. This snapshot is
-    branch-local: the track F merge task recomputes it once the walls, rooms
-    and catalogue branches have landed.
-
-    Group C's second task added the structural grid and the plan symbols
-    (`arch_grid` / `arch_symbol`), both tagged `arch` and `create`:
-    `entity_creation` 19 -> 21, for the same branch-local reason.
-
-    After the track F merge all eleven SECTION 25 tools file under
-    `architecture` (the `arch` tag outranks `create` / `query` / `dimension`),
-    so `entity_creation` and `entity_query` are back at 18 and 9.
+    `architecture` appeared with v1.6's track F (12, SECTION 25: the wall
+    network, openings, stairs, rooms and their reader, schedules, grid,
+    symbols, the catalogue, the exterior chains and the whole plan from one
+    spec). The `arch` tag is ranked directly after `mech` in
+    `_GROUP_TAG_PRIORITY`, so a SECTION 25 tool that also carries `create`,
+    `query` or `dimension` files under its own section; `architecture` is
+    exactly `PACK_TOOL_NAMES["arch"]`, and every group the track-F branches
+    had grown while the tag was unranked on them returned to its
+    pre-track-F value.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
         "analysis": 12,
-        "architecture": 11,
+        "architecture": 12,
         "batch": 3,
         "blocks": 9,
         "corner_ops": 4,
@@ -640,4 +621,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 240
+    assert sum(sizes.values()) == 241

@@ -1,6 +1,6 @@
 """Golden query set for tool discovery: English in, one right tool out.
 
-Ninety-one cases (76 tuning + 15 holdout) split into a **tuning** set and a
+Ninety-nine cases (84 tuning + 15 holdout) split into a **tuning** set and a
 **holdout** set. The split is
 the point of the file. Ranking work is measured against
 :data:`TUNING_CASES` only; :data:`HOLDOUT_CASES` were written at the same time,
@@ -190,6 +190,20 @@ TUNING_CASES: tuple[GoldenCase, ...] = (
     GoldenCase("put an m12 hex bolt on the drawing", "std_part_insert", "paraphrase"),
     GoldenCase("draw the parts list table on the sheet", "bom_table", "paraphrase"),
     GoldenCase("save this drawing as a dwg", "drawing_export_dwg", "paraphrase"),
+    # v1.6 track F - the architectural plan. Written before the merged alias
+    # records were measured against them; a miss is fixed by adding vocabulary
+    # to that tool's record in discovery/aliases.py, never by moving the
+    # expectation. Turkish queries again: this shop searches in Turkish, and
+    # the last two close the reconciliation's gaps - a site plan ("vaziyet")
+    # and the room areas ("alan"), neither of which any record carried.
+    GoldenCase("draw the walls of a floor plan", "arch_wall", "paraphrase"),
+    GoldenCase("put a door in this wall", "arch_opening", "paraphrase"),
+    GoldenCase("label the room with its measured area", "arch_room", "paraphrase"),
+    GoldenCase("draw the whole floor plan from a spec", "arch_plan_from_spec", "paraphrase"),
+    GoldenCase("kapı pencere listesi", "arch_schedule", "synonym"),
+    GoldenCase("merdiven çiz", "arch_stair", "synonym"),
+    GoldenCase("vaziyet planı çiz", "arch_plan_from_spec", "synonym"),
+    GoldenCase("oda alanlarını hesapla", "arch_rooms_detect", "synonym"),
 )
 
 

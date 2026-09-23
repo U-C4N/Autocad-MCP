@@ -964,6 +964,15 @@ LEAN_TOOL_NAMES = frozenset(
         "mech_dimension_part",
         "sheet_frame",
         "titleblock_apply",
+        # Architecture (track F) - the four a lean client needs to draw a
+        # plan: walls, the openings they host, a measured room label, and the
+        # whole plan in one call. `arch`-pack tools, so TOOL_PACKS=core hides
+        # them from a lean surface too; with the five mechanical/sheet ones
+        # above, lean is 64.
+        "arch_wall",
+        "arch_opening",
+        "arch_room",
+        "arch_plan_from_spec",
     }
 )
 
@@ -977,7 +986,7 @@ SOLID_TOOL_NAMES = frozenset(
 # mechanically should not pay for the P&ID surface, and a client that never
 # talks to a live seat should not pay for the environment surface. Styles and
 # page setup (SECTION 18/19) are drafting essentials and stay in core.
-TOOL_PACK_NAMES = ("core", "pid", "settings", "mech")
+TOOL_PACK_NAMES = ("core", "pid", "settings", "mech", "arch")
 PACK_TOOL_NAMES: dict[str, frozenset[str]] = {
     "pid": frozenset(
         {
@@ -1039,6 +1048,26 @@ PACK_TOOL_NAMES: dict[str, frozenset[str]] = {
             "centre_marks",
             "section_line",
             "hatch_material",
+        }
+    ),
+    # SECTION 25 - the architectural plan: the wall network with its openings,
+    # stairs, rooms and their reader, schedules, grid and symbols, the
+    # furniture / sanitary catalogue, the exterior chains and the whole plan
+    # from one spec (track F spec §8).
+    "arch": frozenset(
+        {
+            "arch_wall",
+            "arch_opening",
+            "arch_stair",
+            "arch_room",
+            "arch_rooms_detect",
+            "arch_schedule",
+            "arch_grid",
+            "arch_symbol",
+            "arch_catalogue_list",
+            "arch_catalogue_insert",
+            "arch_dimension_chains",
+            "arch_plan_from_spec",
         }
     ),
 }
@@ -5715,7 +5744,9 @@ async def drawing_finalize(
     pid_unconnected_equipment — silent on a sheet with no P&ID symbols, plus the
     mechanical focuses mech_missing_centreline, mech_unhatched_section,
     mech_view_misaligned, mech_duplicate_dimension, mech_thread_unrepresented,
-    mech_bom_balloon_mismatch — silent on a sheet with no mechanical part),
+    mech_bom_balloon_mismatch — silent on a sheet with no mechanical part, plus the
+    architectural focuses arch_room_unlabelled, arch_wall_gap, arch_opening_clash —
+    silent on a sheet with no ACADMCP_ARCH record),
     then saves to disk, exports a screenshot, and returns the DWG path.
 
     Raises ToolError if any validator 'error' finding is present, or if critique reports an
@@ -5976,7 +6007,9 @@ async def drawing_critique(
             "(silent on a drawing with no P&ID symbols), and the mechanical focuses "
             "mech_missing_centreline, mech_unhatched_section, mech_view_misaligned, "
             "mech_duplicate_dimension, mech_thread_unrepresented, "
-            "mech_bom_balloon_mismatch (silent on a drawing with no mechanical part). "
+            "mech_bom_balloon_mismatch (silent on a drawing with no mechanical part), and "
+            "the architectural focuses arch_room_unlabelled, arch_wall_gap, "
+            "arch_opening_clash (silent on a drawing with no ACADMCP_ARCH record). "
             "None = run all.",
         ),
     ] = None,
@@ -9783,7 +9816,7 @@ async def drawing_export_dwg(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 25: Architecture (11 tools) ─────────────────────────────────────
+# ── SECTION 25: Architecture (12 tools) ─────────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -10458,6 +10491,66 @@ async def arch_symbol(
             _backend(ctx), kind, (x, y), lang=lang, scale=scale, **(params or {})
         )
     except (TypeError, ValueError) as exc:
+        raise ToolError(str(exc)) from exc
+
+
+# ── arch: the whole plan (integration) ──
+
+
+@cad_tool(
+    summary="Draw a whole floor plan - walls, doors, windows, stairs, rooms, chains, schedules - in one transaction.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Architecture: Plan From Spec", "destructiveHint": False},
+    tags={"arch", "create"},
+)
+async def arch_plan_from_spec(
+    spec: Annotated[
+        dict,
+        Field(
+            description=(
+                "{sheet: {intent, sheet_size, scale (denominator, 50 = 1:50)}, lang: 'en'|'tr', "
+                "poche: bool, walls: [{id, axis: [[x,y],...], thickness, justification, "
+                "material, closed}], openings: [{id, wall, kind: 'door'|'window', offset, "
+                "width, swing, hand, sill, height, tag}], stairs: [{id, start, direction_deg, "
+                "width, risers, riser_height, going, kind, turn}], rooms: [{id, name, number, "
+                "at}], chains: {sides: ['bottom','left']}, schedules: [{kind: "
+                "'doors'|'windows'|'rooms', at: [x,y]}]}"
+            )
+        ),
+    ],
+    ctx: Context = None,
+) -> dict:
+    """A whole plan drawn inside one transaction: walls with their hosted doors and
+    windows, stairs, room labels whose areas are measured off the walls just drawn,
+    the exterior dimension chains and the door / window / room schedules.
+
+    Every item is validated before the transaction opens, so a refusal leaves the
+    drawing untouched and names its path (`walls[1].thickness: ...`,
+    `rooms[0].area: ...`). What only the drawing can refuse - a room point in no
+    closed face - rolls the transaction back, and so does a cancelled request (the
+    rollback runs under an anyio shield). The result carries each step's own
+    result, the wall engine's `omitted` list and the three `arch_*` critique
+    focuses run over the committed plan.
+
+    Refused by name: an unknown key, no walls, an unknown language or material, a
+    non-finite or non-positive number, an arc segment in a wall axis, an opening
+    that overlaps another or runs past its wall segment (both ids named), a typed
+    room `area` (areas are measured, never typed), an unknown chain side or
+    schedule kind, and a transaction that cannot be opened. Catalogue furniture,
+    the grid and symbols are separate tools (`arch_catalogue_insert`, `arch_grid`,
+    `arch_symbol`).
+    """
+    from engineering.arch.spec import draw_plan_from_spec
+
+    await ctx.info(
+        f"arch_plan_from_spec: {len((spec or {}).get('walls') or [])} wall(s), "
+        f"{len((spec or {}).get('openings') or [])} opening(s)"
+    )
+    try:
+        return await draw_plan_from_spec(_backend(ctx), spec)
+    except ValueError as exc:
         raise ToolError(str(exc)) from exc
 
 

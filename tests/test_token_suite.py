@@ -163,14 +163,14 @@ def test_the_cache_arithmetic_follows_the_published_multipliers():
 
 def test_the_idle_lane_covers_the_four_advertised_surfaces(report):
     """Default, lean, search - and TOOL_PACKS=core,mech, the mechanical client
-    that never opens a P&ID or a live seat: the default surface minus exactly
-    the pid and settings packs."""
+    that never opens a P&ID, a live seat or a floor plan: the default surface
+    minus exactly the pid, settings and arch packs (track F added `arch`)."""
     variants = {row["variant"]: row for row in report["idle"]}
     assert set(variants) == {"default", "lean", "packs_core_mech", "search"}
     assert variants["default"]["advertised_tools"] > 100
     assert variants["lean"]["advertised_tools"] == len(server.LEAN_TOOL_NAMES)
     assert variants["search"]["advertised_tools"] == 2
-    dropped = len(server.PACK_TOOL_NAMES["pid"]) + len(server.PACK_TOOL_NAMES["settings"])
+    dropped = sum(len(server.PACK_TOOL_NAMES[pack]) for pack in ("pid", "settings", "arch"))
     assert variants["packs_core_mech"]["advertised_tools"] == (
         variants["default"]["advertised_tools"] - dropped
     )

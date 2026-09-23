@@ -11,6 +11,11 @@ SECTION 22's three standard-parts tools and SECTION 23's five annotation
 symbols - 14 in all. SECTION 24 (the sheet: frames, title blocks, revisions,
 the parts list, balloons, xrefs, images, DWG) stays in `core` - universal
 drafting, not a vertical - and files under its own `sheet` group.
+
+v1.6 track F adds the `arch` pack: SECTION 25's twelve architectural tools -
+the wall network, openings, stairs, rooms and their reader, schedules, the
+grid and symbols, the furniture and sanitary catalogue, the exterior chains
+and the whole plan from one spec. Lean gains four of them.
 """
 
 from __future__ import annotations
@@ -115,6 +120,28 @@ SHEET_TOOLS = {
     "drawing_export_dwg",
 }
 
+ARCH_TOOLS = {
+    "arch_wall",
+    "arch_opening",
+    "arch_stair",
+    "arch_room",
+    "arch_rooms_detect",
+    "arch_schedule",
+    "arch_grid",
+    "arch_symbol",
+    "arch_catalogue_list",
+    "arch_catalogue_insert",
+    "arch_dimension_chains",
+    "arch_plan_from_spec",
+}
+
+LEAN_ARCH_ESSENTIALS = {
+    "arch_wall",
+    "arch_opening",
+    "arch_room",
+    "arch_plan_from_spec",
+}
+
 LEAN_MECH_ESSENTIALS = {
     "mech_part_draw",
     "mech_view_add",
@@ -132,7 +159,7 @@ LEAN_SETTINGS_ESSENTIALS = {
 }
 
 #: Declaration order - what `tool_packs["available"]` reports.
-ALL_PACKS = ["core", "pid", "settings", "mech"]
+ALL_PACKS = ["core", "pid", "settings", "mech", "arch"]
 #: `tool_packs["enabled"]` is sorted, which is no longer the same list.
 ALL_PACKS_ENABLED = sorted(ALL_PACKS)
 
@@ -145,15 +172,19 @@ async def _restore(monkeypatch):
 
 
 def test_pack_registry_names_real_tools_and_only_them():
-    assert server.TOOL_PACK_NAMES == ("core", "pid", "settings", "mech")
+    assert server.TOOL_PACK_NAMES == ("core", "pid", "settings", "mech", "arch")
     assert server.PACK_TOOL_NAMES["pid"] == frozenset(PID_TOOLS)
     assert server.PACK_TOOL_NAMES["mech"] == frozenset(MECH_TOOLS)
     assert server.PACK_TOOL_NAMES["settings"] == frozenset(SETTINGS_TOOLS)
+    assert server.PACK_TOOL_NAMES["arch"] == frozenset(ARCH_TOOLS)
     assert len(SETTINGS_TOOLS) == 22
     assert len(MECH_TOOLS) == 14
+    assert len(ARCH_TOOLS) == 12
     assert not (server.PACK_TOOL_NAMES["settings"] & server.PACK_TOOL_NAMES["pid"])
     assert not (server.PACK_TOOL_NAMES["mech"] & server.PACK_TOOL_NAMES["pid"])
     assert not (server.PACK_TOOL_NAMES["mech"] & server.PACK_TOOL_NAMES["settings"])
+    for pack in ("pid", "settings", "mech"):
+        assert not (server.PACK_TOOL_NAMES["arch"] & server.PACK_TOOL_NAMES[pack]), pack
     assert not (SHEET_TOOLS & set().union(*server.PACK_TOOL_NAMES.values())), (
         "SECTION 24 is core drafting, not a vertical pack"
     )
@@ -173,6 +204,7 @@ async def test_core_only_hides_pid_and_settings_but_keeps_styles_and_page_setup(
     assert PID_TOOLS <= disabled
     assert SETTINGS_TOOLS <= disabled
     assert MECH_TOOLS <= disabled
+    assert ARCH_TOOLS <= disabled
     assert not (SHEET_TOOLS & disabled)
     assert not (STYLE_TOOLS & disabled), "styles are core drafting essentials"
     assert not (PAGE_SETUP_TOOLS & disabled), "page setup and templates are core"
@@ -193,7 +225,7 @@ async def test_all_is_the_default_and_enables_every_pack(monkeypatch):
     monkeypatch.setattr(config.settings, "tool_packs", "all")
     info = await server._apply_tool_profile("full")
     disabled = set(info["disabled_tools"])
-    assert not ((PID_TOOLS | SETTINGS_TOOLS | MECH_TOOLS) & disabled)
+    assert not ((PID_TOOLS | SETTINGS_TOOLS | MECH_TOOLS | ARCH_TOOLS) & disabled)
     assert info["tool_packs"]["enabled"] == ALL_PACKS_ENABLED
 
 
@@ -222,19 +254,24 @@ async def test_lean_intersects_with_packs(monkeypatch):
 async def test_lean_carries_the_five_settings_essentials_and_nothing_from_the_settings_pack(
     monkeypatch,
 ):
-    """Spec §8.2: lean = 60 (55 + the five mechanical/sheet essentials). The
-    five settings essentials are core-pack tools, so `TOOL_PACKS=core` leaves
-    them on a lean surface; no environment tool is lean."""
+    """Spec §8.2: lean = 64 (55 + the five mechanical/sheet essentials + track
+    F's four architectural ones). The five settings essentials are core-pack
+    tools, so `TOOL_PACKS=core` leaves them on a lean surface; no environment
+    tool is lean."""
     assert LEAN_SETTINGS_ESSENTIALS <= server.LEAN_TOOL_NAMES
     assert LEAN_MECH_ESSENTIALS <= server.LEAN_TOOL_NAMES
+    assert LEAN_ARCH_ESSENTIALS <= server.LEAN_TOOL_NAMES
+    assert server.LEAN_TOOL_NAMES & ARCH_TOOLS == LEAN_ARCH_ESSENTIALS
     assert not (SETTINGS_TOOLS & server.LEAN_TOOL_NAMES)
-    assert len(server.LEAN_TOOL_NAMES) == 60
+    assert len(server.LEAN_TOOL_NAMES) == 64
     monkeypatch.setattr(config.settings, "tool_packs", "core")
     info = await server._apply_tool_profile("lean")
     disabled = set(info["disabled_tools"])
     assert not (LEAN_SETTINGS_ESSENTIALS & disabled)
     assert not ({"sheet_frame", "titleblock_apply"} & disabled), "sheet tools are core"
-    assert info["enabled_count"] == 60 - 6, "lean minus the three pid and three mech tools"
+    assert info["enabled_count"] == 64 - 10, (
+        "lean minus the three pid, three mech and four arch tools"
+    )
 
 
 async def test_the_three_track_e_sections_file_under_their_own_groups():
@@ -246,7 +283,8 @@ async def test_the_three_track_e_sections_file_under_their_own_groups():
     assert set(groups["environment"]) == SETTINGS_TOOLS
     assert set(groups["mechanical"]) == MECH_TOOLS
     assert set(groups["sheet"]) == SHEET_TOOLS
-    assert len(groups) == 26  # + architecture (SECTION 25, track F)
+    assert set(groups["architecture"]) == ARCH_TOOLS
+    assert len(groups) == 26
 
 
 async def test_system_about_reports_packs():

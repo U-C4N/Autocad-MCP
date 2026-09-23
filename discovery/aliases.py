@@ -62,7 +62,8 @@ class ToolAliases:
 #       splits read and write.
 #   ERASE, INSERT -- the server genuinely exposes one operation through more
 #       than one tool (single vs. batch delete; block insert vs. block-reference
-#       creation vs. the P&ID catalogue insert), so each is a correct destination.
+#       creation vs. the P&ID, standard-parts and furniture / sanitary
+#       catalogue inserts), so each is a correct destination.
 #   QSELECT -- AutoCAD's Quick Select dialog is both "filter by properties"
 #       (selection_filter) and "find things like this one"
 #       (entity_select_smart); a drafter typing it could mean either.
@@ -508,6 +509,7 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "what is wrong with this drawing",
             "drafting mistakes",
             "check before finalising",
+            "anything wrong before i finish",
         ),
     ),
     "drawing_deliver": ToolAliases(
@@ -2240,6 +2242,8 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "exterior wall",
             "partition wall",
             "floor plan walls",
+            "walls of a floor plan",
+            "draw the walls",
             "clean wall corners",
             "t junction of walls",
             "wall poche",
@@ -2309,7 +2313,12 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
     # AREA and BOUNDARY stay with analysis_measure_entity and boundary_trace:
     # on a plain AutoCAD seat a drafter typing them means those tools, and
     # sharing them would move the golden BPOLY / area cases. The room
-    # vocabulary below reaches these two without either command.
+    # vocabulary below reaches these two without either command. Task 9's
+    # reconciliation of the merged records kept that decision on purpose:
+    # neither command goes into SHARED_ACAD_COMMANDS and neither moves to an
+    # arch_* record. The Turkish room vocabulary ("oda", "alan", "oda alanları")
+    # carries both spellings, diacritic and ASCII-folded, because the search
+    # tokenizer splits on a non-ASCII letter instead of folding it.
     "arch_room": ToolAliases(
         acad=(),
         synonyms=(
@@ -2318,8 +2327,12 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "room name and number",
             "net floor area",
             "measured room area",
+            "oda",
             "oda etiketi",
+            "oda alanı",
             "oda alani",
+            "alan",
+            "mahal adı",
             "mahal adi",
         ),
     ),
@@ -2331,7 +2344,18 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "rooms of a floor plan",
             "room areas of this plan",
             "read rooms from lines",
+            "oda",
+            "odalar",
+            "odaları bul",
             "odalari bul",
+            "alan",
+            "oda alanları",
+            "oda alanlari",
+            "oda alanlarını hesapla",
+            "oda alanlarini hesapla",
+            "alan hesabı",
+            "alan hesabi",
+            "kat planı alanları",
             "kat plani alanlari",
         ),
     ),
@@ -2342,7 +2366,14 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "window schedule",
             "room schedule",
             "opening schedule",
+            "kapı çizelgesi",
             "kapi cizelgesi",
+            "kapı listesi",
+            "kapi listesi",
+            "pencere listesi",
+            "kapı pencere listesi",
+            "kapi pencere listesi",
+            "pencere çizelgesi",
             "pencere cizelgesi",
             "mahal listesi",
         ),
@@ -2409,6 +2440,29 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "kot isareti",
             "kesit isareti",
             "gorunus isareti",
+        ),
+    ),
+    # ── Architecture: the whole plan (SECTION 25, track F integration) ──────
+    "arch_plan_from_spec": ToolAliases(
+        acad=(),
+        synonyms=(
+            "draw a floor plan",
+            "whole floor plan from a spec",
+            "plan with walls doors and windows",
+            "draw a house plan",
+            "apartment plan",
+            "two room plan",
+            "architectural plan in one go",
+            "kat planı",
+            "kat plani",
+            "kat planı çiz",
+            "kat plani ciz",
+            "vaziyet",
+            "vaziyet planı",
+            "vaziyet plani",
+            "vaziyet planı çiz",
+            "vaziyet plani ciz",
+            "mimari plan",
         ),
     ),
 }
