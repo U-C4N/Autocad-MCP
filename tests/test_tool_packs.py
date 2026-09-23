@@ -246,7 +246,7 @@ async def test_the_three_track_e_sections_file_under_their_own_groups():
     assert set(groups["environment"]) == SETTINGS_TOOLS
     assert set(groups["mechanical"]) == MECH_TOOLS
     assert set(groups["sheet"]) == SHEET_TOOLS
-    assert len(groups) == 25
+    assert len(groups) == 26  # + architecture (SECTION 25, track F)
 
 
 async def test_system_about_reports_packs():
