@@ -7,7 +7,8 @@ essentials and stay in `core`, so `TOOL_PACKS=core` hides the environment
 surface and nothing else.
 
 v1.6 tracks B+G add the `mech` pack: SECTION 21's six part-model tools and
-SECTION 22's three standard-parts tools.
+SECTION 22's three standard-parts tools and SECTION 23's five annotation
+symbols - 14 in all.
 """
 
 from __future__ import annotations
@@ -91,6 +92,11 @@ MECH_TOOLS = {
     "std_part_list",
     "std_part_insert",
     "std_feature_draw",
+    "surface_texture",
+    "weld_symbol",
+    "centre_marks",
+    "section_line",
+    "hatch_material",
 }
 
 LEAN_SETTINGS_ESSENTIALS = {
@@ -120,7 +126,7 @@ def test_pack_registry_names_real_tools_and_only_them():
     assert server.PACK_TOOL_NAMES["mech"] == frozenset(MECH_TOOLS)
     assert server.PACK_TOOL_NAMES["settings"] == frozenset(SETTINGS_TOOLS)
     assert len(SETTINGS_TOOLS) == 22
-    assert len(MECH_TOOLS) == 9
+    assert len(MECH_TOOLS) == 14
     assert not (server.PACK_TOOL_NAMES["settings"] & server.PACK_TOOL_NAMES["pid"])
     assert not (server.PACK_TOOL_NAMES["mech"] & server.PACK_TOOL_NAMES["pid"])
     assert not (server.PACK_TOOL_NAMES["mech"] & server.PACK_TOOL_NAMES["settings"])

@@ -1017,6 +1017,11 @@ PACK_TOOL_NAMES: dict[str, frozenset[str]] = {
             "std_part_list",
             "std_part_insert",
             "std_feature_draw",
+            "surface_texture",
+            "weld_symbol",
+            "centre_marks",
+            "section_line",
+            "hatch_material",
         }
     ),
 }
@@ -8761,6 +8766,357 @@ async def std_feature_draw(
     await ctx.info(f"standard feature {kind} at ({x}, {y})")
     return await draw_std_feature(
         _backend(ctx), kind, (x, y), params, rotation=rotation, layer=layer
+    )
+
+
+# ---------------------------------------------------------------------------
+# ── SECTION 23: Mechanical Annotation (5 tools) ─────────────────────────────
+# ---------------------------------------------------------------------------
+# ISO annotation symbols composed from LINE / ARC / CIRCLE / LWPOLYLINE / TEXT,
+# so the same symbol lands on COM and ezdxf. The standards tables live in
+# engineering/mech/annotate.py with their sources; a value outside a
+# transcribed table is refused there, before the first entity is written.
+
+
+@cad_tool(
+    summary="Draw an ISO 21920-1 surface-texture symbol: Ra/Rz, process, lay, allowance.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Surface Texture Symbol (ISO 21920-1)", "destructiveHint": False},
+    tags={"engineering", "mech"},
+)
+async def surface_texture(
+    x: Annotated[float, "Symbol apex X (WCS) — the point the leader attaches to."],
+    y: Annotated[float, "Symbol apex Y (WCS)."],
+    ra: Annotated[
+        float | None, Field(default=None, description="Ra value in µm, written as 'Ra 3.2'.")
+    ] = None,
+    rz: Annotated[
+        float | None, Field(default=None, description="Rz value in µm, written as 'Rz 12.5'.")
+    ] = None,
+    machining: Annotated[
+        str,
+        Field(
+            default="any",
+            description=(
+                "any (basic vee) | required (bar across the vee, material removal "
+                "required) | prohibited (circle in the vee, material removal not allowed)."
+            ),
+        ),
+    ] = "any",
+    process: Annotated[
+        str | None, "Manufacturing method, treatment or coating, e.g. 'milled'."
+    ] = None,
+    lay: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description=(
+                "Direction of lay: parallel, perpendicular, crossed, multidirectional, "
+                "circular, radial, particulate."
+            ),
+        ),
+    ] = None,
+    allowance: Annotated[
+        float | None, "Machining allowance in mm, written below the extension line."
+    ] = None,
+    all_around: Annotated[bool, "Circle at the kink: the requirement applies all around."] = False,
+    leader_to: Annotated[
+        list[float] | None, "[x, y] on the surface; draws a leader with an arrowhead there."
+    ] = None,
+    height: Annotated[
+        float,
+        Field(
+            default=3.5,
+            gt=0,
+            description="Text height (mm). ISO 1302 tabulates 2.5, 3.5, 5, 7, 10, 14, 20.",
+        ),
+    ] = 3.5,
+    rotation: Annotated[float, "Rotate the whole symbol about its apex (degrees CCW)."] = 0.0,
+    standard: Annotated[
+        str, "ISO 21920-1 (default) or ISO 1302 for drawings issued under the older designation."
+    ] = "ISO 21920-1",
+    layer: Annotated[
+        str | None, "Override the role layers (DIM for geometry, TEXT for text)."
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """Draw the 60° surface-texture vee with its annotation in the standard positions.
+
+    Refusals, all before the first entity reaches the drawing: a text height
+    outside the seven ISO 1302 rows (2.5/3.5/5/7/10/14/20 mm — never
+    interpolated), a `lay` that is not one of the seven ISO 1302 directions of
+    lay, a `machining` outside any/required/prohibited, and a `standard` other
+    than ISO 21920-1 or ISO 1302.
+    """
+    from engineering.mech.annotate import draw_surface_texture
+
+    await ctx.debug(f"Surface texture symbol at ({x}, {y})")
+    return await draw_surface_texture(
+        _backend(ctx),
+        at=(x, y),
+        leader_to=tuple(leader_to) if leader_to else None,
+        ra=ra,
+        rz=rz,
+        process=process,
+        lay=lay,
+        machining=machining,
+        all_around=all_around,
+        allowance=allowance,
+        height=height,
+        standard=standard,
+        rotation=rotation,
+        layer=layer,
+    )
+
+
+@cad_tool(
+    summary="Draw an ISO 2553 weld symbol: reference line, identification line, size and pitch.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Weld Symbol (ISO 2553)", "destructiveHint": False},
+    tags={"engineering", "mech"},
+)
+async def weld_symbol(
+    x: Annotated[float, "Kink X (WCS) — where the arrow line meets the reference line."],
+    y: Annotated[float, "Kink Y (WCS)."],
+    kind: Annotated[str, "Elementary symbol: square | v | bevel | u | j | fillet."] = "fillet",
+    size: Annotated[
+        float | str | None,
+        Field(
+            default=None,
+            description=(
+                "Written before the symbol. A number on a fillet takes the ISO 2553 "
+                "design-throat prefix (5 → 'a5'); pass a string for leg length ('z7')."
+            ),
+        ),
+    ] = None,
+    length: Annotated[float | None, "Weld length (mm), written after the symbol."] = None,
+    pitch: Annotated[
+        float | None, "Pitch (mm) of an intermittent weld, written in brackets after the length."
+    ] = None,
+    side: Annotated[
+        str,
+        Field(
+            default="arrow",
+            description=(
+                "arrow (symbol on the reference line) | other (on the dashed "
+                "identification line) | both (symmetrical; the identification line is "
+                "omitted, per ISO 2553:2019)."
+            ),
+        ),
+    ] = "arrow",
+    field_weld: Annotated[bool, "Flag at the kink: weld made on site."] = False,
+    all_around: Annotated[bool, "Circle at the kink: weld all around."] = False,
+    process: Annotated[str | None, "Tail reference, e.g. an ISO 4063 process number."] = None,
+    leader_to: Annotated[
+        list[float] | None, "[x, y] on the joint; draws a leader with an arrowhead there."
+    ] = None,
+    height: Annotated[float, Field(default=3.5, gt=0, description="Text height (mm).")] = 3.5,
+    rotation: Annotated[float, "Rotate the whole annotation about the kink (degrees CCW)."] = 0.0,
+    layer: Annotated[
+        str | None, "Override the role layers (DIM for geometry, TEXT for text)."
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """Draw an ISO 2553 weld annotation: reference line, identification line, symbol, dimensions.
+
+    Refusals, all before the first entity reaches the drawing: a `kind` outside
+    the six elementary symbols transcribed here (square, v, bevel, u, j,
+    fillet — the rest of the ISO 2553 table is deliberately not shipped rather
+    than guessed), a `side` outside arrow/other/both, a non-positive `height`,
+    and a `pitch` given without a `length`.
+    """
+    from engineering.mech.annotate import draw_weld_symbol
+
+    await ctx.debug(f"Weld symbol {kind} at ({x}, {y})")
+    return await draw_weld_symbol(
+        _backend(ctx),
+        at=(x, y),
+        kind=kind,
+        leader_to=tuple(leader_to) if leader_to else None,
+        size=size,
+        length=length,
+        pitch=pitch,
+        side=side,
+        field_weld=field_weld,
+        all_around=all_around,
+        process=process,
+        height=height,
+        rotation=rotation,
+        layer=layer,
+    )
+
+
+@cad_tool(
+    summary="Draw ISO 128-23 centre marks or centre lines on circles, read from the drawing.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Centre Marks (ISO 128-23)", "destructiveHint": False},
+    tags={"engineering", "mech"},
+)
+async def centre_marks(
+    handles: Annotated[
+        list[str] | None,
+        "Handles of CIRCLEs/ARCs; their real centre and radius are read from the drawing.",
+    ] = None,
+    centers: Annotated[
+        list[list[float]] | None,
+        "Explicit centres as [x, y] or [x, y, radius]; style='lines' needs the radius.",
+    ] = None,
+    style: Annotated[
+        str,
+        Field(
+            default="mark",
+            description="mark (short cross at the centre) | lines (full centre lines).",
+        ),
+    ] = "mark",
+    extension: Annotated[
+        float,
+        Field(
+            default=3.0,
+            gt=0,
+            description="Arm length (mark) or overrun past the outline (lines), mm.",
+        ),
+    ] = 3.0,
+    layer: Annotated[str | None, "Override the CENTER role layer."] = None,
+    ctx: Context = None,
+) -> dict:
+    """Centre marks on the CENTER layer, whose linetype carries ISO 128-23's dash pattern.
+
+    Pass `handles` and the radii are read back with `entity_get` rather than
+    restated — a radius from memory is the classic silent wrong number.
+    Refusals, all before the first entity is written: neither `handles` nor
+    `centers` given (or both), a handle that is not a CIRCLE or ARC, a circle
+    in a plane tilted out of WCS XY (capability `ocs_tilted_plane`, so it has
+    no radius in this frame), a `style` outside mark/lines, a non-positive
+    `extension`, and `style='lines'` on a centre given without a radius.
+    """
+    from engineering.mech.marks import draw_centre_marks
+
+    await ctx.debug(f"Centre marks style={style}")
+    return await draw_centre_marks(
+        _backend(ctx),
+        handles=handles,
+        centers=centers,
+        style=style,
+        extension=extension,
+        layer=layer,
+    )
+
+
+@cad_tool(
+    summary="Draw an ISO 128-40 cutting-plane line and return the plane the section view uses.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Section Line (ISO 128-40)", "destructiveHint": False},
+    tags={"engineering", "mech"},
+)
+async def section_line(
+    x1: Annotated[float, "Cutting plane start X (WCS)."],
+    y1: Annotated[float, "Cutting plane start Y (WCS)."],
+    x2: Annotated[float, "Cutting plane end X (WCS)."],
+    y2: Annotated[float, "Cutting plane end Y (WCS)."],
+    label: Annotated[str, "Capital letter drawn at both ends, e.g. 'A'."] = "A",
+    direction: Annotated[
+        list[float] | None,
+        "Viewing direction as [dx, dy]; must not be parallel to the cutting plane.",
+    ] = None,
+    style: Annotated[
+        str, "full | half | offset | revolved — carried into the returned plane."
+    ] = "full",
+    height: Annotated[float, Field(default=5.0, gt=0, description="Label height (mm).")] = 5.0,
+    layer: Annotated[str | None, "Override the role layers (GEOMETRY/CENTER/TEXT)."] = None,
+    ctx: Context = None,
+) -> dict:
+    """Draw the cutting-plane line and hand back the plane a section view consumes.
+
+    Wide segments at the ends on GEOMETRY, the thin long-dash-dot middle on
+    CENTER, an arrow at each end whose head sits on the line end and points the
+    way the section is viewed, and the same letter beyond both arrows.
+    `payload["plane"]` is exactly `{p1, p2, label, direction, style}` — feed it
+    to the section view so the label on the plan and the label on the view
+    cannot disagree. Refusals, before any entity is written: `p1 == p2`, a zero
+    or parallel viewing direction, an empty `label`, a `style` outside
+    full/half/offset/revolved, and a non-positive `height`.
+    """
+    from engineering.mech.marks import draw_section_line
+
+    await ctx.debug(f"Section line {label} ({x1},{y1})-({x2},{y2})")
+    return await draw_section_line(
+        _backend(ctx),
+        (x1, y1),
+        (x2, y2),
+        label=label,
+        direction=tuple(direction) if direction else (0.0, -1.0),
+        style=style,
+        height=height,
+        layer=layer,
+    )
+
+
+@cad_tool(
+    summary="Hatch a region with the ISO 128-50 section pattern for a named material.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Material Hatch (ISO 128-50)", "destructiveHint": False},
+    tags={"engineering", "mech"},
+)
+async def hatch_material(
+    material: Annotated[str, "Material name; an unknown one is refused with the list."] = "steel",
+    boundary: Annotated[
+        list[list[float]] | None, "Closed boundary as [[x, y], ...] — at least three points."
+    ] = None,
+    handles: Annotated[
+        list[str] | None, "Entities to chain into one closed loop instead of a boundary."
+    ] = None,
+    scale: Annotated[
+        float,
+        Field(default=1.0, gt=0, description="Multiplies the material's own pattern scale."),
+    ] = 1.0,
+    angle: Annotated[
+        float | None, "Replaces the material's own pattern angle (degrees) when given."
+    ] = None,
+    layer: Annotated[str | None, "Override the HATCH role layer."] = None,
+    ctx: Context = None,
+) -> dict:
+    """Section-hatch a cut face with the pattern ISO 128-50 gives its material.
+
+    Refusals: an unknown material (named, with the full list, before anything
+    is drawn), neither `boundary` nor `handles` (or both), a boundary with
+    fewer than three points, and a non-positive `scale`. With `handles` the
+    loop is chained by `boundary_from_entities`, which the COM engine refuses
+    (capability `boundary_trace`) - pass `boundary` on a live seat, or run
+    headlessly. The HATCH layer is created first when the drawing lacks it:
+    ActiveX refuses an entity on an absent layer and would otherwise leave the
+    hatch orphaned on layer 0.
+
+    The payload states its own accuracy, as `analysis_measure_entity` does:
+    `area` is the polygon actually hatched, `boundary_area` the exact area of
+    the chained loop, and `accuracy` is `"exact"` or `"flatten_tolerance"` -
+    an arc edge reaches `entity_create_hatch` as chords, so a curved cut face
+    is hatched to within `HATCH_FLATTEN_SAGITTA` of itself rather than being
+    replaced by its chord polygon. With `handles`, the outline
+    `boundary_from_entities` draws is scaffolding and is deleted; `traced`
+    reports its handle and whether the delete succeeded. A loop enclosing no
+    area is refused instead of writing a HATCH of area 0.0.
+    """
+    from engineering.mech.marks import draw_material_hatch
+
+    await ctx.debug(f"Material hatch {material}")
+    return await draw_material_hatch(
+        _backend(ctx),
+        boundary=boundary,
+        handles=handles,
+        material=material,
+        scale=scale,
+        angle=angle,
+        layer=layer,
     )
 
 

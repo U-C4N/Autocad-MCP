@@ -27,8 +27,8 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 
 </div>
 
-> **v1.5 release snapshot:** 213 tools · 8 resources · 5 prompt templates · 3284 collected tests.
-> 213 is the **registered** count; a default install advertises 208 over `tools/list`,
+> **v1.5 release snapshot:** 218 tools · 8 resources · 5 prompt templates · 3284 collected tests.
+> 218 is the **registered** count; a default install advertises 213 over `tools/list`,
 > because `ENABLE_3D` is unset. `system_about` is the runtime authority.
 
 ## Why this exists
@@ -117,7 +117,7 @@ Claude Desktop, Cursor, or any stdio MCP host. For HTTP: `autocad-mcp --transpor
 | Quality loop | `drawing_preflight` → `drawing_plan` → `drawing_critique` → `drawing_refine` → `drawing_finalize` (0–100 score) |
 | Delivery | `drawing_deliver`: DXF/PDF/PNG + SHA-256 manifest + reopen-parity checks |
 
-<sub>213 tools in 24 groups; <code>TOOL_PACKS=core</code> hides the nine <code>pid_*</code> tools and the 22 environment tools (<code>TOOL_PACKS=core,settings</code> keeps the latter) from a client that needs neither. Plus 8 resources that cost nothing in the tool budget (<code>autocad://drawing/info</code>, <code>layers</code>, <code>blocks</code>, <code>entities/stats</code>, <code>entities/{layer_name}</code>, <code>system/status</code>, <code>pid/symbols</code>, <code>standards/isa51</code>) and 5 prompt templates.</sub>
+<sub>218 tools in 24 groups; <code>TOOL_PACKS=core</code> hides the nine <code>pid_*</code> tools and the 22 environment tools (<code>TOOL_PACKS=core,settings</code> keeps the latter) from a client that needs neither. Plus 8 resources that cost nothing in the tool budget (<code>autocad://drawing/info</code>, <code>layers</code>, <code>blocks</code>, <code>entities/stats</code>, <code>entities/{layer_name}</code>, <code>system/status</code>, <code>pid/symbols</code>, <code>standards/isa51</code>) and 5 prompt templates.</sub>
 
 **Two rules worth knowing.** Every coordinate in and out of a tool is WCS on both engines — the one exception is TEXT `rotation`, which stays in the entity frame because a mirrored TEXT is mirror-imaged and no scalar angle expresses that. And never read vertices back and shoelace them: that loses **28.2%** of the area on a semicircular edge, silently. `analysis_measure_entity(handle)` reads the real geometry and states its own accuracy.
 

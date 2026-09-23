@@ -91,6 +91,10 @@ class ToolAliases:
 #   OPTIONS -- one dialog both reads and writes a preference; the server
 #       splits read (system_preferences_get) and write (system_preferences_set),
 #       the SETVAR precedent.
+#   SECTIONPLANE -- the section a drafter asks for is either a whole section
+#       view of a drawn part (mech_view_add) or the cutting-plane line and its
+#       labels on an existing view (section_line); tracks B+G groups M and A
+#       each claimed it, and a drafter typing it could mean either.
 #
 # Every other AutoCAD command must map to exactly one tool.
 SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
@@ -113,6 +117,7 @@ SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
         "PLOT",
         "QSELECT",
         "SAVEAS",
+        "SECTIONPLANE",
         "SETVAR",
         "STYLE",
         "UCS",
@@ -343,6 +348,65 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "flatness",
             "perpendicularity",
             "true position",
+        ),
+    ),
+    # ── Mechanical annotation (ISO 21920-1 / ISO 2553) ──────────────────────
+    "surface_texture": ToolAliases(
+        synonyms=(
+            "surface finish",
+            "surface roughness",
+            "surface texture symbol",
+            "roughness symbol",
+            "ra value",
+            "rz value",
+            "machining symbol",
+            "yuzey puruzlulugu",
+            "yuzey isleme sembolu",
+        ),
+    ),
+    "weld_symbol": ToolAliases(
+        synonyms=(
+            "weld symbol",
+            "welding symbol",
+            "fillet weld",
+            "butt weld",
+            "weld callout",
+            "field weld",
+            "weld all around",
+            "kaynak sembolu",
+            "kose kaynagi",
+        ),
+    ),
+    "centre_marks": ToolAliases(
+        acad=("CENTERMARK", "CENTERLINE", "DIMCENTER"),
+        synonyms=(
+            "centre mark",
+            "center mark",
+            "centre line",
+            "center line of a hole",
+            "cross at the centre",
+            "eksen cizgisi",
+            "merkez isareti",
+        ),
+    ),
+    "section_line": ToolAliases(
+        acad=("SECTIONPLANE",),
+        synonyms=(
+            "cutting plane line",
+            "section line",
+            "section a-a",
+            "where to cut the part",
+            "view direction arrows",
+            "kesit cizgisi",
+        ),
+    ),
+    "hatch_material": ToolAliases(
+        synonyms=(
+            "material hatch",
+            "hatch as cast iron",
+            "section hatching for steel",
+            "hatch pattern for a material",
+            "malzeme taramasi",
         ),
     ),
     # ── Dimensions ──────────────────────────────────────────────────────────

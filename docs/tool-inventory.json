@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 213,
+    "tools": 218,
     "resources": 8,
     "prompts": 5,
     "groups": 24
@@ -22,7 +22,7 @@
     "environment": 22,
     "layers": 14,
     "layouts": 12,
-    "mech": 9,
+    "mech": 14,
     "page_setup": 6,
     "pid": 9,
     "premium": 12,
@@ -342,6 +342,20 @@
         "title": "Batch: Run Tools",
         "readOnlyHint": false,
         "destructiveHint": true
+      }
+    },
+    {
+      "name": "centre_marks",
+      "group": "mech",
+      "cost": "mutate",
+      "summary": "Draw ISO 128-23 centre marks or centre lines on circles, read from the drawing.",
+      "tags": [
+        "engineering",
+        "mech"
+      ],
+      "annotations": {
+        "title": "Centre Marks (ISO 128-23)",
+        "destructiveHint": false
       }
     },
     {
@@ -1594,6 +1608,20 @@
       }
     },
     {
+      "name": "hatch_material",
+      "group": "mech",
+      "cost": "mutate",
+      "summary": "Hatch a region with the ISO 128-50 section pattern for a named material.",
+      "tags": [
+        "engineering",
+        "mech"
+      ],
+      "annotations": {
+        "title": "Material Hatch (ISO 128-50)",
+        "destructiveHint": false
+      }
+    },
+    {
       "name": "hatch_set_gradient",
       "group": "entity_creation",
       "cost": "mutate",
@@ -2298,6 +2326,20 @@
       }
     },
     {
+      "name": "section_line",
+      "group": "mech",
+      "cost": "mutate",
+      "summary": "Draw an ISO 128-40 cutting-plane line and return the plane the section view uses.",
+      "tags": [
+        "engineering",
+        "mech"
+      ],
+      "annotations": {
+        "title": "Section Line (ISO 128-40)",
+        "destructiveHint": false
+      }
+    },
+    {
       "name": "selection_filter",
       "group": "entity_query",
       "cost": "read",
@@ -2458,6 +2500,20 @@
       "annotations": {
         "title": "Standard Parts: Catalogue",
         "readOnlyHint": true
+      }
+    },
+    {
+      "name": "surface_texture",
+      "group": "mech",
+      "cost": "mutate",
+      "summary": "Draw an ISO 21920-1 surface-texture symbol: Ra/Rz, process, lay, allowance.",
+      "tags": [
+        "engineering",
+        "mech"
+      ],
+      "annotations": {
+        "title": "Surface Texture Symbol (ISO 21920-1)",
+        "destructiveHint": false
       }
     },
     {
@@ -3028,6 +3084,20 @@
       ],
       "annotations": {
         "title": "Set Viewport Scale",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "weld_symbol",
+      "group": "mech",
+      "cost": "mutate",
+      "summary": "Draw an ISO 2553 weld symbol: reference line, identification line, size and pitch.",
+      "tags": [
+        "engineering",
+        "mech"
+      ],
+      "annotations": {
+        "title": "Weld Symbol (ISO 2553)",
         "destructiveHint": false
       }
     }

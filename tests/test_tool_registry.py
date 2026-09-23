@@ -495,7 +495,7 @@ async def test_tool_groups_is_byte_identical_to_the_source_declared_grouping():
 
 
 async def test_tool_group_sizes_are_unchanged():
-    """Frozen snapshot of the surface (204 tools, 23 groups).
+    """Frozen snapshot of the surface (209 tools, 23 groups).
 
     Taken before @cad_tool landed at 131 tools; `batch` moved 2 -> 3 when
     v1.5.0's `cad_batch` joined `entity_batch_create`/`entity_batch_modify`, and
@@ -540,6 +540,12 @@ async def test_tool_group_sizes_are_unchanged():
     SECTION 22 added the standard-parts catalogue (`std_part_list` /
     `std_part_insert` / `std_feature_draw`) to the same group, filed under
     `mech` rather than under their secondary `query` / `create` tags.
+
+    SECTION 23 added the mechanical annotation symbols (`surface_texture` /
+    `weld_symbol` / `centre_marks` / `section_line` / `hatch_material`). They
+    are tagged `engineering` and `mech`; with `mech` ranked ahead of
+    `engineering` in `_GROUP_TAG_PRIORITY` they file under `mech` (14 in all,
+    exactly `PACK_TOOL_NAMES["mech"]`), and `engineering` stays at 10.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
@@ -556,7 +562,7 @@ async def test_tool_group_sizes_are_unchanged():
         "environment": 22,
         "layers": 14,
         "layouts": 12,
-        "mech": 9,
+        "mech": 14,
         "page_setup": 6,
         "pid": 9,
         "premium": 12,
@@ -568,4 +574,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 213
+    assert sum(sizes.values()) == 218
