@@ -27,23 +27,24 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 
 </div>
 
-> **v1.5 release snapshot:** 241 tools · 8 resources · 5 prompt templates · 4507 collected tests.
+> **v1.5 release snapshot:** 241 tools · 8 resources · 5 prompt templates · 4516 collected tests.
 > 241 is the **registered** count; a default install advertises 236 over `tools/list`,
 > because `ENABLE_3D` is unset. `system_about` is the runtime authority.
 
 ## Why this exists
 
-**A big MCP server is expensive to be connected to.** The full catalog costs a client **72,163 tokens** before it has asked for anything. Discovery mode replaces it with two tools and costs **356**.
+**A big MCP server is expensive to be connected to.** The full catalog costs a client **78,772 tokens** before it has asked for anything. Discovery mode replaces it with two tools and costs **356**.
 
 **A drafter searches for `FILLET`, not `entity_fillet`.** Those command names appeared in no tool name or description — `df = 0` against a stock index, not badly ranked but *absent*. The fix was data: an authored corpus of **205 AutoCAD command names and 1318 synonym phrases** covering all 241 tools. A test refuses to let a tool exist without one.
 
 | Advertised surface | Tools seen | Idle cost |
 |---|---:|---:|
-| `TOOL_PROFILE=full` (default) | 224 | 72,163 tokens |
-| `TOOL_PACKS=core,settings` (full profile) | 201 | 60,727 tokens |
-| `TOOL_PACKS=core,mech` (full profile) | 193 | 61,673 tokens |
-| `TOOL_PACKS=core` (full profile) | 179 | 53,959 tokens |
-| `TOOL_PROFILE=lean` | 60 | 19,484 tokens |
+| `TOOL_PROFILE=full` (default) | 236 | 78,772 tokens |
+| `TOOL_PACKS=core,settings` (full profile) | 201 | 60,926 tokens |
+| `TOOL_PACKS=core,mech` (full profile) | 193 | 61,872 tokens |
+| `TOOL_PACKS=core,arch` (full profile) | 191 | 60,568 tokens |
+| `TOOL_PACKS=core` (full profile) | 179 | 54,158 tokens |
+| `TOOL_PROFILE=lean` | 64 | 21,939 tokens |
 | `DISCOVERY_MODE=search` | 2 | **356 tokens** |
 
 > [!NOTE]
@@ -104,6 +105,7 @@ Claude Desktop, Cursor, or any stdio MCP host. For HTTP: `autocad-mcp --transpor
 | Engineering generators | involute gears (front + section A-A), DIN 6885 keyed bores, ISO A3 title block |
 | Mechanical parts | one part model (segments or outline + typed features) and one view engine: front / side / top / section / detail with hidden lines, ISO 128-50 cut faces and ISO 129 dimensions; ISO 4014/4017/4032/7089/4762 fasteners, ISO 15 bearings, DIN 471/472, DIN 509, DIN 332 and ISO 3601-2 as real blocks with attributes; ISO 21920-1 surface texture, ISO 2553 welds, ISO 128-40 section lines |
 | Sheet & delivery | ISO 5457 frames A4-A0 with zones and trim marks, ISO 7200 title blocks for every size, revision blocks with clouds, ISO 7573 parts lists with ISO 6433 balloons linked by XDATA, CSV/XLSX extraction, xrefs and images on both engines, real `.dwg` on a live seat |
+| Architecture | one plan model — walls with hosted doors and windows — and one engine: L / T / X junctions resolved, openings cut, poché by material; rooms measured from the faces the walls enclose (never typed) and read back from any plan with a confidence; door / window / room schedules as real TABLEs; a furniture and sanitary catalogue at nominal sizes; structural grid, north arrow, section / level / elevation marks; exterior dimension chains; English or Turkish labels (`lang="tr"`, decimal comma) |
 | P&ID | catalogue blocks with ports and tags (ISO 10628-2 / ISA-5.1), port-to-port lines with ISA-5.1 classes and line numbers, `pid_graph` reads any P&ID back with confidence, instrument index / line list / equipment list, `pid_from_spec` one-call sheets |
 | Styles & standards | ISO-25 / ANSI dimension styles, ISOCP / ROMANS text styles, ISO / ANSI leader styles from authored presets; `drawing_apply_standard("iso")` sets all of it plus units and the `mech` layers in one call; `changed` reports only what moved |
 | Discovery | `search_tools` ranked over an AutoCAD command and synonym corpus — `FILLET`, `BPOLY`, `QSELECT`, `WBLOCK`, `OVERKILL`, `CHSPACE` each rank **#1** of the 236-tool advertised catalog |
@@ -160,29 +162,30 @@ Self-measurement, produced by scripts in [`benchmarks/`](https://github.com/U-C4
 
 ### Correctness — every release re-proves itself
 
-39 deterministic headless checks against the previous tag and the current tree, each in its own subprocess so a hard crash counts as a miss rather than killing the run.
+43 deterministic headless checks against the previous tag and the current tree, each in its own subprocess so a hard crash counts as a miss rather than killing the run.
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---|---:|---:|---:|---:|
-| v1.5.1 *(baseline)* | 26 / 39 | 66.7 % | — | — |
-| **v1.6.0-dev** *(this branch)* | **39 / 39** | **100 %** | 13 | **0** |
+| v1.5.1 *(baseline)* | 26 / 43 | 60.5 % | — | — |
+| **v1.6.0-dev** *(this branch)* | **43 / 43** | **100 %** | 17 | **0** |
 
-The thirteen fixed rows are new capability (`miss → pass`). Tracks B and G add seven: `mech_part_roundtrip` (a part read back out of its own `ACADMCP_MECH` XDATA equals the part drawn), `mech_section_hatch_area` (a 60 x ⌀40 sleeve with a ⌀20 bore cuts 1200 mm² exactly, measured out of the drawing by `analysis_measure_entity`), `mech_iso286_on_dimension` (40 H7 is +0.025 / 0 and survives the layout), `mech_thread_unrepresented_is_caught` (the ISO 6410 focus fires on a thread drawn as a plain circle — a gate that never fires is not a gate), `std_part_iso4014_m12` (s = 18, k = 7.5, read by value), `sheet_frame_iso5457_a3` (the frame runs 20,10 to 410,287 inside the 420 × 297 sheet) and `bom_balloon_link` (two identical bolts are one row of quantity 2, and its balloon carries the row's item number). The other six are the three P&ID checks of track A and, from track E, `settings_dimstyle_iso25_values` (the ISO-25 preset lands in the DIMSTYLE table with ISO 129-1's numbers), `settings_layer_state_roundtrip` (save → change → restore puts the layer table back, and the state survives save/reopen because it is an XRECORD in the file) and `settings_pdf_mediabox_a3` (the plotted PDF's own `/MediaBox` reads 420 × 297). The 26 checks v1.5.1 was gated on all still pass. Against the older `v1.4.0` baseline the same 26 reported **21 / 26 → 26 / 26, five fixed, zero regressed** — two of those were repaired defects (`fail → pass`), the diameter and radius callouts, which measured the leader as geometry and dimensioned a 40 mm bore as 60 at default settings.
+The seventeen fixed rows are new capability (`miss → pass`). Track F adds four: `arch_junction_l_t_x` (an L corner mitres at (4100, −100) / (3900, 100), a T stem stops on the near face at (2950, 100) / (3050, 100), an X cuts all four faces, and the wall areas are 1 400 000, 1 490 000 and 2 360 000 mm² — computed by hand), `arch_room_area_net` (a 4 × 5 m room between 200 mm walls measures 20.00 m² in its label and its record, not the 21.84 m² its axes enclose), `arch_opening_cuts_wall` (both faces are interrupted across a 900 door and two jambs close it) and `arch_rooms_detect_foreign` (a plan of plain lines on a `WALLS` layer yields 20 and 15 m² at confidence 0.6, and nothing is written). Tracks B and G add seven: `mech_part_roundtrip` (a part read back out of its own `ACADMCP_MECH` XDATA equals the part drawn), `mech_section_hatch_area` (a 60 x ⌀40 sleeve with a ⌀20 bore cuts 1200 mm² exactly, measured out of the drawing by `analysis_measure_entity`), `mech_iso286_on_dimension` (40 H7 is +0.025 / 0 and survives the layout), `mech_thread_unrepresented_is_caught` (the ISO 6410 focus fires on a thread drawn as a plain circle — a gate that never fires is not a gate), `std_part_iso4014_m12` (s = 18, k = 7.5, read by value), `sheet_frame_iso5457_a3` (the frame runs 20,10 to 410,287 inside the 420 × 297 sheet) and `bom_balloon_link` (two identical bolts are one row of quantity 2, and its balloon carries the row's item number). The other six are the three P&ID checks of track A and, from track E, `settings_dimstyle_iso25_values` (the ISO-25 preset lands in the DIMSTYLE table with ISO 129-1's numbers), `settings_layer_state_roundtrip` (save → change → restore puts the layer table back, and the state survives save/reopen because it is an XRECORD in the file) and `settings_pdf_mediabox_a3` (the plotted PDF's own `/MediaBox` reads 420 × 297). The 26 checks v1.5.1 was gated on all still pass. Against the older `v1.4.0` baseline the same 26 reported **21 / 26 → 26 / 26, five fixed, zero regressed** — two of those were repaired defects (`fail → pass`), the diameter and radius callouts, which measured the leader as geometry and dimensioned a 40 mm bore as 60 at default settings.
 
 ### The task matrix — tasks that can fail
 
-An earlier matrix scored this server 10/10, which carried no information: every task in it exercised something the server was built around. Five were added in 1.5 because they *can* fail, and three did while being written; 1.6 adds three more — one the P&ID reader can fail on its own, one where the PDF file, not the setter, is the witness, and one where a whole mechanical sheet has to come out clean.
+An earlier matrix scored this server 10/10, which carried no information: every task in it exercised something the server was built around. Five were added in 1.5 because they *can* fail, and three did while being written; 1.6 adds four more — one the P&ID reader can fail on its own, one where the PDF file, not the setter, is the witness, one where a whole mechanical sheet has to come out clean, and one where a floor plan's rooms are read back off the drawing.
 
 | Task | Verified against |
 |---|---|
 | `tool_discovery` | six AutoCAD command names, each ranking #1 |
-| `token_budget` | 72,163 → 356 tokens, against a ceiling fixed in advance |
+| `token_budget` | 78,772 → 356 tokens, against a ceiling fixed in advance |
 | `hatch_islands` | 300 filled with the island, 400 ignoring it |
 | `selection_filter` | window 1, crossing 2, bounding box 3, polygon 1 |
 | `measure_from_handle` | 139.2699 against the 100.0 a vertex shoelace gives |
 | `pid_roundtrip` | the example sheet drawn by `pid_from_spec`, read back by `pid_graph`, which never sees the spec: 5 nodes, 4 edges, 0 dangling, `confidence_min` 1.0, `FIC-101` wired to `FCV-101` |
 | `page_setup_truth` | ANSI B then ISO A3 landscape applied to Layout1, each plotted through `batch_plot` and read back from its PDF's `/MediaBox`: 432 × 279 then 420 × 297 mm, not the setter's return value (a fresh layout is already A3, so the B sheet is what a no-op setter cannot fake) |
 | `mech_assembly` | a flange-coupling A3 sheet — hub with a full section, flange with its bolt-circle end view, two ISO 4014 bolts with ISO 4032 nuts, an ISO 7573 parts list read off the drawing, linked balloons, ISO 5457 frame, ISO 7200 title block — gated on `drawing_critique(focus=None)` returning **zero** issues and a finalize score of at least **90**; a test drops one balloon and watches the gate fail |
+| `arch_roundtrip` | a two-room plan — an entrance door, an interior door, two windows, a stair — drawn by `arch_plan_from_spec` and read back by `arch_rooms_detect`, which never sees the spec: each room within 0.1 % of its label and of the net floor computed by hand (4825 × 5750 and 3825 × 5750 mm), the door and window schedules listing D1, D2, W1, W2, `drawing_critique(focus=None)` at **zero** and a finalize score of at least **90**; a test removes one room label and watches the gate fail |
 
 ### Headless performance
 
@@ -231,7 +234,7 @@ Nothing loads a `.env` file — export these, or set them in your MCP client's `
 |---|---|---|
 | `AUTOCAD_MCP_BACKEND` | `auto` | `auto`, `com`, or `ezdxf` |
 | `CAD_PROGID` | `AutoCAD.Application` | COM ProgID the live backend attaches to |
-| `TOOL_PROFILE` | `full` | `lean` (60 curated tools, 54 with `TOOL_PACKS=core`) or `full` |
+| `TOOL_PROFILE` | `full` | `lean` (64 curated tools, 54 with `TOOL_PACKS=core`) or `full` |
 | `TOOL_PACKS` | `all` | Vertical packs to advertise: `core,pid,settings` (`core` always on) |
 | `DISCOVERY_MODE` | `off` | `search` replaces the catalog with `search_tools` + `call_tool` |
 | `ENABLE_3D` | `false` | Expose the opt-in `solid_*` tools (COM) |

@@ -1,12 +1,12 @@
 {
   "summary": {
     "baseline_ref": "v1.5.1",
-    "total": 39,
+    "total": 43,
     "old_pass": 26,
-    "new_pass": 39,
-    "old_pct": 66.7,
+    "new_pass": 43,
+    "old_pct": 60.5,
     "new_pct": 100.0,
-    "fixed": 13,
+    "fixed": 17,
     "regressed": 0
   },
   "rows": [
@@ -241,6 +241,30 @@
     {
       "check": "bom_balloon_link",
       "category": "Sheet",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "arch_junction_l_t_x",
+      "category": "Architecture",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "arch_room_area_net",
+      "category": "Architecture",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "arch_opening_cuts_wall",
+      "category": "Architecture",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "arch_rooms_detect_foreign",
+      "category": "Architecture",
       "old": "miss",
       "new": "pass"
     }

@@ -117,6 +117,16 @@ the live seat a missing `MECH` layer and a parts list that could not see a
 `BLOCKREFERENCE`; each is fixed with a test. The competitor reports carry no
 result for it.
 
+### Matrix v6 (v1.6) — the architectural plan
+
+`tasks_v6.py` keeps the v5 eighteen unchanged and adds track F's evidence:
+
+| Task | Category | Verified against |
+|---|---|---|
+| `arch_roundtrip` | arch | the plan of `engineering/arch/spec.py::EXAMPLE_SPEC` — a 9 × 6 m brick ring at 250 mm split by a 100 mm AAC wall, an entrance door, an interior door, two windows, a straight stair, two labelled rooms, the exterior chains and the door / window / room schedules — drawn in one transaction by `draw_plan_from_spec`, then read back without the spec: `rooms_detect` on the wall layer must find each labelled room within 0.1 % of the area its label carries **and** of the net floor computed by hand (4825 × 5750 = 27 743 750 and 3825 × 5750 = 21 993 750 mm²), `schedule_rows` must list exactly D1, D2 and W1, W2, and the saved plan is gated like `mech_assembly`: `run_critique(focus=None)` returns **zero** issues and `combine(validator, critique)` scores at least **90**. `tests/test_benchmark_v6.py` removes one room label to prove the gate fails and names `arch_room_unlabelled` |
+
+The competitor reports carry no result for it.
+
 ## Live competitor lane (v1.4)
 
 Two competitor adapters now execute the exact same task matrix, black-box over
@@ -234,15 +244,15 @@ python benchmarks/compare_versions.py --json results.json
 
 ### Result — this branch (1.6.0-dev) vs v1.5.1 (release gate)
 
-39 checks, ezdxf backend, one subprocess per check. Machine-readable report:
+43 checks, ezdxf backend, one subprocess per check. Machine-readable report:
 [`results/published/ab-v1.5.1-vs-v1.6.0-dev.json`](results/published/ab-v1.5.1-vs-v1.6.0-dev.json).
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---------|----------------|-----------|-------|-----------|
-| **v1.5.1** (baseline)     | 26 / 39 | 66.7 % | — | — |
-| **v1.6.0-dev** (this branch) | 39 / 39 | 100 % | 13 | **0** |
+| **v1.5.1** (baseline)     | 26 / 43 | 60.5 % | — | — |
+| **v1.6.0-dev** (this branch) | 43 / 43 | 100 % | 17 | **0** |
 
-The thirteen are all `miss → pass` — v1.5.1 has none of the methods. Seven
+The seventeen are all `miss → pass` — v1.5.1 has none of the methods. Four are track F: `arch_junction_l_t_x` (L, T and X junction outlines against hand-computed corners and wall areas), `arch_room_area_net` (a 4 × 5 m room between 200 mm walls is labelled 20.00 m², not its 21.84 m² axis area), `arch_opening_cuts_wall` (both faces interrupted across a door, two jambs) and `arch_rooms_detect_foreign` (plain lines on a WALLS layer read as 20 and 15 m² at confidence 0.6, nothing written). Seven
 are tracks B and G: `mech_part_roundtrip` (a part read back from its own
 `ACADMCP_MECH` XDATA equals the part drawn), `mech_section_hatch_area` (a
 sleeve 60 long, ⌀40 outside, ⌀20 bore: a full section cuts two 60 × 10 faces,

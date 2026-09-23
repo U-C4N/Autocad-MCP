@@ -568,6 +568,59 @@ def test_a_dimension_reports_where_its_text_stands():
     assert props["text_position"] == [181.0, 230.0]
 
 
+class IAcadEntity:
+    """What pywin32 hands back for ``ModelSpace.Item(i)`` once a makepy cache
+    for the AutoCAD type library exists: acax25enu.tlb declares the result
+    ``IAcadEntity*``, so the wrapper is the gen_py class of that name and it
+    exposes only the entity base's members. Measured on AutoCAD 2026
+    (2026-09-23, scripts/smoke_arch_com.py): ``type(item).__name__`` is
+    ``"IAcadEntity"`` and ``item.StartPoint`` on an AcDbLine raises
+    ``AttributeError: '<win32com.gen_py.AutoCAD 2025 Type Library.IAcadEntity
+    instance>' object has no attribute 'StartPoint'``. The concrete object is
+    reachable only through ``_oleobj_``."""
+
+    BASE_MEMBERS = frozenset(
+        {"ObjectName", "Handle", "Layer", "color", "Linetype", "Visible", "GetBoundingBox"}
+    )
+
+    def __init__(self, raw):
+        object.__setattr__(self, "_oleobj_", raw)
+
+    def __getattr__(self, key):
+        if key in self.BASE_MEMBERS:
+            return getattr(self._oleobj_, key)
+        raise AttributeError(
+            "'<win32com.gen_py.AutoCAD 2025 Type Library.IAcadEntity instance>' "
+            f"object has no attribute {key!r}"
+        )
+
+
+def test_a_line_listed_through_a_narrowed_wrapper_keeps_its_endpoints():
+    """``entity_list`` reads every entity through ``ModelSpace.Item``. With a
+    makepy cache the LINE rows lost ``start``/``end`` (only the bounding box
+    survived), so on the live seat the room reader found 0 wall segments and
+    ``arch_plan_from_spec`` refused its first room label."""
+    from backends.com_backend import _entity_info
+
+    raw = _Entity(
+        "AcDbLine",
+        GetBoundingBox=lambda: ((125.0, 125.0, 0.0), (1000.0, 125.0, 0.0)),
+        StartPoint=(125.0, 125.0, 0.0),
+        EndPoint=(1000.0, 125.0, 0.0),
+        Length=875.0,
+        Handle="2B0",
+        Layer="A-WALL-E-N",
+        color=256,
+        Linetype="ByLayer",
+        Visible=True,
+    )
+    info = _entity_info(IAcadEntity(raw))
+    assert info.type == "LINE" and info.layer == "A-WALL-E-N"
+    assert info.properties["start"] == [125.0, 125.0]
+    assert info.properties["end"] == [1000.0, 125.0]
+    assert info.properties["length"] == 875.0
+
+
 def test_com_geometry_bbox_is_the_drawn_body_without_the_attribute():
     from backends.com_backend import _entity_info
 

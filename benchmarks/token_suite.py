@@ -521,6 +521,16 @@ async def idle_lane(counter: Any, turns: int = SESSION_TURNS) -> list[dict[str, 
                 turns,
             )
         )
+        config.settings.tool_packs = "core,arch"
+        rows.append(
+            await _idle_row(
+                "packs_core_arch",
+                "TOOL_PACKS=core,arch - an architectural client that never opens a "
+                "P&ID, a machine part or a live seat.",
+                counter,
+                turns,
+            )
+        )
         config.settings.tool_packs = previous_packs
         srv._apply_discovery_mode("search")
         rows.append(

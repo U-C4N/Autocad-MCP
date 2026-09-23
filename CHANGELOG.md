@@ -29,6 +29,16 @@ model and one view engine instead of a zoo of per-part generators, a new
 (`xref_attach`, `xref_manage`, `image_attach`, `drawing_export_dwg`). Spec:
 `docs/superpowers/specs/2026-09-22-v1.6-mech-design.md`.
 
+Track F of 1.6: architectural 2D, the plan model. 12 tools in a new SECTION
+25 — a wall network with hosted doors and windows drawn by one engine (L / T /
+X junctions resolved, openings cut, poché by material), rooms computed as the
+faces the walls enclose and read back from any plan, schedules read off the
+drawing, a furniture and sanitary catalogue, the structural grid and plan
+symbols, exterior dimension chains and the whole plan in one transaction — a
+new `arch` pack, three `arch_*` critique focuses, and English or Turkish
+labels. No new contract member. Spec:
+`docs/superpowers/specs/2026-09-23-v1.6-arch-design.md`.
+
 ### Added
 
 - **Styles — 10 tools, pack `core`.** `dimstyle_list/create/modify/set_current`,
@@ -104,6 +114,31 @@ model and one view engine instead of a zoo of per-part generators, a new
   with its linked balloon, an xref attached and detached, and a real
   31687-byte `.dwg` written by ActiveX `SaveAs` — `drawing_critique(focus=None)`
   returned 0 issues (record below).
+- **Architecture — 12 tools, pack `arch`.** `arch_wall`, `arch_opening`,
+  `arch_stair`, `arch_room`, `arch_rooms_detect`, `arch_schedule`,
+  `arch_grid`, `arch_symbol`, `arch_catalogue_list`, `arch_catalogue_insert`,
+  `arch_dimension_chains`, `arch_plan_from_spec`. The plan travels as
+  `ACADMCP_ARCH` XDATA through the mechanical codec, generalised to take an
+  application id; `draw_prims` takes a role map. The `arch` layer set is
+  ISO 13567-style with ISO 128 lineweights; wall poché follows
+  `engineering/arch/materials.py`, whose rows each name their source. Areas
+  are measured, never typed. Lean gains four and reaches 64.
+- **Benchmark evidence for track F.** `benchmarks/tasks_v6.py` (19 tasks, the
+  default matrix; v5 to v2 stay addressable) adds `arch_roundtrip`: the example
+  plan drawn by `arch_plan_from_spec` and read back by `arch_rooms_detect`
+  within 0.1 % of each label and of the hand-computed net floor, the schedules
+  listing the drawn tags, gated on a zero-issue `drawing_critique(focus=None)`
+  and a finalize score of at least 90; a test removes one room label and
+  watches the gate fail by name. The correctness suite grows to 43 with
+  `arch_junction_l_t_x`, `arch_room_area_net`, `arch_opening_cuts_wall` and
+  `arch_rooms_detect_foreign`. A/B against `v1.5.1`: **26 / 43 → 43 / 43,
+  seventeen `miss → pass`, zero regressed**. The token suite measures a
+  `TOOL_PACKS=core,arch` row: 191 tools / 60,568 tokens against 236 / 78,772
+  by default.
+- **Live COM smoke.** `scripts/smoke_arch_com.py` executed once on AutoCAD
+  2026 (`25.1s (LMS Tech)`): the example plan drawn in one transaction, both
+  rooms read back within 0.1 % of their labels and of the hand-computed net
+  floor, and `drawing_critique(focus=None)` returned 0 issues (record below).
 
 - **P&ID — 9 tools, pack `pid`.**
   - `pid_symbol_list` / `pid_symbol_insert`: a 43-symbol ISO 10628-2 /
@@ -268,6 +303,20 @@ model and one view engine instead of a zoo of per-part generators, a new
   excluded) and `mirrored` on both engines. The COM box is exact at right
   angles and measured off them; a member ActiveX cannot measure is carried
   by its corners and the box says `approximate: true`.
+- **`entity_list` lost every type-specific property on a live seat with a
+  makepy cache.** `ModelSpace.Item` (and `SelectionSet.Item`) is declared
+  `IAcadEntity*`, so once `win32com.client.gencache` had run against AutoCAD
+  every listed entity arrived as the gen_py `IAcadEntity` wrapper: measured on
+  AutoCAD 2026, `item.StartPoint` on an AcDbLine raised `AttributeError`, and a
+  LINE row kept only its bounding box (no `start` / `end`, no polyline
+  `points`, no text). The room reader therefore saw 0 wall segments and
+  `arch_plan_from_spec` refused its first room label live, while every
+  headless test passed. `_entity_info` now re-dispatches exactly that wrapper
+  through its runtime class (`_com_concrete_entity`); a concrete wrapper from
+  `HandleToObject` is left alone. The same narrowing strips `start` from
+  every listed LINE, so it would equally explain the `pid_graph`
+  `KeyError: 'start'` recorded above as a busy-refused point read (not
+  re-measured).
 
 ### Changed
 
@@ -834,6 +883,71 @@ cleanup then left the scratch document open. The smoke retries refused calls
 for up to 90 s (a refused call was not executed) and tracks its documents by
 the document list rather than by an assumed name, because `SaveAs` renames the
 document it writes.
+
+### Live COM smoke — architecture (track F)
+
+`scripts/smoke_arch_com.py`, AutoCAD 2026, Windows 11, in a new document only —
+`draw_plan_from_spec(EXAMPLE_SPEC)` (walls, openings, stair, two room labels,
+chains, three schedules in one transaction) → `read_plan` → `rooms_detect` →
+`run_critique(focus=None)`, all through the COM engine, exit 0, the scratch
+document closed afterwards:
+
+```json
+{
+  "autocad": "25.1s (LMS Tech)",
+  "walls": [
+    "EXT",
+    "INT"
+  ],
+  "openings": [
+    "D1",
+    "D2",
+    "W1",
+    "W2"
+  ],
+  "omitted": [],
+  "stairs": 1,
+  "schedules": [
+    {
+      "kind": "doors",
+      "representation": "native",
+      "rows": 2
+    },
+    {
+      "kind": "windows",
+      "representation": "native",
+      "rows": 2
+    },
+    {
+      "kind": "rooms",
+      "representation": "native",
+      "rows": 3
+    }
+  ],
+  "rooms": {
+    "01": {
+      "label_mm2": 27743750.0,
+      "detected_mm2": 27743750.0,
+      "hand_mm2": 27743750.0,
+      "agrees": true
+    },
+    "02": {
+      "label_mm2": 21993750.0,
+      "detected_mm2": 21993750.0,
+      "hand_mm2": 21993750.0,
+      "agrees": true
+    }
+  },
+  "faces_detected": 2,
+  "confidence_min": 1.0,
+  "critique_issues": 0,
+  "critique": []
+}
+```
+
+The first run exited 1: the first room label was refused because the room
+reader found 0 wall segments on `A-WALL-E-N` — the `entity_list` narrowing
+listed under **Fixed**. The run above is the one after the fix.
 
 ## [1.5.1] — 2026-08-06
 

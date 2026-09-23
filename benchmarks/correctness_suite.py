@@ -642,6 +642,182 @@ async def std_part_iso4014_m12():
     return payload["kind"] == "std_part" and "M12" in str(payload["designation"])
 
 
+# ── Architecture (track F) ──────────────────────────────────────────────────
+
+
+def _arch_points(geometry) -> set:
+    """Every endpoint of a drawn face or jamb, rounded to a micron."""
+    return {
+        (round(float(x), 6), round(float(y), 6))
+        for line in (*geometry.faces, *geometry.jambs)
+        for x, y in (line.p1, line.p2)
+    }
+
+
+def _arch_passes_through(geometry, point) -> bool:
+    """Does a drawn face run *through* ``point`` (not merely end on it)?"""
+    px, py = point
+    for line in geometry.faces:
+        (x1, y1), (x2, y2) = line.p1, line.p2
+        length = math.hypot(x2 - x1, y2 - y1)
+        cross = (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1)
+        along = ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / (length * length)
+        if abs(cross) <= 1e-6 * length and 1e-9 < along < 1.0 - 1e-9:
+            return True
+    return False
+
+
+def _arch_region_area(geometry) -> float:
+    from engineering.measure import polygon_area_perimeter
+
+    return sum(
+        polygon_area_perimeter([(x, y, 0.0) for x, y in loop], True)[0] for loop in geometry.regions
+    )
+
+
+async def arch_junction_l_t_x():
+    """The three junction kinds, against coordinates worked out by hand.
+
+    L: one 200 mm centre wall turning at (4000, 0) - the outer corner is
+    (4100, -100), the inner (3900, 100), and a mitred corner keeps the area at
+    axis length x thickness: 7000 x 200 = 1 400 000 mm².
+    T: a 100 mm stem on x = 3000 ending on the axis of a 200 mm wall - its faces
+    stop on the near face at (2950, 100) and (3050, 100), the near face is open
+    between them, the far face runs through; 6000 x 200 + 2900 x 100 = 1 490 000.
+    X: two 200 mm walls crossing at (3000, 0) - the first stays whole, the second
+    stops on its faces, all four faces are cut at x = 2900 / 3100 and y = +-100;
+    6000 x 200 + 2 x 2900 x 200 = 2 360 000.
+    """
+    from engineering.arch.model import wall_from_dict
+    from engineering.arch.walls import wall_geometry
+
+    def wall(wall_id, axis, thickness):
+        return wall_from_dict({"id": wall_id, "axis": axis, "thickness": thickness})
+
+    l_geo = wall_geometry([wall("L", [[0, 0], [4000, 0], [4000, 3000]], 200)], poche=False)
+    t_geo = wall_geometry(
+        [wall("A", [[0, 0], [6000, 0]], 200), wall("B", [[3000, 0], [3000, 3000]], 100)],
+        poche=False,
+    )
+    x_geo = wall_geometry(
+        [wall("A", [[0, 0], [6000, 0]], 200), wall("B", [[3000, -3000], [3000, 3000]], 200)],
+        poche=False,
+    )
+    l_ok = (
+        {(4100.0, -100.0), (3900.0, 100.0)} <= _arch_points(l_geo)
+        and not {(4100.0, 100.0), (3900.0, -100.0)} & _arch_points(l_geo)
+        and abs(_arch_region_area(l_geo) - 1_400_000.0) < 1e-6
+    )
+    t_ok = (
+        {(2950.0, 100.0), (3050.0, 100.0)} <= _arch_points(t_geo)
+        and not _arch_passes_through(t_geo, (3000.0, 100.0))
+        and _arch_passes_through(t_geo, (3000.0, -100.0))
+        and abs(_arch_region_area(t_geo) - 1_490_000.0) < 1e-6
+    )
+    x_ok = (
+        {(2900.0, 100.0), (3100.0, 100.0), (2900.0, -100.0), (3100.0, -100.0)}
+        <= _arch_points(x_geo)
+        and not any(
+            _arch_passes_through(x_geo, p)
+            for p in ((3000.0, 100.0), (3000.0, -100.0), (2900.0, 0.0), (3100.0, 0.0))
+        )
+        and abs(_arch_region_area(x_geo) - 2_360_000.0) < 1e-6
+    )
+    return l_ok and t_ok and x_ok
+
+
+async def arch_room_area_net():
+    """A 4 x 5 m room between 200 mm walls measures 20.00 m², not its axis area.
+
+    The ring's axis runs (-100, -100) to (4100, 5100), so its inner faces are
+    x = 0 / 4000 and y = 0 / 5000: the floor is 4000 x 5000 = 20 000 000 mm²,
+    while the axis encloses 4200 x 5200 = 21 840 000. The number is read back
+    out of the room record the label carries, and the label text must say it.
+    """
+    from engineering.arch.draw import draw_walls, read_plan
+    from engineering.arch.lang import fmt_area_m2
+    from engineering.arch.model import wall_from_dict
+    from engineering.arch.rooms import label_room
+
+    b = await _b()
+    ring = wall_from_dict(
+        {
+            "id": "W1",
+            "axis": [[-100, -100], [4100, -100], [4100, 5100], [-100, 5100]],
+            "thickness": 200,
+            "closed": True,
+        }
+    )
+    await draw_walls(b, [ring])
+    await label_room(b, {"id": "R1", "name": "ROOM", "number": "01", "at": [2000, 2500]})
+    (room,) = (await read_plan(b))["rooms"]
+    texts = [e.properties.get("text", "") for e in await b.entity_list(type_filter="TEXT")]
+    return (
+        abs(float(room.area) - 20_000_000.0) < 0.5
+        and fmt_area_m2(room.area, "en") == "20.00 m²"
+        and any("20.00 m²" in str(text) for text in texts)
+    )
+
+
+async def arch_opening_cuts_wall():
+    """A 900 door at 1000 along a 5 m, 200 mm wall interrupts both faces.
+
+    No face runs through x = 1450 (the middle of the door) on either face line
+    y = +-100 while one still runs through x = 500, and two jambs close the cut
+    at x = 1000 and x = 1900.
+    """
+    from engineering.arch.model import opening_from_dict, wall_from_dict
+    from engineering.arch.walls import wall_geometry
+
+    wall = wall_from_dict({"id": "W1", "axis": [[0, 0], [5000, 0]], "thickness": 200})
+    door = opening_from_dict(
+        {"id": "D1", "wall": "W1", "kind": "door", "offset": 1000, "width": 900}
+    )
+    geo = wall_geometry([wall], [door], poche=False)
+    jambs = {
+        round(float(line.p1[0]), 6)
+        for line in geo.jambs
+        if abs(line.p1[0] - line.p2[0]) < 1e-9 and abs(abs(line.p1[1] - line.p2[1]) - 200.0) < 1e-9
+    }
+    return (
+        not _arch_passes_through(geo, (1450.0, 100.0))
+        and not _arch_passes_through(geo, (1450.0, -100.0))
+        and _arch_passes_through(geo, (500.0, 100.0))
+        and {1000.0, 1900.0} <= jambs
+        and tuple(geo.omitted) == ()
+    )
+
+
+async def arch_rooms_detect_foreign():
+    """A plan of plain lines - no record of ours - yields the net areas.
+
+    Two rooms drawn as the inner outlines of 200 mm walls on a layer named
+    WALLS: 4000 x 5000 and 3000 x 5000, inside an outer outline (-200, -200)
+    to (7400, 5200). The reader must find exactly those two faces - 20 000 000
+    and 15 000 000 mm² - at the foreign-plan confidence 0.6, and must not have
+    written anything.
+    """
+    from engineering.arch.rooms import rooms_detect
+
+    b = await _b()
+    for x0, y0, x1, y1 in (
+        (-200.0, -200.0, 7400.0, 5200.0),
+        (0.0, 0.0, 4000.0, 5000.0),
+        (4200.0, 0.0, 7200.0, 5000.0),
+    ):
+        corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+        for a, c in zip(corners, corners[1:] + corners[:1], strict=True):
+            await b.entity_create_line(a[0], a[1], c[0], c[1], layer="WALLS")
+    before = len(await b.entity_list(limit=1000))
+    found = await rooms_detect(b)
+    areas = sorted(round(float(room["area"]), 3) for room in found["rooms"])
+    return (
+        areas == [15_000_000.0, 20_000_000.0]
+        and all(float(room["confidence"]) == 0.6 for room in found["rooms"])
+        and len(await b.entity_list(limit=1000)) == before
+    )
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -682,6 +858,10 @@ CHECKS = {
     "std_part_iso4014_m12": (std_part_iso4014_m12, "Mechanical"),
     "sheet_frame_iso5457_a3": (sheet_frame_iso5457_a3, "Sheet"),
     "bom_balloon_link": (bom_balloon_link, "Sheet"),
+    "arch_junction_l_t_x": (arch_junction_l_t_x, "Architecture"),
+    "arch_room_area_net": (arch_room_area_net, "Architecture"),
+    "arch_opening_cuts_wall": (arch_opening_cuts_wall, "Architecture"),
+    "arch_rooms_detect_foreign": (arch_rooms_detect_foreign, "Architecture"),
 }
 
 

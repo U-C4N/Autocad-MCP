@@ -897,10 +897,10 @@ def _com_unnarrow(obj):
     such a return in the gen_py class of the *declared* type, and that wrapper
     exposes only ``IAcadObject`` members: ``.Count`` / ``.Item`` / ``.GetName``
     on the dictionary and ``.ArrowSize`` / ``.TextStyle`` on a leader style all
-    raise ``AttributeError`` even though the live object answers them. (The
-    rest of this backend never meets the problem: ``HandleToObject`` is declared
-    ``IDispatch*``, which keeps the concrete class, and ``ModelSpace.Item`` is
-    read only through ``IAcadEntity`` members.)
+    raise ``AttributeError`` even though the live object answers them.
+    (``HandleToObject`` is declared ``IDispatch*``, which keeps the concrete
+    class; ``ModelSpace.Item`` is declared ``IAcadEntity*`` and meets the same
+    problem - ``_entity_info`` un-narrows it through ``_com_concrete_entity``.)
 
     ``win32com.client.dynamic.Dispatch`` on the raw interface builds a
     late-bound proxy from the object's own type info, so every member of the
@@ -1358,8 +1358,34 @@ def _temporary_edge_entity(space, kind: str, edge: dict):
     return ellipse
 
 
+#: The gen_py class names pywin32 gives a result whose *declared* type is an
+#: ActiveX base interface. ``ModelSpace.Item``, ``SelectionSet.Item`` and
+#: ``IAcadBlock.Item`` are declared ``IAcadEntity*`` (acax25enu.tlb).
+_COM_NARROWED_WRAPPERS = frozenset({"IAcadEntity", "IAcadObject"})
+
+
+def _com_concrete_entity(entity):
+    """The entity through its runtime class when a makepy wrapper narrowed it.
+
+    With a makepy cache for the AutoCAD type library, ``ModelSpace.Item(i)``
+    comes back as the gen_py ``IAcadEntity`` class, which answers only the
+    entity base's members. Measured on AutoCAD 2026 (2026-09-23): on an
+    AcDbLine, ``type(item).__name__ == "IAcadEntity"`` and ``item.StartPoint``
+    raises ``AttributeError`` - so every ``entity_list`` row lost its
+    type-specific properties (a LINE kept only its bounding box) and the room
+    reader saw no wall segments at all. Only that wrapper is re-dispatched:
+    ``_com_unnarrow`` walks the object's type info across the process
+    boundary, and a concrete wrapper (``HandleToObject`` is declared
+    ``IDispatch*``) needs none of it.
+    """
+    if type(entity).__name__ in _COM_NARROWED_WRAPPERS:
+        return _com_unnarrow(entity)
+    return entity
+
+
 def _entity_info(entity) -> EntityInfo:
     """Convert a COM entity object to EntityInfo dataclass."""
+    entity = _com_concrete_entity(entity)
     try:
         bb_min, bb_max = entity.GetBoundingBox()
         props = {

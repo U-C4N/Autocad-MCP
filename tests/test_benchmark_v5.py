@@ -48,7 +48,7 @@ def test_the_suite_carries_the_mechanical_and_sheet_checks():
         assert CHECKS[name][1] == "Mechanical"
     assert CHECKS["sheet_frame_iso5457_a3"][1] == "Sheet"
     assert CHECKS["bom_balloon_link"][1] == "Sheet"
-    assert len(CHECKS) == 39
+    assert len(CHECKS) == 43
 
 
 @pytest.mark.asyncio

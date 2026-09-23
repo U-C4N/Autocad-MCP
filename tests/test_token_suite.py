@@ -161,25 +161,36 @@ def test_the_cache_arithmetic_follows_the_published_multipliers():
 # -- lane 1: idle cost ------------------------------------------------------
 
 
-def test_the_idle_lane_covers_the_four_advertised_surfaces(report):
-    """Default, lean, search - and TOOL_PACKS=core,mech, the mechanical client
-    that never opens a P&ID, a live seat or a floor plan: the default surface
-    minus exactly the pid, settings and arch packs (track F added `arch`)."""
+def test_the_idle_lane_covers_the_five_advertised_surfaces(report):
+    """Default, lean, search - and the two single-vertical clients:
+    TOOL_PACKS=core,mech (the default surface minus exactly the pid and settings
+    packs, and the arch pack) and TOOL_PACKS=core,arch (minus pid, settings and
+    mech)."""
     variants = {row["variant"]: row for row in report["idle"]}
-    assert set(variants) == {"default", "lean", "packs_core_mech", "search"}
+    assert set(variants) == {"default", "lean", "packs_core_mech", "packs_core_arch", "search"}
     assert variants["default"]["advertised_tools"] > 100
     assert variants["lean"]["advertised_tools"] == len(server.LEAN_TOOL_NAMES)
     assert variants["search"]["advertised_tools"] == 2
-    dropped = sum(len(server.PACK_TOOL_NAMES[pack]) for pack in ("pid", "settings", "arch"))
+    packs = server.PACK_TOOL_NAMES
     assert variants["packs_core_mech"]["advertised_tools"] == (
-        variants["default"]["advertised_tools"] - dropped
+        variants["default"]["advertised_tools"]
+        - len(packs["pid"])
+        - len(packs["settings"])
+        - len(packs["arch"])
     )
-    assert (
-        variants["default"]["chars"]
-        > variants["packs_core_mech"]["chars"]
-        > variants["lean"]["chars"]
-        > variants["search"]["chars"]
+    assert variants["packs_core_arch"]["advertised_tools"] == (
+        variants["default"]["advertised_tools"]
+        - len(packs["pid"])
+        - len(packs["settings"])
+        - len(packs["mech"])
     )
+    for narrowed in ("packs_core_mech", "packs_core_arch"):
+        assert (
+            variants["default"]["chars"]
+            > variants[narrowed]["chars"]
+            > variants["lean"]["chars"]
+            > variants["search"]["chars"]
+        )
 
 
 def test_the_idle_lane_separates_the_wire_payload_from_what_the_model_pays(report):

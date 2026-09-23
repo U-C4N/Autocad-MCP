@@ -1,4 +1,4 @@
-"""Reference adapter for this repository, covering the v5 task matrix.
+"""Reference adapter for this repository, covering the v6 task matrix.
 
 Every task verifies against a value worked out independently of the code under
 test — a closed-form area, a count of entities placed on purpose, a token
@@ -12,7 +12,7 @@ import math
 from pathlib import Path
 
 from benchmarks.adapters.base import BenchmarkAdapter, TaskResult
-from benchmarks.tasks_v5 import TaskSpec
+from benchmarks.tasks_v6 import TaskSpec
 from engineering.delivery import deliver_drawing
 from engineering.layers import ensure_engineering_layers, ensure_standard_linetypes
 from engineering.refiner import refine_drawing
@@ -39,6 +39,15 @@ DISCOVERY_TOP_N = 3
 #: The advertised catalog must stay under this in discovery mode. Fixed here
 #: rather than derived from the measurement, so the measurement can miss it.
 TOKEN_CEILING = 2_000
+
+#: The net floor of the two rooms of ``engineering/arch/spec.py::EXAMPLE_SPEC``,
+#: computed by hand: the 250 mm ring on axis (0,0)-(9000,6000) has its inner
+#: faces at x = 125 / 8875 and y = 125 / 5875, the 100 mm wall on x = 5000 its
+#: faces at 4950 / 5050. Room 01: 4825 x 5750; room 02: 3825 x 5750.
+ROUNDTRIP_AREAS_MM2: dict[str, float] = {
+    "01": 4825.0 * 5750.0,
+    "02": 3825.0 * 5750.0,
+}
 
 
 class AutoCADMCPProAdapter(BenchmarkAdapter):
@@ -677,6 +686,94 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
                 "invalidity_ratio": score["invalidity_ratio"],
                 "parts_list_rows": len(rows),
                 "fasteners": len(fasteners),
+                "validator_findings": sorted(f.code for f in validation.findings),
+            },
+            [str(sheet)],
+        )
+
+    async def _task_arch_roundtrip(self):
+        """A two-room plan drawn from one spec and read back off the drawing.
+
+        Track F's evidence (spec §10). ``arch_plan_from_spec`` draws the plan of
+        ``engineering/arch/spec.py::EXAMPLE_SPEC`` - a 9 x 6 m brick ring at 250
+        mm split by a 100 mm AAC wall, an entrance door, an interior door, two
+        windows, a straight stair, two labelled rooms, the exterior chains and
+        the three schedules. Then the drawing is read, never the spec:
+
+        * ``rooms_detect`` on the wall layer must find each labelled room, and
+          its area must agree with the area the label's record carries within
+          0.1 %, and with the net floor computed by hand in
+          ``ROUNDTRIP_AREAS_MM2`` - so a label that typed the axis area fails;
+        * the door and window schedules read off the records must list exactly
+          the drawn tags;
+        * ``run_critique(focus=None)`` returns zero issues and the finalize
+          score - ``combine(validator.summary, critique)`` over the saved plan -
+          is at least 90.
+
+        Any one slipping fails the task, and the metrics name what slipped.
+        """
+        from engineering import DrawingValidator
+        from engineering.arch.critique import point_in_loop
+        from engineering.arch.draw import read_plan
+        from engineering.arch.layers import ARCH_ROLE_LAYER
+        from engineering.arch.rooms import rooms_detect
+        from engineering.arch.schedule import schedule_rows
+        from engineering.arch.spec import EXAMPLE_SPEC, draw_plan_from_spec
+        from engineering.critique import run_critique
+        from engineering.scoring import combine
+
+        drawn = await draw_plan_from_spec(self.backend, EXAMPLE_SPEC)
+        plan = await read_plan(self.backend)
+        detected = await rooms_detect(self.backend, layers=[ARCH_ROLE_LAYER["wall"]])
+        faces = list(detected.get("rooms") or [])
+
+        areas: dict[str, dict] = {}
+        for room in plan["rooms"]:
+            face = next((f for f in faces if point_in_loop(room.at, f["loop"])), None)
+            detected_area = float(face["area"]) if face is not None else 0.0
+            hand = ROUNDTRIP_AREAS_MM2.get(str(room.number))
+            areas[str(room.number)] = {
+                "label_mm2": float(room.area),
+                "detected_mm2": detected_area,
+                "hand_mm2": hand,
+                "agrees": face is not None
+                and hand is not None
+                and abs(detected_area - float(room.area)) <= 1e-3 * float(room.area)
+                and abs(detected_area - hand) <= 1e-3 * hand,
+            }
+        rooms_ok = (
+            set(areas) == set(ROUNDTRIP_AREAS_MM2)
+            and len(faces) == len(ROUNDTRIP_AREAS_MM2)
+            and all(row["agrees"] for row in areas.values())
+        )
+
+        door_tags = sorted(str(row["tag"]) for row in schedule_rows("doors", plan, lang="en"))
+        window_tags = sorted(str(row["tag"]) for row in schedule_rows("windows", plan, lang="en"))
+        tags_ok = door_tags == ["D1", "D2"] and window_tags == ["W1", "W2"]
+
+        sheet = self.artifact_dir / "arch_roundtrip.dxf"
+        await self.backend.drawing_save_as(str(sheet))
+        issues = await run_critique(self.backend, None)
+        validation = await DrawingValidator().run(self.backend)
+        summary = {"error": 0, "warning": 0, "info": 0}
+        for issue in issues:
+            summary[issue.severity] = summary.get(issue.severity, 0) + 1
+        score = combine(validation.summary, summary)
+        passed = rooms_ok and tags_ok and len(issues) == 0 and float(score["score"]) >= 90.0
+        return (
+            passed,
+            {
+                "rooms": areas,
+                "faces_detected": len(faces),
+                "confidence_min": detected.get("confidence_min"),
+                "door_tags": door_tags,
+                "window_tags": window_tags,
+                "omitted": drawn.get("omitted"),
+                "critique_issues": len(issues),
+                "critique_focuses": sorted({issue.focus for issue in issues}),
+                "score": float(score["score"]),
+                "grade": score["grade"],
+                "invalidity_ratio": score["invalidity_ratio"],
                 "validator_findings": sorted(f.code for f in validation.findings),
             },
             [str(sheet)],
