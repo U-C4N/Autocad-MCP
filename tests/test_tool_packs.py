@@ -5,6 +5,9 @@ v1.6 track E adds the `settings` pack: the 22 SECTION 20 environment tools.
 Styles (SECTION 18) and page setup / templates (SECTION 19) are drafting
 essentials and stay in `core`, so `TOOL_PACKS=core` hides the environment
 surface and nothing else.
+
+v1.6 tracks B+G add the `mech` pack: SECTION 21's six part-model tools and
+SECTION 22's three standard-parts tools.
 """
 
 from __future__ import annotations
@@ -78,6 +81,18 @@ SETTINGS_TOOLS = {
     "system_prompt_message",
 }
 
+MECH_TOOLS = {
+    "mech_part_draw",
+    "mech_view_add",
+    "mech_dimension_part",
+    "mech_hole_pattern",
+    "mech_part_from_spec",
+    "mech_part_inspect",
+    "std_part_list",
+    "std_part_insert",
+    "std_feature_draw",
+}
+
 LEAN_SETTINGS_ESSENTIALS = {
     "drawing_apply_standard",
     "page_setup_apply",
@@ -86,16 +101,10 @@ LEAN_SETTINGS_ESSENTIALS = {
     "textstyle_set_current",
 }
 
+#: Declaration order - what `tool_packs["available"]` reports.
 ALL_PACKS = ["core", "pid", "settings", "mech"]
-ALL_PACKS_SORTED = sorted(ALL_PACKS)
-MECH_TOOLS = {
-    "mech_part_draw",
-    "mech_view_add",
-    "mech_dimension_part",
-    "mech_hole_pattern",
-    "mech_part_from_spec",
-    "mech_part_inspect",
-}
+#: `tool_packs["enabled"]` is sorted, which is no longer the same list.
+ALL_PACKS_ENABLED = sorted(ALL_PACKS)
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -111,7 +120,10 @@ def test_pack_registry_names_real_tools_and_only_them():
     assert server.PACK_TOOL_NAMES["mech"] == frozenset(MECH_TOOLS)
     assert server.PACK_TOOL_NAMES["settings"] == frozenset(SETTINGS_TOOLS)
     assert len(SETTINGS_TOOLS) == 22
+    assert len(MECH_TOOLS) == 9
     assert not (server.PACK_TOOL_NAMES["settings"] & server.PACK_TOOL_NAMES["pid"])
+    assert not (server.PACK_TOOL_NAMES["mech"] & server.PACK_TOOL_NAMES["pid"])
+    assert not (server.PACK_TOOL_NAMES["mech"] & server.PACK_TOOL_NAMES["settings"])
 
 
 async def test_every_pack_member_is_a_registered_tool():
@@ -127,6 +139,7 @@ async def test_core_only_hides_pid_and_settings_but_keeps_styles_and_page_setup(
     disabled = set(info["disabled_tools"])
     assert PID_TOOLS <= disabled
     assert SETTINGS_TOOLS <= disabled
+    assert MECH_TOOLS <= disabled
     assert not (STYLE_TOOLS & disabled), "styles are core drafting essentials"
     assert not (PAGE_SETUP_TOOLS & disabled), "page setup and templates are core"
     assert "block_define" not in disabled and "entity_set_xdata" not in disabled
@@ -146,8 +159,8 @@ async def test_all_is_the_default_and_enables_every_pack(monkeypatch):
     monkeypatch.setattr(config.settings, "tool_packs", "all")
     info = await server._apply_tool_profile("full")
     disabled = set(info["disabled_tools"])
-    assert not ((PID_TOOLS | SETTINGS_TOOLS) & disabled)
-    assert info["tool_packs"]["enabled"] == ALL_PACKS_SORTED
+    assert not ((PID_TOOLS | SETTINGS_TOOLS | MECH_TOOLS) & disabled)
+    assert info["tool_packs"]["enabled"] == ALL_PACKS_ENABLED
 
 
 async def test_unknown_pack_is_ignored_with_a_warning_and_core_cannot_be_dropped(

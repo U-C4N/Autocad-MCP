@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 210,
+    "tools": 213,
     "resources": 8,
     "prompts": 5,
     "groups": 24
@@ -22,7 +22,7 @@
     "environment": 22,
     "layers": 14,
     "layouts": 12,
-    "mech": 6,
+    "mech": 9,
     "page_setup": 6,
     "pid": 9,
     "premium": 12,
@@ -2416,6 +2416,48 @@
       "annotations": {
         "title": "Solid: Revolve",
         "destructiveHint": false
+      }
+    },
+    {
+      "name": "std_feature_draw",
+      "group": "mech",
+      "cost": "mutate",
+      "summary": "Draw a standard feature - thread, undercut, ring or O-ring groove, centre hole - onto existing geometry.",
+      "tags": [
+        "create",
+        "mech"
+      ],
+      "annotations": {
+        "title": "Standard Parts: Draw Feature",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "std_part_insert",
+      "group": "mech",
+      "cost": "mutate",
+      "summary": "Insert an ISO standard part - hex bolt, nut, washer, cap screw or ball bearing - as a tagged block.",
+      "tags": [
+        "create",
+        "mech"
+      ],
+      "annotations": {
+        "title": "Standard Parts: Insert",
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "std_part_list",
+      "group": "mech",
+      "cost": "read",
+      "summary": "Search the standard-parts catalogue: ISO bolts, nuts, washers, cap screws, bearings.",
+      "tags": [
+        "mech",
+        "query"
+      ],
+      "annotations": {
+        "title": "Standard Parts: Catalogue",
+        "readOnlyHint": true
       }
     },
     {
