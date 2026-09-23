@@ -495,7 +495,7 @@ async def test_tool_groups_is_byte_identical_to_the_source_declared_grouping():
 
 
 async def test_tool_group_sizes_are_unchanged():
-    """Frozen snapshot of the surface (231 tools, 25 groups).
+    """Frozen snapshot of the surface (233 tools, 25 groups).
 
     Taken before @cad_tool landed at 131 tools; `batch` moved 2 -> 3 when
     v1.5.0's `cad_batch` joined `entity_batch_create`/`entity_batch_modify`, and
@@ -589,6 +589,10 @@ async def test_tool_group_sizes_are_unchanged():
     tags: `entity_query` 9 -> 10, `entity_creation` 18 -> 19. This snapshot is
     branch-local: the track F merge task recomputes it once the walls, rooms
     and catalogue branches have landed.
+
+    Group C's second task added the structural grid and the plan symbols
+    (`arch_grid` / `arch_symbol`), both tagged `arch` and `create`:
+    `entity_creation` 19 -> 21, for the same branch-local reason.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
@@ -599,7 +603,7 @@ async def test_tool_group_sizes_are_unchanged():
         "dimensions": 5,
         "drawing": 11,
         "engineering": 10,
-        "entity_creation": 19,
+        "entity_creation": 21,
         "entity_modification": 16,
         "entity_query": 10,
         "environment": 22,
@@ -618,4 +622,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 231
+    assert sum(sizes.values()) == 233

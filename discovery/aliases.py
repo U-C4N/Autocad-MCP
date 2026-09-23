@@ -2264,6 +2264,36 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "mobilya yerlestir",
         ),
     ),
+    "arch_grid": ToolAliases(
+        acad=("COLUMNGRIDADD",),
+        synonyms=(
+            "structural grid",
+            "column grid",
+            "axis grid",
+            "grid bubbles",
+            "grid lines with bubbles",
+            "numbered and lettered axes",
+            "aks sistemi",
+            "akslar",
+            "kolon aksi",
+        ),
+    ),
+    "arch_symbol": ToolAliases(
+        acad=(),
+        synonyms=(
+            "north arrow",
+            "north point",
+            "section mark",
+            "section cut symbol",
+            "level mark",
+            "floor level symbol",
+            "elevation mark",
+            "kuzey oku",
+            "kot isareti",
+            "kesit isareti",
+            "gorunus isareti",
+        ),
+    ),
 }
 
 

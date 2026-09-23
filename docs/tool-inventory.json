@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 231,
+    "tools": 233,
     "resources": 8,
     "prompts": 5,
     "groups": 25
@@ -16,7 +16,7 @@
     "dimensions": 5,
     "drawing": 11,
     "engineering": 10,
-    "entity_creation": 19,
+    "entity_creation": 21,
     "entity_modification": 16,
     "entity_query": 10,
     "environment": 22,
@@ -206,6 +206,34 @@
       "annotations": {
         "title": "Architecture: Catalogue",
         "readOnlyHint": true
+      }
+    },
+    {
+      "name": "arch_grid",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Draw a structural grid: axis lines with numbered and lettered bubbles at both ends.",
+      "tags": [
+        "arch",
+        "create"
+      ],
+      "annotations": {
+        "title": "Architecture: Structural Grid",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "arch_symbol",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Draw a plan symbol: north arrow, section mark, level mark or elevation mark.",
+      "tags": [
+        "arch",
+        "create"
+      ],
+      "annotations": {
+        "title": "Architecture: Symbol",
+        "destructiveHint": false
       }
     },
     {
