@@ -183,6 +183,21 @@ model and one view engine instead of a zoo of per-part generators, a new
 
 ### Fixed
 
+- **Hatch islands on a live seat.** `hatch_add_boundary` was refused on COM
+  (`hatch_edge_paths`), so a transverse section of any hollow part - a
+  bushing, a flange bore - could not be drawn in AutoCAD. Each typed edge now
+  becomes a temporary LINE, true ARC or ELLIPSE appended with
+  `AppendInnerLoop` and deleted after `Evaluate`; a chain of lines is one
+  polyline. Measured on AutoCAD 2026: a two-arc island leaves exactly
+  10000 - 100*pi of a 100 x 100 hatch, the OD40/ID20 sleeve's section B-B hatches
+  942.2864 mm2 (the view engine's declared 180-gon), and an open loop is
+  refused with nothing left behind.
+- **`block_find_references` found nothing on a live seat.** ActiveX names a
+  block reference `AcDbBlockReference`, so `entity_list(type_filter="INSERT")`
+  matched nothing. The COM type filter now lets the DXF name find it (`INSERT`,
+  `LWPOLYLINE`, and every `*DIMENSION` class for `DIMENSION`); the reported type
+  is unchanged.
+
 - **Found by the tracks B + G evidence** (each with a test that fails on the
   old code):
   - `dimension_diameter` put its text beyond the *second* chord point

@@ -216,10 +216,12 @@ async def _ensure_layers(backend, names) -> tuple[str, ...]:
 def _refuse_islands_without_edge_paths(backend, prims) -> None:
     """Refuse a hatch with islands on an engine that cannot attach them - before drawing.
 
-    Islands go through `hatch_add_boundary`, which the live engine refuses
-    (capability ``hatch_edge_paths``: ActiveX appends loops as objects, not
-    typed edges). Finding that out at the hatch would leave the rest of the
-    view already drawn; asking the capability map first leaves nothing behind.
+    Islands go through `hatch_add_boundary` (capability ``hatch_edge_paths``).
+    Both shipped engines support it - the live one turns each typed edge into a
+    temporary LINE/ARC/ELLIPSE and appends it with ``AppendInnerLoop`` - but a
+    backend that declares it unsupported must say so before anything is drawn:
+    finding out at the hatch would leave the rest of the view already on the
+    sheet, while asking the capability map first leaves nothing behind.
     """
     if not any(isinstance(p, HatchArea) and len(p.loops) > 1 for p in prims):
         return

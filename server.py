@@ -1859,12 +1859,15 @@ async def hatch_add_boundary(
     ],
     ctx: Context = None,
 ) -> dict:
-    """Add one boundary path built from typed edges.
+    """Add one boundary path built from typed edges - an island inside the hatch.
 
     Typed edges exist because a boundary that only accepts vertex lists
     silently straightens every curve it is given. Every edge is validated
     before any is written, so a malformed list refuses instead of leaving a
-    half-built path.
+    half-built path. Both engines: headlessly the edges become an edge path;
+    on a live seat each becomes a temporary LINE, true ARC or ELLIPSE appended
+    as an inner loop and then deleted (a chain of lines becomes one polyline).
+    A loop that does not close is refused by AutoCAD and nothing is added.
     """
     return await _backend(ctx).hatch_add_boundary(handle, edges)
 

@@ -10,6 +10,7 @@ Strategy:
 
 from __future__ import annotations
 
+import math
 import sys
 from types import SimpleNamespace
 from typing import Any
@@ -1168,3 +1169,178 @@ async def test_the_activex_type_names_still_filter_as_before(monkeypatch):
     assert len(await backend.entity_list(type_filter="BLOCKREFERENCE")) == 1
     assert len(await backend.entity_list(type_filter="POLYLINE")) == 1
     assert len(await backend.entity_list(type_filter="ROTATEDDIMENSION")) == 1
+
+
+# ── hatch islands on the live engine: typed edges as temporary entities ─────
+
+
+class _LoopEntity:
+    def __init__(self, log, kind):
+        self._log = log
+        self.kind = kind
+        self.Closed = False
+        self.StartAngle = None
+        self.EndAngle = None
+
+    def Delete(self):
+        self._log.append(("Delete", self.kind))
+
+
+class _HatchSpace:
+    """The hatch's owner block: records every temporary entity it creates."""
+
+    def __init__(self, log):
+        self._log = log
+
+    def AddLightWeightPolyline(self, flat):
+        values = list(getattr(flat, "value", flat))
+        self._log.append(("AddLightWeightPolyline", len(values) // 2))
+        return _LoopEntity(self._log, "pline")
+
+    def AddLine(self, a, b):
+        self._log.append(("AddLine",))
+        return _LoopEntity(self._log, "line")
+
+    def AddArc(self, center, radius, start, end):
+        self._log.append(("AddArc", radius, round(start, 9), round(end, 9)))
+        return _LoopEntity(self._log, "arc")
+
+    def AddEllipse(self, center, major, ratio):
+        self._log.append(("AddEllipse", ratio))
+        return _LoopEntity(self._log, "ellipse")
+
+
+class _IslandHatch:
+    ObjectName = "AcDbHatch"
+    Handle = "2A"
+    OwnerID = 7
+
+    def __init__(self, log, refuse=False):
+        self._log = log
+        self._refuse = refuse
+        self.NumberOfLoops = 1
+
+    def AppendInnerLoop(self, objects):
+        items = list(getattr(objects, "value", objects))
+        if self._refuse:
+            raise RuntimeError("E_FAIL")  # what AutoCAD 2026 answers an open loop with
+        self._log.append(("AppendInnerLoop", [e.kind for e in items]))
+        self.NumberOfLoops += 1
+
+    def Evaluate(self):
+        self._log.append(("Evaluate",))
+
+
+@pytest.fixture
+def island_seat(monkeypatch):
+    import backends.com_backend as cb
+
+    log: list = []
+    hatch = _IslandHatch(log)
+    space = _HatchSpace(log)
+    doc = SimpleNamespace(HandleToObject=lambda h: hatch, ObjectIdToObject=lambda oid: space)
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
+    monkeypatch.setattr(cb, "_regen", lambda: None)
+    backend = ComBackend()
+
+    async def _run_inline(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(backend, "_run", _run_inline)
+    return backend, hatch, log
+
+
+def _square(x0, y0, size):
+    corners = [(x0, y0), (x0 + size, y0), (x0 + size, y0 + size), (x0, y0 + size)]
+    return [
+        {"type": "line", "start": list(corners[i]), "end": list(corners[(i + 1) % 4])}
+        for i in range(4)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_chain_of_lines_becomes_one_closed_polyline_loop(island_seat):
+    """A flattened bore is 180 line edges; one temporary polyline carries them
+    in a single COM call and is deleted once the hatch has evaluated it."""
+    backend, _, log = island_seat
+    result = await backend.hatch_add_boundary("2A", _square(10, 10, 20))
+    assert result == {"ok": True, "handle": "2A", "path_count": 2, "edge_types": ["line"] * 4}
+    assert log == [
+        ("AddLightWeightPolyline", 4),
+        ("AppendInnerLoop", ["pline"]),
+        ("Evaluate",),
+        ("Delete", "pline"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_arcs_stay_true_arcs_in_radians_and_clockwise_is_swapped(island_seat):
+    """Curved-edge fidelity is the reason this tool exists: an arc edge becomes
+    an AcDbArc, never a chord chain. ActiveX arcs run counter-clockwise, so a
+    clockwise edge is the counter-clockwise arc from its end to its start."""
+    backend, _, log = island_seat
+    edges = [
+        {"type": "arc", "center": [0, 0], "radius": 10, "start_angle": 0, "end_angle": 180},
+        {
+            "type": "arc",
+            "center": [0, 0],
+            "radius": 10,
+            "start_angle": 0,
+            "end_angle": 180,
+            "ccw": False,
+        },
+    ]
+    result = await backend.hatch_add_boundary("2A", edges)
+    assert result["ok"] is True and result["edge_types"] == ["arc", "arc"]
+    assert log[0] == ("AddArc", 10.0, 0.0, round(math.pi, 9))
+    assert log[1] == ("AddArc", 10.0, round(math.pi, 9), 0.0)
+    assert log[2] == ("AppendInnerLoop", ["arc", "arc"])
+    assert [entry for entry in log if entry[0] == "Delete"] == [
+        ("Delete", "arc"),
+        ("Delete", "arc"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_loop_autocad_refuses_is_taken_back_out(island_seat):
+    """AutoCAD answers an open loop with E_FAIL (measured); the temporary
+    entities are deleted and the call says nothing was added."""
+    backend, hatch, log = island_seat
+    hatch._refuse = True
+    open_chain = _square(0, 0, 5)[:3]
+    result = await backend.hatch_add_boundary("2A", open_chain)
+    assert result["ok"] is False and "closed loop" in result["error"]
+    assert ("Evaluate",) not in log
+    created = [e for e in log if e[0].startswith("Add")]
+    deleted = [e for e in log if e[0] == "Delete"]
+    assert len(created) == len(deleted) == 3, "every temporary line is deleted"
+    assert hatch.NumberOfLoops == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("edges", "message"),
+    [
+        ([], "edges must not be empty"),
+        (["line"], "edge 0 is not an object"),
+        ([{"type": "spline"}], "unknown type 'spline'"),
+        ([{"type": "arc", "center": [0, 0], "radius": 1, "start_angle": 0}], "missing 'end_angle'"),
+        ([{"type": "line", "start": [0, float("nan")], "end": [1, 1]}], "non-finite"),
+        (
+            [{"type": "arc", "center": [0, 0], "radius": 0, "start_angle": 0, "end_angle": 90}],
+            "radius must be > 0",
+        ),
+    ],
+)
+async def test_a_malformed_edge_list_is_refused_before_anything_is_created(
+    island_seat, edges, message
+):
+    backend, _, log = island_seat
+    result = await backend.hatch_add_boundary("2A", edges)
+    assert result["ok"] is False and message in result["error"]
+    assert log == [], "nothing reached AutoCAD"
+
+
+def test_the_live_engine_now_advertises_typed_hatch_edge_paths():
+    feature = ComBackend().capabilities().features["hatch_edge_paths"]
+    assert feature.supported is True

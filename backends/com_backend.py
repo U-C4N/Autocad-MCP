@@ -1265,6 +1265,99 @@ def _type_filter_matches(type_filter: str, ent_type: str) -> bool:
     return wanted == "DIMENSION" and ent_type.endswith("DIMENSION")
 
 
+def _prepare_hatch_edges(edges):
+    """Validate a typed edge list the way the headless engine does.
+
+    Returns ``(prepared, None)`` or ``(None, refusal)``; nothing is created
+    until every edge has passed.
+    """
+    if not edges:
+        return None, {"ok": False, "error": "edges must not be empty"}
+    required = {
+        "line": ("start", "end"),
+        "arc": ("center", "radius", "start_angle", "end_angle"),
+        "ellipse": ("center", "major_axis", "ratio"),
+    }
+    prepared = []
+    for index, edge in enumerate(edges):
+        if not isinstance(edge, dict):
+            return None, {"ok": False, "error": f"edge {index} is not an object"}
+        kind = str(edge.get("type", "")).strip().lower()
+        if kind not in required:
+            return None, {
+                "ok": False,
+                "error": (
+                    f"edge {index}: unknown type {edge.get('type')!r}; valid types are "
+                    "line, arc, ellipse"
+                ),
+            }
+        missing = [key for key in required[kind] if key not in edge]
+        if missing:
+            return None, {"ok": False, "error": f"edge {index} ({kind}) is missing {missing[0]!r}"}
+        keys = list(required[kind])
+        if kind == "ellipse":
+            keys += [k for k in ("start_angle", "end_angle") if k in edge]
+        numbers = []
+        try:
+            for key in keys:
+                value = edge[key]
+                if isinstance(value, (list, tuple)):
+                    numbers.extend(float(v) for v in value[:2])
+                else:
+                    numbers.append(float(value))
+        except (TypeError, ValueError):
+            return None, {"ok": False, "error": f"edge {index} ({kind}) has a non-numeric value"}
+        if not all(math.isfinite(v) for v in numbers):
+            return None, {"ok": False, "error": f"edge {index} ({kind}) has a non-finite value"}
+        if kind == "arc" and float(edge["radius"]) <= 0:
+            return None, {"ok": False, "error": f"edge {index} (arc) radius must be > 0"}
+        if kind == "ellipse" and not 0 < float(edge["ratio"]) <= 1:
+            return None, {"ok": False, "error": f"edge {index} (ellipse) ratio must be in (0, 1]"}
+        prepared.append((kind, edge))
+    return prepared, None
+
+
+def _closed_line_chain(prepared, tol: float = 1e-6):
+    """The loop's vertices when it is only lines, each starting where the last
+    ended and the last closing on the first; otherwise ``None``."""
+    if any(kind != "line" for kind, _ in prepared):
+        return None
+    points = [(float(e["start"][0]), float(e["start"][1])) for _, e in prepared]
+    ends = [(float(e["end"][0]), float(e["end"][1])) for _, e in prepared]
+    for i, end in enumerate(ends):
+        nxt = points[(i + 1) % len(points)]
+        if abs(end[0] - nxt[0]) > tol or abs(end[1] - nxt[1]) > tol:
+            return None
+    return points if len(points) >= 3 else None
+
+
+def _temporary_edge_entity(space, kind: str, edge: dict):
+    """One typed edge as a real ActiveX entity: LINE, ARC or ELLIPSE."""
+    if kind == "line":
+        (x1, y1), (x2, y2) = edge["start"][:2], edge["end"][:2]
+        return space.AddLine(_apoint(x1, y1), _apoint(x2, y2))
+    cx, cy = edge["center"][:2]
+    ccw = bool(edge.get("ccw", True))
+    if kind == "arc":
+        start = math.radians(float(edge["start_angle"]))
+        end = math.radians(float(edge["end_angle"]))
+        if not ccw:  # an ActiveX arc runs counter-clockwise from start to end
+            start, end = end, start
+        return space.AddArc(_apoint(cx, cy), float(edge["radius"]), start, end)
+    mx, my = edge["major_axis"][:2]
+    ellipse = space.AddEllipse(_apoint(cx, cy), _apoint(mx, my), float(edge["ratio"]))
+    start = float(edge.get("start_angle", 0.0))
+    end = float(edge.get("end_angle", 360.0))
+    if abs((end - start) % 360.0) > 1e-9:
+        if not ccw:
+            start, end = end, start
+        # AcadEllipse.StartAngle/EndAngle are angles from the major axis, the
+        # quantity the headless engine's ellipse edge carries in degrees.
+        ellipse.StartAngle = math.radians(start)
+        ellipse.EndAngle = math.radians(end)
+    return ellipse
+
+
 def _entity_info(entity) -> EntityInfo:
     """Convert a COM entity object to EntityInfo dataclass."""
     try:
@@ -1560,7 +1653,9 @@ class ComBackend(AutoCADBackend):
                 ),
                 "boundary_trace": FeatureCapability(False, reason="no_activex_member_command_only"),
                 "hatch_edge_paths": FeatureCapability(
-                    False, reason="activex_appends_loops_as_objects_not_typed_edges"
+                    True,
+                    "native",
+                    reason="typed_edges_become_temporary_line_arc_ellipse;append_inner_loop",
                 ),
                 "handle_overlay": FeatureCapability(
                     False, reason="window_capture_has_no_render_to_label"
@@ -3523,16 +3618,75 @@ class ComBackend(AutoCADBackend):
         return await self._run(_sync)
 
     async def hatch_add_boundary(self, handle, edges) -> dict:
-        """Refused on the live backend: ActiveX takes boundary loops as whole
-        objects (AppendOuterLoop / AppendInnerLoop), not as typed edges, so the
-        curved-edge fidelity this tool exists for cannot be expressed."""
-        raise UnsupportedCapabilityError(
-            "hatch_edge_paths",
-            "hatch_add_boundary: ActiveX appends boundary loops as existing objects rather "
-            "than typed edges, so an arc edge cannot be given directly. Draw the boundary "
-            "entities and use entity_create_hatch, or switch to the headless backend "
-            "(AUTOCAD_MCP_BACKEND=ezdxf).",
-        )
+        """Add one boundary path to a HATCH from typed edges, as an inner loop.
+
+        ActiveX takes a loop as whole objects, so every typed edge becomes a
+        real temporary entity in the hatch's own space - a LINE, a true ARC or
+        an ELLIPSE, never a chord chain - appended with ``AppendInnerLoop``,
+        evaluated, then deleted. A loop made only of chained lines becomes one
+        closed lightweight polyline: one COM call instead of one per edge (a
+        flattened bore is 180 of them). Measured on AutoCAD 2026 (25.1s): a
+        20 mm island built from two arcs leaves exactly 10000 - 100*pi of a
+        100 x 100 hatch, and an open loop is refused by AutoCAD with E_FAIL.
+
+        The edge list is validated in full before anything is created, with the
+        headless engine's messages, and a malformed list answers
+        ``{"ok": False}``; a loop AutoCAD refuses is taken back out, temporary
+        entities included.
+        """
+        prepared, refusal = _prepare_hatch_edges(edges)
+        if refusal:
+            return refusal
+
+        def _sync():
+            doc = _acad_doc()
+            hatch, refused = self._resolve_com_hatch(doc, handle)
+            if refused:
+                return refused
+            try:
+                space = _com_unnarrow(doc.ObjectIdToObject(hatch.OwnerID))
+            except Exception as exc:
+                log.debug("hatch owner lookup failed, using model space: %s", exc)
+                space = _msp()
+            temporary = []
+            try:
+                chain = _closed_line_chain(prepared)
+                if chain is not None:
+                    flat = [c for point in chain for c in point]
+                    loop = space.AddLightWeightPolyline(_av(flat))
+                    loop.Closed = True
+                    temporary.append(loop)
+                else:
+                    for kind, edge in prepared:
+                        temporary.append(_temporary_edge_entity(space, kind, edge))
+                objects = win32com.client.VARIANT(
+                    pythoncom.VT_ARRAY | pythoncom.VT_DISPATCH, temporary
+                )
+                hatch.AppendInnerLoop(objects)
+                hatch.Evaluate()
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"AutoCAD did not accept the boundary as a closed loop ({exc}); "
+                        "nothing was added to the hatch."
+                    ),
+                }
+            finally:
+                for entity in temporary:
+                    try:
+                        entity.Delete()
+                    except Exception as exc:
+                        log.debug("temporary hatch edge not deleted: %s", exc)
+            _regen()
+            return {
+                "ok": True,
+                "handle": hatch.Handle,
+                "path_count": int(hatch.NumberOfLoops),
+                "edge_types": [kind for kind, _ in prepared],
+            }
+
+        return await self._run(_sync)
 
     async def analysis_list_properties(self, handle: str) -> dict:
         def _sync():
