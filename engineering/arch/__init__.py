@@ -6,6 +6,13 @@ and alphabetical - keep every side's names.
 
 from __future__ import annotations
 
+from .dimension import (
+    FIRST_OFFSET_PAPER_MM,
+    ROWS,
+    SIDES,
+    STEP_PAPER_MM,
+    exterior_chains,
+)
 from .lang import LANGS, fmt_area_m2, fmt_number, tag_prefix, vocab
 from .layers import ARCH_LAYER_DEFS, ARCH_LAYER_ROLES, ARCH_LAYERS, ARCH_ROLE_LAYER
 from .materials import WALL_HATCH_TABLE, WALL_MATERIALS, wall_hatch
@@ -58,12 +65,16 @@ __all__ = [
     "ARCH_ROLE_LAYER",
     "ARROW_PAPER_MM",
     "BLONDEL_RANGE",
+    "FIRST_OFFSET_PAPER_MM",
     "KINDS",
     "LANGS",
     "MIN_JOIN_ANGLE_DEG",
     "Opening",
+    "ROWS",
     "Room",
+    "SIDES",
     "STAIR_KINDS",
+    "STEP_PAPER_MM",
     "Stair",
     "TEXT_PAPER_MM",
     "TURNS",
@@ -75,6 +86,7 @@ __all__ = [
     "blondel",
     "decode",
     "encode",
+    "exterior_chains",
     "face_offsets",
     "fmt_area_m2",
     "fmt_number",

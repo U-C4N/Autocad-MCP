@@ -691,6 +691,7 @@ async def _registered_tool_count() -> int | None:
 _GROUP_TAG_PRIORITY = (
     "pid",
     "mech",
+    "arch",
     "sheet",
     "style",
     "pagesetup",
@@ -721,6 +722,7 @@ _GROUP_TAG_PRIORITY = (
 _GROUP_TAG_LABELS = {
     "pid": "pid",
     "mech": "mechanical",
+    "arch": "architecture",
     "sheet": "sheet",
     "style": "styles",
     "pagesetup": "page_setup",
@@ -9778,6 +9780,295 @@ async def drawing_export_dwg(
     validated = validate_path(path, allow_write=True)
     await ctx.info(f"DWG export {version}: {validated}")
     return await _backend(ctx).drawing_export_dwg(str(validated), version)
+
+
+# ---------------------------------------------------------------------------
+# ── SECTION 25: Architecture (4 tools) ──────────────────────────────────────
+# ---------------------------------------------------------------------------
+
+
+@cad_tool(
+    summary="Add walls to the plan: clean L/T/X junctions, cut openings, material poché.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Architecture: Wall", "destructiveHint": False},
+    tags={"arch", "create"},
+)
+async def arch_wall(
+    walls: Annotated[
+        list[dict],
+        Field(
+            description=(
+                "Walls to add: [{id, axis:[[x,y],...] (2+ points, straight segments, WCS mm), "
+                "thickness, justification:'center'|'left'|'right' (side of the axis looking "
+                "along it), material:'brick'|'aac'|'concrete'|'reinforced_concrete'|"
+                "'gypsum_board'|'stone'|'timber'|'generic', closed:bool}]"
+            )
+        ),
+    ],
+    poche: Annotated[
+        bool,
+        Field(default=True, description="Hatch the cut wall faces in their material (ISO 128-50)"),
+    ] = True,
+    ctx: Context = None,
+) -> dict:
+    """Add walls to the plan network already on the drawing and resolve every junction.
+
+    Two ends at one point mitre into a clean L; an end inside another wall is a
+    T (the stem stops on the crossing wall's near face, which is cut there); two
+    axes crossing are an X (all four faces cut). A drawn wall whose outline the
+    new walls change is taken back out and redrawn with its openings - the
+    result lists it under `redrawn` - and a wall they do not touch is left alone.
+    Every wall carries an `ACADMCP_ARCH` record, so later calls find it by id.
+
+    Refused before anything is drawn or erased, by path: a wall id already on
+    the drawing or used twice, an axis of fewer than two points or with a
+    zero-length segment, a non-positive thickness, an unknown justification or
+    material (the list is named), two walls meeting at less than 5° (the mitre
+    would run away), a wall corner lying inside another wall off its axis, an
+    end inside a wall whose axis only meets it past that wall's end, and a new
+    wall that would leave a drawn opening uncuttable. A curved wall is not
+    supported: an axis is straight segments only.
+    """
+    from engineering.arch.draw import add_walls
+
+    await ctx.info(f"arch_wall: {len(walls)} wall(s)")
+    try:
+        return await add_walls(_backend(ctx), walls, poche=poche)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@cad_tool(
+    summary="Host a door or a window in a drawn wall by distance along it; the wall is cut.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Architecture: Door / Window", "destructiveHint": False},
+    tags={"arch", "create"},
+)
+async def arch_opening(
+    wall: Annotated[str, Field(description="Id of the drawn wall that hosts the opening")],
+    offset: Annotated[
+        float,
+        Field(
+            description="Distance along the wall's axis from its first point to the near jamb (mm)"
+        ),
+    ],
+    width: Annotated[float, Field(description="Clear width of the opening (mm)")],
+    kind: Annotated[str, Field(default="door", description="door | window")] = "door",
+    swing: Annotated[
+        str,
+        Field(
+            default="in",
+            description="Doors: in = to the left of the axis (inside a CCW perimeter) | out",
+        ),
+    ] = "in",
+    hand: Annotated[
+        str,
+        Field(
+            default="left",
+            description="Doors: the hinge jamb, seen from the swing side facing the wall: left | right",
+        ),
+    ] = "left",
+    sill: Annotated[
+        float | None, Field(default=None, description="Windows: sill height (schedule only, mm)")
+    ] = None,
+    height: Annotated[
+        float | None, Field(default=None, description="Opening height (schedule only, mm)")
+    ] = None,
+    tag: Annotated[
+        str | None,
+        Field(default=None, description="Schedule tag; default the next D1/W1 (en) or K1/P1 (tr)"),
+    ] = None,
+    opening_id: Annotated[
+        str | None, Field(default=None, description="Opening id; default its tag")
+    ] = None,
+    lang: Annotated[str, Field(default="en", description="Tag language: en | tr")] = "en",
+    poche: Annotated[
+        bool, Field(default=True, description="Hatch the redrawn wall's cut faces")
+    ] = True,
+    ctx: Context = None,
+) -> dict:
+    """A door or a window in a wall already drawn, found by its id; the wall is redrawn cut.
+
+    The opening removes its width from both wall faces and each edge is closed
+    by a jamb. A door is drawn open at 90° - its leaf as long as the opening is
+    wide, hinged on `hand`, with a quarter-arc swing on the `swing` side; a
+    window is a frame line on each face and two glazing lines between them. The
+    opening's `ACADMCP_ARCH` record sits on the leaf or the frame, so a schedule
+    reads it back.
+
+    Refused before anything is drawn or erased: a wall id not on the drawing
+    (the drawn ids are named), an opening id already drawn, an opening that
+    runs past its wall segment or straddles an axis vertex, one overlapping
+    another opening on the same wall (both ids named), one that runs into a
+    junction (the solid stretch it must fit in is named), an unknown kind,
+    swing, hand or language.
+    """
+    from engineering.arch.draw import add_opening
+
+    spec = {
+        "id": opening_id,
+        "wall": wall,
+        "kind": kind,
+        "offset": offset,
+        "width": width,
+        "swing": swing,
+        "hand": hand,
+        "sill": sill,
+        "height": height,
+        "tag": tag,
+    }
+    await ctx.info(f"arch_opening: {kind} in wall {wall}")
+    try:
+        return await add_opening(
+            _backend(ctx), {k: v for k, v in spec.items() if v is not None}, lang=lang, poche=poche
+        )
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@cad_tool(
+    summary="Draw a straight, L or U stair in plan and report its Blondel step rule.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Architecture: Stair", "destructiveHint": False},
+    tags={"arch", "create"},
+)
+async def arch_stair(
+    stair_id: Annotated[str, Field(description="Stair id, unique on the drawing")],
+    start_x: Annotated[float, Field(description="WCS X of the midpoint of the bottom riser")],
+    start_y: Annotated[float, Field(description="WCS Y of the midpoint of the bottom riser")],
+    width: Annotated[float, Field(description="Flight width (mm)")],
+    risers: Annotated[int, Field(description="Number of risers from floor to floor")],
+    riser_height: Annotated[float, Field(description="Riser height R (mm)")],
+    going: Annotated[float, Field(description="Tread going G (mm)")],
+    direction_deg: Annotated[
+        float, Field(default=0.0, description="Direction up the first flight, degrees CCW from +X")
+    ] = 0.0,
+    kind: Annotated[str, Field(default="straight", description="straight | l | u")] = "straight",
+    turn: Annotated[
+        str, Field(default="left", description="L / U stairs: which way the second flight turns")
+    ] = "left",
+    lang: Annotated[str, Field(default="en", description="Label language: en | tr")] = "en",
+    scale: Annotated[
+        float,
+        Field(
+            default=50.0, description="Plot-scale denominator for the label and arrow (50 = 1:50)"
+        ),
+    ] = 50.0,
+    ctx: Context = None,
+) -> dict:
+    """A stair in plan: every riser as a line, the outline, the walking line with its arrow.
+
+    The label ("UP" / "ÇIKIŞ") sits on the first tread at 2.5 mm × `scale`. The
+    result reports `blondel` - 2R + G against 600-650 mm, the step-length rule
+    attributed to François Blondel (1675). It is a design rule reported for the
+    drafter, not a building code: no national stair regulation is checked and
+    a value outside the band is reported (`ok: false`), not refused.
+
+    Refused before anything is drawn: a stair id already on the drawing, a
+    non-positive width, riser height or going, fewer than 2 risers (4 for an L
+    or a U - two per flight), a non-integer riser count, an unknown kind, turn
+    or language.
+    """
+    from engineering.arch.draw import add_stair
+
+    spec = {
+        "id": stair_id,
+        "start": [start_x, start_y],
+        "direction_deg": direction_deg,
+        "width": width,
+        "risers": risers,
+        "riser_height": riser_height,
+        "going": going,
+        "kind": kind,
+        "turn": turn,
+    }
+    await ctx.info(f"arch_stair: {kind} stair {stair_id}")
+    try:
+        return await add_stair(_backend(ctx), spec, lang=lang, scale=scale)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@cad_tool(
+    summary="Dimension the plan's facades: openings, walls and overall chains outside each side.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Architecture: Dimension Chains", "destructiveHint": False},
+    tags={"arch", "dimension"},
+)
+async def arch_dimension_chains(
+    sides: Annotated[
+        list[str] | None,
+        Field(
+            default=None,
+            description="Sides to dimension: bottom | top | left | right (default bottom, left)",
+        ),
+    ] = None,
+    scale: Annotated[
+        float,
+        Field(
+            default=50.0,
+            description="Plot-scale denominator: rows sit 10 mm and 8 mm apart on paper",
+        ),
+    ] = 50.0,
+    first_offset: Annotated[
+        float | None,
+        Field(
+            default=None, description="Distance of the first row from the building (drawing units)"
+        ),
+    ] = None,
+    step: Annotated[
+        float | None, Field(default=None, description="Distance between rows (drawing units)")
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """The three exterior chains an architectural plan carries, as real DIMENSIONs.
+
+    Nearest first: the openings row (every jamb in that facade), the walls row
+    (both faces of every wall meeting it - wall thickness, clear width, wall
+    thickness, ...) and the overall row. The points come from the wall engine's
+    own faces, read back from the plan on the drawing. A row that would only
+    restate a farther one is not drawn (ISO 129-1: each measurement once).
+    The row spacing defaults (10 mm, then 8 mm on paper) are this server's
+    drafting choices, not standard values. Text height follows the current
+    dimension style: at 1:50 set DIMSCALE=50 with `dimstyle_modify`.
+
+    Refused by name: a drawing with no walls, an unknown or repeated side, a
+    non-positive scale, offset or step.
+    """
+    from engineering.arch.draw import draw_chains, read_plan
+
+    backend = _backend(ctx)
+    try:
+        plan = await read_plan(backend)
+        if not plan["walls"]:
+            raise ValueError(
+                "this drawing carries no architectural walls; draw them with arch_wall"
+            )
+        await ctx.info(f"arch_dimension_chains: {len(plan['walls'])} wall(s)")
+        return await draw_chains(
+            backend,
+            plan["walls"],
+            plan["openings"],
+            sides=tuple(sides or ("bottom", "left")),
+            scale=scale,
+            first_offset=first_offset,
+            step=step,
+        )
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+# ── arch: rooms (group R) ──
+
+# ── arch: catalogue (group C) ──
 
 
 # ---------------------------------------------------------------------------

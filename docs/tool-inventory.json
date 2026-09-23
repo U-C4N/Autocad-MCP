@@ -3,13 +3,14 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 229,
+    "tools": 233,
     "resources": 8,
     "prompts": 5,
-    "groups": 25
+    "groups": 26
   },
   "groups": {
     "analysis": 12,
+    "architecture": 4,
     "batch": 3,
     "blocks": 9,
     "corner_ops": 4,
@@ -178,6 +179,62 @@
       "annotations": {
         "title": "Select Entities By Type",
         "readOnlyHint": true
+      }
+    },
+    {
+      "name": "arch_dimension_chains",
+      "group": "architecture",
+      "cost": "mutate",
+      "summary": "Dimension the plan's facades: openings, walls and overall chains outside each side.",
+      "tags": [
+        "arch",
+        "dimension"
+      ],
+      "annotations": {
+        "title": "Architecture: Dimension Chains",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "arch_opening",
+      "group": "architecture",
+      "cost": "mutate",
+      "summary": "Host a door or a window in a drawn wall by distance along it; the wall is cut.",
+      "tags": [
+        "arch",
+        "create"
+      ],
+      "annotations": {
+        "title": "Architecture: Door / Window",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "arch_stair",
+      "group": "architecture",
+      "cost": "mutate",
+      "summary": "Draw a straight, L or U stair in plan and report its Blondel step rule.",
+      "tags": [
+        "arch",
+        "create"
+      ],
+      "annotations": {
+        "title": "Architecture: Stair",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "arch_wall",
+      "group": "architecture",
+      "cost": "mutate",
+      "summary": "Add walls to the plan: clean L/T/X junctions, cut openings, material poché.",
+      "tags": [
+        "arch",
+        "create"
+      ],
+      "annotations": {
+        "title": "Architecture: Wall",
+        "destructiveHint": false
       }
     },
     {

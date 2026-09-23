@@ -495,7 +495,7 @@ async def test_tool_groups_is_byte_identical_to_the_source_declared_grouping():
 
 
 async def test_tool_group_sizes_are_unchanged():
-    """Frozen snapshot of the surface (229 tools, 25 groups).
+    """Frozen snapshot of the surface (233 tools, 26 groups).
 
     Taken before @cad_tool landed at 131 tools; `batch` moved 2 -> 3 when
     v1.5.0's `cad_batch` joined `entity_batch_create`/`entity_batch_modify`, and
@@ -581,10 +581,17 @@ async def test_tool_group_sizes_are_unchanged():
     `sheet`, so pack, group and SECTION are one list again: `engineering`
     returned 17 -> 10, `blocks` 11 -> 9, `entity_creation` 19 -> 18 and
     `drawing` 12 -> 11 — every one of them its pre-SECTION-24 value.
+
+    `architecture` appeared with v1.6's track F: SECTION 25 opened with the
+    plan model's wall engine (`arch_wall` / `arch_opening` / `arch_stair` /
+    `arch_dimension_chains`); the `arch` tag is ranked directly after `mech` in
+    `_GROUP_TAG_PRIORITY`, so those tools file under `architecture` rather
+    than under their secondary `create` / `dimension` tags.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
         "analysis": 12,
+        "architecture": 4,
         "batch": 3,
         "blocks": 9,
         "corner_ops": 4,
@@ -610,4 +617,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 229
+    assert sum(sizes.values()) == 233
