@@ -5746,7 +5746,9 @@ async def drawing_finalize(
     mech_view_misaligned, mech_duplicate_dimension, mech_thread_unrepresented,
     mech_bom_balloon_mismatch — silent on a sheet with no mechanical part, plus the
     architectural focuses arch_room_unlabelled, arch_wall_gap, arch_opening_clash —
-    silent on a sheet with no ACADMCP_ARCH record),
+    silent on a sheet with no ACADMCP_ARCH record, plus the topology focuses
+    topo_dangling_endpoint, topo_near_miss, topo_interior_crossing — on network
+    layers no P&ID or architectural focus reads, silent on every sheet this server draws),
     then saves to disk, exports a screenshot, and returns the DWG path.
 
     Raises ToolError if any validator 'error' finding is present, or if critique reports an
@@ -6009,7 +6011,9 @@ async def drawing_critique(
             "mech_duplicate_dimension, mech_thread_unrepresented, "
             "mech_bom_balloon_mismatch (silent on a drawing with no mechanical part), and "
             "the architectural focuses arch_room_unlabelled, arch_wall_gap, "
-            "arch_opening_clash (silent on a drawing with no ACADMCP_ARCH record). "
+            "arch_opening_clash (silent on a drawing with no ACADMCP_ARCH record), and "
+            "the topology focuses topo_dangling_endpoint, topo_near_miss, "
+            "topo_interior_crossing (network layers no P&ID or architectural focus reads). "
             "None = run all.",
         ),
     ] = None,
@@ -10555,7 +10559,7 @@ async def arch_plan_from_spec(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 26: Understanding & QA (1 tool) ─────────────────────────────────
+# ── SECTION 26: Understanding & QA (2 tools) ────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -10765,6 +10769,108 @@ async def drawing_diff(
         report["markup"] = await _diff_markup(
             backend, result, new_snap, rev=rev.strip().upper(), description=description
         )
+    return report
+
+
+@cad_tool(
+    summary="Find dangling ends, near misses and unjoined crossings in a pipe or cable network.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Drawing: Topology Check", "readOnlyHint": True},
+    tags={"analysis", "query"},
+)
+async def drawing_topology_check(
+    layers: Annotated[
+        list[str] | None,
+        Field(
+            default=None,
+            description="Layers to check; default: every layer the vocabulary classifies as "
+            "piping or electrical with confidence >= 0.9.",
+        ),
+    ] = None,
+    path: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="A DXF to check instead of the current document; it is read, never "
+            "opened or modified.",
+        ),
+    ] = None,
+    gap: Annotated[
+        float | None,
+        Field(
+            default=None,
+            gt=0,
+            description="Two ends, or an end and a line, closer than this without touching are a "
+            "near miss; default 0.2 % of the network's diagonal (never under 10 x tol).",
+        ),
+    ] = None,
+    tol: Annotated[
+        float,
+        Field(default=0.01, gt=0, description="Within this distance two ends are joined."),
+    ] = 0.01,
+    limit: Annotated[
+        int,
+        Field(default=200, ge=1, le=5000, description="Rows kept per list; counts are complete."),
+    ] = 200,
+    ctx: Context = None,
+) -> dict:
+    """Topology of a line network (spec §11): dangling ends, near misses (end to end and
+    end to line within `gap`) and interior crossings (two lines of one layer crossing
+    away from their ends). Never modifies the drawing.
+
+    An end that touches another network line, any curve on another layer (a tank
+    outline) or the box of any block reference (a valve, a pump) is connected. Arcs
+    and bulged polyline segments are measured as true arcs; arcs are not tested for
+    crossings. The default layers come with their classification as evidence.
+
+    Refused before any work: a `path` that does not exist or cannot be read, a
+    `layers` entry that is not a layer of the drawing (the drawing's layers named),
+    no layer classified as a network layer when `layers` is omitted (name them),
+    a non-positive `tol` or `gap`, and a `gap` that does not exceed `tol`.
+    """
+    from engineering.understand.snapshot import take_snapshot
+    from engineering.understand.topology import cap_findings, network_layers, topology_findings
+
+    backend = _backend(ctx)
+    source = None
+    if path:
+        validated = validate_path(path)
+        if not validated.is_file():
+            raise ToolError(f"path: {validated} does not exist or is not a file")
+        source = str(validated)
+    try:
+        snap = await take_snapshot(backend, source)
+    except (OSError, ValueError) as exc:
+        raise ToolError(f"path: {exc}") from exc
+    known = set(snap.layers) | {rec.layer for rec in snap.records}
+    classification = network_layers(snap)
+    if layers:
+        missing = [name for name in layers if name not in known]
+        if missing:
+            listed = ", ".join(sorted(known)[:20]) + (" ..." if len(known) > 20 else "")
+            raise ToolError(
+                f"layers: {', '.join(repr(m) for m in missing)} is not a layer of this drawing; "
+                f"its layers are {listed}"
+            )
+        chosen = list(layers)
+    else:
+        chosen = [row["layer"] for row in classification]
+        if not chosen:
+            raise ToolError(
+                "no layer of this drawing is classified piping or electrical with confidence "
+                ">= 0.9 - name the layers to check with `layers` (drawing_understand shows what "
+                "each layer carries)"
+            )
+    await ctx.info(f"drawing_topology_check: {len(chosen)} layer(s) of {snap.source}")
+    try:
+        findings = topology_findings(snap, layers=chosen, gap=gap, tol=tol)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+    report = cap_findings(findings, limit)
+    report["source"] = snap.source
+    report["classification"] = [row for row in classification if row["layer"] in set(chosen)]
     return report
 
 

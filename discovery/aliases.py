@@ -2478,6 +2478,18 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "revizyonlar arasi degisiklik",
         ),
     ),
+    "drawing_topology_check": ToolAliases(
+        synonyms=(
+            "dangling pipe ends",
+            "pipes that do not connect",
+            "gaps in the pipe network",
+            "unconnected cable ends",
+            "network connectivity check",
+            "açık uçlar",
+            "acik uclar",
+            "kopuk hatlar",
+        ),
+    ),
 }
 
 
