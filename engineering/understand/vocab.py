@@ -32,6 +32,7 @@ __all__ = [
     "classify_layer",
     "equipment_kind",
     "fold",
+    "is_network_layer",
     "room_label",
     "supply_return",
 ]
@@ -436,6 +437,43 @@ def room_label(text: str | None) -> dict | None:
                 name = " ".join(w for w in rest if w != number).strip() or None
                 return {"number": number, "name": name, "language": language}
     return None
+
+
+#: Words that make a piping or electrical layer hold annotation, not lines: pipe
+#: sizes, materials, valve or line numbers, hatching. Matched like every other
+#: keyword here (a word of five letters or more anywhere in the name).
+_NOT_A_LINE_WORDS = (
+    ("annotation", "diameter", "en"),
+    ("annotation", "sizes", "en"),
+    ("annotation", "size", "en"),
+    ("annotation", "material", "en"),
+    ("annotation", "number", "en"),
+    ("annotation", "nummer", "nl"),
+    ("annotation", "arcering", "nl"),
+    ("annotation", "hatch", "en"),
+)
+
+
+def is_network_layer(name: str | None) -> bool:
+    """A layer whose lines are pipes or cables.
+
+    `classify_layer` files it under piping or electrical at 0.9, and its name
+    says neither that it holds symbols - a valve, pump, tank, motor, panel or
+    reducer (`equipment_kind`), whose outlines are no pipe - nor that it holds
+    annotation: sizes, materials, numbers, hatching, or an annotation word.
+    Field P&IDs keep valves and pumps on their own layers (``KLEPPEN``,
+    ``PRODUCT PUMPS``) that a service keyword alone would read as piping.
+    """
+    meaning = classify_layer(name)
+    if meaning["discipline"] not in ("piping", "electrical") or meaning["confidence"] < DIRECT:
+        return False
+    if equipment_kind(name) is not None:
+        return False
+    folded = fold(name)
+    if _first(_NOT_A_LINE_WORDS, folded) is not None:
+        return False
+    annotation = [row for row in _DISCIPLINE_WORDS if row[0] == "annotation"]
+    return _first(annotation, folded) is None
 
 
 def equipment_kind(block_name: str | None) -> dict | None:

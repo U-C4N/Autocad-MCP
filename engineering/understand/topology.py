@@ -53,7 +53,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from engineering.understand.snapshot import EntityRecord, Pt, Snapshot
-from engineering.understand.vocab import classify_layer
+from engineering.understand.vocab import classify_layer, is_network_layer
 
 __all__ = [
     "DEFAULT_TOL",
@@ -219,7 +219,7 @@ def network_layers(snap: Snapshot) -> list[dict]:
     for name in sorted(names):
         meaning = classify_layer(name)
         confidence = float(meaning.get("confidence") or 0.0)
-        if meaning.get("discipline") in NETWORK_DISCIPLINES and confidence >= NETWORK_CONFIDENCE:
+        if is_network_layer(name):
             rows.append(
                 {
                     "layer": name,

@@ -34,12 +34,10 @@ from engineering.layers import PID_LAYERS
 from engineering.pid.lines import PID_LINE_LAYERS
 from engineering.plan_spec import Issue
 from engineering.understand.topology import (
-    NETWORK_CONFIDENCE,
-    NETWORK_DISCIPLINES,
     network_layers,
     topology_findings,
 )
-from engineering.understand.vocab import classify_layer
+from engineering.understand.vocab import is_network_layer
 
 if TYPE_CHECKING:
     from backends.base import AutoCADBackend
@@ -66,13 +64,7 @@ SEMANTIC_LAYERS: frozenset[str] = frozenset(
 
 
 def _is_candidate(name: str) -> bool:
-    if name in SEMANTIC_LAYERS:
-        return False
-    meaning = classify_layer(name)
-    return (
-        meaning.get("discipline") in NETWORK_DISCIPLINES
-        and float(meaning.get("confidence") or 0.0) >= NETWORK_CONFIDENCE
-    )
+    return name not in SEMANTIC_LAYERS and is_network_layer(name)
 
 
 def focus_layers(snap) -> list[str]:

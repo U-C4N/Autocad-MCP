@@ -17,6 +17,7 @@ from engineering.understand.vocab import (
     classify_layer,
     equipment_kind,
     fold,
+    is_network_layer,
     room_label,
     supply_return,
 )
@@ -232,3 +233,31 @@ def test_block_names_say_their_kind(block, kind, language):
 def test_an_anonymous_block_has_no_kind():
     assert equipment_kind("*U12") is None
     assert equipment_kind(None) is None
+
+
+@pytest.mark.parametrize(
+    ("name", "network"),
+    [
+        ("P_product piping", True),
+        ("P_cipsupplyline", True),
+        ("E_power", True),
+        # symbols, not lines: the layer names the equipment drawn on it
+        ("KLEPPEN", False),
+        ("Valve_ball valves", False),
+        ("PRODUCT PUMPS", False),
+        ("CIP return pumps", False),
+        ("Storage tanks", False),
+        ("E_panel connections", False),
+        # annotation on a piping layer: sizes, materials, numbers, hatching
+        ("P_pipe diameters", False),
+        ("PIPESIZES", False),
+        ("piping materials", False),
+        ("valve numbers", False),
+        ("PIPE TEXT", False),
+        # not piping or electrical at all
+        ("WALLS", False),
+        ("0", False),
+    ],
+)
+def test_a_network_layer_holds_lines_not_symbols_or_annotation(name, network):
+    assert is_network_layer(name) is network

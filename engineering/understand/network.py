@@ -72,7 +72,7 @@ from dataclasses import dataclass
 
 from engineering.understand.labels import parse_diameters, parse_tag, wiring_target
 from engineering.understand.snapshot import EntityRecord, Pt, Snapshot
-from engineering.understand.vocab import classify_layer, fold, supply_return
+from engineering.understand.vocab import classify_layer, fold, is_network_layer, supply_return
 
 __all__ = [
     "EQUIPMENT_SEARCH_SHARE",
@@ -262,13 +262,10 @@ def _layer_names(snap: Snapshot) -> list[str]:
 
 
 def default_layers(snap: Snapshot) -> tuple[str, ...]:
-    """Every layer `classify_layer` files under piping or electrical with confidence >= 0.9."""
-    chosen = []
-    for name in _layer_names(snap):
-        found = classify_layer(name)
-        if found["discipline"] in NETWORK_DISCIPLINES and found["confidence"] >= NETWORK_CONFIDENCE:
-            chosen.append(name)
-    return tuple(chosen)
+    """Every layer of pipes or cables: `vocab.is_network_layer` - piping or electrical
+    at confidence >= 0.9, and not a layer of valve, pump or tank symbols or of
+    annotation (sizes, materials, numbers), whose lines are no pipe."""
+    return tuple(name for name in _layer_names(snap) if is_network_layer(name))
 
 
 def label_search_default(snap: Snapshot, *, tol: float = 1.0) -> float:
@@ -413,8 +410,9 @@ def _choose_layers(snap: Snapshot, layers) -> tuple[str, ...]:
         chosen = default_layers(snap)
         if not chosen:
             raise ValueError(
-                "layers: no layer is classified piping or electrical with confidence >= 0.9; "
-                f"name the layers to read. The drawing has: {', '.join(known)}"
+                "layers: no layer is classified piping or electrical with confidence >= 0.9 "
+                "(symbol and annotation layers left out); name the layers to read. The drawing "
+                f"has: {', '.join(known)}"
             )
         return chosen
     names = [str(name) for name in layers]
