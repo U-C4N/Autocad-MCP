@@ -8,6 +8,7 @@ behaves the way AutoCAD 2026 was measured to behave (the extension must be
 
 from __future__ import annotations
 
+import asyncio
 import math
 from pathlib import Path
 
@@ -171,6 +172,23 @@ def test_read_snapshot_refuses_missing_and_unreadable_files(tmp_path):
     with pytest.raises(ValueError) as excinfo:
         read_snapshot(str(junk))
     assert "not a readable DXF" in str(excinfo.value)
+
+
+def test_a_truncated_dxf_is_refused_not_left_hanging(tmp_path):
+    # An interrupted save: the header opens and the file ends. ezdxf's tag reader
+    # raises StopIteration here, which asyncio.to_thread cannot hand back to an
+    # awaiting tool - the call would never answer. It must be the same refusal
+    # as any other unreadable file, also through a worker thread.
+    half = tmp_path / "half.dxf"
+    half.write_text("  0\nSECTION\n  2\nHEADER\n  9\n$ACADVER\n  1\nAC1015\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="not a readable DXF"):
+        read_snapshot(str(half))
+
+    async def through_a_thread():
+        return await asyncio.wait_for(asyncio.to_thread(read_snapshot, str(half)), timeout=10)
+
+    with pytest.raises(ValueError, match="not a readable DXF"):
+        asyncio.run(through_a_thread())
 
 
 # -- take_snapshot on the headless engine ---------------------------------------

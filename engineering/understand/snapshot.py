@@ -297,11 +297,16 @@ def records_from_doc(doc, *, source: str) -> Snapshot:
 
 
 def _read(path: str, *, source: str) -> Snapshot:
+    # Every parse or walk failure is one refusal. A truncated file makes ezdxf's
+    # tag reader raise StopIteration, which asyncio.to_thread cannot hand back to
+    # an awaiting tool - uncaught, the tool would never answer.
     try:
-        doc = ezdxf.readfile(path)
-    except (OSError, ezdxf.DXFError) as exc:
-        raise ValueError(f"{path} is not a readable DXF file: {exc}") from exc
-    return records_from_doc(doc, source=source)
+        return records_from_doc(ezdxf.readfile(path), source=source)
+    except MemoryError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - see above
+        reason = str(exc) or type(exc).__name__
+        raise ValueError(f"{path} is not a readable DXF file: {reason}") from exc
 
 
 def read_snapshot(path: str) -> Snapshot:
