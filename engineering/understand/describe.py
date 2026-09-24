@@ -32,7 +32,7 @@ from collections.abc import Sequence
 from engineering.arch.faces import Face, face_containing, planar_faces
 from engineering.pid.graph import ATTRIBUTE_TAGS, KEYWORDS
 from engineering.understand.clusters import find_clusters
-from engineering.understand.labels import parse_tag
+from engineering.understand.labels import parse_tag, wiring_target
 from engineering.understand.snapshot import EntityRecord, Snapshot, length_of
 from engineering.understand.units import infer_units, robust_extents, wall_segments
 from engineering.understand.vocab import classify_layer, room_label
@@ -113,6 +113,9 @@ def tag_occurrences(snap: Snapshot, *, prep: dict | None = None) -> list[dict]:
 
     A tag is read with `labels.parse_tag` from a TEXT / MTEXT / MULTILEADER,
     or from an INSERT attribute named like a tag (`pid.graph.ATTRIBUTE_TAGS`).
+    A wiring callout (`labels.wiring_target`: ``Wiring to CP-2``) is not an
+    occurrence of the panel it names - it stands at the load, not the panel -
+    the rule `network.tag_occurrences` keeps too.
     Two readings of one tag in one space closer than
     :data:`TAG_MERGE_FRACTION` of the diagonal are one occurrence (the
     attribute's position and confidence win). Rows carry ``tag``, ``handle``,
@@ -128,6 +131,8 @@ def tag_occurrences(snap: Snapshot, *, prep: dict | None = None) -> list[dict]:
             continue
         readings = []
         if rec.type in _TEXT_TYPES and rec.text:
+            if wiring_target(rec.text):
+                continue  # names the panel it points at; it is not written there
             readings.append((parse_tag(rec.text), "text", TEXT_TAG_CONFIDENCE))
         elif rec.type == "INSERT":
             for name, value in rec.attribs:

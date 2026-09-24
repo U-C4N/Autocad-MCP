@@ -818,6 +818,214 @@ async def arch_rooms_detect_foreign():
     )
 
 
+# ── Understanding foreign drawings (track H) ───────────────────────────────
+
+
+def _plant_pair() -> dict:
+    """The synthetic plant pair, written to a fresh temporary folder."""
+    from tests.fixtures.plant_pair import build_plant_pair
+
+    return build_plant_pair(tempfile.mkdtemp(prefix="acadmcp_plant_"))
+
+
+def _quoted(handle: str) -> str:
+    """A handle as it appears in a JSON dump - quoted, so '2A' never matches '12A3'."""
+    return f'"{handle}"'
+
+
+async def scale_check_detects_schematic():
+    """The synthetic P&ID is schematic against its layout; a uniform 2x copy is not.
+
+    The pair: room 1 of the P&ID is the layout stretched 1.3x, room 2 is
+    rearranged, and of the 55 pairs of the 11 shared tags 21.8 % lie within
+    ±10 % of the median ratio - at most 50 % is ``schematic`` (spec §6).
+    The control: six tags at (0, 0), (4000, 0), (8000, 0), (0, 3000),
+    (4000, 3000), (8000, 6000) and the same tags at twice those coordinates -
+    the nearest pair is 3000 mm apart, every ratio is exactly 2.0, so the
+    doubled drawing is ``to_scale`` against the first with factor 2.
+    """
+    import ezdxf
+
+    from engineering.understand.scale import scale_check
+    from engineering.understand.snapshot import read_snapshot
+
+    truth = _plant_pair()
+    pair = scale_check(read_snapshot(truth["pid"]), read_snapshot(truth["layout"]))
+    folder = tempfile.mkdtemp(prefix="acadmcp_scale_")
+    positions = [(0, 0), (4000, 0), (8000, 0), (0, 3000), (4000, 3000), (8000, 6000)]
+    paths = []
+    for factor in (1.0, 2.0):
+        doc = ezdxf.new("R2018")
+        msp = doc.modelspace()
+        for number, (x, y) in enumerate(positions, start=1):
+            msp.add_circle((x * factor, y * factor), 500.0)
+            msp.add_text(f"T{number}", dxfattribs={"insert": (x * factor, y * factor)})
+        path = os.path.join(folder, f"x{factor:g}.dxf")
+        doc.saveas(path)
+        paths.append(path)
+    control = scale_check(read_snapshot(paths[1]), read_snapshot(paths[0]))
+    return (
+        pair["verdict"] == "schematic"
+        and control["verdict"] == "to_scale"
+        and abs(float(control["factor"]) - 2.0) < 1e-9
+    )
+
+
+async def pipe_takeoff_rmst_exact():
+    """Every routable pipe run's layout length is the rectilinear MST of its tags.
+
+    Measured on the synthetic pair with ``length_source="layout"``. The truth
+    is the generator's own Manhattan / Prim arithmetic over the tag positions it
+    placed, hand-checked in tests/test_plant_pair.py - PR1 5500 (5000 + 500),
+    PR2 13200 (the three distances 6000 / 7200 / 13200, spanning tree 6000 +
+    7200), CS1 20700 (20500 + 200). All eight routable runs must agree to a
+    micron; the run ending on T105, which the layout lacks, is not routable.
+    """
+    from engineering.understand.network import build_network
+    from engineering.understand.snapshot import read_snapshot
+    from engineering.understand.takeoff import pipe_rows
+
+    truth = _plant_pair()
+    pid, layout = read_snapshot(truth["pid"]), read_snapshot(truth["layout"])
+    services = tuple(sorted({run["service"] for run in truth["pipe_runs"]}))
+    result = pipe_rows(build_network(pid), pid, layout, services=services, length_source="layout")
+    found = {(r["service"], tuple(sorted(r["tags"]))): r for r in result["runs"]}
+    routable = [run for run in truth["pipe_runs"] if run["layout_length_mm"] is not None]
+    for run in routable:
+        got = found.get((run["service"], tuple(run["tags"])))
+        if got is None or got.get("layout_m") is None:
+            return False
+        if abs(float(got["layout_m"]) * 1000.0 - run["layout_length_mm"]) > 1e-6:
+            return False
+    return len(routable) == 8
+
+
+async def cable_takeoff_roundup():
+    """Cable rows: the panel from the callout, Manhattan length, metres rounded up.
+
+    The truth rows of the synthetic pair, by hand: M11 (5500, 8200) to CP-1
+    (1200, 10800) is 6900 mm, 6.9 m x 1.2 = 8.28 -> 9; T102 (8000, 3500) to CP-1
+    is 14100 mm -> 16.92 -> 17; M12 (26300, 8400) to CP-2 (35000, 1300) is
+    15800 mm -> 18.96 -> 19; T202 (28700, 3000) to CP-2 is 8000 mm -> 9.6 -> 10.
+    The heater on T202 states no power, and its row must keep an empty one.
+    """
+    from engineering.understand.snapshot import read_snapshot
+    from engineering.understand.takeoff import cable_rows
+
+    truth = _plant_pair()
+    rows = {
+        row["tag"]: row
+        for row in cable_rows(read_snapshot(truth["pid"]), read_snapshot(truth["layout"]))["rows"]
+    }
+    expected = {"M11": ("CP-1", 9), "T102": ("CP-1", 17), "M12": ("CP-2", 19), "T202": ("CP-2", 10)}
+    for tag, (panel, metres) in expected.items():
+        row = rows.get(tag)
+        if row is None or row.get("panel") != panel or row.get("cable_m") != metres:
+            return False
+    return rows["T202"].get("kw") is None and rows["M11"].get("kw") == 5.5
+
+
+async def diff_detects_known_edits():
+    """Two revisions differing by exactly five edits - and the diff says so.
+
+    A move (a LINE shifted 10 mm), a text change (PUMP A -> PUMP B), an
+    attribute change (TAG T101 -> T102), an add (a new LINE) and a delete (a
+    LINE removed); a CIRCLE stays untouched. The edits are made on a copy read
+    back from the first file, so every surviving entity keeps its handle. The
+    diff must list the added line as added, the removed line as removed, the
+    three edited entities as changed - and nothing else, the circle included.
+    """
+    import json
+
+    import ezdxf
+
+    from engineering.understand.diff import diff_snapshots
+    from engineering.understand.snapshot import read_snapshot
+
+    folder = tempfile.mkdtemp(prefix="acadmcp_diff_")
+    old_path, new_path = os.path.join(folder, "rev_a.dxf"), os.path.join(folder, "rev_b.dxf")
+    doc = ezdxf.new("R2018")
+    msp = doc.modelspace()
+    moved = msp.add_line((0, 0), (100, 0), dxfattribs={"layer": "PIPE"})
+    text = msp.add_text("PUMP A", dxfattribs={"insert": (0, 50), "height": 2.5})
+    block = doc.blocks.new("TAGGED")
+    block.add_circle((0, 0), 10)
+    block.add_attdef("TAG", (0, 0), dxfattribs={"height": 2.5})
+    insert = msp.add_blockref("TAGGED", (200, 0))
+    insert.add_auto_attribs({"TAG": "T101"})
+    gone = msp.add_line((0, 100), (100, 100), dxfattribs={"layer": "PIPE"})
+    kept = msp.add_circle((300, 300), 20)
+    doc.saveas(old_path)
+
+    revision = ezdxf.readfile(old_path)
+    revision.entitydb[moved.dxf.handle].translate(10, 0, 0)
+    revision.entitydb[text.dxf.handle].dxf.text = "PUMP B"
+    revision.entitydb[insert.dxf.handle].get_attrib("TAG").dxf.text = "T102"
+    revision.modelspace().delete_entity(revision.entitydb[gone.dxf.handle])
+    added = revision.modelspace().add_line((500, 500), (600, 500), dxfattribs={"layer": "PIPE"})
+    revision.saveas(new_path)
+
+    diff = diff_snapshots(read_snapshot(old_path), read_snapshot(new_path))
+    changed = json.dumps(diff["changed"])
+    dumped = changed + json.dumps(diff["added"]) + json.dumps(diff["removed"])
+    return (
+        len(diff["added"]) == 1
+        and len(diff["removed"]) == 1
+        and len(diff["changed"]) == 3
+        and _quoted(added.dxf.handle) in json.dumps(diff["added"])
+        and _quoted(gone.dxf.handle) in json.dumps(diff["removed"])
+        and all(_quoted(e.dxf.handle) in changed for e in (moved, text, insert))
+        and _quoted(kept.dxf.handle) not in dumped
+    )
+
+
+async def topology_known_defects():
+    """Dangling ends, a near miss and a crossing, placed on purpose - and nothing else.
+
+    On layer PIPE: a closed 1000 x 1000 square (no free end, no defect); a LINE
+    from (500, -500) that stops at (500, -5), 5 mm short of the square's bottom
+    edge (a near miss at gap 10, and a dangling end); two LINEs crossing at
+    (2500, 500), away from all four of their ends (one interior crossing); and a
+    clean T - a LINE ending on the middle of another at (4500, 0), which is a
+    junction, not a crossing and not a near miss.
+    """
+    import json
+
+    import ezdxf
+
+    from engineering.understand.snapshot import read_snapshot
+    from engineering.understand.topology import topology_findings
+
+    doc = ezdxf.new("R2018")
+    msp = doc.modelspace()
+    pipe = {"layer": "PIPE"}
+    ring = msp.add_lwpolyline(
+        [(0, 0), (1000, 0), (1000, 1000), (0, 1000)], close=True, dxfattribs=pipe
+    )
+    short = msp.add_line((500, -500), (500, -5), dxfattribs=pipe)
+    cross_a = msp.add_line((2000, 0), (3000, 1000), dxfattribs=pipe)
+    cross_b = msp.add_line((2000, 1000), (3000, 0), dxfattribs=pipe)
+    bar = msp.add_line((4000, 0), (5000, 0), dxfattribs=pipe)
+    stem = msp.add_line((4500, 0), (4500, 500), dxfattribs=pipe)
+    path = os.path.join(tempfile.mkdtemp(prefix="acadmcp_topo_"), "topology.dxf")
+    doc.saveas(path)
+
+    found = topology_findings(read_snapshot(path), layers=["PIPE"], gap=10.0)
+    near = json.dumps(found["near_miss"])
+    crossing = json.dumps(found["crossing"])
+    dangling = json.dumps(found["dangling"])
+    return (
+        _quoted(short.dxf.handle) in near
+        and _quoted(short.dxf.handle) in dangling
+        and _quoted(ring.dxf.handle) not in dangling
+        and _quoted(ring.dxf.handle) not in crossing
+        and len(found["crossing"]) == 1
+        and _quoted(cross_a.dxf.handle) in crossing
+        and _quoted(cross_b.dxf.handle) in crossing
+        and all(_quoted(e.dxf.handle) not in crossing + near for e in (bar, stem))
+    )
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -862,6 +1070,11 @@ CHECKS = {
     "arch_room_area_net": (arch_room_area_net, "Architecture"),
     "arch_opening_cuts_wall": (arch_opening_cuts_wall, "Architecture"),
     "arch_rooms_detect_foreign": (arch_rooms_detect_foreign, "Architecture"),
+    "scale_check_detects_schematic": (scale_check_detects_schematic, "Understanding"),
+    "pipe_takeoff_rmst_exact": (pipe_takeoff_rmst_exact, "Understanding"),
+    "cable_takeoff_roundup": (cable_takeoff_roundup, "Understanding"),
+    "diff_detects_known_edits": (diff_detects_known_edits, "Understanding"),
+    "topology_known_defects": (topology_known_defects, "Understanding"),
 }
 
 

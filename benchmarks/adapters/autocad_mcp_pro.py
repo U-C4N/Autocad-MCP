@@ -1,4 +1,4 @@
-"""Reference adapter for this repository, covering the v6 task matrix.
+"""Reference adapter for this repository, covering the v7 task matrix.
 
 Every task verifies against a value worked out independently of the code under
 test — a closed-form area, a count of entities placed on purpose, a token
@@ -12,7 +12,7 @@ import math
 from pathlib import Path
 
 from benchmarks.adapters.base import BenchmarkAdapter, TaskResult
-from benchmarks.tasks_v6 import TaskSpec
+from benchmarks.tasks_v7 import TaskSpec
 from engineering.delivery import deliver_drawing
 from engineering.layers import ensure_engineering_layers, ensure_standard_linetypes
 from engineering.refiner import refine_drawing
@@ -777,6 +777,147 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
                 "validator_findings": sorted(f.code for f in validation.findings),
             },
             [str(sheet)],
+        )
+
+    async def _task_takeoff_roundtrip(self):
+        """Pipe and cable quantities off the synthetic plant pair, against its truth.
+
+        Track H's evidence (spec §15). The pair is written fresh into the
+        artifact folder by ``tests/fixtures/plant_pair.py``, whose truth is
+        computed from the positions it placed. Then only the two DXFs are read:
+
+        * ``scale_check(pid, layout)`` must say ``schematic`` - room 1 is the
+          layout stretched 1.3x, room 2 is rearranged, and 21.8 % of the 55 tag
+          pairs lie within ±10 % of the median ratio;
+        * ``pipe_rows(..., length_source="auto")`` must report every run of the
+          P&ID (the ice-water utility included, because ``services`` names it)
+          with the truth's status; a routable run's layout length must equal the
+          rectilinear MST of its tags exactly, its sizes (both across the
+          reducer) and its service must be the drawn ones (the CIP return drawn
+          on the supply layer included); the run ending on T105, which the
+          layout lacks, is status C with no layout length;
+        * ``cable_rows(pid, layout)`` must give every load its panel from the
+          layout's wiring callouts, its stated power (the heater's stays empty),
+          the Manhattan length to the panel and the metres rounded up after the
+          20 % allowance.
+
+        Any one slipping fails the task, and the metrics name what slipped.
+        """
+        from engineering.understand.network import build_network
+        from engineering.understand.scale import scale_check
+        from engineering.understand.snapshot import read_snapshot
+        from engineering.understand.takeoff import cable_rows, pipe_rows
+        from tests.fixtures.plant_pair import build_plant_pair
+
+        truth = build_plant_pair(self.artifact_dir / "plant_pair")
+        pid = read_snapshot(truth["pid"])
+        layout = read_snapshot(truth["layout"])
+        scale = scale_check(pid, layout)
+        services = tuple(sorted({run["service"] for run in truth["pipe_runs"]}))
+        pipe = pipe_rows(
+            build_network(pid), pid, layout, scale=scale, services=services, length_source="auto"
+        )
+        found = {(run["service"], tuple(sorted(run["tags"]))): run for run in pipe["runs"]}
+        pipe_mismatch = []
+        for run in truth["pipe_runs"]:
+            got = found.get((run["service"], tuple(run["tags"])))
+            if got is None:
+                pipe_mismatch.append({"run": run["id"], "reason": "no run with these tags"})
+                continue
+            reasons = []
+            if got["status"] != run["status"]:
+                reasons.append(f"status {got['status']} != {run['status']}")
+            want, have = run["layout_length_mm"], got.get("layout_m")
+            if want is None and have is not None:
+                reasons.append(f"a layout length ({have} m) for an unroutable run")
+            elif want is not None and (have is None or abs(float(have) * 1000.0 - want) > 1e-6):
+                reasons.append(f"layout length {have} m != {want} mm")
+            if set(got["diameters"]) != set(run["diameters"]):
+                reasons.append(f"sizes {sorted(got['diameters'])} != {sorted(run['diameters'])}")
+            if reasons:
+                pipe_mismatch.append({"run": run["id"], "reason": "; ".join(reasons)})
+
+        cable = {row["tag"]: row for row in cable_rows(pid, layout)["rows"]}
+        cable_mismatch = []
+        for want in truth["cable_rows"]:
+            got = cable.get(want["tag"])
+            if got is None:
+                cable_mismatch.append({"tag": want["tag"], "wrong": ["missing"]})
+                continue
+            wrong = [key for key in ("panel", "kw") if got.get(key) != want[key]]
+            if got.get("cable_m") != want["roundup_m"]:
+                wrong.append("cable_m")
+            length = got.get("length_m")
+            if length is None or abs(float(length) * 1000.0 - want["length_mm"]) > 1e-6:
+                wrong.append("length_m")
+            if wrong:
+                cable_mismatch.append({"tag": want["tag"], "wrong": wrong})
+
+        passed = scale["verdict"] == truth["scale_verdict"] and not pipe_mismatch
+        passed = passed and not cable_mismatch
+        return (
+            passed,
+            {
+                "scale_verdict": scale["verdict"],
+                "within_10pct": scale.get("within_10pct"),
+                "length_source": pipe.get("length_source"),
+                "runs_checked": len(truth["pipe_runs"]),
+                "pipe_mismatch": pipe_mismatch,
+                "loads_checked": len(truth["cable_rows"]),
+                "cable_mismatch": cable_mismatch,
+            },
+            [truth["pid"], truth["layout"]],
+        )
+
+    async def _task_understand_foreign(self):
+        """One call on a foreign layout reports what is wrong with it, by evidence.
+
+        Track H's evidence (spec §5, §15), on the synthetic plant pair: the
+        layout declares inches (``$INSUNITS = 1``) over millimetre geometry, a
+        stray LINE 5,000 km away stretches its declared extents, and the plan is
+        drawn twice, 100 m apart. ``describe`` of the layout must infer
+        millimetres, report that they disagree with the declared unit and warn
+        about ``INSUNITS``, name the stray entity's handle in its extents, and
+        report exactly two clusters; ``describe`` of the P&ID must classify its
+        four service layers and the electrical layer as the generator names them
+        (English and Dutch names). A warning or an extents report is searched as
+        JSON, so the gate holds whatever shape the evidence takes.
+        """
+        import json
+
+        from engineering.understand.describe import describe
+        from engineering.understand.snapshot import read_snapshot
+        from tests.fixtures.plant_pair import build_plant_pair
+
+        truth = build_plant_pair(self.artifact_dir / "plant_pair")
+        layout = describe(read_snapshot(truth["layout"]))
+        pid = describe(read_snapshot(truth["pid"]))
+        units = layout["units"]
+        units_flagged = (
+            str(units.get("inferred")) == truth["layout_true_unit"]
+            and units.get("agree") is False
+            and "INSUNITS" in json.dumps(layout["warnings"], ensure_ascii=False)
+        )
+        outlier_found = f'"{truth["outlier_handle"]}"' in json.dumps(layout["extents"])
+        copies_separated = len(layout["clusters"]) == truth["cluster_count"]
+        read = {row["name"]: row["service"] for row in pid["layers"]}
+        misread = {
+            name: read.get(name)
+            for name, service in truth["layer_services"].items()
+            if read.get(name) != service
+        }
+        passed = units_flagged and outlier_found and copies_separated and not misread
+        return (
+            passed,
+            {
+                "units": units,
+                "units_flagged": units_flagged,
+                "outlier_found": outlier_found,
+                "clusters": len(layout["clusters"]),
+                "copies_separated": copies_separated,
+                "misread_layers": misread,
+            },
+            [truth["layout"], truth["pid"]],
         )
 
     async def _task_auditable_delivery(self):

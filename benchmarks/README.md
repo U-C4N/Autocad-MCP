@@ -127,6 +127,17 @@ result for it.
 
 The competitor reports carry no result for it.
 
+### Matrix v7 (v1.6) — understanding foreign drawings
+
+`tasks_v7.py` keeps the v6 nineteen unchanged and adds track H's evidence, both on the synthetic plant pair of `tests/fixtures/plant_pair.py` (invented names; its truth is computed from the positions it placed, never typed):
+
+| Task | Category | Verified against |
+|---|---|---|
+| `takeoff_roundtrip` | plant | `scale_check(pid, layout)` must say **schematic** (room 1 is a 1.3× stretch, room 2 is rearranged: 21.8 % of the 55 tag pairs within ±10 % of the median ratio); `pipe_rows(..., length_source="auto")` must report all nine runs with the truth's status, each routable run's layout length equal to the rectilinear MST of its tags to a micron (PR1 5500, PR2 13200, CS1 20700 mm, …), its size and service as drawn — the CIP return drawn on the supply layer included — and both sizes across the reducer; `cable_rows` must give M11 / T102 / M12 / T202 their panels, 6900 / 14100 / 15800 / 8000 mm and 9 / 17 / 19 / 10 m after the 20 % allowance, the heater's power empty. `tests/test_benchmark_v7.py` deletes the wiring callouts and the gate names all four loads |
+| `understand_foreign` | understand | `describe(layout)` must infer millimetres and warn about `INSUNITS` (the file says inches), name the stray line's handle in its extents and report two clusters (the plan is drawn twice, 100 m apart); `describe(pid)` must classify `P_product piping`, `P_cipsupplyline`, `P_cipreturnline`, `P_ijswater` and `E_power` as product, CIP supply, CIP return, ice water and electrical. `tests/test_benchmark_v7.py` makes the layout declare millimetres and the units gate fails alone |
+
+The competitor reports carry no result for them.
+
 ## Live competitor lane (v1.4)
 
 Two competitor adapters now execute the exact same task matrix, black-box over
@@ -244,15 +255,15 @@ python benchmarks/compare_versions.py --json results.json
 
 ### Result — this branch (1.6.0-dev) vs v1.5.1 (release gate)
 
-43 checks, ezdxf backend, one subprocess per check. Machine-readable report:
+48 checks, ezdxf backend, one subprocess per check. Machine-readable report:
 [`results/published/ab-v1.5.1-vs-v1.6.0-dev.json`](results/published/ab-v1.5.1-vs-v1.6.0-dev.json).
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---------|----------------|-----------|-------|-----------|
-| **v1.5.1** (baseline)     | 26 / 43 | 60.5 % | — | — |
-| **v1.6.0-dev** (this branch) | 43 / 43 | 100 % | 17 | **0** |
+| **v1.5.1** (baseline)     | 26 / 48 | 54.2 % | — | — |
+| **v1.6.0-dev** (this branch) | 48 / 48 | 100 % | 22 | **0** |
 
-The seventeen are all `miss → pass` — v1.5.1 has none of the methods. Four are track F: `arch_junction_l_t_x` (L, T and X junction outlines against hand-computed corners and wall areas), `arch_room_area_net` (a 4 × 5 m room between 200 mm walls is labelled 20.00 m², not its 21.84 m² axis area), `arch_opening_cuts_wall` (both faces interrupted across a door, two jambs) and `arch_rooms_detect_foreign` (plain lines on a WALLS layer read as 20 and 15 m² at confidence 0.6, nothing written). Seven
+The twenty-two are all `miss → pass` — v1.5.1 has none of the methods. Five are track H: `scale_check_detects_schematic` (the synthetic P&ID is schematic against its layout; a uniform 2× copy is to scale with factor 2), `pipe_takeoff_rmst_exact` (eight routable runs, each exactly the rectilinear MST of its tags), `cable_takeoff_roundup` (9 / 17 / 19 / 10 m, the unstated power left empty), `diff_detects_known_edits` (five known edits and nothing else) and `topology_known_defects` (one near miss, one crossing, a clean T). Four are track F: `arch_junction_l_t_x` (L, T and X junction outlines against hand-computed corners and wall areas), `arch_room_area_net` (a 4 × 5 m room between 200 mm walls is labelled 20.00 m², not its 21.84 m² axis area), `arch_opening_cuts_wall` (both faces interrupted across a door, two jambs) and `arch_rooms_detect_foreign` (plain lines on a WALLS layer read as 20 and 15 m² at confidence 0.6, nothing written). Seven
 are tracks B and G: `mech_part_roundtrip` (a part read back from its own
 `ACADMCP_MECH` XDATA equals the part drawn), `mech_section_hatch_area` (a
 sleeve 60 long, ⌀40 outside, ⌀20 bore: a full section cuts two 60 × 10 faces,

@@ -39,6 +39,16 @@ new `arch` pack, three `arch_*` critique focuses, and English or Turkish
 labels. No new contract member. Spec:
 `docs/superpowers/specs/2026-09-23-v1.6-arch-design.md`.
 
+Track H of 1.6: understanding drawings somebody else made. Six tools in two
+new sections — understanding and QA (26: a one-call report, a scale check
+between a P&ID and its layout, a revision diff, topology checks) and plant
+takeoffs (27: pipe and cable quantities whose topology comes from the P&ID
+and whose lengths come from the layout) — one DXF snapshot per drawing (a
+live document through `Document.Export`, never renamed), a vocabulary in five
+languages, three `topo_*` critique focuses, a new `plant` pack and the
+`office` extra. Read-only by default; nothing invented. No new contract
+member. Spec: `docs/superpowers/specs/2026-09-24-v1.6-understand-design.md`.
+
 ### Added
 
 - **Styles — 10 tools, pack `core`.** `dimstyle_list/create/modify/set_current`,
@@ -139,6 +149,33 @@ labels. No new contract member. Spec:
   2026 (`25.1s (LMS Tech)`): the example plan drawn in one transaction, both
   rooms read back within 0.1 % of their labels and of the hand-computed net
   floor, and `drawing_critique(focus=None)` returned 0 issues (record below).
+- **Understanding foreign drawings — 4 tools, pack `core`; plant takeoffs — 2
+  tools, pack `plant`.** `drawing_understand`, `drawing_scale_check`,
+  `drawing_diff`, `drawing_topology_check`, `pipe_takeoff`, `cable_takeoff`.
+  Every one reads a snapshot of frozen WCS records
+  (`engineering/understand/snapshot.py`); labels are read by one parser
+  (`%%c`, `\U+2205`, the U+2300 sign, `ø` and MTEXT format runs decoded,
+  Cyrillic look-alike tags folded to Latin) and layer names and texts by one
+  EN / TR / RU / NL / DE vocabulary. The takeoff workbook is written as CSV
+  always and as XLSX with the new `office` extra (`openpyxl`, also in `full`).
+  Lean gains `drawing_understand` and reaches 65.
+- **Benchmark evidence for track H.** `benchmarks/tasks_v7.py` (21 tasks, the
+  default matrix; v6 to v2 stay addressable) adds `takeoff_roundtrip` and
+  `understand_foreign`, both on the synthetic plant pair of
+  `tests/fixtures/plant_pair.py`, whose truth is computed from the positions
+  it placed; each gate is shown to fail on a broken input. The correctness
+  suite grows to 48 with `scale_check_detects_schematic`,
+  `pipe_takeoff_rmst_exact`, `cable_takeoff_roundup`,
+  `diff_detects_known_edits` and `topology_known_defects`. A/B against
+  `v1.5.1`: **26 / 48 → 48 / 48, twenty-two `miss → pass`, zero regressed**.
+- **`scripts/field_test_takeoff.py`** runs both takeoffs on a user's own P&ID
+  and layout and writes the report next to them; it refuses an output folder
+  inside the repository and prints no quantity unless `--show` is given.
+- **Live COM smoke.** `scripts/smoke_understand_com.py` executed once on
+  AutoCAD 2026 (`25.1s (LMS Tech)`): the live snapshots matched
+  their files type for type in model space, the DWG route read the same
+  P&ID, both takeoffs matched the truth and the diff reported exactly the
+  one entity moved (record below).
 
 - **P&ID — 9 tools, pack `pid`.**
   - `pid_symbol_list` / `pid_symbol_insert`: a 43-symbol ISO 10628-2 /
@@ -318,8 +355,40 @@ labels. No new contract member. Spec:
   `KeyError: 'start'` recorded above as a busy-refused point read (not
   re-measured).
 
+- **Track H, found after the groups landed.** Six defects in the readers,
+  each with a test that failed before its fix:
+  - A truncated DXF (an interrupted save, a partial copy) made ezdxf raise
+    `StopIteration`, which `asyncio.to_thread` cannot hand back to an
+    awaiting caller, so every track H tool reading one would have hung. The
+    snapshot now refuses it as "not a readable DXF file".
+  - `take_snapshot` of a DWG the operator already had open opened it again
+    read-only and closed "it" unsaved - possibly their copy, with their
+    unsaved work. An open document is now looked up first, exported as it
+    stands and left open; only a document the snapshot opened is closed.
+  - `drawing_diff`: a LINE drawn back to front and moved was reported as
+    reshaped; an INSERT carrying one attribute tag twice could lose an edit
+    of the first value (a repeated tag is now compared as the list of its
+    values); the cluster list is capped like the other lists
+    (`truncated["clusters"]`, the markup still clouds every cluster); and a
+    whole-drawing move keeps only the 32 nearest candidates per entity.
+  - A line number was read as an equipment tag: `100-P-001` yielded the pump
+    `P-001`. A token that is the tail of a word beginning with a digit is no
+    longer a tag.
+  - The pipe network merged ends and dropped stubs within `tol = 1.0`
+    drawing units - a metre on a metre P&ID. The tolerance now defaults to
+    1 mm in the P&ID's inferred unit, and a dropped stub is counted and said.
+  - A wiring callout was counted as a place its panel is written:
+    `Wiring to CP-2` made `CP-2` ambiguous in `drawing_scale_check` and
+    `drawing_understand`, and `Wiring to CP1` a phantom tag `CP1`. On the
+    synthetic pair the check matched 10 tags and 45 pairs (13.3 % within
+    ±10 %) where the generator placed 11 and 55 (21.8 %). A callout is no
+    longer a tag occurrence - the rule the line-network reader already kept.
+
 ### Changed
 
+- **`MAX_DXF_BYTES` defaults to 512 MB** (was 50 MB): a real plant layout read
+  for track H was a 188 MB DXF. The snapshot's refusal names the file's size,
+  the limit and the variable; `0` still disables the check.
 - Three tool groups appear in `system_about` and `docs/tool-inventory.json`:
   `styles` (10), `page_setup` (6), `environment` (22) — 204 tools in 23 groups;
   `LEAN_TOOL_NAMES` 55; capability keys `dwgprops`, `dwt_write`,
@@ -948,6 +1017,86 @@ document closed afterwards:
 The first run exited 1: the first room label was refused because the room
 reader found 0 wall segments on `A-WALL-E-N` — the `entity_list` narrowing
 listed under **Fixed**. The run above is the one after the fix.
+
+### Live COM smoke — understanding (track H)
+
+`scripts/smoke_understand_com.py`, AutoCAD 2026, Windows 11, on the synthetic
+plant pair only — `take_snapshot` of `pid.dxf` opened live, the same P&ID
+saved as DWG and read back through the read-only DWG route, `take_snapshot`
+of `layout.dxf`, `pipe_rows` / `cable_rows` on the live snapshots against the
+pair's truth, then one tag moved 10 mm and `diff_snapshots` of the layout
+before and after, all through the COM engine, exit 0, every document closed:
+
+```json
+{
+  "autocad": "25.1s (LMS Tech)",
+  "export_s": 0.104,
+  "live_pid_source": "live:pid.dxf",
+  "dwg_pid_source": "live:pid.dwg",
+  "model_space": {
+    "pid_file": {
+      "ARC": 1,
+      "INSERT": 15,
+      "LINE": 8,
+      "LWPOLYLINE": 8,
+      "MTEXT": 8,
+      "TEXT": 31
+    },
+    "pid_live": {
+      "ARC": 1,
+      "INSERT": 15,
+      "LINE": 8,
+      "LWPOLYLINE": 8,
+      "MTEXT": 8,
+      "TEXT": 31
+    },
+    "pid_dwg": {
+      "ARC": 1,
+      "INSERT": 15,
+      "LINE": 8,
+      "LWPOLYLINE": 8,
+      "MTEXT": 8,
+      "TEXT": 31
+    },
+    "layout_file": {
+      "CIRCLE": 18,
+      "LINE": 25,
+      "LWPOLYLINE": 4,
+      "MULTILEADER": 8,
+      "TEXT": 26
+    },
+    "layout_live": {
+      "CIRCLE": 18,
+      "LINE": 25,
+      "LWPOLYLINE": 4,
+      "MULTILEADER": 8,
+      "TEXT": 26
+    }
+  },
+  "paper_space_layouts": [],
+  "takeoffs": {
+    "scale_verdict": "schematic",
+    "within_10pct": 0.21818181818181817,
+    "runs_checked": 9,
+    "pipe_mismatch": [],
+    "loads_checked": 4,
+    "cable_mismatch": []
+  },
+  "diff": {
+    "moved": "44",
+    "added": 0,
+    "removed": 0,
+    "changed": 1,
+    "moved_is_the_change": true
+  }
+}
+```
+
+The smoke works only in documents it brought in from its own temporary
+folder, known by full path; each live snapshot, the DWG save and the move
+first check, in the same COM-thread call, that the active document is the
+smoke's own, and on the way out it re-activates the document that was active
+when it started.
 
 ## [1.5.1] — 2026-08-06
 

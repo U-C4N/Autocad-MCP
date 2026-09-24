@@ -1,12 +1,12 @@
 {
   "summary": {
     "baseline_ref": "v1.5.1",
-    "total": 43,
+    "total": 48,
     "old_pass": 26,
-    "new_pass": 43,
-    "old_pct": 60.5,
+    "new_pass": 48,
+    "old_pct": 54.2,
     "new_pct": 100.0,
-    "fixed": 17,
+    "fixed": 22,
     "regressed": 0
   },
   "rows": [
@@ -265,6 +265,36 @@
     {
       "check": "arch_rooms_detect_foreign",
       "category": "Architecture",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "scale_check_detects_schematic",
+      "category": "Understanding",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "pipe_takeoff_rmst_exact",
+      "category": "Understanding",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "cable_takeoff_roundup",
+      "category": "Understanding",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "diff_detects_known_edits",
+      "category": "Understanding",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "topology_known_defects",
+      "category": "Understanding",
       "old": "miss",
       "new": "pass"
     }

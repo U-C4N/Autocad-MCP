@@ -190,3 +190,30 @@ def test_the_synthetic_pid_is_schematic_against_its_layout(tmp_path):
     assert len(result["matched"]) >= 3
     # The layout's two plan copies: the check must pick one of them.
     assert result["scope"]["cluster_b"] is not None
+
+
+def test_a_wiring_callout_is_not_a_second_place_for_its_panel():
+    """``Wiring to CP-2`` names the panel it points at; it is not written at the
+    panel. Read as a tag it would make every panel with a callout ambiguous
+    (and ``Wiring to CP1`` a phantom tag ``CP1``), so the callout takes no part
+    - the same rule the line-network reader (`network.tag_occurrences`) keeps."""
+    plan = {**PLAN, "CP-2": (3000.0, 15000.0)}
+    callouts = [
+        text("W1", "Wiring to CP-2", 12000.0, 0.0),
+        text("W2", "Wiring to CP1", 0.0, 9000.0),
+    ]
+    result = scale_check(snapshot(tags(plan, "A")), snapshot(tags(plan, "B") + callouts))
+    assert result["ambiguous"] == []
+    assert "CP-2" in {row["tag"] for row in result["matched"]}
+    assert result["only_b"] == []
+    assert result["pair_count"] == math.comb(len(plan), 2)
+
+
+def test_the_synthetic_pair_reproduces_the_generators_own_statistics(tmp_path):
+    """The generator computes its truth from the positions it placed: 11 shared
+    tags, 55 pairs, 21.8 % within +/-10 % of the median. The check must see the
+    same tags - a wiring callout counted as a panel would drop to 45."""
+    truth = build_plant_pair(tmp_path)
+    result = scale_check(read_snapshot(truth["pid"]), read_snapshot(truth["layout"]))
+    assert result["pair_count"] == truth["scale"]["overall"]["pairs"] == 55
+    assert result["within_10pct"] == pytest.approx(truth["scale"]["overall"]["within_10pct"])
