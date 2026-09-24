@@ -80,6 +80,12 @@ LABELS: dict[str, tuple[str, str, str]] = {
     # Kontrol kinds and reasons
     "unassigned_diameter": ("Çap atanmamış", "Diameter unassigned", "Диаметр не назначен"),
     "unroutable": ("Yönlendirilemez", "Unroutable", "Трассировка невозможна"),
+    "excluded_region": (
+        "Detay kopyası (hariç)",
+        "Detail copy (left out)",
+        "Копия детали (исключена)",
+    ),
+    "detail_copies": ("Olası detay kopyaları", "Possible detail copies", "Возможные копии деталей"),
     "end_not_on_equipment": (
         "Bir uç ekipmanda değil",
         "An end is on no equipment",
@@ -192,6 +198,7 @@ LABELS: dict[str, tuple[str, str, str]] = {
     "rule_rounding": ("Kural: yuvarlama", "Rule: rounding", "Правило: округление"),
     "rule_power": ("Kural: güç", "Rule: power", "Правило: мощность"),
     "rule_panel": ("Kural: pano", "Rule: panel", "Правило: шкаф"),
+    "panel_inferred": ("Pano tahmini (en yakın)", "Panel inferred (nearest)", "Шкаф по близости"),
     "rule_package": ("Kural: pano paketleri", "Rule: panel packages", "Правило: комплектные шкафы"),
     "rule_section": ("Kural: kesit", "Rule: section", "Правило: сечение"),
     "section_rules": (
@@ -314,6 +321,17 @@ TEXTS: dict[str, tuple[str, str, str]] = {
         "else from the P&ID; names are normalised (CP 1 → CP-1).",
         "Шкаф берётся из выносок подключения на планировке ('Wiring to CP1' и варианты), иначе "
         "из P&ID; имена нормализуются (CP 1 → CP-1).",
+    ),
+    "rule_panel_nearest": (
+        "Pano, yerleşimdeki bağlantı notlarından, yoksa P&ID'den alınır; hiçbiri yoksa ve yükün "
+        "etiketi yerleşimde ise yerleşimdeki en yakın pano seçilir ve satır Kontrol sayfasında "
+        "'pano tahmini' olarak işaretlenir. Adlar normalleştirilir (CP 1 → CP-1).",
+        "The panel comes from the layout's wiring callouts, else from the P&ID; when neither "
+        "names one and the load's tag is on the layout, the nearest panel there is taken and the "
+        "row is flagged 'panel inferred' on the control sheet. Names are normalised (CP 1 → CP-1).",
+        "Шкаф берётся из выносок подключения на планировке, иначе из P&ID; если нет ни того, ни "
+        "другого, а тег нагрузки есть на планировке, берётся ближайший шкаф, и строка отмечается "
+        "на листе контроля как 'шкаф по близости'. Имена нормализуются (CP 1 → CP-1).",
     ),
     "rule_package": (
         "Pano paketleri: kendisi güç belirten bir panoya bağlı yük o paketin parçasıdır; mahal ve "
@@ -526,6 +544,15 @@ def _pipe_method(result: dict, lang: str) -> list[list]:
         ["tol", method["tol"]],
         ["label_search", round(float(method["label_search"]), 6)],
         ["overlap", _num(method["overlap_length_m"])],
+        [
+            "detail_copies",
+            "; ".join(
+                f"{region['id']} ({', '.join(region['tags'])})"
+                + (" - " + _t("excluded_region", lang) if region["excluded"] else "")
+                for region in result.get("detail_copies", [])
+            )
+            or "—",
+        ],
     ]
     rows += [["warning", warning] for warning in result["warnings"]]
     return [[_t(topic, lang), value] for topic, value in rows]
@@ -615,7 +642,13 @@ def _cable_method(result: dict, lang: str) -> list[list]:
         ["rule_allowance", method["allowance"]],
         ["rule_rounding", _say("rule_rounding", lang)],
         ["rule_power", _say("rule_power", lang)],
-        ["rule_panel", _say("rule_panel", lang)],
+        [
+            "rule_panel",
+            _say(
+                "rule_panel_nearest" if method.get("panel_rule") == "nearest" else "rule_panel",
+                lang,
+            ),
+        ],
         ["rule_package", _say("rule_package", lang)],
         ["rule_section", _say("rule_section", lang)],
         ["section_rules", "; ".join(_rule_text(rule) for rule in rules) or "—"],

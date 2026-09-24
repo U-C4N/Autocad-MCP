@@ -32,6 +32,7 @@ import re
 __all__ = [
     "CYRILLIC_LOOKALIKES",
     "fold_lookalikes",
+    "is_panel_name",
     "normalize_panel",
     "parse_diameters",
     "parse_electrical",
@@ -297,6 +298,21 @@ def parse_electrical(text: str | None) -> dict:
         "neutral": bool(_NEUTRAL_RE.search(body)),
         "vfd": any(word in lowered for word in _VFD_WORDS),
     }
+
+
+#: Letter prefixes that name what a load is wired to: control panel, junction
+#: box, distribution board, motor control centre, local / motor control panel,
+#: power panel, switchboard. A convention list, not a standard.
+PANEL_PREFIXES = ("CP", "JB", "DB", "MCC", "LCP", "MCP", "PP", "SB", "SWB")
+
+
+def is_panel_name(name: str | None) -> bool:
+    """A normalised name whose letters say it is a panel: ``CP-1``, ``JB-2``,
+    ``CP-M82``, ``MCC-3`` - not ``M-87``, which `normalize_panel` would also
+    shape, because any letters-and-digits token has a panel's form."""
+    if not name:
+        return False
+    return str(name).split("-", 1)[0] in PANEL_PREFIXES
 
 
 def wiring_target(text: str | None) -> str | None:

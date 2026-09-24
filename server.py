@@ -11149,6 +11149,14 @@ async def pipe_takeoff(
             "drawing, 0.001 on a metre one).",
         ),
     ] = None,
+    exclude_regions: Annotated[
+        list[str] | None,
+        Field(
+            default=None,
+            description="Ids of reported detail copies (detail_copies: D1, D2 ...) whose runs "
+            "repeat pipes drawn elsewhere and are left out. Omitted, every copy is counted.",
+        ),
+    ] = None,
     ctx: Context = None,
 ) -> dict:
     """A pipe takeoff: topology from the P&ID, lengths from the layout, rows by room x service x diameter.
@@ -11201,6 +11209,7 @@ async def pipe_takeoff(
             force=force,
             layers=layers,
             tol=tol,
+            exclude_regions=exclude_regions,
         )
     except (ValueError, OSError) as exc:
         raise ToolError(str(exc)) from exc
@@ -11263,6 +11272,14 @@ async def cable_takeoff(
             "e.g. [{'max_kw': 5.5, 'section': '5x2.5'}]. Omitted, no section is proposed.",
         ),
     ] = None,
+    panel_rule: Annotated[
+        str,
+        Field(
+            default="nearest",
+            description="A load no wiring callout places: 'nearest' takes the nearest panel on "
+            "the layout and flags the row panel_inferred; 'stated' leaves it open.",
+        ),
+    ] = "nearest",
     ctx: Context = None,
 ) -> dict:
     """A cable takeoff: one row per electrical load, the shop's cable method made repeatable.
@@ -11271,7 +11288,9 @@ async def cable_takeoff(
     texts near each tag (Russian, Turkish and English spellings). **Power is
     never invented**: a load with no stated kW keeps an empty cell and an open
     item. The panel comes from the layout's wiring callouts ('Wiring to CP1'
-    and its variants, normalised to CP-1), else from the P&ID. The length is the
+    and its variants, normalised to CP-1), else from the P&ID ('к CP1'); a load
+    neither places takes the nearest panel on the layout, flagged
+    `panel_inferred` (`panel_rule='stated'` leaves it open). The length is the
     Manhattan distance on the layout from the load's tag to its panel's tag,
     and the cable is ROUNDUP(length x (1 + allowance)) to the metre. Room and
     panel totals count known power once: a load wired to a panel that states
@@ -11306,6 +11325,7 @@ async def cable_takeoff(
             lang=lang,
             allowance=allowance,
             section_rules=section_rules,
+            panel_rule=panel_rule,
         )
     except (ValueError, OSError) as exc:
         raise ToolError(str(exc)) from exc

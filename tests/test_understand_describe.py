@@ -171,6 +171,42 @@ def test_a_room_label_inside_the_wall_faces_is_measured():
     assert report["room_faces"]["unlabelled"] == 1
 
 
+def frame(handle, x0, y0, x1, y1, layer="0"):
+    return EntityRecord(
+        handle=handle,
+        type="LWPOLYLINE",
+        layer=layer,
+        space="Model",
+        points=((x0, y0), (x1, y0), (x1, y1), (x0, y1)),
+        closed=True,
+        bbox=(x0, y0, x1, y1),
+    )
+
+
+def test_a_room_drawn_as_a_frame_is_measured_by_its_frame():
+    # A P&ID draws its rooms as closed frames on no wall layer. Each numbered
+    # label takes the smallest frame around it that holds no other room label;
+    # the sheet border (both rooms) and a box drawn tight around a label (under
+    # ten text heights a side) are not rooms.
+    records = [
+        frame("B", 0.0, 0.0, 20000.0, 10000.0),  # the border: both labels inside
+        frame("F1", 1000.0, 1000.0, 9000.0, 9000.0),  # room 1: 8000 x 8000
+        frame("F2", 11000.0, 1000.0, 19000.0, 7000.0),  # room 2: 8000 x 6000
+        frame("K", 1900.0, 7900.0, 4100.0, 8400.0),  # a box around room 1's label
+        text("R1", "ROOM 1", 2000.0, 8000.0),
+        text("R2", "ROOM 2", 12000.0, 6000.0),
+        # an unnumbered mention inside room 2 ('hot room') does not deny its frame
+        text("H", "HOT ROOM", 15000.0, 3000.0),
+    ]
+    report = describe(snapshot(records))
+    rooms = {room["number"]: room for room in report["rooms"]}
+    assert rooms["1"]["source"] == rooms["2"]["source"] == "label+frame"
+    assert rooms["1"]["face"]["area"] == pytest.approx(64_000_000.0, abs=EPS)
+    assert rooms["2"]["face"]["area"] == pytest.approx(48_000_000.0, abs=EPS)
+    # a frame is weaker evidence than a face of wall layers
+    assert rooms["1"]["confidence"] == rooms["2"]["confidence"] == 0.8
+
+
 def test_a_cabinet_label_naming_its_room_is_not_a_room():
     # 'CONTROL CABINET / FILLING ROOM' labels the cabinet, not a room: it names
     # equipment and carries no room number. A numbered room named after its

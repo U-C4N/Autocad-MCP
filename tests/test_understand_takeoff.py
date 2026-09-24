@@ -305,6 +305,69 @@ def test_without_room_faces_a_piece_goes_to_the_nearest_numbered_room():
     ]
 
 
+def detail_pid():
+    # three tanks spread over the plant, and a compact detail drawing of the same
+    # three tanks at x = 60 m: the detail repeats their pipes
+    return [
+        *tank("A", "T4100", 0.0, 0.0),
+        *tank("B", "T4101", 20000.0, 0.0),
+        *tank("C", "T4102", 20000.0, 20000.0),
+        rec("L1", "LINE", PIPE, ((500.0, 250.0), (20000.0, 250.0))),  # 19.5 m
+        rec("L2", "LINE", PIPE, ((20250.0, 500.0), (20250.0, 20000.0))),  # 19.5 m
+        *tank("a", "T4100", 60000.0, 0.0),
+        *tank("b", "T4101", 61000.0, 0.0),
+        *tank("c", "T4102", 61000.0, 1000.0),
+        rec("L3", "LINE", PIPE, ((60500.0, 250.0), (61000.0, 250.0))),  # 0.5 m
+        rec("L4", "LINE", PIPE, ((61250.0, 500.0), (61250.0, 1000.0))),  # 0.5 m
+        text("D1", "Ø51", (10000.0, 260.0), 50.0),
+    ]
+
+
+def test_a_detail_drawn_twice_is_reported_and_left_out_on_request():
+    drawing = snap(detail_pid(), 4, "pid.dxf")
+    network = build_network(drawing, layers=[PIPE])
+    counted = pipe_rows(network, drawing, None, services=["product"])
+    (region,) = counted["detail_copies"]
+    assert (region["id"], region["tags"]) == ("D1", ["T4100", "T4101", "T4102"])
+    assert (region["kind"], region["base"]) == ("repeated", None)
+    assert region["box"][0] > 55000.0  # the compact copy, not the spread-out plant
+    assert counted["totals"]["net_m"] == pytest.approx(40.0, abs=EPS)  # 19.5 + 19.5 + 0.5 + 0.5
+    assert any("possible detail cop" in w and "D1" in w for w in counted["warnings"])
+    left_out = pipe_rows(network, drawing, None, services=["product"], exclude_regions=["D1"])
+    assert left_out["totals"]["net_m"] == pytest.approx(39.0, abs=EPS)
+    assert left_out["totals"]["excluded_m"] == pytest.approx(1.0, abs=EPS)
+    excluded = [c for c in left_out["control"] if c["kind"] == "excluded_region"]
+    assert {c["reason"] for c in excluded} == {"D1"} and len(excluded) == 2
+    with pytest.raises(ValueError, match="^exclude_regions: 'D9' unknown; the P&ID has D1"):
+        pipe_rows(network, drawing, None, services=["product"], exclude_regions=["D9"])
+
+
+def test_a_package_of_one_equipments_parts_is_reported_as_a_region():
+    # A skid drawn in detail: P200's own parts P200A / P200B / P200C sit close
+    # together at x = 60 m, far from the plant's tanks. Their tags are written
+    # once each - no copy - but the family is one package whose internal pipes
+    # a site takeoff may leave to its vendor: reported, left out on request.
+    records = [
+        *tank("A", "T4100", 0.0, 0.0),
+        *tank("B", "T4101", 20000.0, 0.0),
+        rec("L1", "LINE", PIPE, ((500.0, 250.0), (20000.0, 250.0))),  # 19.5 m
+        *tank("p", "P200A", 60000.0, 0.0),
+        *tank("q", "P200B", 61000.0, 0.0),
+        *tank("r", "P200C", 61000.0, 1000.0),
+        rec("L3", "LINE", PIPE, ((60500.0, 250.0), (61000.0, 250.0))),  # 0.5 m
+        rec("L4", "LINE", PIPE, ((61250.0, 500.0), (61250.0, 1000.0))),  # 0.5 m
+    ]
+    drawing = snap(records, 4, "pid.dxf")
+    network = build_network(drawing, layers=[PIPE])
+    counted = pipe_rows(network, drawing, None, services=["product"])
+    (region,) = counted["detail_copies"]
+    assert (region["kind"], region["base"]) == ("family", "P200")
+    assert region["tags"] == ["P200A", "P200B", "P200C"]
+    left_out = pipe_rows(network, drawing, None, services=["product"], exclude_regions=["D1"])
+    assert left_out["totals"]["net_m"] == pytest.approx(19.5, abs=EPS)
+    assert left_out["totals"]["excluded_m"] == pytest.approx(1.0, abs=EPS)
+
+
 def test_other_services_are_left_out_unless_asked(pair):
     pid, layout, network = pair
     assert DEFAULT_SERVICES == ("product", "cip_supply", "cip_return")

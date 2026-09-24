@@ -52,6 +52,11 @@ ATTRIBUTE_TAG_CONFIDENCE = 0.95
 TEXT_TAG_CONFIDENCE = 0.8
 ROOM_FACE_CONFIDENCE = 0.9
 ROOM_LABEL_CONFIDENCE = 0.6
+#: A room read from a closed frame around its label: weaker than wall faces.
+ROOM_FRAME_CONFIDENCE = 0.8
+#: A frame is a room only when each side is at least this many label text
+#: heights long: a box drawn tight around the label is no room.
+FRAME_MIN_TEXT_HEIGHTS = 10.0
 TITLE_NAME_CONFIDENCE = 0.9
 TITLE_ATTRIBUTE_CONFIDENCE = 0.6
 #: The face finder pairs every wall segment with every other; above this many
@@ -178,8 +183,12 @@ def find_rooms(records: Sequence[EntityRecord], *, tol: float, membership: dict)
     A label is any text `vocab.room_label` recognises. Wall layers are the
     ones `vocab.classify_layer` files under ``architecture``; their straight
     segments go through `engineering.arch.faces.planar_faces` (arcs are left
-    out and counted). ``labelled`` pairs each room row with its `Face` for a
-    caller that needs the geometry; ``rooms`` is JSON-ready.
+    out and counted). A label no wall face holds takes the smallest closed,
+    straight-sided polyline around it that holds no other room label and is at
+    least ``FRAME_MIN_TEXT_HEIGHTS`` label heights a side - how a P&ID draws
+    its rooms - at ``ROOM_FRAME_CONFIDENCE``. ``labelled`` pairs each room row
+    with its `Face` for a caller that needs the geometry; ``rooms`` is
+    JSON-ready.
     """
     labels = []
     for rec in records:
@@ -205,8 +214,12 @@ def find_rooms(records: Sequence[EntityRecord], *, tol: float, membership: dict)
     rooms: list[dict] = []
     labelled: list[tuple[dict, Face]] = []
     used: set[int] = set()
+    frames = _frames(records)
     for rec, parsed, at in labels:
         face = face_containing(faces, at) if faces else None
+        from_frame = None
+        if face is None and frames:
+            from_frame = _frame_around(rec, parsed, at, frames, labels)
         row = {
             "number": parsed.get("number"),
             "name": parsed.get("name"),
@@ -221,14 +234,16 @@ def find_rooms(records: Sequence[EntityRecord], *, tol: float, membership: dict)
         }
         if face is not None:
             used.add(id(face))
+        chosen = face or from_frame
+        if chosen is not None:
             row["face"] = {
-                "area": face.area,
-                "polygon": [[p[0], p[1]] for p in face.loop],
-                "centroid": [face.centroid[0], face.centroid[1]],
+                "area": chosen.area,
+                "polygon": [[p[0], p[1]] for p in chosen.loop],
+                "centroid": [chosen.centroid[0], chosen.centroid[1]],
             }
-            row["source"] = "label+face"
-            row["confidence"] = ROOM_FACE_CONFIDENCE
-            labelled.append((row, face))
+            row["source"] = "label+face" if face is not None else "label+frame"
+            row["confidence"] = ROOM_FACE_CONFIDENCE if face is not None else ROOM_FRAME_CONFIDENCE
+            labelled.append((row, chosen))
         rooms.append(row)
     rooms.sort(key=lambda r: (r["cluster"] or "", r["number"] or "", r["name"] or "", r["at"]))
     return {
@@ -240,6 +255,74 @@ def find_rooms(records: Sequence[EntityRecord], *, tol: float, membership: dict)
         "arcs_skipped": bulged,
         "skipped": skipped,
     }
+
+
+def _frames(records: Sequence[EntityRecord]) -> list[tuple[EntityRecord, Face]]:
+    """Closed, straight-sided polylines as faces: the frames a room may be drawn as."""
+    out = []
+    for rec in records:
+        if rec.type not in ("LWPOLYLINE", "POLYLINE") or not rec.closed or len(rec.points) < 3:
+            continue
+        if any(rec.bulges):
+            continue
+        face = _polygon_face(rec.points)
+        if face is not None:
+            out.append((rec, face))
+    return out
+
+
+def _polygon_face(points) -> Face | None:
+    pts = [(float(x), float(y)) for x, y in points]
+    signed = 0.0
+    cx = cy = 0.0
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:] + pts[:1], strict=True):
+        cross = x0 * y1 - x1 * y0
+        signed += cross
+        cx += (x0 + x1) * cross
+        cy += (y0 + y1) * cross
+    signed /= 2.0
+    if abs(signed) <= 0.0:
+        return None
+    centroid = (cx / (6.0 * signed), cy / (6.0 * signed))
+    if signed < 0.0:
+        pts.reverse()
+    start = min(range(len(pts)), key=lambda i: (pts[i][1], pts[i][0]))
+    loop = tuple(pts[start:] + pts[:start])
+    return Face(loop=loop, area=abs(signed), centroid=centroid)
+
+
+def _frame_around(rec, parsed, at, frames, labels) -> Face | None:
+    """The smallest frame around ``at`` that is a room: no label of another room
+    number in it (an unnumbered mention - 'hot room' - does not count), each side
+    at least FRAME_MIN_TEXT_HEIGHTS label heights."""
+    least = FRAME_MIN_TEXT_HEIGHTS * float(rec.height or 0.0)
+    best = None
+    for frame_rec, face in frames:
+        box = frame_rec.bbox or (
+            min(p[0] for p in face.loop),
+            min(p[1] for p in face.loop),
+            max(p[0] for p in face.loop),
+            max(p[1] for p in face.loop),
+        )
+        if not (box[0] <= at[0] <= box[2] and box[1] <= at[1] <= box[3]):
+            continue
+        if min(box[2] - box[0], box[3] - box[1]) < least:
+            continue
+        if face_containing([face], at) is None:
+            continue
+        others = [
+            other_at
+            for other, other_parsed, other_at in labels
+            if other is not rec
+            and other_parsed["number"]
+            and other_parsed["number"] != parsed["number"]
+            and face_containing([face], other_at) is not None
+        ]
+        if others:
+            continue
+        if best is None or face.area < best.area:
+            best = face
+    return best
 
 
 def drawing_units(snap: Snapshot, *, prep: dict | None = None, rooms: dict | None = None) -> dict:

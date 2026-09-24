@@ -915,7 +915,9 @@ async def cable_takeoff_roundup():
     truth = _plant_pair()
     rows = {
         row["tag"]: row
-        for row in cable_rows(read_snapshot(truth["pid"]), read_snapshot(truth["layout"]))["rows"]
+        for row in cable_rows(
+            read_snapshot(truth["pid"]), read_snapshot(truth["layout"]), panel_rule="stated"
+        )["rows"]
     }
     expected = {"M11": ("CP-1", 9), "T102": ("CP-1", 17), "M12": ("CP-2", 19), "T202": ("CP-2", 10)}
     for tag, (panel, metres) in expected.items():

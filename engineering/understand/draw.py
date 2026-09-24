@@ -16,6 +16,7 @@ from engineering.understand.network import build_network
 from engineering.understand.report import check_lang, write_workbook
 from engineering.understand.snapshot import take_snapshot
 from engineering.understand.takeoff import (
+    PANEL_RULES,
     cable_rows,
     check_allowance,
     check_pipe_options,
@@ -51,6 +52,7 @@ async def run_pipe_takeoff(
     force: bool = False,
     layers=None,
     tol: float | None = None,
+    exclude_regions=None,
 ) -> dict:
     """`pipe_rows` over a P&ID and an optional layout, plus the workbook when `output` is named.
 
@@ -85,6 +87,7 @@ async def run_pipe_takeoff(
             vertical_allowance=options["vertical_allowance"],
             length_source=options["length_source"],
             force=bool(force),
+            exclude_regions=tuple(exclude_regions or ()),
         )
 
     result = await asyncio.to_thread(compute)
@@ -105,15 +108,25 @@ async def run_cable_takeoff(
     lang: str = "en",
     allowance: float = 0.20,
     section_rules=None,
+    panel_rule: str = "nearest",
 ) -> dict:
     """`cable_rows` over a P&ID and an optional layout, plus the workbook when `output` is named."""
     check_lang(lang)
     allowance = check_allowance(allowance)
     rules = check_section_rules(section_rules)
+    if panel_rule not in PANEL_RULES:
+        raise ValueError(
+            f"panel_rule: {panel_rule!r} unknown; choose from {', '.join(PANEL_RULES)}"
+        )
     pid = await take_snapshot(backend, pid_path)
     layout = await take_snapshot(backend, layout_path) if layout_path else None
     result = await asyncio.to_thread(
-        cable_rows, pid, layout, allowance=allowance, section_rules=list(rules) or None
+        cable_rows,
+        pid,
+        layout,
+        allowance=allowance,
+        section_rules=list(rules) or None,
+        panel_rule=panel_rule,
     )
     result["files"] = (
         await asyncio.to_thread(write_workbook, result, kind="cable", lang=lang, path=output)

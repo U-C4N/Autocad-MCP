@@ -192,6 +192,34 @@ def test_without_a_layout_lengths_stay_empty_with_an_open_item(pair):
     assert all(row["panel"] is None for row in result["rows"])
 
 
+def test_a_load_no_callout_places_takes_the_nearest_panel_flagged(pair):
+    # M82's 'Wiring to CP1' callout is gone. By default the nearest panel on the
+    # layout is taken - CP-1 at hypot(13000, 2000) = 13.2 m, not CP-M88 at 23.1 m
+    # - and the row says so; with panel_rule='stated' the panel stays open.
+    pid, _layout = pair
+    layout = snap([r for r in layout_records() if r.handle != "wM82"], 4, "layout.dxf")
+    result = cable_rows(pid, layout)
+    m82 = by_tag(result)["M82"]
+    assert (m82["panel"], m82["panel_source"]) == ("CP-1", "nearest")
+    assert m82["length_m"] * 1000.0 == pytest.approx(15000.0, abs=1e-6)  # Manhattan
+    assert m82["cable_m"] == 18
+    assert {
+        "tag": "M82",
+        "item": "panel_inferred",
+        "detail": "no wiring callout names a panel; CP-1 is the nearest panel on the layout, "
+        "13.2 m away",
+    } in result["open_items"]
+    assert ("M82", "missing_panel") not in {(i["tag"], i["item"]) for i in result["open_items"]}
+    assert result["method"]["panel_rule"] == "nearest"
+    stated = cable_rows(pid, layout, panel_rule="stated")
+    assert by_tag(stated)["M82"]["panel"] is None
+    assert ("M82", "missing_panel") in {(i["tag"], i["item"]) for i in stated["open_items"]}
+    with pytest.raises(
+        ValueError, match="^panel_rule: 'closest' unknown; choose from nearest, stated"
+    ):
+        cable_rows(pid, layout, panel_rule="closest")
+
+
 def test_a_tag_missing_from_the_layout_is_an_open_item(pair):
     pid, _layout = pair
     layout = snap(layout_records(skip=("M87",)), 4, "layout.dxf")

@@ -837,7 +837,9 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
             if reasons:
                 pipe_mismatch.append({"run": run["id"], "reason": "; ".join(reasons)})
 
-        cable = {row["tag"]: row for row in cable_rows(pid, layout)["rows"]}
+        # panel_rule="stated": the gate reads what the drawing says; a nearest-panel
+        # guess is no evidence
+        cable = {row["tag"]: row for row in cable_rows(pid, layout, panel_rule="stated")["rows"]}
         cable_mismatch = []
         for want in truth["cable_rows"]:
             got = cable.get(want["tag"])

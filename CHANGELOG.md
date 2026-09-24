@@ -401,6 +401,28 @@ member. Spec: `docs/superpowers/specs/2026-09-24-v1.6-understand-design.md`.
     naming the room it serves, or a note pointing into a room. An unnumbered
     label naming equipment is no room. Without room faces, when the drawing
     numbers its rooms, only numbered labels take pieces.
+  - The bare Russian "to" before a panel (`к CP1`, `к щиту CP-2`) is a
+    wiring callout.
+- **Track H, what the field test asked for** (each with a synthetic test):
+  - **Rooms drawn as frames.** A room label no wall face holds takes the
+    smallest closed, straight-sided polyline around it that holds no other
+    room number and is at least ten label heights a side (`label+frame`,
+    confidence 0.8). This is how a P&ID draws its rooms, so P&ID lengths are
+    cut at the room frames.
+  - **The nearest panel, flagged.** `cable_takeoff(panel_rule="nearest")`,
+    the default: a load that no callout places, whose tag is on the layout,
+    takes the nearest panel there. Only names with a panel prefix
+    (`is_panel_name`: CP, JB, DB, MCC ...) or names a callout gives are
+    candidates. The row is flagged `panel_inferred`, and an inferred panel
+    never makes a package. `panel_rule="stated"` leaves such a load open. The
+    benchmark and the correctness check read stated panels only.
+  - **Possible packages and detail copies.** `pipe_takeoff` reports
+    `detail_copies`: compact groups of tags drawn twice (`repeated`), and
+    compact groups of one equipment's own parts, such as M150B, M150C and
+    M150D of M150 (`family`). A pasteurizer drawn in detail, whose internal
+    pipes its vendor supplies, shows up this way. Nothing is removed until
+    `exclude_regions=["D2"]` names it. The excluded runs go to the control
+    rows as `excluded_region` and are totalled in `excluded_m`.
 
 ### Changed
 

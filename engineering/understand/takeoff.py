@@ -27,11 +27,17 @@ drawing.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Iterable
 
 from engineering.arch.faces import face_containing
 from engineering.understand.describe import FACE_TOL_FRACTION, drawing_units, find_rooms, prepare
-from engineering.understand.labels import normalize_panel, parse_electrical, wiring_target
+from engineering.understand.labels import (
+    is_panel_name,
+    normalize_panel,
+    parse_electrical,
+    wiring_target,
+)
 from engineering.understand.network import (
     MODEL,
     TEXT_TYPES,
@@ -371,6 +377,150 @@ def _pid_cells(edges, regions: dict, m_per_unit: float) -> dict:
     return cells
 
 
+#: How a load no callout places gets its panel: the nearest one on the layout
+#: (flagged ``panel_inferred``), or none (``missing_panel``).
+PANEL_RULES = ("nearest", "stated")
+
+
+def _nearest_panel(here: Pt, panel_at: dict, *, exclude=None) -> tuple[str, float] | None:
+    """(panel, distance in layout units) of the panel nearest ``here``; ties by name."""
+    candidates = [(math.dist(here, p), name) for name, p in panel_at.items() if name != exclude]
+    if not candidates:
+        return None
+    distance, name = min(candidates)
+    return name, distance
+
+
+#: Detail copies: tags drawn twice are grouped when their occurrences lie within
+#: this share of the P&ID's robust diagonal of each other (single linkage) ...
+DETAIL_LINK_SHARE = 0.03
+#: ... and a group is a possible detail copy when it holds at least this many
+#: distinct repeated tags, each of which also stands somewhere outside it. The
+#: same count of an equipment's own parts (M150 -> M150B, M150C, M150D) standing
+#: within DETAIL_FAMILY_SHARE of the diagonal is a possible package or detail.
+DETAIL_MIN_TAGS = 3
+DETAIL_FAMILY_SHARE = 0.15
+_FAMILY_TAG = re.compile(r"^(?P<base>[A-Z]{1,4}-?\d{1,5})(?P<part>[A-Z]{1,2})$")
+
+
+def detail_copy_regions(pid: Snapshot, *, prep: dict | None = None) -> list[dict]:
+    """Where a P&ID may draw pipes twice: ``[{"id", "box", "tags", "kind", "base"}]``.
+
+    ``repeated``: tags written more than once (readings of one tag closer than
+    half the link are one) grouped by where they stand; a compact group of at
+    least ``DETAIL_MIN_TAGS`` such tags, every one also written outside it, is a
+    possible detail copy. ``family``: at least ``DETAIL_MIN_TAGS`` parts of one
+    equipment (``M150B``, ``M150C`` ... of ``M150``) standing close together, a
+    possible package or detail whose internal pipes a site takeoff may leave to
+    its vendor. Ids run D1, D2 ... from the left. A heuristic that reports and
+    never removes: the caller decides.
+    """
+    prep = prep or prepare(pid)
+    link = DETAIL_LINK_SHARE * prep["diag"]
+    if link <= 0.0:
+        return []
+    occurrences = {
+        tag: [place["at"] for place in places] for tag, places in tag_occurrences(pid).items()
+    }
+    points = [
+        (tag, at)
+        for tag, places in occurrences.items()
+        for at in _distinct(places, link / 2.0)
+        if len(_distinct(places, link / 2.0)) > 1
+    ]
+    parent = list(range(len(points)))
+
+    def find(k: int) -> int:
+        while parent[k] != k:
+            parent[k] = parent[parent[k]]
+            k = parent[k]
+        return k
+
+    grid: dict[tuple[int, int], list[int]] = {}
+    for k, (_tag, at) in enumerate(points):
+        grid.setdefault((math.floor(at[0] / link), math.floor(at[1] / link)), []).append(k)
+    for (cx, cy), members in grid.items():
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for j in grid.get((cx + dx, cy + dy), ()):
+                    for i in members:
+                        if i < j and math.dist(points[i][1], points[j][1]) <= link:
+                            parent[find(i)] = find(j)
+    groups: dict[int, list[int]] = {}
+    for k in range(len(points)):
+        groups.setdefault(find(k), []).append(k)
+    total = {}
+    for tag, _at in points:
+        total[tag] = total.get(tag, 0) + 1
+    regions = []
+    for members in groups.values():
+        tags = sorted({points[k][0] for k in members})
+        if len(tags) < DETAIL_MIN_TAGS:
+            continue
+        here = {}
+        for k in members:
+            here[points[k][0]] = here.get(points[k][0], 0) + 1
+        if any(here[tag] >= total[tag] for tag in tags):
+            continue  # a tag written only here: this is where it lives, not a copy
+        xs = [points[k][1][0] for k in members]
+        ys = [points[k][1][1] for k in members]
+        regions.append(
+            {
+                "box": [min(xs) - link, min(ys) - link, max(xs) + link, max(ys) + link],
+                "tags": tags,
+                "kind": "repeated",
+                "base": None,
+            }
+        )
+    families: dict[str, dict[str, list]] = {}
+    for tag, places in occurrences.items():
+        match = _FAMILY_TAG.match(tag)
+        if match:
+            families.setdefault(match["base"], {})[tag] = places
+    for base, parts in sorted(families.items()):
+        if len(parts) < DETAIL_MIN_TAGS:
+            continue
+        xs = [p[0] for places in parts.values() for p in places]
+        ys = [p[1] for places in parts.values() for p in places]
+        if math.hypot(max(xs) - min(xs), max(ys) - min(ys)) > DETAIL_FAMILY_SHARE * prep["diag"]:
+            continue
+        regions.append(
+            {
+                "box": [min(xs) - link, min(ys) - link, max(xs) + link, max(ys) + link],
+                "tags": sorted(parts),
+                "kind": "family",
+                "base": base,
+            }
+        )
+    regions.sort(key=lambda region: (region["box"][0], region["box"][1]))
+    return [{"id": f"D{i}", **region} for i, region in enumerate(regions, start=1)]
+
+
+def _distinct(places, radius: float) -> list:
+    """The places of one tag, readings closer than ``radius`` to a kept one dropped."""
+    kept: list = []
+    for at in places:
+        if all(math.dist(at, other) > radius for other in kept):
+            kept.append(at)
+    return kept
+
+
+def _majority_region(edges, boxes: dict) -> str | None:
+    """The region holding more than half a run's drawn length, by piece midpoints."""
+    total = sum(edge["length"] for edge in edges)
+    if not boxes or total <= 0.0:
+        return None
+    share: dict[str, float] = {}
+    for edge in edges:
+        mid = ((edge["a"][0] + edge["b"][0]) / 2.0, (edge["a"][1] + edge["b"][1]) / 2.0)
+        for region_id, box in boxes.items():
+            if box[0] <= mid[0] <= box[2] and box[1] <= mid[1] <= box[3]:
+                share[region_id] = share.get(region_id, 0.0) + edge["length"]
+                break
+    best = max(share.items(), key=lambda item: item[1], default=None)
+    return best[0] if best is not None and best[1] > total / 2.0 else None
+
+
 def _reasons(flagged: list[dict]) -> str:
     counts: dict[str, int] = {}
     for run in flagged:
@@ -389,6 +539,7 @@ def pipe_rows(
     vertical_allowance=0.0,
     length_source="auto",
     force=False,
+    exclude_regions=(),
 ) -> dict:
     """Takeoff rows by room x service x diameter, with the runs, checks and method behind them.
 
@@ -410,6 +561,15 @@ def pipe_rows(
     P&ID has room faces, else the nearest room label). On the layout a run
     holding several diameters shares its routed length among them in
     proportion to their drawn length on the P&ID.
+
+    Detail copies: where several tags the P&ID draws twice sit close together
+    (`detail_copy_regions`), a detail of equipment may repeat its pipes. Each
+    such region is reported in ``detail_copies`` and counted like any other
+    drawing; a run with more than half its drawn length in a region named in
+    ``exclude_regions`` is left out, listed in ``control`` as
+    ``excluded_region`` and totalled in ``excluded_m``. An unknown region id is
+    refused with the ids the P&ID has. Which copy is the detail is the
+    engineer's call: the drawing does not say.
     """
     options = check_pipe_options(
         services=services,
@@ -442,13 +602,45 @@ def pipe_rows(
     )
     m_pid = pid_unit["m_per_unit"]
     m_layout = layout_unit["m_per_unit"] if layout_unit else None
+    copies = detail_copy_regions(pid, prep=prep_pid)
+    known_ids = [region["id"] for region in copies]
+    left_out = [str(region_id) for region_id in (exclude_regions or ())]
+    for region_id in left_out:
+        if region_id not in known_ids:
+            raise ValueError(
+                f"exclude_regions: {region_id!r} unknown; the P&ID has "
+                f"{', '.join(known_ids) or 'no detail copy'}"
+            )
+    boxes = {region["id"]: region["box"] for region in copies}
+    for region in copies:
+        region["pipe_m"] = 0.0
+        region["excluded"] = region["id"] in left_out
 
     rows: dict[tuple[str, str, str], dict] = {}
     runs_out, control, excluded = [], [], {}
+    excluded_m = 0.0
     for run in network["runs"]:
         if run.service not in options["services"]:
             excluded[run.service] = excluded.get(run.service, 0) + 1
             continue
+        inside = _majority_region(run.edges, boxes)
+        if inside is not None:
+            region = next(r for r in copies if r["id"] == inside)
+            region["pipe_m"] += sum(edge["length"] for edge in run.edges) * m_pid
+            if inside in left_out:
+                drawn_m = sum(edge["length"] for edge in run.edges) * m_pid
+                excluded_m += drawn_m
+                control.append(
+                    {
+                        "run": run.id,
+                        "kind": "excluded_region",
+                        "service": run.service,
+                        "tags": list(run.tags),
+                        "schematic_m": drawn_m,
+                        "reason": inside,
+                    }
+                )
+                continue
         ends = network["attachments"].get(run.id, [])
         drawn = sum(edge["length"] for edge in run.edges)
         schematic_m = drawn * m_pid
@@ -621,6 +813,17 @@ def pipe_rows(
             "control rows, not in the table. length_source='pid' with force=True measures "
             "every run on the P&ID instead, and says the scale is not verified."
         )
+    counted_copies = [region for region in copies if not region["excluded"]]
+    if counted_copies:
+        listed = "; ".join(
+            f"{region['id']}: {', '.join(region['tags'])} ({region['pipe_m']:.1f} m)"
+            for region in counted_copies
+        )
+        warnings.append(
+            f"{len(counted_copies)} possible detail cop{'y' if len(counted_copies) == 1 else 'ies'} "
+            f"- tags drawn twice, close together - are counted like the rest ({listed}). If one "
+            "repeats pipes drawn elsewhere, pass its id in exclude_regions."
+        )
     if not scale_verified:
         warnings.append(
             "scale_verified: false - lengths are drawn lengths on a P&ID that no scale check "
@@ -640,7 +843,9 @@ def pipe_rows(
             "allowance_m": net_total * allowance,
             "total_m": net_total * (1.0 + allowance),
             "flagged_runs": sum(1 for r in runs_out if r["status"] == "C"),
+            "excluded_m": excluded_m,
         },
+        "detail_copies": copies,
         "length_source": source,
         "scale": scale,
         "scale_verified": scale_verified,
@@ -660,6 +865,7 @@ def pipe_rows(
             "overlap_length_m": network["stats"]["overlap_length"] * m_pid,
             "route": "rectilinear MST of the tag positions; each connection x first, then y",
             "rooms": _rooms_mode(regions),
+            "exclude_regions": left_out,
         },
     }
 
@@ -742,14 +948,22 @@ def _inside_box(p: Pt, box) -> bool:
 
 
 def cable_rows(
-    pid: Snapshot, layout: Snapshot | None, *, allowance=0.20, section_rules=None
+    pid: Snapshot,
+    layout: Snapshot | None,
+    *,
+    allowance=0.20,
+    section_rules=None,
+    panel_rule="nearest",
 ) -> dict:
     """One row per electrical load, the cable method made repeatable (spec §9).
 
     Loads are the P&ID tags with electrical texts near them (`parse_electrical`:
     kW, phases, voltage, + N, VFD) and the tags a wiring callout names. The
     panel comes from the layout's callouts (`wiring_target`: 'Wiring to CP1'
-    -> CP-1), else the P&ID's. The length is the Manhattan distance on the
+    -> CP-1), else the P&ID's; with ``panel_rule='nearest'`` (the default) a
+    load no callout places, whose tag is on the layout, takes the nearest panel
+    there and is flagged ``panel_inferred`` - ``'stated'`` leaves it open. An
+    inferred panel never makes a load part of a package. The length is the Manhattan distance on the
     layout from the load's tag to its panel's tag, and the cable is
     `roundup_m(length, allowance)`. **Power is never invented**: a load with no
     stated kW keeps an empty cell and an open item. With no layout, lengths
@@ -763,6 +977,10 @@ def cable_rows(
     """
     allowance = check_allowance(allowance)
     rules = check_section_rules(section_rules)
+    if panel_rule not in PANEL_RULES:
+        raise ValueError(
+            f"panel_rule: {panel_rule!r} unknown; choose from {', '.join(PANEL_RULES)}"
+        )
     pid_places = {tag: [p["at"] for p in places] for tag, places in tag_occurrences(pid).items()}
     pid_search = CABLE_SEARCH_SHARE * label_search_default(pid)
 
@@ -825,6 +1043,8 @@ def cable_rows(
         room_regions(layout, cluster, prep=prep_layout) if layout is not None else room_regions(pid)
     )
 
+    # the panels a callout names anywhere, besides every tag with a panel prefix
+    named = {target for target, _source in panels.values()}
     rows, items = [], []
     for tag in sorted(set(loads) | set(panels)):
         texts = sorted(loads.get(tag, []), key=lambda item: item[:2])
@@ -841,6 +1061,16 @@ def cable_rows(
         phases = next((f["phases"] for _d, _h, f in texts if f["phases"]), None)
         voltage = next((f["voltage"] for _d, _h, f in texts if f["voltage"]), None)
         panel, panel_source = panels.get(tag, (None, None))
+        inferred = None
+        if panel is None and panel_rule == "nearest" and layout is not None:
+            here_now = positions.get(tag)
+            if here_now is not None:
+                candidates = {
+                    name: p for name, p in panel_at.items() if name in named or is_panel_name(name)
+                }
+                inferred = _nearest_panel(here_now, candidates, exclude=normalize_panel(tag))
+                if inferred is not None:
+                    panel, panel_source = inferred[0], "nearest"
         row = {
             "tag": tag,
             "room": "",
@@ -872,6 +1102,16 @@ def cable_rows(
                     "tag": tag,
                     "item": "missing_panel",
                     "detail": "no wiring callout names a panel for this tag",
+                }
+            )
+        elif panel_source == "nearest":
+            items.append(
+                {
+                    "tag": tag,
+                    "item": "panel_inferred",
+                    "detail": "no wiring callout names a panel; "
+                    f"{panel} is the nearest panel on the layout, "
+                    f"{inferred[1] * layout_unit['m_per_unit']:.1f} m away",
                 }
             )
         if rules and kw is not None and row["section"] is None:
@@ -918,7 +1158,9 @@ def cable_rows(
         (normalize_panel(r["tag"]) or r["tag"]): r["tag"] for r in rows if r["kw"] is not None
     }
     for row in rows:
-        owner = stated.get(row["panel"]) if row["panel"] else None
+        # only a panel the drawing names makes a package; a nearest guess does not
+        known = row["panel"] and row["panel_source"] != "nearest"
+        owner = stated.get(row["panel"]) if known else None
         if owner is not None and owner != row["tag"]:
             row["package"] = owner
 
@@ -959,6 +1201,7 @@ def cable_rows(
             "allowance": allowance,
             "search": {"pid": pid_search, "layout": layout_search},
             "section_rules": [dict(rule) for rule in rules],
+            "panel_rule": panel_rule,
             "rooms": _rooms_mode(regions),
         },
     }

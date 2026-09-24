@@ -11,6 +11,7 @@ import pytest
 
 from engineering.understand.labels import (
     CYRILLIC_LOOKALIKES,
+    is_panel_name,
     normalize_panel,
     parse_diameters,
     parse_electrical,
@@ -210,6 +211,15 @@ def test_wiring_callouts_in_four_languages():
     )
     assert wiring_target("bedrading naar CP3") == "CP-3"
     assert wiring_target("CP 2 panosuna") == "CP-2"
+
+
+def test_a_panel_name_is_told_by_its_letters():
+    # normalize_panel reads any letters-and-digits token; only a panel prefix
+    # (control panel, junction box, distribution board, MCC ...) makes a panel
+    assert is_panel_name("CP-1") and is_panel_name("JB-2") and is_panel_name("CP-M82")
+    assert is_panel_name("MCC-3") and is_panel_name("DB-12")
+    assert not is_panel_name("M-87") and not is_panel_name("T-4100")
+    assert not is_panel_name(None) and not is_panel_name("")
 
 
 def test_the_russian_to_before_a_panel_is_a_wiring_callout():
