@@ -599,10 +599,20 @@ async def test_tool_group_sizes_are_unchanged():
     `drawing_scale_check`, tagged the same, followed it (13 -> 14). This
     snapshot is branch-local: the track H merge task recomputes it once the
     understand, network and diff branches have landed.
+
+    Track H group D opened its copy of SECTION 26 (Understanding & QA) with
+    `drawing_diff` and `drawing_topology_check`, both tagged `analysis` and
+    `query`; `analysis` outranks `query` in `_GROUP_TAG_PRIORITY`, so both file
+    under `analysis` (12 -> 14). This snapshot is branch-local: the track H
+    merge recomputes it once the understand, network and diff branches have
+    landed.
+
+    Merged, the two SECTION 26 halves file all four readers under `analysis`
+    (12 -> 16).
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
-        "analysis": 14,
+        "analysis": 16,
         "architecture": 12,
         "batch": 3,
         "blocks": 9,
@@ -629,4 +639,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 243
+    assert sum(sizes.values()) == 245

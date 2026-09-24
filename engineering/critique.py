@@ -420,6 +420,10 @@ from .arch.critique import ARCH_DISPATCH  # noqa: E402  (same reason: after the 
 
 _FOCUS_DISPATCH.update(ARCH_DISPATCH)
 
+from .understand.critique import TOPO_DISPATCH  # noqa: E402  (same reason: after the base focuses)
+
+_FOCUS_DISPATCH.update(TOPO_DISPATCH)
+
 
 async def run_critique(
     backend: AutoCADBackend,

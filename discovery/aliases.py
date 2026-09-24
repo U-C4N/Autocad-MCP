@@ -2513,6 +2513,31 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "масштаб",
         ),
     ),
+    # ── Understanding & QA (SECTION 26, track H group D) ────────────────────
+    "drawing_diff": ToolAliases(
+        acad=("COMPARE",),
+        synonyms=(
+            "compare two drawings",
+            "compare two revisions",
+            "what changed between revisions",
+            "drawing differences",
+            "cloud the changes",
+            "revizyonlar arası değişiklik",
+            "revizyonlar arasi degisiklik",
+        ),
+    ),
+    "drawing_topology_check": ToolAliases(
+        synonyms=(
+            "dangling pipe ends",
+            "pipes that do not connect",
+            "gaps in the pipe network",
+            "unconnected cable ends",
+            "network connectivity check",
+            "açık uçlar",
+            "acik uclar",
+            "kopuk hatlar",
+        ),
+    ),
 }
 
 

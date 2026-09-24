@@ -36,6 +36,9 @@ CritiqueFocus = Literal[
     "arch_room_unlabelled",
     "arch_wall_gap",
     "arch_opening_clash",
+    "topo_dangling_endpoint",
+    "topo_near_miss",
+    "topo_interior_crossing",
 ]
 SnapType = Literal["end", "mid", "center", "quad", "int", "perp", "near"]
 
@@ -62,6 +65,9 @@ ALL_CRITIQUE_FOCUSES: tuple[CritiqueFocus, ...] = (
     "arch_room_unlabelled",
     "arch_wall_gap",
     "arch_opening_clash",
+    "topo_dangling_endpoint",
+    "topo_near_miss",
+    "topo_interior_crossing",
 )
 
 

@@ -3,13 +3,13 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 243,
+    "tools": 245,
     "resources": 8,
     "prompts": 5,
     "groups": 26
   },
   "groups": {
-    "analysis": 14,
+    "analysis": 16,
     "architecture": 12,
     "batch": 3,
     "blocks": 9,
@@ -898,6 +898,20 @@
       }
     },
     {
+      "name": "drawing_diff",
+      "group": "analysis",
+      "cost": "mutate",
+      "summary": "Compare two revisions of a drawing: what moved, changed, was added or removed.",
+      "tags": [
+        "analysis",
+        "query"
+      ],
+      "annotations": {
+        "title": "Drawing: Diff Two Revisions",
+        "destructiveHint": false
+      }
+    },
+    {
       "name": "drawing_export_dwg",
       "group": "sheet",
       "cost": "safe",
@@ -1173,6 +1187,20 @@
       "annotations": {
         "title": "Save As Template",
         "destructiveHint": false
+      }
+    },
+    {
+      "name": "drawing_topology_check",
+      "group": "analysis",
+      "cost": "read",
+      "summary": "Find dangling ends, near misses and unjoined crossings in a pipe or cable network.",
+      "tags": [
+        "analysis",
+        "query"
+      ],
+      "annotations": {
+        "title": "Drawing: Topology Check",
+        "readOnlyHint": true
       }
     },
     {
