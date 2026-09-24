@@ -10,6 +10,7 @@ Strategy:
 
 from __future__ import annotations
 
+import importlib.util
 import math
 import sys
 from types import SimpleNamespace
@@ -20,6 +21,13 @@ import pytest
 
 from backends.base import normalize_lineweight
 from backends.com_backend import ComBackend
+
+#: A path that marshals a point or an object array builds a real pywin32 VARIANT,
+#: and pywin32 exists only on Windows. The Windows lane runs these; elsewhere
+#: they skip, like the suite's other VARIANT-dependent COM tests.
+needs_pywin32 = pytest.mark.skipif(
+    importlib.util.find_spec("win32com") is None, reason="pywin32 not installed"
+)
 
 
 @pytest.mark.asyncio
@@ -1312,6 +1320,7 @@ def _square(x0, y0, size):
 
 
 @pytest.mark.asyncio
+@needs_pywin32
 async def test_a_chain_of_lines_becomes_one_closed_polyline_loop(island_seat):
     """A flattened bore is 180 line edges; one temporary polyline carries them
     in a single COM call and is deleted once the hatch has evaluated it."""
@@ -1327,6 +1336,7 @@ async def test_a_chain_of_lines_becomes_one_closed_polyline_loop(island_seat):
 
 
 @pytest.mark.asyncio
+@needs_pywin32
 async def test_arcs_stay_true_arcs_in_radians_and_clockwise_is_swapped(island_seat):
     """Curved-edge fidelity is the reason this tool exists: an arc edge becomes
     an AcDbArc, never a chord chain. ActiveX arcs run counter-clockwise, so a
@@ -1355,6 +1365,7 @@ async def test_arcs_stay_true_arcs_in_radians_and_clockwise_is_swapped(island_se
 
 
 @pytest.mark.asyncio
+@needs_pywin32
 async def test_a_loop_autocad_refuses_is_taken_back_out(island_seat):
     """AutoCAD answers an open loop with E_FAIL (measured); the temporary
     entities are deleted and the call says nothing was added."""

@@ -265,6 +265,21 @@ member. Spec: `docs/superpowers/specs/2026-09-24-v1.6-understand-design.md`.
 
 ### Fixed
 
+- **Every tool call raised `RecursionError` after a few hundred in-process
+  sessions.** fastmcp 3's `enable()` / `disable()` append a Visibility
+  transform per call, and a tool lookup walks the whole transform stack as
+  nested calls. `_apply_tool_profile` runs in the lifespan, once per client
+  connection, so each session stacked two more layers. The first Linux CI run
+  of the 1.6 tree found it: on CPython 3.11, which counts C frames against the
+  recursion limit, `system_status` itself failed from about 90 % of the suite
+  on. The profile's transforms now replace the previous ones instead of
+  stacking on them, the idiom `_apply_discovery_mode` already used, and a test
+  switches the profile 600 times and then calls a tool.
+- The same CI run failed 21 fake-ActiveX tests off Windows (they build a real
+  pywin32 VARIANT and now skip without pywin32, like the suite's other
+  VARIANT-dependent COM tests; the Windows lane runs them), and a test that
+  spelled a path through a directory it never created, which only Windows
+  normalises away.
 - **Found by the 1.6.0 README renders** (each with a test that fails on the
   old code):
   - The exterior dimension chains of `arch_dimension_chains` and

@@ -22,6 +22,11 @@ from backends.contracts.refs import (
 )
 from backends.ezdxf_backend import EzdxfBackend
 
+#: A path that marshals a point or an object array builds a real pywin32 VARIANT,
+#: and pywin32 exists only on Windows. The Windows lane runs these; elsewhere
+#: they skip, like the suite's other VARIANT-dependent COM tests.
+needs_pywin32 = pytest.mark.skipif(find_spec("win32com") is None, reason="pywin32 not installed")
+
 TRACK_G_KEYS = ("dwg_write", "xref_live", "xlsx_write")
 
 
@@ -385,6 +390,7 @@ class _ComDoc:
 
 
 @pytest.mark.asyncio
+@needs_pywin32
 async def test_com_attach_calls_the_measured_member_with_radians(monkeypatch, external):
     import math
 
@@ -478,6 +484,7 @@ async def test_com_attach_refuses_a_plain_block_of_the_same_name_case_insensitiv
 
 
 @pytest.mark.asyncio
+@needs_pywin32
 async def test_com_attach_still_works_when_no_block_of_that_name_exists(monkeypatch, external):
     import backends.com_backend as cb
 
@@ -489,6 +496,7 @@ async def test_com_attach_still_works_when_no_block_of_that_name_exists(monkeypa
 
 
 @pytest.mark.asyncio
+@needs_pywin32
 async def test_com_raster_calls_addraster_with_radians(monkeypatch, tmp_path):
     import math
 

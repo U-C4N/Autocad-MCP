@@ -1089,6 +1089,9 @@ PACK_TOOL_NAMES: dict[str, frozenset[str]] = {
 }
 
 _active_tool_profile: dict | None = None
+#: The Visibility transforms the last _apply_tool_profile added, detached before
+#: the next one is applied.
+_profile_transforms: list = []
 
 
 def _enabled_packs() -> tuple[set[str], list[str]]:
@@ -1160,10 +1163,23 @@ async def _apply_tool_profile(profile: str | None = None) -> dict:
     registered = {tool.name for tool in await _registered_tools() if getattr(tool, "name", None)}
     enabled = _profile_enabled_names(selected, registered)
     disabled = sorted(registered - enabled)
+    # Replace the previous profile's visibility, never stack on it. fastmcp 3's
+    # enable()/disable() append a Visibility transform per call and a tool lookup
+    # walks the whole stack as nested calls; the lifespan runs this on every
+    # client connection, so an in-process server grew two layers per session
+    # until every tool call raised RecursionError (Linux CI, CPython 3.11). The
+    # same detach-first idiom as _apply_discovery_mode.
+    for transform in _profile_transforms:
+        try:
+            mcp._transforms.remove(transform)
+        except (AttributeError, ValueError) as exc:  # pragma: no cover - layout change
+            log.debug("Could not detach a tool-profile transform: %s", exc)
+    before = list(mcp.transforms)
     if enabled:
         mcp.enable(names=set(enabled))
     if disabled:
         mcp.disable(names=set(disabled))
+    _profile_transforms[:] = [t for t in mcp.transforms if not any(t is b for b in before)]
     _active_tool_profile = {
         "profile": selected,
         "registered_count": len(registered),

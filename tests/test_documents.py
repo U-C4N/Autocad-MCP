@@ -190,6 +190,9 @@ async def test_save_to_the_document_own_path_is_not_a_collision(backend, tmp_pat
     assert (await backend.drawing_save(str(path)))["ok"] is True
     await backend.entity_create_circle(0, 0, 3)
     # A spelling that differs from the key still names the same file.
+    # POSIX resolves sub/.. through the directory, so it must exist; Windows
+    # normalises the spelling before it looks.
+    (tmp_path / "sub").mkdir()
     spelled = str(tmp_path / "sub" / ".." / "self.dxf")
     assert (await backend.drawing_save_as(spelled))["ok"] is True
     assert len(await backend.document_list()) == 2

@@ -120,3 +120,25 @@ async def test_profile_switch_is_idempotent():
     assert set(info["disabled_tools"]) == set(server.SOLID_TOOL_NAMES)
     lean_again = await server._apply_tool_profile("lean")
     assert lean_again["enabled_count"] == len(server.LEAN_TOOL_NAMES)
+
+
+async def test_reapplying_a_profile_replaces_its_visibility_instead_of_stacking(monkeypatch):
+    # fastmcp 3 appends a Visibility transform on every enable/disable call, and a
+    # tool lookup walks the whole stack as nested calls. The lifespan re-applies
+    # the profile on every client connection, so the stack grew by two per
+    # session: after a few hundred in-process sessions every tool call raised
+    # RecursionError (Linux CI, CPython 3.11, which counts C frames too).
+    await server._apply_tool_profile("full")
+    depth = len(server.mcp.transforms)
+    for _ in range(300):
+        await server._apply_tool_profile("lean")
+        await server._apply_tool_profile("full")
+    assert len(server.mcp.transforms) == depth
+
+    monkeypatch.setenv("AUTOCAD_MCP_BACKEND", "ezdxf")
+    monkeypatch.setattr(config.settings, "tool_profile", "lean")
+    async with Client(server.mcp) as client:
+        visible = {tool.name for tool in await client.list_tools()}
+        status = (await client.call_tool("system_status", {})).structured_content
+    assert visible == set(server.LEAN_TOOL_NAMES)
+    assert status["backend"] == "ezdxf"

@@ -9,11 +9,19 @@ is dispatched at all).
 
 from __future__ import annotations
 
+import importlib.util
 import types
 
 import pytest
 
 from backends.base import EntityInfo
+
+#: A path that marshals a point or an object array builds a real pywin32 VARIANT,
+#: and pywin32 exists only on Windows. The Windows lane runs these; elsewhere
+#: they skip, like the suite's other VARIANT-dependent COM tests.
+needs_pywin32 = pytest.mark.skipif(
+    importlib.util.find_spec("win32com") is None, reason="pywin32 not installed"
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -251,6 +259,7 @@ async def test_a_non_string_block_name_is_a_type_error_on_both_placing_tools(bac
         await backend.block_insert("", 0, 0)
 
 
+@needs_pywin32
 async def test_com_block_ref_probes_the_block_table_before_insert_block(com):
     backend, document, space = com
     with pytest.raises(ValueError, match="'NO_SUCH_BLOCK' is not defined"):
@@ -332,6 +341,7 @@ async def test_explode_refuses_a_non_insert_without_writing(backend):
     assert len(list(backend._msp())) == before
 
 
+@needs_pywin32
 async def test_com_explode_deletes_attdefs_adds_text_per_attrib_and_deletes_the_reference(com):
     backend, document, space = com
     attdef = _FakeObject("AcDbAttributeDefinition", "D1", Constant=False)
@@ -395,6 +405,7 @@ async def test_com_explode_refuses_a_non_insert_before_any_call(com):
     assert space.calls == []
 
 
+@needs_pywin32
 async def test_com_explode_adds_the_text_to_the_owner_block_not_the_active_layout(com):
     """ActiveX ``Explode()`` places the members in the owner space; the tag
     TEXT must land beside them, not in whatever tab is active."""
@@ -456,6 +467,7 @@ async def test_com_explode_refuses_a_nested_reference_before_explode(com):
     assert dispatched == [] and space.calls == [] and ref.deleted is False
 
 
+@needs_pywin32
 async def test_com_explode_carries_the_attrib_frame_and_style_onto_the_text(com):
     """The COM twin of the mirrored-reference test. ``AddText`` builds a +Z
     TEXT; an ATTRIB reflected to ``Normal (0, 0, -1)`` has an OCS ``Rotation``
@@ -541,6 +553,7 @@ async def test_com_explode_carries_the_attrib_frame_and_style_onto_the_text(com)
     }
 
 
+@needs_pywin32
 async def test_com_explode_skips_frame_members_the_attrib_does_not_expose(com):
     """A bare ATTRIB (the shape the earlier fakes use) still explodes: an
     absent optional member is skipped, never written as a guess, and a
@@ -580,6 +593,7 @@ async def test_com_explode_skips_frame_members_the_attrib_does_not_expose(com):
     assert names == ["Rotation", "Alignment", "Layer"]
 
 
+@needs_pywin32
 async def test_com_explode_turns_a_constant_attdef_into_text_instead_of_deleting_it(com):
     """``GetAttributes()`` excludes constant attributes (``GetConstantAttributes()``
     lists them) and ``Explode()`` returns each as an ``AcDbAttributeDefinition``
@@ -645,6 +659,7 @@ async def test_com_explode_turns_a_constant_attdef_into_text_instead_of_deleting
     ], "the constant ATTDEF's placement, angle and alignment ride onto its TEXT"
 
 
+@needs_pywin32
 async def test_com_explode_falls_back_to_the_constant_tag_list_when_constant_is_absent(com):
     """An object that does not expose ``Constant`` is still recognised through
     ``GetConstantAttributes()``; a value-less placeholder is still just deleted."""
@@ -937,6 +952,7 @@ async def test_explode_of_a_single_cell_grid_is_still_an_ordinary_insert(backend
     assert [(await backend.entity_get(h)).type for h in result["inserted_handles"]] == ["CIRCLE"]
 
 
+@needs_pywin32
 async def test_com_explode_turns_a_multi_line_attrib_into_mtext(com):
     """``TextString`` of a multi-line attribute is one flattened string; the
     content is ``MTextAttributeContent`` and the box ``MTextBoundaryWidth``.
@@ -1018,6 +1034,7 @@ async def test_com_explode_turns_a_multi_line_attrib_into_mtext(com):
     assert ref.deleted is True
 
 
+@needs_pywin32
 async def test_com_explode_multi_line_attrib_takes_the_frame_before_the_angle(com):
     backend, document, space = com
     note = _FakeObject(
@@ -1689,6 +1706,7 @@ class _SpaceFailingSecondAddText(_FakeSpace):
         return super().AddText(text, point, height)
 
 
+@needs_pywin32
 async def test_com_explode_undoes_a_burst_that_fails_after_explode(com):
     """ActiveX ``Explode()`` leaves the reference in place, so a failure after
     it (here ``AddText`` on the second attribute; a constant ATTDEF whose
@@ -1794,6 +1812,7 @@ async def test_set_attributes_refuses_by_tag_and_leaves_the_value_alone(backend)
     assert await backend.block_get_attributes(ref.handle) == {"TAG": "7"}
 
 
+@needs_pywin32
 async def test_com_insert_refuses_before_insert_block_and_writes_numbers_as_text(com):
     backend, document, space = com
     space.attributes = {"TAG": ""}
@@ -1876,6 +1895,7 @@ async def test_define_on_an_existing_layer_reports_nothing_created(backend):
     assert result["layers_created"] == [], "layer 0 always exists"
 
 
+@needs_pywin32
 async def test_com_define_probes_layers_before_blocks_add(com):
     backend, document, space = com
     with pytest.raises(ValueError, match="'NOT_A_LAYER' do not exist"):
@@ -1921,6 +1941,7 @@ async def test_define_treats_an_existing_layer_case_insensitively(backend):
     assert result["layers_created"] == []
 
 
+@needs_pywin32
 async def test_com_define_creates_a_case_folded_layer_once(com):
     backend, document, space = com
     with pytest.raises(ValueError, match=r"layer\(s\) 'Alpha' do not exist"):
@@ -1933,6 +1954,7 @@ async def test_com_define_creates_a_case_folded_layer_once(com):
     assert [name for name, _ in document.Blocks.blocks["PID_CASE"].calls] == ["AddLine", "AddLine"]
 
 
+@needs_pywin32
 async def test_com_define_treats_an_existing_layer_case_insensitively(com):
     backend, document, space = com
     document.Layers.Add("PID-EQUIP")
@@ -1941,6 +1963,7 @@ async def test_com_define_treats_an_existing_layer_case_insensitively(com):
     assert result["layers_created"] == [] and document.Layers.added == ["PID-EQUIP"]
 
 
+@needs_pywin32
 async def test_com_define_refuses_a_bad_base_point_before_blocks_add(com):
     backend, document, space = com
     with pytest.raises(TypeError, match="'base_y'"):
