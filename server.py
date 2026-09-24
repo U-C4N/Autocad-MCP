@@ -10555,6 +10555,80 @@ async def arch_plan_from_spec(
 
 
 # ---------------------------------------------------------------------------
+# ── SECTION 26: Understanding & QA (1 tool) ─────────────────────────────────
+# ---------------------------------------------------------------------------
+
+
+@cad_tool(
+    summary="Read a foreign drawing: units, extents, clusters, layers, tags, rooms, languages.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Understand: Describe Drawing", "readOnlyHint": True},
+    tags={"analysis", "query"},
+)
+async def drawing_understand(
+    path: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="DXF file to read (a DWG only on a live seat); omitted: the current "
+            "document.",
+        ),
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """One report on a drawing somebody else made, every claim with its evidence
+    and a confidence. Never modifies the drawing: a file is read as it is, and
+    the current document through a snapshot (headless: the document in memory;
+    live: a `Document.Export` DXF copy in a temporary folder, deleted after).
+    An xref's own entities are not read - the host drawing is.
+
+    - `units`: `$INSUNITS` as declared against the unit the geometry implies
+      (text heights, wall thickness, door swings, labelled room areas, overall
+      size - each item with its median and its value under every candidate
+      unit). A disagreement is a warning with the numbers, never a silent
+      correction.
+    - `extents`: declared, computed and robust boxes and the `outliers` that
+      stretch them, farthest first, by handle.
+    - `clusters`: separate bodies of model-space content (plan copies, sheets,
+      details), each with its box, entity count, commonest layers and tallest
+      labels.
+    - `layers`: entity count, drawn length (and metres in the inferred unit)
+      and the discipline / service each most likely carries - the vocabulary's
+      confidence (0.9) for a name keyword, 0.6 when most texts on the layer
+      agree, 0.4 when fewer do.
+    - `equipment_tags` (a tag found more than once is `ambiguous`), `rooms`
+      (room labels in five languages, each with the wall-layer face it sits in
+      and its measured area), `languages` (Latin / Turkish / Cyrillic character
+      classes), `blocks` (named / anonymous, kinds by name), `layouts`,
+      `title_block` and `warnings`.
+
+    Refused before anything is read: a `path` that does not exist, a DXF over
+    `MAX_DXF_BYTES` (the refusal names the size and the variable), and a file
+    the engine cannot parse (a DWG headlessly: ezdxf reads DXF only).
+    """
+    import asyncio
+
+    from ezdxf.lldxf.const import DXFError
+
+    from engineering.understand.describe import describe
+    from engineering.understand.snapshot import take_snapshot
+
+    target = None
+    if path:
+        target = validate_path(path)
+        if not target.is_file():
+            raise ToolError(f"path: no such file {str(target)!r}")
+    await ctx.info(f"drawing_understand: {target or 'current document'}")
+    try:
+        snap = await take_snapshot(_backend(ctx), str(target) if target else None)
+    except (ValueError, OSError, RuntimeError, DXFError) as exc:
+        raise ToolError(str(exc)) from exc
+    return await asyncio.to_thread(describe, snap)
+
+
+# ---------------------------------------------------------------------------
 # ── RESOURCES ───────────────────────────────────────────────────────────────
 # ---------------------------------------------------------------------------
 
