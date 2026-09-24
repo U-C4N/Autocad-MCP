@@ -2494,6 +2494,25 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "yabanci cizim",
         ),
     ),
+    "drawing_scale_check": ToolAliases(
+        acad=(),
+        synonyms=(
+            "scale check",
+            "is the p&id to scale",
+            "is this drawing to scale",
+            "schematic or to scale",
+            "unscaled p&id",
+            "tag distances against the layout",
+            "can i measure pipe on the p&id",
+            "ölçek",
+            "olcek",
+            "ölçek kontrolü",
+            "olcek kontrolu",
+            "ölçekli mi",
+            "olcekli mi",
+            "масштаб",
+        ),
+    ),
 }
 
 

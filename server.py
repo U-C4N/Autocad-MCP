@@ -10555,7 +10555,7 @@ async def arch_plan_from_spec(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 26: Understanding & QA (1 tool) ─────────────────────────────────
+# ── SECTION 26: Understanding & QA (2 tools) ────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -10626,6 +10626,91 @@ async def drawing_understand(
     except (ValueError, OSError, RuntimeError, DXFError) as exc:
         raise ToolError(str(exc)) from exc
     return await asyncio.to_thread(describe, snap)
+
+
+@cad_tool(
+    summary="Is this drawing to scale against a reference? Tag distances, ratios, a verdict.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Understand: Scale Check", "readOnlyHint": True},
+    tags={"analysis", "query"},
+)
+async def drawing_scale_check(
+    reference: Annotated[
+        str,
+        Field(
+            description="The reference drawing of the same plant (a DXF, usually the layout): "
+            "distances on it are the ones the other drawing is measured against."
+        ),
+    ],
+    path: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="The drawing to check (usually the P&ID); omitted: the current document.",
+        ),
+    ] = None,
+    min_pair_mm: Annotated[
+        float,
+        Field(
+            default=2000.0,
+            gt=0,
+            description="Tag pairs closer than this on the reference (mm) are left out: a tag "
+            "label is not an equipment centre.",
+        ),
+    ] = 2000.0,
+    ctx: Context = None,
+) -> dict:
+    """Is the drawing to scale against the reference - or a schematic whose lengths
+    are lengths of drawn line, not of pipe? Read-only on both drawings.
+
+    Equipment tags are matched between the two (a Cyrillic look-alike such as
+    `Т4100` is the Latin `T4100`). Only a tag found exactly once in each is used;
+    a tag found more than once (plan copies, a legend, a second sheet) is listed
+    in `ambiguous` and takes no part. When a drawing holds several bodies of
+    content (two copies of one plan), the pair of scopes - whole drawing or one
+    cluster on each side - that matches the most tags is used and named in
+    `scope`. For every two matched tags at least `min_pair_mm` apart on the
+    reference, the ratio of their distances is taken (both in millimetres by
+    each drawing's inferred unit, see `drawing_understand`). The result gives
+    the matched tags, the median ratio, the quartiles and their range, the
+    share of pairs within +/-10 % of the median, the same per room of the
+    reference (or per cluster for tags in no room) in `groups`, and a verdict:
+    `to_scale` (at least 80 % within the band; `factor` is the median, so a
+    uniform other scale is recognised), `schematic` (50 % or less), `partly`
+    in between, `insufficient` with fewer than three matched tags or no pair
+    above the floor. Tag labels are not equipment centres; the band and the
+    floor absorb that offset, and the result's `notes` say so.
+
+    Refused before anything is read: a `reference` or `path` that does not
+    exist, a DXF over `MAX_DXF_BYTES` (the refusal names the size and the
+    variable), a file the engine cannot parse (a DWG headlessly), and a
+    `min_pair_mm` that is not a positive finite number.
+    """
+    import asyncio
+
+    from ezdxf.lldxf.const import DXFError
+
+    from engineering.understand.scale import scale_check
+    from engineering.understand.snapshot import take_snapshot
+
+    ref = validate_path(reference)
+    if not ref.is_file():
+        raise ToolError(f"reference: no such file {str(ref)!r}")
+    target = None
+    if path:
+        target = validate_path(path)
+        if not target.is_file():
+            raise ToolError(f"path: no such file {str(target)!r}")
+    await ctx.info(f"drawing_scale_check: {target or 'current document'} against {ref}")
+    backend = _backend(ctx)
+    try:
+        checked = await take_snapshot(backend, str(target) if target else None)
+        against = await take_snapshot(backend, str(ref))
+        return await asyncio.to_thread(scale_check, checked, against, min_pair_mm=min_pair_mm)
+    except (ValueError, OSError, RuntimeError, DXFError) as exc:
+        raise ToolError(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

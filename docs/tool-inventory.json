@@ -3,13 +3,13 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 242,
+    "tools": 243,
     "resources": 8,
     "prompts": 5,
     "groups": 26
   },
   "groups": {
-    "analysis": 13,
+    "analysis": 14,
     "architecture": 12,
     "batch": 3,
     "blocks": 9,
@@ -1114,6 +1114,20 @@
       ],
       "annotations": {
         "title": "Save As"
+      }
+    },
+    {
+      "name": "drawing_scale_check",
+      "group": "analysis",
+      "cost": "read",
+      "summary": "Is this drawing to scale against a reference? Tag distances, ratios, a verdict.",
+      "tags": [
+        "analysis",
+        "query"
+      ],
+      "annotations": {
+        "title": "Understand: Scale Check",
+        "readOnlyHint": true
       }
     },
     {
