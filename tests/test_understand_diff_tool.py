@@ -46,7 +46,7 @@ async def test_the_current_document_against_its_older_revision(client, tmp_path)
         pair["insert"],
     }
     assert result["blocks"]["compared"] is True and result["blocks"]["changed"] == []
-    assert result["truncated"] == {"changed": 0, "added": 0, "removed": 0}
+    assert result["truncated"] == {"changed": 0, "added": 0, "removed": 0, "clusters": 0}
     assert await _total(client) == before, "a diff without markup writes nothing"
 
 

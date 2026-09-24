@@ -294,8 +294,46 @@ def test_cap_report_cuts_every_list_and_says_how_much():
     new = snap(*STILL, *(line(f"N{i}", 0, 1000 * (i + 1), 100, 1000 * (i + 1)) for i in range(5)))
     capped = cap_report(diff_snapshots(old, new, move_tol=10.0), limit=2)
     assert len(capped["added"]) == 2
-    assert capped["truncated"] == {"changed": 0, "added": 3, "removed": 0}
+    # five lines 1000 apart are five clusters: the list is capped like the others
+    assert len(capped["clusters"]) == 2
+    assert capped["truncated"] == {"changed": 0, "added": 3, "removed": 0, "clusters": 3}
     assert capped["summary"]["added"] == 5
+
+
+def test_a_line_drawn_back_to_front_and_moved_is_a_move():
+    # the signature ignores a LINE's direction; so does its movement
+    old = snap(*STILL, line("D", 0, 200, 100, 200))
+    new = snap(*STILL, line("D", 150, 250, 50, 250))  # reversed, then moved by (50, 50)
+    (row,) = diff_snapshots(old, new, move_tol=100.0)["changed"]
+    assert row["changes"] == {"moved_by": [pytest.approx(50.0), pytest.approx(50.0)]}
+
+
+def test_an_attribute_tag_carried_twice_cannot_hide_a_change():
+    # as a dict, both revisions read NOTE = "B" and the edit of the first NOTE vanished
+    before = (("NOTE", "A"), ("NOTE", "B"))
+    after = (("NOTE", "X"), ("NOTE", "B"))
+    old = snap(*STILL, rec("I", "INSERT", "TAGS", ((500, 500),), block="TB", attribs=before))
+    new = snap(*STILL, rec("I", "INSERT", "TAGS", ((500, 500),), block="TB", attribs=after))
+    (row,) = diff_snapshots(old, new)["changed"]
+    assert row["changes"] == {"attribs": [{"tag": "NOTE", "from": ["A", "B"], "to": ["X", "B"]}]}
+
+
+def test_a_dense_drawing_moved_as_a_whole_pairs_each_entity_with_its_own_copy():
+    # 200 lines 10 apart on one layer, all moved (3, 0) under new handles: no exact
+    # match, so no handle stage, and with move_tol 500 each line has about a hundred
+    # candidates. The position stage keeps only the nearest few per entity, and each
+    # line must still pair with its own moved copy.
+    old = snap(*(line(f"O{i}", 0, 10 * i, 5, 10 * i) for i in range(200)))
+    new = snap(*(line(f"N{i}", 3, 10 * i, 8, 10 * i) for i in range(200)))
+    result = diff_snapshots(old, new, move_tol=500.0)
+    assert result["handles_stable"] is False
+    assert (result["summary"]["changed"], result["summary"]["added"]) == (200, 0)
+    assert result["summary"]["removed"] == 0
+    assert all(
+        row["changes"] == {"moved_by": [pytest.approx(3.0), pytest.approx(0.0)]}
+        and row["old_handle"][1:] == row["new_handle"][1:]
+        for row in result["changed"]
+    )
 
 
 # -- block definitions -----------------------------------------------------------------

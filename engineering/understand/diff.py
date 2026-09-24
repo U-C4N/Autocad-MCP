@@ -66,6 +66,7 @@ padding are this module's declared defaults, not values from a standard.
 from __future__ import annotations
 
 import hashlib
+import heapq
 import math
 import os
 from collections import defaultdict
@@ -99,6 +100,10 @@ MOVE_FRACTION = 0.02
 ROBUST_QUANTILE = 0.01
 #: A cluster's box is padded by this share of ``move_tol``.
 PAD_FRACTION = 0.25
+#: The position stage keeps at most this many nearest old candidates per new
+#: entity, so a dense drawing that moved as a whole (every entity left for this
+#: stage, hundreds of neighbours within ``move_tol``) cannot build n x m pairs.
+NEAREST_PER_ENTITY = 32
 DEFAULT_LIMIT = 200
 CATEGORIES = ("changed", "added", "removed")
 
@@ -239,12 +244,14 @@ def _nearest_pairs(
             if b is None:
                 continue
             cx, cy = math.floor(b[0] / move_tol), math.floor(b[1] / move_tol)
+            near: list[tuple[float, str, str, int, int]] = []
             for dx in (-1, 0, 1):
                 for dy in (-1, 0, 1):
                     for i, a in grid.get((cx + dx, cy + dy), ()):
                         distance = math.dist(a, b)
                         if distance <= move_tol:
-                            candidates.append((distance, olds[i].handle, news[j].handle, i, j))
+                            near.append((distance, olds[i].handle, news[j].handle, i, j))
+            candidates.extend(heapq.nsmallest(NEAREST_PER_ENTITY, near))
     candidates.sort()
     used_old: set[int] = set()
     used_new: set[int] = set()
@@ -296,10 +303,18 @@ def _movement(o: EntityRecord, n: EntityRecord, tol: float) -> dict:
         return {"geometry": {"from": [list(p) for p in before], "to": [list(p) for p in after]}}
     dx, dy = b[0] - a[0], b[1] - a[1]
     half = tol / 2.0
-    translated = len(before) == len(after) and all(
-        abs(p[0] + dx - q[0]) <= half and abs(p[1] + dy - q[1]) <= half
-        for p, q in zip(before, after, strict=True)
-    )
+
+    def translates(start: list, end: list) -> bool:
+        return len(start) == len(end) and all(
+            abs(p[0] + dx - q[0]) <= half and abs(p[1] + dy - q[1]) <= half
+            for p, q in zip(start, end, strict=True)
+        )
+
+    translated = translates(before, after)
+    if not translated and o.type == "LINE" and len(after) == 2:
+        # the signature ignores a LINE's direction, so its movement must too:
+        # the same line drawn the other way round and moved is a move
+        translated = translates(before, after[::-1])
     if not translated:
         return {"geometry": {"from": [list(p) for p in before], "to": [list(p) for p in after]}}
     if abs(dx) > half or abs(dy) > half:
@@ -308,12 +323,33 @@ def _movement(o: EntityRecord, n: EntityRecord, tol: float) -> dict:
 
 
 def _attrib_changes(o: EntityRecord, n: EntityRecord) -> list[dict]:
-    before, after = dict(o.attribs), dict(n.attribs)
-    return [
-        {"tag": tag, "from": before.get(tag), "to": after.get(tag)}
-        for tag in sorted(set(before) | set(after))
-        if before.get(tag) != after.get(tag)
-    ]
+    """One row per attribute tag whose values differ. A tag an INSERT carries
+    twice is compared as the list of its values, so one change cannot hide
+    behind the other; a tag carried once keeps plain ``from`` / ``to``."""
+
+    def by_tag(attribs) -> dict[str, list]:
+        values: dict[str, list] = defaultdict(list)
+        for tag, value in attribs:
+            values[tag].append(value)
+        return values
+
+    before, after = by_tag(o.attribs), by_tag(n.attribs)
+    rows = []
+    for tag in sorted(set(before) | set(after)):
+        old_values, new_values = before.get(tag, []), after.get(tag, [])
+        if old_values == new_values:
+            continue
+        if len(old_values) <= 1 and len(new_values) <= 1:
+            rows.append(
+                {
+                    "tag": tag,
+                    "from": old_values[0] if old_values else None,
+                    "to": new_values[0] if new_values else None,
+                }
+            )
+        else:
+            rows.append({"tag": tag, "from": old_values, "to": new_values})
+    return rows
 
 
 def _changes(o: EntityRecord, n: EntityRecord, tol: float) -> dict:
@@ -554,13 +590,16 @@ def diff_snapshots(
 
 
 def cap_report(result: dict, limit: int = DEFAULT_LIMIT) -> dict:
-    """``result`` with each list of ``CATEGORIES`` cut to ``limit`` rows and
-    ``truncated`` saying how many rows each cut dropped."""
+    """``result`` with each list of ``CATEGORIES`` and the ``clusters`` cut to
+    ``limit`` rows and ``truncated`` saying how many rows each cut dropped.
+
+    The clusters are capped in the report only: a markup still clouds every one.
+    """
     if int(limit) < 1:
         raise ValueError(f"limit must be at least 1; got {limit!r}")
     capped = dict(result)
     capped["truncated"] = {}
-    for category in CATEGORIES:
+    for category in (*CATEGORIES, "clusters"):
         rows = list(result.get(category) or [])
         capped[category] = rows[: int(limit)]
         capped["truncated"][category] = max(0, len(rows) - int(limit))
