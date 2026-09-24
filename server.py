@@ -11029,6 +11029,271 @@ async def drawing_topology_check(
 
 
 # ---------------------------------------------------------------------------
+# ── SECTION 27: Plant Takeoffs (2 tools) ────────────────────────────────────
+# ---------------------------------------------------------------------------
+
+
+@cad_tool(
+    summary="Pipe takeoff from a P&ID and its layout: rows by room, service and diameter.",
+    cost="safe",
+)
+@mcp.tool(
+    annotations={
+        "title": "Plant: Pipe Takeoff",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+    },
+    tags={"plant", "analysis"},
+)
+async def pipe_takeoff(
+    pid_path: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="The P&ID (DXF headlessly; DXF or DWG on a live seat). Omit to read "
+            "the current drawing as the P&ID.",
+        ),
+    ] = None,
+    layout_path: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="The layout of the same plant. Omitted, every length is the P&ID's "
+            "drawn length and is marked scale_verified: false.",
+        ),
+    ] = None,
+    output: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Workbook to write (.xlsx); the four sheets are also written as CSV "
+            "beside it. Omit to return the rows only.",
+        ),
+    ] = None,
+    lang: Annotated[
+        str, Field(default="en", description="Headers and method text: tr | en | ru.")
+    ] = "en",
+    services: Annotated[
+        list[str] | None,
+        Field(
+            default=None,
+            description="Services to take off; default product, cip_supply, cip_return. Also: "
+            "glycol_supply, glycol_return, steam, condensate, cold_water, hot_water, "
+            "ice_water, compressed_air, drain, electrical, unknown.",
+        ),
+    ] = None,
+    allowance: Annotated[
+        float,
+        Field(
+            default=0.20,
+            ge=0.0,
+            le=1.0,
+            description="Allowance as a share of the net length (0.20 = 20 %); its own column.",
+        ),
+    ] = 0.20,
+    vertical_allowance: Annotated[
+        float,
+        Field(
+            default=0.0,
+            ge=0.0,
+            description="Metres added per connection for rises and drops (layout lengths).",
+        ),
+    ] = 0.0,
+    length_source: Annotated[
+        str,
+        Field(
+            default="auto",
+            description="auto | pid | layout. auto measures on the P&ID only when the scale "
+            "check calls it to scale, else on the layout.",
+        ),
+    ] = "auto",
+    force: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="With length_source='pid', measure on a P&ID the scale check calls "
+            "schematic anyway.",
+        ),
+    ] = False,
+    layers: Annotated[
+        list[str] | None,
+        Field(
+            default=None,
+            description="P&ID layers holding the lines; default every layer the vocabulary "
+            "files under piping or electrical with confidence >= 0.9.",
+        ),
+    ] = None,
+    tol: Annotated[
+        float,
+        Field(
+            default=1.0,
+            gt=0.0,
+            description="Line ends closer than this (P&ID drawing units) are one junction.",
+        ),
+    ] = 1.0,
+    ctx: Context = None,
+) -> dict:
+    """A pipe takeoff: topology from the P&ID, lengths from the layout, rows by room x service x diameter.
+
+    The P&ID gives the runs (junctions merged, tees split, a line drawn twice
+    counted once, valves and reducers bridged), each run's service (the layer,
+    overridden by a supply / return word near the line), its diameters exactly
+    as labelled (direct, carried by continuity - never across a reducer - or
+    unassigned) and the equipment tags at its ends. The length comes from the
+    layout unless the scale check calls the P&ID to scale: the rectilinear
+    minimum spanning tree of the run's tag positions on the layout, each
+    connection along x first then y, plus `vertical_allowance` per connection.
+    The P&ID's drawn length stays beside it as `schematic_m`, never as the
+    answer. Lengths are metres from the unit the geometry implies; an INSUNITS
+    that disagrees is a warning, never a factor. Status A / B / C per run: a C
+    run (an end on no equipment, a tag missing from or written twice on the
+    layout) is on the Kontrol sheet with its schematic length, counted in the
+    total and flagged.
+
+    Read-only on both drawings. With `output` it writes one workbook - Metraj,
+    Özet, Kontrol, Metodoloji - as XLSX and, always, as CSV beside it.
+
+    Refused before a drawing is read: `lang` outside tr / en / ru, an unknown
+    service or length source, an allowance outside 0-1, a negative vertical
+    allowance, a non-positive tolerance, and `length_source='layout'` without
+    a layout. A missing, unreadable or oversize drawing is refused by the
+    reader, which names MAX_DXF_BYTES. Refused after the scale check:
+    `length_source='pid'` on a P&ID it calls schematic, unless `force=True`
+    (the refusal quotes the statistics). Without openpyxl the XLSX is not
+    written and `files.refused` carries `capability: "xlsx_write"` naming the
+    `office` extra; the CSV files are written all the same.
+    """
+    from engineering.understand.draw import run_pipe_takeoff
+
+    pid = str(validate_path(pid_path)) if pid_path else None
+    layout = str(validate_path(layout_path)) if layout_path else None
+    target = str(validate_path(output, allow_write=True)) if output else None
+    await ctx.info(f"pipe_takeoff: {pid or 'current drawing'} / {layout or 'no layout'}")
+    try:
+        return await run_pipe_takeoff(
+            _backend(ctx),
+            pid_path=pid,
+            layout_path=layout,
+            output=target,
+            lang=lang,
+            services=services,
+            allowance=allowance,
+            vertical_allowance=vertical_allowance,
+            length_source=length_source,
+            force=force,
+            layers=layers,
+            tol=tol,
+        )
+    except (ValueError, OSError) as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@cad_tool(
+    summary="Cable takeoff: one row per load, Manhattan length to its panel, rounded up to the metre.",
+    cost="safe",
+)
+@mcp.tool(
+    annotations={
+        "title": "Plant: Cable Takeoff",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+    },
+    tags={"plant", "analysis"},
+)
+async def cable_takeoff(
+    pid_path: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="The P&ID carrying the electrical texts (kW, phases, voltage, VFD). "
+            "Omit to read the current drawing.",
+        ),
+    ] = None,
+    layout_path: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="The layout with the tags, the panels and the 'Wiring to CPn' "
+            "callouts. Omitted, every length stays empty with an open item.",
+        ),
+    ] = None,
+    output: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Workbook to write (.xlsx); the four sheets are also written as CSV "
+            "beside it. Omit to return the rows only.",
+        ),
+    ] = None,
+    lang: Annotated[
+        str, Field(default="en", description="Headers and method text: tr | en | ru.")
+    ] = "en",
+    allowance: Annotated[
+        float,
+        Field(
+            default=0.20,
+            ge=0.0,
+            le=1.0,
+            description="Allowance before rounding up to the metre (0.20 = 20 %).",
+        ),
+    ] = 0.20,
+    section_rules: Annotated[
+        list[dict] | None,
+        Field(
+            default=None,
+            description="Your own section table: [{max_kw, section, phases (1|3, optional)}], "
+            "e.g. [{'max_kw': 5.5, 'section': '5x2.5'}]. Omitted, no section is proposed.",
+        ),
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """A cable takeoff: one row per electrical load, the shop's cable method made repeatable.
+
+    Power, phases, voltage, neutral and VFD come from the P&ID's electrical
+    texts near each tag (Russian, Turkish and English spellings). **Power is
+    never invented**: a load with no stated kW keeps an empty cell and an open
+    item. The panel comes from the layout's wiring callouts ('Wiring to CP1'
+    and its variants, normalised to CP-1), else from the P&ID. The length is the
+    Manhattan distance on the layout from the load's tag to its panel's tag,
+    and the cable is ROUNDUP(length x (1 + allowance)) to the metre. Room and
+    panel totals count known power once: a load wired to a panel that states
+    its own power is part of that package, and the package's power is counted
+    instead of its children's - the rule is written on the method sheet.
+    Sections only from `section_rules`; no standard table is applied. Open
+    items: missing power, missing panel, a tag or panel not on the layout, no
+    layout at all, a load no section rule covers.
+
+    Read-only on both drawings. With `output` it writes one workbook - Metraj,
+    Özet, Kontrol, Metodoloji - as XLSX and, always, as CSV beside it.
+
+    Refused before a drawing is read: `lang` outside tr / en / ru, an allowance
+    outside 0-1 and a malformed section rule (named by its path,
+    `section_rules[0].section: ...`). A missing, unreadable or oversize drawing
+    is refused by the reader, which names MAX_DXF_BYTES. Without openpyxl the
+    XLSX is not written and `files.refused` carries `capability: "xlsx_write"`
+    naming the `office` extra; the CSV files are written all the same.
+    """
+    from engineering.understand.draw import run_cable_takeoff
+
+    pid = str(validate_path(pid_path)) if pid_path else None
+    layout = str(validate_path(layout_path)) if layout_path else None
+    target = str(validate_path(output, allow_write=True)) if output else None
+    await ctx.info(f"cable_takeoff: {pid or 'current drawing'} / {layout or 'no layout'}")
+    try:
+        return await run_cable_takeoff(
+            _backend(ctx),
+            pid_path=pid,
+            layout_path=layout,
+            output=target,
+            lang=lang,
+            allowance=allowance,
+            section_rules=section_rules,
+        )
+    except (ValueError, OSError) as exc:
+        raise ToolError(str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
 # ── RESOURCES ───────────────────────────────────────────────────────────────
 # ---------------------------------------------------------------------------
 

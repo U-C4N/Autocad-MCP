@@ -609,10 +609,24 @@ async def test_tool_group_sizes_are_unchanged():
 
     Merged, the two SECTION 26 halves file all four readers under `analysis`
     (12 -> 16).
+
+    `analysis` moved 12 -> 13 when track H's SECTION 27 opened with
+    `pipe_takeoff` on the network branch. It is tagged `plant` and
+    `analysis`, and `plant` is not in `_GROUP_TAG_PRIORITY` on that
+    branch, so it files under `analysis`. This snapshot is branch-local:
+    the track H integration task gives `plant` its pack and its group
+    once every branch has landed.
+
+    It moved 13 -> 14 when `cable_takeoff` joined the same section, for
+    the same branch-local reason.
+
+    With SECTION 27 merged beside them, the four readers and the two
+    takeoffs all file under `analysis` (12 -> 18) until the track H
+    integration task ranks `understand` and `plant`.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
-        "analysis": 16,
+        "analysis": 18,
         "architecture": 12,
         "batch": 3,
         "blocks": 9,
@@ -639,4 +653,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 245
+    assert sum(sizes.values()) == 247
