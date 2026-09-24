@@ -11,6 +11,9 @@ class TableLayout:
     column_widths: list[float]
     row_height: float
     text_height: float
+    #: The first row is a title, merged across every column as AutoCAD's
+    #: TABLE draws it.
+    title_row: bool = False
 
     @property
     def row_count(self) -> int:
@@ -71,7 +74,7 @@ def prepare_table_layout(
         if any(width <= 0 for width in widths):
             raise RuntimeError("entity_create_table: column widths must be positive")
 
-    return TableLayout(data, widths, float(row_height), float(text_height))
+    return TableLayout(data, widths, float(row_height), float(text_height), title_row=bool(title))
 
 
 def validate_mleader(points: list[list[float]], text: str) -> list[tuple[float, float]]:

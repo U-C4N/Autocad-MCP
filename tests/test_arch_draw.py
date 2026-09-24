@@ -197,6 +197,27 @@ async def test_draw_chains_puts_real_dimensions_on_the_dimension_layer(backend):
     }
 
 
+async def test_draw_chains_text_follows_the_plot_scale_and_dimscale_is_put_back(backend):
+    # At the style's DIMSCALE 1 a 1:50 chain's 2.5 text was 2.5 drawing units -
+    # 0.05 mm on the sheet - and the README plan render showed empty boxes where
+    # the numbers belong. The chain carries the scale; the drawing keeps its own.
+    shell = Wall(
+        id="shell",
+        axis=((0.0, 0.0), (8200.0, 0.0), (8200.0, 6200.0), (0.0, 6200.0)),
+        thickness=200.0,
+        closed=True,
+    )
+    before = await backend.system_get_variable("DIMSCALE")
+    result = await draw_chains(backend, [shell], [], sides=("bottom",), scale=50)
+    assert result["dimscale"] == 50.0
+    heights = set()
+    for handle in result["handles"]:
+        block = backend._doc.entitydb[handle].get_geometry_block()
+        heights |= {round(e.dxf.char_height, 6) for e in block if e.dxftype() == "MTEXT"}
+    assert heights == {125.0}  # 2.5 mm on paper x 50
+    assert await backend.system_get_variable("DIMSCALE") == before
+
+
 async def test_assign_tags_numbers_each_kind_in_the_chosen_language():
     ops = [
         Opening(id="1", wall="a", kind="door", offset=0.0, width=900.0),

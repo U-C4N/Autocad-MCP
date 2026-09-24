@@ -10090,8 +10090,9 @@ async def arch_dimension_chains(
     own faces, read back from the plan on the drawing. A row that would only
     restate a farther one is not drawn (ISO 129-1: each measurement once).
     The row spacing defaults (10 mm, then 8 mm on paper) are this server's
-    drafting choices, not standard values. Text height follows the current
-    dimension style: at 1:50 set DIMSCALE=50 with `dimstyle_modify`.
+    drafting choices, not standard values. Text, arrows and gaps follow the
+    plot scale: each chain is drawn at DIMSCALE = `scale` (reported as
+    `dimscale`), and the drawing's own DIMSCALE is put back afterwards.
 
     Refused by name: a drawing with no walls, an unknown or repeated side, a
     non-positive scale, offset or step.

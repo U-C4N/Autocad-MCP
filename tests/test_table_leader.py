@@ -28,6 +28,49 @@ async def test_ezdxf_table_returns_composite_contract(backend):
     assert result.properties["bounds"] == {"min": [10.0, 72.0], "max": [30.0, 100.0]}
 
 
+async def test_ezdxf_table_title_row_is_merged_across_the_table(backend):
+    # AutoCAD's TABLE merges its title row. Drawn as one column's cell, a title
+    # such as 'DOOR SCHEDULE' wrapped inside the first column and ran over the
+    # header row below it. The title spans the table, and only the table's outer
+    # edges cross its row.
+    result = await backend.entity_create_table(
+        0,
+        100,
+        rows=[["D1", "900"]],
+        headers=["TAG", "WIDTH"],
+        column_widths=[20, 30],
+        row_height=10,
+        text_height=2.5,
+        title="DOOR SCHEDULE",
+    )
+    children = [backend._doc.entitydb[h] for h in result.properties["child_handles"]]
+    (title,) = [e for e in children if e.dxftype() == "MTEXT" and e.text == "DOOR SCHEDULE"]
+    assert title.dxf.width == pytest.approx(50.0 - 2 * 1.0)  # padding min(1.0, 10 x 0.15)
+    verticals = [e for e in children if e.dxftype() == "LINE" and e.dxf.start.x == e.dxf.end.x]
+    inner = [v for v in verticals if 0.0 < v.dxf.start.x < 50.0]
+    assert inner and all(max(v.dxf.start.y, v.dxf.end.y) == pytest.approx(90.0) for v in inner)
+    outer = [v for v in verticals if v.dxf.start.x in (0.0, 50.0)]
+    assert len(outer) == 2 and all(max(v.dxf.start.y, v.dxf.end.y) == 100.0 for v in outer)
+
+
+async def test_ezdxf_table_cell_margin_scales_with_the_lettering(backend):
+    # A 1:50 schedule letters at 125 in rows of 350. A flat 1.0 margin is 0.02 mm
+    # on that sheet: the text sat on the cell line, and 'LEFT' read as 'FT'.
+    result = await backend.entity_create_table(
+        0,
+        0,
+        rows=[["D1", "LEFT"]],
+        column_widths=[750, 1000],
+        row_height=350,
+        text_height=125,
+    )
+    children = [backend._doc.entitydb[h] for h in result.properties["child_handles"]]
+    (left,) = [e for e in children if e.dxftype() == "MTEXT" and e.text == "LEFT"]
+    assert left.dxf.insert.x == pytest.approx(750 + 50.0)  # 0.4 x 125
+    assert left.dxf.insert.y == pytest.approx(-50.0)
+    assert left.dxf.width == pytest.approx(1000 - 2 * 50.0)
+
+
 async def test_ezdxf_table_survives_save_and_reopen(backend, tmp_path):
     result = await backend.entity_create_table(0, 30, rows=[["A", "1"]], headers=["Name", "Qty"])
     path = tmp_path / "table.dxf"

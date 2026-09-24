@@ -510,6 +510,17 @@ def _normalise_dimstyle_rounding(doc) -> None:
             continue
 
 
+def _arial_standard_style(doc) -> None:
+    """Standard in Arial, as AutoCAD 2026's acadiso.dwt ships it.
+
+    ezdxf's own default is txt.shx, which has no superscript two: an
+    architectural area label 'm²' read 'm?' when AutoCAD opened the DXF, and
+    rendered as a box headlessly. A new live drawing already starts in Arial,
+    so the two engines now begin from the same Standard.
+    """
+    doc.styles.get("Standard").dxf.font = "arial.ttf"
+
+
 def _apply_iso_dimstyle(doc) -> None:
     """Store ISO defaults on the document's `Standard` dimension style."""
     try:
@@ -2276,6 +2287,7 @@ class EzdxfBackend(AutoCADBackend):
             else:
                 doc = ezdxf.new(dxfversion="R2010")
                 _apply_iso_dimstyle(doc)
+                _arial_standard_style(doc)
             # R32: registering a fresh Drawing is the release — the runaway keeps
             # the object it captured. The quarantined entry is evicted first so
             # it can never be re-activated. Clear before _reset_history_baseline,
@@ -4861,21 +4873,34 @@ class EzdxfBackend(AutoCADBackend):
                 line = msp.add_line((x0, yy), (x0 + layout.width, yy))
                 self._apply_attrs(line, layer, None)
                 children.append(line)
-            for xx in x_positions:
-                line = msp.add_line((xx, y0), (xx, y0 - layout.height))
+            last = len(x_positions) - 1
+            for index, xx in enumerate(x_positions):
+                # a title row is merged, as AutoCAD's TABLE draws it: only the
+                # outer edges cross it
+                inner = 0 < index < last
+                top = y0 - layout.row_height if layout.title_row and inner else y0
+                line = msp.add_line((xx, top), (xx, y0 - layout.height))
                 self._apply_attrs(line, layer, None)
                 children.append(line)
 
-            padding = min(1.0, layout.row_height * 0.15)
+            # the cell margin scales with the lettering: 1.0 at the default 2.5
+            # text, 50 on a 1:50 schedule (a flat 1.0 there is 0.02 mm on the
+            # sheet and the text sat on the cell line)
+            padding = min(0.4 * layout.text_height, 0.15 * layout.row_height)
             for row_index, row in enumerate(layout.cells):
                 for column_index, value in enumerate(row):
                     if not value:
                         continue
+                    span = (
+                        layout.width
+                        if layout.title_row and row_index == 0
+                        else layout.column_widths[column_index]
+                    )
                     text_entity = msp.add_mtext(
                         value,
                         dxfattribs={
                             "char_height": layout.text_height,
-                            "width": max(1.0, layout.column_widths[column_index] - 2 * padding),
+                            "width": max(1.0, span - 2 * padding),
                         },
                     )
                     text_entity.dxf.insert = (

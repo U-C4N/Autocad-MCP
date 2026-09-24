@@ -375,42 +375,55 @@ async def add_stair(backend, stair: dict, *, lang: str = "en", scale=50) -> dict
 async def draw_chains(
     backend, walls, openings, *, sides=("bottom", "left"), scale=50, first_offset=None, step=None
 ) -> dict:
-    """The exterior chains as real linear DIMENSIONs on the dimension layer."""
+    """The exterior chains as real linear DIMENSIONs on the dimension layer.
+
+    Their text, arrows and gaps follow the plot scale like every other plan
+    annotation: DIMSCALE is ``scale`` while the chains are drawn, so each chain
+    dimension carries it, and the drawing's own DIMSCALE is put back afterwards.
+    Drawn at the style's DIMSCALE 1, a 1:50 chain's 2.5 text was 2.5 drawing
+    units - 0.05 mm on the sheet, which is no text at all.
+    """
     intents = exterior_chains(
         walls, openings, sides=sides, first_offset=first_offset, step=step, scale=scale
     )
     layer = ARCH_ROLE_LAYER["dim"]
     await ensure_arch_layers(backend, [layer])
+    factor = float(scale)
+    previous = await backend.system_get_variable("DIMSCALE")
+    previous = 1.0 if previous is None else float(previous)
     handles: list[str] = []
     rows: list[dict] = []
-    for intent in intents:
-        horizontal = abs(intent.p2[1] - intent.p1[1]) <= abs(intent.p2[0] - intent.p1[0])
-        info = await backend.dimension_linear(
-            intent.p1[0],
-            intent.p1[1],
-            intent.p2[0],
-            intent.p2[1],
-            intent.text_at[0],
-            intent.text_at[1],
-            0.0 if horizontal else 90.0,
-            layer,
-        )
-        handles.append(info.handle)
-        rows.append(
-            {
-                "row": intent.feature,
-                "from": list(intent.p1),
-                "to": list(intent.p2),
-                "value": math.dist(intent.p1, intent.p2),
-            }
-        )
+    if abs(previous - factor) > 1e-9:
+        await backend.system_set_variable("DIMSCALE", factor)
+    try:
+        for intent in intents:
+            horizontal = abs(intent.p2[1] - intent.p1[1]) <= abs(intent.p2[0] - intent.p1[0])
+            info = await backend.dimension_linear(
+                intent.p1[0],
+                intent.p1[1],
+                intent.p2[0],
+                intent.p2[1],
+                intent.text_at[0],
+                intent.text_at[1],
+                0.0 if horizontal else 90.0,
+                layer,
+            )
+            handles.append(info.handle)
+            rows.append(
+                {
+                    "row": intent.feature,
+                    "from": list(intent.p1),
+                    "to": list(intent.p2),
+                    "value": math.dist(intent.p1, intent.p2),
+                }
+            )
+    finally:
+        if abs(previous - factor) > 1e-9:
+            await backend.system_set_variable("DIMSCALE", previous)
     return {
         "count": len(handles),
         "handles": handles,
         "dimensions": rows,
-        "text_height": (
-            "set by the current dimension style; at 1:{0:g} set DIMSCALE={0:g} with "
-            "dimstyle_modify so the text plots at its paper height".format(float(scale))
-        ),
+        "dimscale": factor,
         "backend": backend.name,
     }

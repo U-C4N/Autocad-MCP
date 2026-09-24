@@ -46,6 +46,14 @@ def _rendered(backend, handle):
 # ── headless engine ─────────────────────────────────────────────────────────
 
 
+async def test_a_new_drawing_writes_standard_in_arial_like_acadiso(backend):
+    # AutoCAD 2026's acadiso.dwt ships Standard as Arial. ezdxf's own default is
+    # txt.shx, which has no superscript two: an architectural area label 'm²'
+    # read 'm?' in AutoCAD and rendered as a box headlessly.
+    rows = {row["name"]: row["font"] for row in await backend.textstyle_list()}
+    assert rows["Standard"] == "arial.ttf"
+
+
 async def test_dimstyle_list_reports_standard_current_with_the_seventeen_values(backend):
     rows = await backend.dimstyle_list()
     assert [r["name"] for r in rows] == ["Standard"]
