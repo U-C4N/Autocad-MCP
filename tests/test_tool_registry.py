@@ -495,7 +495,7 @@ async def test_tool_groups_is_byte_identical_to_the_source_declared_grouping():
 
 
 async def test_tool_group_sizes_are_unchanged():
-    """Frozen snapshot of the surface (241 tools, 26 groups).
+    """Frozen snapshot of the surface (242 tools, 26 groups).
 
     Taken before @cad_tool landed at 131 tools; `batch` moved 2 -> 3 when
     v1.5.0's `cad_batch` joined `entity_batch_create`/`entity_batch_modify`, and
@@ -591,10 +591,17 @@ async def test_tool_group_sizes_are_unchanged():
     exactly `PACK_TOOL_NAMES["arch"]`, and every group the track-F branches
     had grown while the tag was unranked on them returned to its
     pre-track-F value.
+
+    `analysis` moved 12 -> 13 when track H's SECTION 27 opened with
+    `pipe_takeoff` on the network branch. It is tagged `plant` and
+    `analysis`, and `plant` is not in `_GROUP_TAG_PRIORITY` on that
+    branch, so it files under `analysis`. This snapshot is branch-local:
+    the track H integration task gives `plant` its pack and its group
+    once every branch has landed.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
-        "analysis": 12,
+        "analysis": 13,
         "architecture": 12,
         "batch": 3,
         "blocks": 9,
@@ -621,4 +628,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 241
+    assert sum(sizes.values()) == 242

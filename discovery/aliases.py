@@ -2465,6 +2465,28 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "mimari plan",
         ),
     ),
+    "pipe_takeoff": ToolAliases(
+        acad=(),
+        synonyms=(
+            "pipe takeoff",
+            "piping takeoff",
+            "takeoff",
+            "pipe quantities",
+            "how much pipe",
+            "pipe lengths from a p&id",
+            "bill of quantities",
+            "boq",
+            "metraj",
+            "boru metrajı",
+            "boru metraji",
+            "metre cetveli",
+            "boru listesi",
+            "спецификация",
+            "ведомость",
+            "спецификация трубопроводов",
+            "ведомость трубопроводов",
+        ),
+    ),
 }
 
 
