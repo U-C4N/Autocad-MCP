@@ -88,6 +88,12 @@ pdf = [
     # Also satisfies ezdxf's hard Pillow requirement, transitively.
     "matplotlib>=3.8",
 ]
+office = [
+    # XLSX output: the takeoff workbooks (pipe_takeoff / cable_takeoff) and
+    # data_extract(format="xlsx"). Without it every one of them still writes
+    # CSV and refuses XLSX with the `xlsx_write` capability, naming this extra.
+    "openpyxl>=3.1",
+]
 full = [
     # Same marker as `com` above, and for the same reason: `[full]` is the
     # extra this project recommends to contributors, and it was
@@ -95,6 +101,7 @@ full = [
     'pywin32>=306; sys_platform == "win32"',
     "Pillow>=10.0",
     "matplotlib>=3.8",
+    "openpyxl>=3.1",
 ]
 
 [project.scripts]

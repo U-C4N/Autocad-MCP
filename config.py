@@ -9,6 +9,9 @@ from pathlib import Path
 #: CAD this project is developed and tested against.
 DEFAULT_CAD_PROGID = "AutoCAD.Application"
 
+#: Default ``MAX_DXF_BYTES``: 512 MB.
+DEFAULT_MAX_DXF_BYTES = 512 * 1024 * 1024
+
 
 class Settings:
     """Server configuration loaded from environment variables."""
@@ -62,9 +65,12 @@ class Settings:
             os.environ.get("DANGEROUS_COMMANDS_ENABLED", "false").lower().strip() == "true"
         )
 
-        # Reject opening DXF files larger than this many bytes (default 50 MB).
-        # Set to 0 to disable the check.
-        self.max_dxf_bytes: int = int(os.environ.get("MAX_DXF_BYTES", str(50 * 1024 * 1024)))
+        # Reject opening DXF files larger than this many bytes (default 512 MB).
+        # Set to 0 to disable the check. It was 50 MB until v1.6's track H: a
+        # real plant layout read on 2026-09-24 was a 188 MB DXF, and the
+        # understanding tools exist for exactly such drawings. The refusal
+        # names the file's size and this variable.
+        self.max_dxf_bytes: int = int(os.environ.get("MAX_DXF_BYTES", str(DEFAULT_MAX_DXF_BYTES)))
 
         # Hard cap on list/select limit params to keep tool responses bounded.
         self.max_list_limit: int = int(os.environ.get("MAX_LIST_LIMIT", "5000"))

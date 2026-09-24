@@ -242,7 +242,7 @@ Nothing loads a `.env` file — export these, or set them in your MCP client's `
 | `ALLOWED_PATHS` | *(empty)* | Comma-separated absolute paths the server may access |
 | `MAX_UNDO_STACK` | `5` | Maximum retained undo snapshots |
 | `EZDXF_UNDO_DEPTH` | `0` | Headless undo history depth; `0` disables it |
-| `MAX_DXF_BYTES` | `52428800` | Reject larger DXF input; `0` disables |
+| `MAX_DXF_BYTES` | `536870912` | Reject larger DXF input (512 MB); `0` disables |
 | `MAX_LIST_LIMIT` | `5000` | Bound list/selection response sizes |
 | `COM_CALL_TIMEOUT` | `60` | Per-call live AutoCAD timeout (s); `0` disables |
 | `EZDXF_CALL_TIMEOUT` | `120` | Per-call headless timeout (s); `0` disables |
