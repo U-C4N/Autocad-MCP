@@ -103,6 +103,14 @@ def test_ends_within_tol_merge_into_one_run():
     assert run.ends == ((0.0, 0.0), (2000.0, 0.0))
 
 
+def test_a_segment_shorter_than_tol_is_counted_when_it_is_dropped():
+    # a 0.5-unit stub collapses to one vertex at tol 1.0: gone from the network,
+    # but never silently - stats say how many went
+    result = net(line("1", (0.0, 0.0), (1000.0, 0.0)), line("2", (2000.0, 0.0), (2000.5, 0.0)))
+    assert result["stats"]["segments_below_tol"] == 1
+    assert net(line("1", (0.0, 0.0), (1000.0, 0.0)))["stats"]["segments_below_tol"] == 0
+
+
 def test_a_branch_ending_on_a_header_is_a_t_junction():
     result = net(line("1", (0.0, 0.0), (2000.0, 0.0)), line("2", (1000.0, 0.0), (1000.0, 800.0)))
     (run,) = result["runs"]

@@ -11124,13 +11124,15 @@ async def pipe_takeoff(
         ),
     ] = None,
     tol: Annotated[
-        float,
+        float | None,
         Field(
-            default=1.0,
+            default=None,
             gt=0.0,
-            description="Line ends closer than this (P&ID drawing units) are one junction.",
+            description="Line ends closer than this (P&ID drawing units) are one junction; "
+            "default 1 mm in the unit the P&ID's geometry implies (1.0 on a millimetre "
+            "drawing, 0.001 on a metre one).",
         ),
-    ] = 1.0,
+    ] = None,
     ctx: Context = None,
 ) -> dict:
     """A pipe takeoff: topology from the P&ID, lengths from the layout, rows by room x service x diameter.

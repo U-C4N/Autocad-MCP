@@ -21,6 +21,7 @@ from engineering.understand.takeoff import (
     check_pipe_options,
     check_section_rules,
     pipe_rows,
+    unit_of,
 )
 
 __all__ = ["run_cable_takeoff", "run_pipe_takeoff"]
@@ -49,7 +50,7 @@ async def run_pipe_takeoff(
     length_source: str = "auto",
     force: bool = False,
     layers=None,
-    tol: float = 1.0,
+    tol: float | None = None,
 ) -> dict:
     """`pipe_rows` over a P&ID and an optional layout, plus the workbook when `output` is named.
 
@@ -64,14 +65,17 @@ async def run_pipe_takeoff(
         vertical_allowance=vertical_allowance,
         length_source=length_source,
     )
-    tol = _check_tol(tol)
+    tol = None if tol is None else _check_tol(tol)
     if length_source == "layout" and not layout_path:
         raise ValueError("length_source='layout' needs a layout drawing; none was given")
     pid = await take_snapshot(backend, pid_path)
     layout = await take_snapshot(backend, layout_path) if layout_path else None
 
     def compute() -> dict:
-        network = build_network(pid, layers=layers, tol=tol)
+        # 1 mm in the unit the P&ID's geometry implies: a fixed 1.0 would be a
+        # metre on a metre drawing, merging ends a metre apart and dropping pipes
+        joint = tol if tol is not None else 1.0 / (unit_of(pid)["m_per_unit"] * 1000.0)
+        network = build_network(pid, layers=layers, tol=joint)
         return pipe_rows(
             network,
             pid,

@@ -37,6 +37,25 @@ def plant(tmp_path):
     return build_plant_pair(tmp_path)
 
 
+async def test_a_metre_pid_keeps_a_pipe_shorter_than_one_drawing_unit(client, tmp_path):
+    # The junction tolerance defaults to 1 mm in the unit the P&ID's geometry
+    # implies. A fixed 1.0 would be a metre here: the 0.6 m pipe would collapse
+    # to a point and vanish from the totals.
+    import ezdxf
+
+    doc = ezdxf.new(setup=False)
+    doc.header["$INSUNITS"] = 6  # metres
+    msp = doc.modelspace()
+    msp.add_line((0.0, 0.0), (0.6, 0.0), dxfattribs={"layer": "PRODUCT"})
+    msp.add_line((10.0, 0.0), (15.0, 0.0), dxfattribs={"layer": "PRODUCT"})
+    msp.add_text("NOTES", height=0.25, dxfattribs={"layer": "TEXT"}).set_placement((0.0, 1.0))
+    path = tmp_path / "metre_pid.dxf"
+    doc.saveas(path)
+    result = (await client.call_tool("pipe_takeoff", {"pid_path": str(path)})).structured_content
+    assert result["units"]["pid"]["inferred"] == "m"
+    assert result["totals"]["net_m"] == pytest.approx(5.6)  # 0.6 + 5.0
+
+
 async def test_pipe_takeoff_measures_on_the_layout_and_writes_the_workbook(client, plant, tmp_path):
     output = tmp_path / "takeoff.xlsx"
     arguments = {

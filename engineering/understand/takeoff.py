@@ -802,6 +802,13 @@ def pipe_rows(
         )
     }
     warnings = [u["warning"] for u in (pid_unit, layout_unit) if u and u["warning"]]
+    dropped = int(network.get("stats", {}).get("segments_below_tol") or 0)
+    if dropped:
+        warnings.append(
+            f"{dropped} P&ID segment(s) shorter than the junction tolerance "
+            f"({network['stats']['tol']:g} drawing units) collapsed to a point and are not "
+            "counted"
+        )
     if not scale_verified:
         warnings.append(
             "scale_verified: false - lengths are drawn lengths on a P&ID that no scale check "

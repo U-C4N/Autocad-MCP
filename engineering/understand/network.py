@@ -539,10 +539,13 @@ def build_network(snap: Snapshot, *, layers=None, tol=1.0, label_search=None) ->
     raw = _segments(snap, chosen)
     verts = _Vertices(tol)
     snapped = []
+    below_tol = 0  # segments whose two ends merge into one vertex: dropped, and counted
     for a, b, bulge, handle, layer in raw:
         u, v = verts.index(a), verts.index(b)
         if u != v:
             snapped.append((u, v, bulge, handle, layer))
+        else:
+            below_tol += 1
 
     # equipment first: an INSERT a tag labels is never a fitting
     occurrences = tag_occurrences(snap)
@@ -888,6 +891,7 @@ def build_network(snap: Snapshot, *, layers=None, tol=1.0, label_search=None) ->
             "tol": tol,
             "label_search": search,
             "segments": len(raw),
+            "segments_below_tol": below_tol,
             "pieces": len(pieces),
             "overlap_removed": overlap_count,
             "overlap_length": overlap_length,
