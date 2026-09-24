@@ -240,6 +240,71 @@ def test_a_run_with_a_free_end_is_c(pair):
     assert reasons == {"end_not_on_equipment"}
 
 
+def test_a_layout_takeoff_says_how_much_it_could_not_route(pair):
+    # the free-ended run is not routed: the warning names the count, the drawn
+    # length it leaves to the control rows and the P&ID alternative
+    pid, layout, _network = pair
+    records = pid_records() + [rec("L3", "LINE", PIPE, ((0.0, 600.0), (0.0, 1600.0)))]
+    drawing = snap(records, 4, "pid.dxf")
+    result = pipe_rows(
+        build_network(drawing, layers=[PIPE]), drawing, layout, length_source="layout"
+    )
+    (warning,) = [w for w in result["warnings"] if "could not be routed" in w]
+    assert warning.startswith("1 of 3 runs could not be routed on the layout")
+    assert "1.0 m drawn on the P&ID" in warning  # 1000 mm
+    assert "length_source='pid'" in warning
+
+
+def test_pid_lengths_need_no_equipment_at_the_ends():
+    # A product line that ends in the open - no tag, no equipment - still has a
+    # drawn length: measured on the P&ID it is a row, and each piece goes to the
+    # P&ID room it lies in (the wall at x = 4000 cuts the second line).
+    walls = [
+        rec(
+            "W",
+            "LWPOLYLINE",
+            WALLS,
+            ((0, 0), (8000, 0), (8000, 4000), (0, 4000)),
+            closed=True,
+            bbox=(0.0, 0.0, 8000.0, 4000.0),
+        ),
+        rec("X", "LINE", WALLS, ((4000, 0), (4000, 4000))),
+        text("R1", "ROOM 101", (1000.0, 3000.0), 250.0),
+        text("R2", "ROOM 102", (5000.0, 3000.0), 250.0),
+    ]
+    pipes = [
+        rec("p1", "LINE", PIPE, ((1000.0, 1000.0), (3000.0, 1000.0))),  # 2000, room 101
+        rec("p2", "LINE", PIPE, ((3000.0, 1000.0), (6000.0, 1000.0))),  # 1000 + 2000
+        text("d", "Ø51", (2000.0, 1100.0), 50.0),
+    ]
+    drawing = snap(walls + pipes, 4, "pid.dxf")
+    result = pipe_rows(build_network(drawing, layers=[PIPE]), drawing, None, services=["product"])
+    rows = {(row["room"], row["diameter"]): row for row in result["rows"]}
+    assert rows[(room_key("ROOM 101"), "Ø51")]["net_m"] == pytest.approx(3.0, abs=EPS)
+    assert rows[(room_key("ROOM 102"), "Ø51")]["net_m"] == pytest.approx(2.0, abs=EPS)
+    assert result["totals"]["unroutable_m"] == 0.0
+    (run,) = result["runs"]
+    assert run["tags"] == [] and run["status"] in ("A", "B")
+
+
+def test_without_room_faces_a_piece_goes_to_the_nearest_numbered_room():
+    # No walls: pieces go to the nearest room label. 'TO ROOM STORAGE' is a note
+    # pointing at a room, not a room: when the drawing numbers its rooms, only
+    # the numbered labels are candidates, so the line at x 8500-9500 is room 102.
+    records = [
+        text("R1", "ROOM 101", (0.0, 3000.0), 250.0),
+        text("R2", "ROOM 102", (12000.0, 3000.0), 250.0),
+        text("N", "TO ROOM STORAGE", (9000.0, 1200.0), 250.0),
+        rec("p", "LINE", PIPE, ((8500.0, 1000.0), (9500.0, 1000.0))),
+        text("d", "Ø51", (9000.0, 1100.0), 50.0),
+    ]
+    drawing = snap(records, 4, "pid.dxf")
+    result = pipe_rows(build_network(drawing, layers=[PIPE]), drawing, None, services=["product"])
+    assert [(row["room"], row["net_m"]) for row in result["rows"]] == [
+        (room_key("ROOM 102"), pytest.approx(1.0, abs=EPS))
+    ]
+
+
 def test_other_services_are_left_out_unless_asked(pair):
     pid, layout, network = pair
     assert DEFAULT_SERVICES == ("product", "cip_supply", "cip_return")

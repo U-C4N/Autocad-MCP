@@ -226,9 +226,13 @@ def room_regions(snap: Snapshot, cluster=None, *, prep: dict | None = None) -> d
     def key(row: dict) -> str:
         return str(row["number"] or row["name"] or row["text"])
 
+    # without a face a piece goes to the nearest label: when the drawing numbers
+    # its rooms, an unnumbered mention ('to room storage') is a note, not a room
+    numbered = [row for row in found["rooms"] if row["number"]]
+    candidates = numbered or found["rooms"]
     return {
         "faces": [(key(row), face) for row, face in found["labelled"]],
-        "labels": sorted((key(row), (row["at"][0], row["at"][1])) for row in found["rooms"]),
+        "labels": sorted((key(row), (row["at"][0], row["at"][1])) for row in candidates),
     }
 
 
@@ -322,6 +326,58 @@ def _choose_source(requested: str, layout, scale: dict, force: bool) -> tuple[st
     return "layout", f"auto_{verdict}"
 
 
+def _row(rows: dict, room: str, service: str, diameter: str) -> dict:
+    return rows.setdefault(
+        (room, service, diameter),
+        {
+            "room": room,
+            "service": service,
+            "diameter": diameter,
+            "direct_m": 0.0,
+            "continuity_m": 0.0,
+            "unassigned_m": 0.0,
+            "net_m": 0.0,
+            "schematic_m": 0.0,
+            "status": "A",
+            "runs": [],
+        },
+    )
+
+
+def _pid_cells(edges, regions: dict, m_per_unit: float) -> dict:
+    """{(room, diameter): {net, direct, continuity, unassigned}} in metres, piece by piece.
+
+    With room faces a piece is cut at the outlines (`apportion` on its chord,
+    scaled to the piece's true length, so a bend keeps its arc length); without
+    faces the whole piece goes to the room label nearest its midpoint.
+    """
+    cells: dict[tuple[str, str], dict] = {}
+    for edge in edges:
+        a, b = edge["a"], edge["b"]
+        metres = edge["length"] * m_per_unit
+        pieces = apportion([(a, b)], regions) if regions["faces"] else {}
+        chord = sum(pieces.values())
+        if chord > 0.0:
+            shares = {room: value / chord for room, value in pieces.items()}
+        else:
+            shares = {room_at(regions, ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)): 1.0}
+        diameter = edge["diameter"] or UNASSIGNED
+        for room, share in shares.items():
+            cell = cells.setdefault(
+                (room, diameter), {"net": 0.0, "direct": 0.0, "continuity": 0.0, "unassigned": 0.0}
+            )
+            cell["net"] += metres * share
+            cell[edge["diameter_source"]] += metres * share
+    return cells
+
+
+def _reasons(flagged: list[dict]) -> str:
+    counts: dict[str, int] = {}
+    for run in flagged:
+        counts[run["reason"]] = counts.get(run["reason"], 0) + 1
+    return ", ".join(f"{reason} {n}" for reason, n in sorted(counts.items()))
+
+
 def pipe_rows(
     network,
     pid: Snapshot,
@@ -343,12 +399,16 @@ def pipe_rows(
     `length_source='pid'` on a P&ID the scale check calls schematic unless
     `force=True` (the refusal quotes the statistics).
 
-    Status per run: **A** every end on a tag placed on the layout and every
-    piece's diameter read directly; **B** a diameter carried by continuity or
-    unassigned; **C** not routable - an end on no equipment, fewer than two
-    tags, a tag missing from (or written twice on) the layout. A C run goes to
-    `control` with its schematic length only, is counted in the totals and is
-    flagged. A run holding several diameters shares its length among them in
+    Status per run: **A** every piece's diameter read directly; **B** a
+    diameter carried by continuity or unassigned; **C**, on the layout only,
+    not routable - an end on no equipment, fewer than two tags, a tag missing
+    from (or written twice on) the layout. A C run goes to `control` with its
+    schematic length only, is counted in the totals and is flagged, and a
+    warning says how much could not be routed. Measured on the P&ID a run needs
+    no equipment at its ends - the drawn geometry is the length - and each
+    piece goes to the P&ID room it lies in (cut at the room outlines when the
+    P&ID has room faces, else the nearest room label). On the layout a run
+    holding several diameters shares its routed length among them in
     proportion to their drawn length on the P&ID.
     """
     options = check_pipe_options(
@@ -401,16 +461,19 @@ def pipe_rows(
             part["drawn"] += edge["length"]
             part[edge["diameter_source"]] += edge["length"]
         why = None
-        if any(end["tag"] is None for end in ends) or not ends:
-            why = "end_not_on_equipment"
-        elif len(run.tags) < 2:
-            why = "single_tag"
-        elif source == "layout":
-            missing = [tag for tag in run.tags if tag not in positions]
-            if missing:
-                why = (
-                    "tag_ambiguous" if any(t in ambiguous for t in missing) else "tag_not_on_layout"
-                )
+        if source == "layout":
+            if any(end["tag"] is None for end in ends) or not ends:
+                why = "end_not_on_equipment"
+            elif len(run.tags) < 2:
+                why = "single_tag"
+            else:
+                missing = [tag for tag in run.tags if tag not in positions]
+                if missing:
+                    why = (
+                        "tag_ambiguous"
+                        if any(t in ambiguous for t in missing)
+                        else "tag_not_on_layout"
+                    )
         detail = {
             "id": run.id,
             "service": run.service,
@@ -468,15 +531,16 @@ def pipe_rows(
             detail["vertical_m"] = vertical * len(tree)
             length_m = detail["layout_m"] + detail["vertical_m"]
         else:
-            if layout is not None and scale.get("verdict") == "to_scale":
-                length_m = schematic_m / scale["factor"]
-            else:
-                length_m = schematic_m
-            centre = (
-                sum(end["at"][0] for end in ends) / len(ends),
-                sum(end["at"][1] for end in ends) / len(ends),
+            factor = (
+                scale["factor"]
+                if layout is not None and scale.get("verdict") == "to_scale"
+                else 1.0
             )
-            rooms = {room_at(regions, centre): length_m}
+            length_m = schematic_m / factor
+            cells = _pid_cells(run.edges, regions, m_pid / factor)
+            rooms = {}
+            for (room, _diameter), cell in cells.items():
+                rooms[room] = rooms.get(room, 0.0) + cell["net"]
         detail["length_m"] = length_m
         detail["rooms"] = rooms
         status = (
@@ -485,25 +549,25 @@ def pipe_rows(
             else "B"
         )
         detail["status"] = status
+        if source == "pid":
+            # measured piece by piece: each cell is one room and one diameter
+            for (room, diameter), cell in cells.items():
+                row = _row(rows, room, run.service, diameter)
+                row["net_m"] += cell["net"]
+                row["direct_m"] += cell["direct"]
+                row["continuity_m"] += cell["continuity"]
+                row["unassigned_m"] += cell["unassigned"]
+                row["schematic_m"] += cell["net"] * factor
+                if cell["continuity"] or cell["unassigned"]:
+                    row["status"] = "B"
+                if run.id not in row["runs"]:
+                    row["runs"].append(run.id)
+            continue
         for diameter, part in parts.items():
             share = part["drawn"] / drawn if drawn else 0.0
             for room, room_m in rooms.items():
                 x = room_m * share
-                row = rows.setdefault(
-                    (room, run.service, diameter),
-                    {
-                        "room": room,
-                        "service": run.service,
-                        "diameter": diameter,
-                        "direct_m": 0.0,
-                        "continuity_m": 0.0,
-                        "unassigned_m": 0.0,
-                        "net_m": 0.0,
-                        "schematic_m": 0.0,
-                        "status": "A",
-                        "runs": [],
-                    },
-                )
+                row = _row(rows, room, run.service, diameter)
                 row["net_m"] += x
                 row["direct_m"] += x * part["direct"] / part["drawn"]
                 row["continuity_m"] += x * part["continuity"] / part["drawn"]
@@ -548,6 +612,14 @@ def pipe_rows(
             f"{dropped} P&ID segment(s) shorter than the junction tolerance "
             f"({network['stats']['tol']:g} drawing units) collapsed to a point and are not "
             "counted"
+        )
+    flagged = [r for r in runs_out if r["status"] == "C"]
+    if source == "layout" and flagged:
+        warnings.append(
+            f"{len(flagged)} of {len(runs_out)} runs could not be routed on the layout "
+            f"({_reasons(flagged)}); their {unroutable:.1f} m drawn on the P&ID are in the "
+            "control rows, not in the table. length_source='pid' with force=True measures "
+            "every run on the P&ID instead, and says the scale is not verified."
         )
     if not scale_verified:
         warnings.append(

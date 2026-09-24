@@ -35,7 +35,7 @@ from engineering.understand.clusters import find_clusters
 from engineering.understand.labels import parse_tag, wiring_target
 from engineering.understand.snapshot import EntityRecord, Snapshot, length_of
 from engineering.understand.units import infer_units, robust_extents, wall_segments
-from engineering.understand.vocab import classify_layer, room_label
+from engineering.understand.vocab import classify_layer, equipment_kind, room_label
 
 __all__ = [
     "describe",
@@ -186,6 +186,10 @@ def find_rooms(records: Sequence[EntityRecord], *, tol: float, membership: dict)
         if rec.type in _TEXT_TYPES and rec.text:
             parsed = room_label(rec.text)
             at = _anchor(rec)
+            # an unnumbered label that names equipment ('control cabinet - filling
+            # room') labels the equipment; a numbered 'pump room 3' is a room
+            if parsed and parsed["number"] is None and equipment_kind(rec.text):
+                continue
             if parsed and at is not None:
                 labels.append((rec, parsed, at))
     segments, bulged = wall_segments(records)

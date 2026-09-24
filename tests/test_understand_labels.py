@@ -31,6 +31,16 @@ def test_plain_decodes_the_percent_codes():
     assert plain("%%065") == "A"
 
 
+def test_plain_decodes_the_caret_notation_of_a_text_entity():
+    # A TEXT or ATTRIB stores its control characters in caret notation: ^J a line
+    # break, ^I a tab, "^ " a caret. Left undecoded, "6^JROOM" is one word and a
+    # room label's number reads as "6^JROOM".
+    assert plain("6^JROOM") == "6\nROOM"
+    assert plain("A^IB") == "A\tB"
+    assert plain("x^ y") == "x^y"
+    assert plain("\\S1^2;") == "1/2"  # an MTEXT stack keeps its separator
+
+
 def test_plain_decodes_a_unicode_escape():
     assert plain("\\U+2205 51") == "\u2205 51"
     assert plain("\\u+00D8") == "\u00d8"

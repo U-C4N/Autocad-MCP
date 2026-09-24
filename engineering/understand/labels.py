@@ -65,6 +65,10 @@ _TOGGLE_CODES = frozenset("LlOoKkN")
 
 _UNICODE_ESCAPE = re.compile(r"\\[Uu]\+([0-9A-Fa-f]{4})")
 _PERCENT_CODE = re.compile(r"%%(\d{3}|[cdpCDP]|[uoUOkK])")
+#: Caret notation, how a TEXT or ATTRIB stores a control character: ^J a line
+#: break, ^M a carriage return (read as a break), ^I a tab, and "^ " a caret.
+_CARET = re.compile(r"\^([JMI ])")
+_CARET_CHARS = {"J": "\n", "M": "\n", "I": "\t", " ": "^"}
 
 #: Every spelling of the diameter sign met in drawings: Ø (U+00D8), ø (U+00F8),
 #: ∅ (U+2205, AutoCAD's listed diameter symbol), ⌀ (U+2300,
@@ -138,8 +142,9 @@ def plain(text: str | None) -> str:
 
     ``\\U+XXXX`` becomes its character; ``%%c`` / ``%%d`` / ``%%p`` become Ø / ° /
     ±, ``%%nnn`` the character with that code, ``%%%`` a percent sign, and the
-    ``%%u`` / ``%%o`` / ``%%k`` toggles disappear. In MTEXT, ``\\P`` is a line
-    break, ``\\~`` a space, ``\\S a^b;`` / ``\\S a/b;`` the stacked ``a/b``,
+    ``%%u`` / ``%%o`` / ``%%k`` toggles disappear, and the caret notation of a
+    TEXT (``^J`` a line break, ``^I`` a tab, ``^ `` a caret) is decoded. In
+    MTEXT, ``\\P`` is a line break, ``\\~`` a space, ``\\S a^b;`` / ``\\S a/b;`` the stacked ``a/b``,
     ``\\\\`` ``\\{`` ``\\}`` the literal characters; every argument code
     (``\\f...;``, ``\\H...;``, ``\\C...;`` ...) and every toggle is dropped, and so
     are the grouping braces.
@@ -147,6 +152,7 @@ def plain(text: str | None) -> str:
     if not text:
         return ""
     source = _UNICODE_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), str(text))
+    source = _CARET.sub(lambda m: _CARET_CHARS[m.group(1)], source)
     source = source.replace("%%%", "\x00")
 
     def percent(match: re.Match) -> str:

@@ -171,6 +171,18 @@ def test_a_room_label_inside_the_wall_faces_is_measured():
     assert report["room_faces"]["unlabelled"] == 1
 
 
+def test_a_cabinet_label_naming_its_room_is_not_a_room():
+    # 'CONTROL CABINET / FILLING ROOM' labels the cabinet, not a room: it names
+    # equipment and carries no room number. A numbered room named after its
+    # equipment ('PUMP ROOM 3') is still a room.
+    records = [
+        text("C", "CONTROL CABINET FILLING ROOM", 1000.0, 1000.0),
+        text("P", "PUMP ROOM 3", 5000.0, 1000.0),
+    ]
+    report = describe(snapshot(records))
+    assert [(room["number"], room["name"]) for room in report["rooms"]] == [("3", "PUMP")]
+
+
 def test_an_attribute_and_a_text_of_one_tag_are_one_occurrence_and_a_copy_is_two():
     assert parse_tag("T4100") == "T4100"
     records = [
