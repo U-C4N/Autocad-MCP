@@ -10555,6 +10555,220 @@ async def arch_plan_from_spec(
 
 
 # ---------------------------------------------------------------------------
+# ── SECTION 26: Understanding & QA (1 tool) ─────────────────────────────────
+# ---------------------------------------------------------------------------
+
+
+async def _diff_revision(backend, path: str | None, *, tol: float, role: str):
+    """One revision for ``drawing_diff``: its records and, where they can be
+    read, its block signatures (None otherwise).
+
+    A DXF path is read once, here, for both. The current document goes through
+    ``take_snapshot``; its block table is read only on the headless engine,
+    under the backend's own lock. Any other path (a DWG) goes through the
+    snapshot too, which opens it read-only on the live engine.
+    """
+    import asyncio
+
+    from engineering.understand.diff import block_signatures, read_revision
+    from engineering.understand.snapshot import take_snapshot
+
+    if path is None:
+        snap = await take_snapshot(backend, None)
+        blocks = None
+        run = getattr(backend, "_async", None)
+        if backend.name == "ezdxf" and run is not None:
+            blocks = await run(lambda: block_signatures(backend._doc, tol=tol))
+        return snap, blocks
+    validated = validate_path(path)
+    if not validated.is_file():
+        raise ToolError(f"{role}: {validated} does not exist or is not a file")
+    if validated.suffix.lower() == ".dxf":
+        try:
+            return await asyncio.to_thread(read_revision, str(validated), tol=tol)
+        except ValueError as exc:
+            raise ToolError(f"{role}: {exc}") from exc
+    try:
+        return await take_snapshot(backend, str(validated)), None
+    except ValueError as exc:  # an unreadable suffix; the dwg refusal is not a ValueError
+        raise ToolError(f"{role}: {exc}") from exc
+
+
+async def _diff_markup(backend, result: dict, new_snap, *, rev: str, description: str) -> dict:
+    """Revision clouds around every model-space cluster of change, filed under
+    ``rev`` through ``engineering.sheet.revision.add_revision`` - the only
+    write ``drawing_diff`` ever makes."""
+    from engineering.sheet.bom import LIST_WIDTH, ROW_HEIGHT
+    from engineering.sheet.revision import add_revision
+    from engineering.understand.diff import robust_box
+
+    clusters = [c for c in result["clusters"] if c["space"] == "Model"]
+    paper = len(result["clusters"]) - len(clusters)
+    if not clusters:
+        return {
+            "created": False,
+            "clouds": [],
+            "reason": "no change in model space to cloud",
+            "paper_space_clusters": paper,
+        }
+    boxes = [c["box"] for c in clusters]
+    shortest = min(min(b[2] - b[0], b[3] - b[1]) for b in boxes)
+    box = robust_box(new_snap) or (
+        min(b[0] for b in boxes),
+        min(b[1] for b in boxes),
+        max(b[2] for b in boxes),
+        max(b[3] for b in boxes),
+    )
+    summary = result["summary"]
+    text = description or (
+        f"drawing_diff: {summary['changed']} changed, {summary['added']} added, "
+        f"{summary['removed']} removed"
+    )
+    drawn = await add_revision(
+        backend,
+        rev=rev,
+        description=text,
+        clouds=boxes,
+        at=(box[2] - LIST_WIDTH, box[3] + 3.0 * ROW_HEIGHT),
+        cloud_segment=shortest / 4.0,
+    )
+    drawn["paper_space_clusters"] = paper
+    return drawn
+
+
+@cad_tool(
+    summary="Compare two revisions of a drawing: what moved, changed, was added or removed.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Drawing: Diff Two Revisions", "destructiveHint": False},
+    tags={"analysis", "query"},
+)
+async def drawing_diff(
+    old_path: Annotated[
+        str,
+        Field(
+            description="The OLDER revision: a DXF path (a DWG only on the live engine, which "
+            "exports it read-only)."
+        ),
+    ],
+    new_path: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="The NEWER revision: a DXF path, or omitted for the current document.",
+        ),
+    ] = None,
+    tol: Annotated[
+        float,
+        Field(
+            default=0.01,
+            gt=0,
+            description="Geometry is compared rounded to this many drawing units.",
+        ),
+    ] = 0.01,
+    move_tol: Annotated[
+        float | None,
+        Field(
+            default=None,
+            gt=0,
+            description="An unmatched entity is paired with the nearest one of its type and layer "
+            "within this distance and reported as changed; default 2 % of the drawing's robust "
+            "diagonal.",
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        Field(
+            default=200, ge=1, le=5000, description="Rows kept per list (changed, added, removed)."
+        ),
+    ] = 200,
+    markup: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="Draw revision clouds around every cluster of change on the current "
+            "document (the newer revision) and file them under `rev`.",
+        ),
+    ] = False,
+    rev: Annotated[
+        str,
+        Field(
+            default="",
+            description="Revision code for markup=True: one to three capitals or digits.",
+        ),
+    ] = "",
+    description: Annotated[
+        str,
+        Field(default="", description="Revision-row text for markup=True; default: the counts."),
+    ] = "",
+    ctx: Context = None,
+) -> dict:
+    """Compare two revisions of one drawing by geometric signature (spec §10).
+
+    Entities are matched exactly first (type, layer, geometry rounded to `tol`,
+    text, block, attributes - handles do not matter), then by handle while
+    handles look stable, then by type + layer + nearest position within
+    `move_tol`; what is left is added or removed. The report counts changes by
+    layer and type, lists each changed entity with what changed (moved by, text
+    from -> to, attribute from -> to, radius from -> to, ...), compares the
+    block definitions when both revisions are DXF files or the headless current
+    document, and groups the changes into clusters.
+
+    Read-only unless `markup=True`: then revision clouds are drawn around the
+    model-space clusters on the current document, which must be the newer
+    revision, and filed as one revision row - the only write this tool makes.
+
+    Refused before anything is read: `markup=True` with `new_path` (the clouds go
+    on the current document), `markup=True` without a valid `rev`, `markup=True`
+    on an engine without the revcloud capability (the live engine -
+    `capability: "revcloud"`), a path that does not exist, a DXF over
+    MAX_DXF_BYTES (the size and the variable named), a file that is not a
+    readable DXF, and a non-positive `tol` or `move_tol`.
+    """
+    from backends.base import UnsupportedCapabilityError
+    from engineering.sheet.revision import REV_RE
+    from engineering.understand.diff import block_changes, cap_report, diff_snapshots
+
+    backend = _backend(ctx)
+    if markup:
+        if new_path:
+            raise ToolError(
+                "markup draws revision clouds on the current document, which must be the newer "
+                "revision: open it with drawing_open and call again without new_path"
+            )
+        if not REV_RE.fullmatch(rev.strip().upper()):
+            raise ToolError(
+                f"markup needs `rev`, the revision code the clouds are filed under - one to "
+                f"three capitals or digits (A, B, 01); got {rev!r}"
+            )
+        feature = backend.capabilities().features.get("revcloud")
+        if feature is None or not feature.supported:
+            raise UnsupportedCapabilityError(
+                "revcloud",
+                f"drawing_diff(markup=True): the {backend.name} backend cannot draw revision "
+                "clouds (no ActiveX member; REVCLOUD is command-line only). Run the diff "
+                "without markup, or on the ezdxf engine.",
+            )
+    await ctx.info(f"drawing_diff: {old_path} -> {new_path or 'the current document'}")
+    old_snap, old_blocks = await _diff_revision(backend, old_path, tol=tol, role="old_path")
+    new_snap, new_blocks = await _diff_revision(backend, new_path, tol=tol, role="new_path")
+    try:
+        result = diff_snapshots(old_snap, new_snap, tol=tol, move_tol=move_tol)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+    result["old"] = old_snap.source
+    result["new"] = new_snap.source
+    result["blocks"] = block_changes(old_blocks, new_blocks)
+    report = cap_report(result, limit)
+    if markup:
+        report["markup"] = await _diff_markup(
+            backend, result, new_snap, rev=rev.strip().upper(), description=description
+        )
+    return report
+
+
+# ---------------------------------------------------------------------------
 # ── RESOURCES ───────────────────────────────────────────────────────────────
 # ---------------------------------------------------------------------------
 

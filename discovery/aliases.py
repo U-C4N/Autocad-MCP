@@ -2465,6 +2465,19 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "mimari plan",
         ),
     ),
+    # ── Understanding & QA (SECTION 26, track H group D) ────────────────────
+    "drawing_diff": ToolAliases(
+        acad=("COMPARE",),
+        synonyms=(
+            "compare two drawings",
+            "compare two revisions",
+            "what changed between revisions",
+            "drawing differences",
+            "cloud the changes",
+            "revizyonlar arası değişiklik",
+            "revizyonlar arasi degisiklik",
+        ),
+    ),
 }
 
 

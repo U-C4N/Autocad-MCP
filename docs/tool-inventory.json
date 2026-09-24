@@ -3,13 +3,13 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 241,
+    "tools": 242,
     "resources": 8,
     "prompts": 5,
     "groups": 26
   },
   "groups": {
-    "analysis": 12,
+    "analysis": 13,
     "architecture": 12,
     "batch": 3,
     "blocks": 9,
@@ -895,6 +895,20 @@
       "annotations": {
         "title": "Drawing: Deliver Auditable Bundle",
         "destructiveHint": true
+      }
+    },
+    {
+      "name": "drawing_diff",
+      "group": "analysis",
+      "cost": "mutate",
+      "summary": "Compare two revisions of a drawing: what moved, changed, was added or removed.",
+      "tags": [
+        "analysis",
+        "query"
+      ],
+      "annotations": {
+        "title": "Drawing: Diff Two Revisions",
+        "destructiveHint": false
       }
     },
     {
