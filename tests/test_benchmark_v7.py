@@ -10,6 +10,9 @@ A/B report.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import ezdxf
 import pytest
 
@@ -34,6 +37,19 @@ def test_v7_extends_v6_without_touching_it():
     assert DEFAULT_MATRIX == "v7"
     assert task_by_id("takeoff_roundtrip").category == "plant"
     assert task_by_id("understand_foreign").category == "understand"
+
+
+def test_the_published_reference_report_covers_the_whole_current_matrix():
+    # The release's reference run: every task of the current matrix, all passed.
+    # It replaces 1.5's v3 run; the competitor reports stay the v2 runs.
+    published = Path(__file__).resolve().parents[1] / "benchmarks" / "results" / "published"
+    report = json.loads((published / "autocad-mcp-pro.json").read_text(encoding="utf-8"))
+    scored = {item["task_id"] for item in report["results"]}
+
+    assert scored == {task.task_id for task in TASKS_V7}
+    assert report["matrix"] == DEFAULT_MATRIX == "v7"
+    assert report["summary"]["score"] == 100.0
+    assert {item["status"] for item in report["results"]} == {"pass"}
 
 
 def test_the_adapter_implements_every_v7_task():

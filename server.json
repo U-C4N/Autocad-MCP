@@ -2,17 +2,17 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.u-c4n/autocad-mcp",
   "title": "AutoCAD MCP Pro",
-  "description": "AutoCAD automation for AI agents: live COM or headless ezdxf, ISO dims, GD&T, quality gate.",
+  "description": "AutoCAD for AI agents, live or headless: drafting, P&ID, mechanical parts, architecture, takeoffs.",
   "repository": {
     "url": "https://github.com/U-C4N/Autocad-MCP",
     "source": "github"
   },
-  "version": "1.5.1",
+  "version": "1.6.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "autocad-mcp-pro",
-      "version": "1.5.1",
+      "version": "1.6.0",
       "transport": {
         "type": "stdio"
       },
@@ -34,6 +34,13 @@
         {
           "name": "TOOL_PROFILE",
           "description": "Exposed tool profile: full (default) or lean.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "TOOL_PACKS",
+          "description": "Vertical packs to advertise: all (default) or a comma list of core, pid, settings, mech, arch, plant; core is always on.",
           "isRequired": false,
           "format": "string",
           "isSecret": false

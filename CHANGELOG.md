@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-09-25
+
+The v1.6 roadmap, shipped as five tracks: 154 → 247 registered tools in 28
+groups, the correctness suite at 48 / 48 against v1.5.1's 26 / 48 with zero
+regressions, the 21-task benchmark matrix at 21 / 21, and a live AutoCAD 2026
+run of every track's COM paths. Two roadmap criteria are not green, and
+**Not in 1.6** below says which and why: track D (Plant 3D) was dropped, and
+headless creation throughput is still below v1.4.0's. Roadmap:
+`docs/superpowers/specs/2026-09-15-v1.6-roadmap-design.md`.
+
 Track A of 1.6: the server becomes a P&ID expert and a P&ID reader. Nine
 `pid_*` tools in a new SECTION 17, two generic contracts every engine
 implements, six critique focuses that join `drawing_finalize`, and a
@@ -255,6 +265,34 @@ member. Spec: `docs/superpowers/specs/2026-09-24-v1.6-understand-design.md`.
 
 ### Fixed
 
+- **Found by the 1.6.0 README renders** (each with a test that fails on the
+  old code):
+  - The exterior dimension chains of `arch_dimension_chains` and
+    `arch_plan_from_spec` were drawn at the dimension style's DIMSCALE 1, so a
+    1:50 chain's 2.5 text was 2.5 drawing units high — 0.05 mm on the sheet —
+    and the plan render showed empty boxes where the numbers belong. Every
+    other plan annotation already followed the plot scale, and now the chains
+    do too: DIMSCALE is the plan's scale while they are drawn (reported as
+    `dimscale`, replacing the old advice to set it by hand), and the drawing's
+    own DIMSCALE is put back afterwards. Headlessly each chain dimension
+    carries the scale as its override. The live engine reaches the same
+    DIMSCALE through `SetVariable`; that combination has not been re-run on a
+    live seat since this change.
+  - A headless TABLE drew its title as the first column's cell, so a title
+    such as `DOOR SCHEDULE` wrapped inside that column and ran over the header
+    row. The title row is now merged across the table, as AutoCAD's TABLE
+    draws it.
+  - A headless TABLE's cell margin was a flat 1.0 drawing unit — 0.02 mm on a
+    1:50 schedule, where the text sat on the cell line and `LEFT` read as
+    `FT`. The margin now scales with the lettering (0.4 × text height, at most
+    0.15 × row height), which leaves every table at the default 2.5 text as
+    it was.
+  - `drawing_new` left the Standard text style on ezdxf's default `txt`,
+    which has no superscript two: a room label's `m²` read `m?` when AutoCAD
+    opened the DXF and rendered as a box headlessly. Standard is now
+    `arial.ttf`, as AutoCAD 2026's `acadiso.dwt` ships it, so both engines
+    begin from the same Standard; the five bundled templates are rebuilt on it
+    and `scripts/build_templates.py --check` reproduces them.
 - **Hatch islands on a live seat.** `hatch_add_boundary` was refused on COM
   (`hatch_edge_paths`), so a transverse section of any hollow part - a
   bushing, a flange bore - could not be drawn in AutoCAD. Each typed edge now
@@ -426,6 +464,20 @@ member. Spec: `docs/superpowers/specs/2026-09-24-v1.6-understand-design.md`.
 
 ### Changed
 
+- **Release evidence re-measured for 1.6.0.** The A/B gate against v1.5.1
+  (`ab-v1.5.1-vs-v1.6.0.json`: 26 / 48 → 48 / 48, 22 fixed, 0 regressed); the
+  reference adapter on matrix v7 (`autocad-mcp-pro.json`: 21 / 21, replacing
+  the v3 run of 1.5); the 100-point rubric re-scored per category with the
+  evidence for every point withheld (93; the competitor rows are their July
+  snapshots, not re-reviewed); the perf lane as medians of five alternating
+  runs, with the v1.4.0 comparison published beside it
+  (`perf-v1.4.0-vs-v1.6.0.json`). The four charts are regenerated from those
+  files, and the README is rewritten around them, with the mechanical and
+  architectural sheets rendered by `scripts/render_readme_mech.py` and
+  `scripts/render_readme_arch.py`.
+- `ruff` skips `docs/superpowers`: ruff 0.16 formats Markdown code blocks,
+  and reflowing a plan's quoted code would change what the document says was
+  written.
 - **`MAX_DXF_BYTES` defaults to 512 MB** (was 50 MB): a real plant layout read
   for track H was a 188 MB DXF. The snapshot's refusal names the file's size,
   the limit and the variable; `0` still disables the check.
@@ -457,6 +509,27 @@ member. Spec: `docs/superpowers/specs/2026-09-24-v1.6-understand-design.md`.
   not run on this tree yet, and the pre-existing 1369-vs-1363 drift between
   the README and Linux collection predates both tracks and is superseded by
   the new figure.
+
+### Not in 1.6
+
+- **Track D — Plant 3D, read-only — is dropped**, and roadmap criterion 5 is
+  withdrawn, not met. The maintainer does not use Plant 3D, and a reader
+  tested against nobody's real projects would be a guess. `TOOL_PACKS` keeps
+  no `plant3d` pack; the `plant` pack is track H's takeoffs.
+- **Roadmap criterion 7 is not met: headless creation is slower than
+  v1.4.0.** Medians of five alternating runs, one CPython 3.11.15 and one
+  ezdxf over each tree's own code: 2,000 line creates 244.5 → 306.1 ms
+  (1.25×), the 10,000-line build / export / reopen 1,847.9 → 2,553.5 ms
+  (1.38×); with `EZDXF_CALL_TIMEOUT=0` still 1.17× and 1.20×. The premium
+  quality pass went the other way, 150.6 → 65.3 ms. A cProfile of the
+  event-loop thread over the 2,000 creates counts 491,071 function calls on
+  1.6.0 against 319,038 on v1.4.0. The timeout is part of the cost, not all
+  of it, and earlier notes that switching it off restored v1.4.0's numbers
+  were wrong. Carried to 1.7.
+- **Four mechanical feature tables ship without rows**: DIN 471/472, DIN 509,
+  DIN 332 and ISO 3601-2. Their drawing code and provenance tests are in;
+  every size is refused by name until rows verified against the standard's
+  own table are transcribed.
 
 ### Live COM smoke
 

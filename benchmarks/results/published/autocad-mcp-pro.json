@@ -25,6 +25,11 @@
           "reason": null,
           "supported": true
         },
+        "documents": {
+          "mode": "registry",
+          "reason": null,
+          "supported": true
+        },
         "drawing_2d": {
           "mode": "native",
           "reason": null,
@@ -35,10 +40,30 @@
           "reason": "no_dwg_writer_requires_live_autocad",
           "supported": false
         },
+        "dwg_write": {
+          "mode": null,
+          "reason": "requires_oda_file_converter:https://www.opendesign.com/guestfiles/oda_file_converter",
+          "supported": false
+        },
+        "dwgprops": {
+          "mode": null,
+          "reason": "summary_fields_need_live_autocad;custom_properties_need_r2004_or_newer",
+          "supported": false
+        },
+        "dwt_write": {
+          "mode": null,
+          "reason": "dwt_is_a_dwg_container_requires_live_autocad",
+          "supported": false
+        },
         "dxf": {
           "mode": "native",
           "reason": null,
           "supported": true
+        },
+        "explode_opaque_members": {
+          "mode": null,
+          "reason": "ezdxf_cannot_transform:OLE2FRAME,VIEWPORT,ACAD_PROXY_ENTITY_without_proxy_graphic;refused_before_writing",
+          "supported": false
         },
         "handle_overlay": {
           "mode": "rendered",
@@ -50,9 +75,24 @@
           "reason": null,
           "supported": true
         },
+        "interactive_prompt": {
+          "mode": null,
+          "reason": "no_operator_to_prompt_headlessly",
+          "supported": false
+        },
+        "layer_states": {
+          "mode": "xrecord",
+          "reason": "portable_acadmcp_xrecord;not_listed_in_autocad_layer_states_manager",
+          "supported": true
+        },
         "lisp": {
           "mode": null,
           "reason": "live_com_only",
+          "supported": false
+        },
+        "live_application": {
+          "mode": null,
+          "reason": "headless_engine_has_no_application_to_launch_or_attach",
           "supported": false
         },
         "measure_area_acis": {
@@ -68,6 +108,11 @@
         "mtext_background_color": {
           "mode": "native",
           "reason": null,
+          "supported": true
+        },
+        "named_views": {
+          "mode": "vport_active",
+          "reason": "restore_sets_the_view_the_file_opens_on;no_live_display",
           "supported": true
         },
         "ocs_normalized": {
@@ -95,6 +140,11 @@
           "reason": null,
           "supported": true
         },
+        "preferences": {
+          "mode": null,
+          "reason": "preferences_live_in_the_running_application_not_in_a_file",
+          "supported": false
+        },
         "preflight": {
           "mode": "shared",
           "reason": null,
@@ -104,6 +154,11 @@
           "mode": "shared",
           "reason": null,
           "supported": true
+        },
+        "registry_sysvar": {
+          "mode": null,
+          "reason": "registry_saved_variables_have_no_home_in_a_file",
+          "supported": false
         },
         "revcloud": {
           "mode": "native",
@@ -125,6 +180,11 @@
           "reason": null,
           "supported": true
         },
+        "ucs": {
+          "mode": "stored_not_interpreted",
+          "reason": "tool_coordinates_stay_wcs",
+          "supported": true
+        },
         "undo_history": {
           "mode": null,
           "reason": "set_EZDXF_UNDO_DEPTH_to_enable",
@@ -139,6 +199,16 @@
           "mode": "native",
           "reason": null,
           "supported": true
+        },
+        "xlsx_write": {
+          "mode": "openpyxl",
+          "reason": null,
+          "supported": true
+        },
+        "xref_live": {
+          "mode": null,
+          "reason": "reload_and_bind_need_a_live_seat;list_detach_path_are_headless",
+          "supported": false
         }
       }
     }
@@ -149,13 +219,13 @@
     "platform": "Windows-10-10.0.26200-SP0",
     "python": "3.11.15"
   },
-  "generated_at": "2026-08-06T06:27:59.080169+00:00",
-  "git_sha": "d5a0ff5109ddbd37d88371c10a1ed087201de4b5",
-  "matrix": "v3",
+  "generated_at": "2026-09-24T20:58:06.608758+00:00",
+  "git_sha": "554daff8d08c7d891974e55db046e7c70c15e185",
+  "matrix": "v7",
   "results": [
     {
       "artifacts": [],
-      "duration_ms": 2.49,
+      "duration_ms": 2.71,
       "message": "",
       "metrics": {
         "line_length": 5.0
@@ -168,7 +238,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 1.41,
+      "duration_ms": 1.92,
       "message": "",
       "metrics": {},
       "score": 100.0,
@@ -179,7 +249,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 3.31,
+      "duration_ms": 3.38,
       "message": "",
       "metrics": {},
       "score": 100.0,
@@ -190,7 +260,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 17.55,
+      "duration_ms": 24.95,
       "message": "",
       "metrics": {
         "entity_type": "DIMENSION"
@@ -203,7 +273,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 3.7,
+      "duration_ms": 3.64,
       "message": "",
       "metrics": {
         "representations": [
@@ -219,7 +289,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 29.09,
+      "duration_ms": 8.37,
       "message": "",
       "metrics": {
         "entity_count": 0
@@ -232,7 +302,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 1.2,
+      "duration_ms": 0.85,
       "message": "",
       "metrics": {},
       "score": 100.0,
@@ -243,7 +313,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 8.42,
+      "duration_ms": 17.45,
       "message": "",
       "metrics": {
         "final_score": 100.0,
@@ -286,11 +356,11 @@
       "artifacts": [
         {
           "filename": "roundtrip.dxf",
-          "sha256": "d11dfce5eddaf849075c62854a8526efaaa3bbd779d374e4c287de77f361caf7",
-          "size_bytes": 18440
+          "sha256": "28a18050aea00646f9ff7a5fdf8fe3b8783cd4cb77d71108b3834c746e7259c5",
+          "size_bytes": 18446
         }
       ],
-      "duration_ms": 32.29,
+      "duration_ms": 7.21,
       "message": "",
       "metrics": {
         "entity_count": 1
@@ -305,11 +375,11 @@
       "artifacts": [
         {
           "filename": "manifest.json",
-          "sha256": "a74b2e96dbe7ea373717f26a8d26e58fe079a61370eb5d646f04a09f1b7cca2f",
-          "size_bytes": 5662
+          "sha256": "7178055a030b533e83c4a914466c7474350e7728657cd624c9ebc01c753d9e13",
+          "size_bytes": 7929
         }
       ],
-      "duration_ms": 305.81,
+      "duration_ms": 274.87,
       "message": "",
       "metrics": {
         "score": {
@@ -329,7 +399,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 1149.77,
+      "duration_ms": 699.92,
       "message": "",
       "metrics": {
         "ranks": {
@@ -350,15 +420,15 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 53.97,
+      "duration_ms": 86.79,
       "message": "",
       "metrics": {
         "advertised_tools": 2,
-        "catalog_tokens": 40305,
-        "catalog_tools": 149,
+        "catalog_tokens": 83921,
+        "catalog_tools": 242,
         "ceiling": 2000,
         "discovery_tokens": 356,
-        "reduction_x": 113.2,
+        "reduction_x": 235.7,
         "tokenizer": "ratio/v1 (estimate)"
       },
       "score": 100.0,
@@ -369,7 +439,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 10.6,
+      "duration_ms": 7.47,
       "message": "",
       "metrics": {
         "area_ignoring_islands": 400.0,
@@ -386,7 +456,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 8.0,
+      "duration_ms": 26.1,
       "message": "",
       "metrics": {
         "bounding_box": 3,
@@ -403,7 +473,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 5.36,
+      "duration_ms": 5.83,
       "message": "",
       "metrics": {
         "boundary_agrees": true,
@@ -417,16 +487,330 @@
       "stderr_summary": "",
       "stdout_summary": "",
       "task_id": "measure_from_handle"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 58.19,
+      "message": "",
+      "metrics": {
+        "authored_line_numbers_kept": true,
+        "confidence_min": 1.0,
+        "critique_issues": 0,
+        "dangling": 0,
+        "edges": 4,
+        "instrument_index_rows": 1,
+        "line_list_rows": 4,
+        "nodes": 5,
+        "unnumbered_lines_sequenced": true
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "pid_roundtrip"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "untitled-Layout1-ansi_b.pdf",
+          "sha256": "af3c19d4d8b14fbc116ab807bb6feee9fc900fc114e57cd6feb658a6c0dabffb",
+          "size_bytes": 1287
+        },
+        {
+          "filename": "untitled-Layout1-iso_a3.pdf",
+          "sha256": "8d1d1ed505903b6f692ed6e91e9f52577c2c78db3bc2942b949ea4a3d73c9b01",
+          "size_bytes": 1287
+        }
+      ],
+      "duration_ms": 65.46,
+      "message": "",
+      "metrics": {
+        "mediabox_mm": [
+          420.0,
+          297.0
+        ],
+        "mediabox_mm_before": [
+          432.0,
+          279.0
+        ],
+        "orientation": "landscape",
+        "paper": "ISO_A3",
+        "pdf_bytes": 1287,
+        "plot_style_known": true,
+        "size_mm_changed": [
+          [
+            432.0,
+            279.0
+          ],
+          [
+            420.0,
+            297.0
+          ]
+        ],
+        "size_mm_listed": [
+          420.0,
+          297.0
+        ]
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "page_setup_truth"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "mech_assembly.dxf",
+          "sha256": "407dcbed3eb17be7f9d72dda2c1951e8f97fa3fb6090713440404a3f1497d1b2",
+          "size_bytes": 101158
+        }
+      ],
+      "duration_ms": 487.19,
+      "message": "",
+      "metrics": {
+        "critique_focuses": [],
+        "critique_issues": 0,
+        "fasteners": 4,
+        "grade": "A",
+        "invalidity_ratio": 0.0,
+        "parts_list_rows": 2,
+        "score": 100.0,
+        "validator_findings": []
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "mech_assembly"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "arch_roundtrip.dxf",
+          "sha256": "ebec378ef28670e091e651b4130a6eac5a0d2fb480d60f9335b37de28ea713c7",
+          "size_bytes": 82829
+        }
+      ],
+      "duration_ms": 982.07,
+      "message": "",
+      "metrics": {
+        "confidence_min": 1.0,
+        "critique_focuses": [],
+        "critique_issues": 0,
+        "door_tags": [
+          "D1",
+          "D2"
+        ],
+        "faces_detected": 2,
+        "grade": "A",
+        "invalidity_ratio": 0.0,
+        "omitted": [],
+        "rooms": {
+          "01": {
+            "agrees": true,
+            "detected_mm2": 27743750.0,
+            "hand_mm2": 27743750.0,
+            "label_mm2": 27743750.0
+          },
+          "02": {
+            "agrees": true,
+            "detected_mm2": 21993750.0,
+            "hand_mm2": 21993750.0,
+            "label_mm2": 21993750.0
+          }
+        },
+        "score": 100.0,
+        "validator_findings": [],
+        "window_tags": [
+          "W1",
+          "W2"
+        ]
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "arch_roundtrip"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "pid.dxf",
+          "sha256": "94dbdc026878927560a6c81e2283a7d2a26fbe6a398475d415c6383728c46672",
+          "size_bytes": 33795
+        },
+        {
+          "filename": "layout.dxf",
+          "sha256": "37963e237f27f9f495b30d7c0b3bf7f4eff54ff4fec9665f34ab50ddc3f3c7a7",
+          "size_bytes": 40503
+        }
+      ],
+      "duration_ms": 614.2,
+      "message": "",
+      "metrics": {
+        "cable_mismatch": [],
+        "length_source": "layout",
+        "loads_checked": 4,
+        "pipe_mismatch": [],
+        "runs_checked": 9,
+        "scale_verdict": "schematic",
+        "within_10pct": 0.21818181818181817
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "takeoff_roundtrip"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "layout.dxf",
+          "sha256": "ff728965a5698cf9ddf9d9a01cfa244102d183065a149488d4d29dbcee404e85",
+          "size_bytes": 40503
+        },
+        {
+          "filename": "pid.dxf",
+          "sha256": "de4f1ab4102d220efa7167b192b8fdaf9d57cbf300241e945c16967770401cd8",
+          "size_bytes": 33795
+        }
+      ],
+      "duration_ms": 311.97,
+      "message": "",
+      "metrics": {
+        "clusters": 2,
+        "copies_separated": true,
+        "misread_layers": {},
+        "outlier_found": true,
+        "units": {
+          "agree": false,
+          "confidence": 0.76,
+          "declared": {
+            "code": 1,
+            "label": "Inches",
+            "name": "in"
+          },
+          "evidence": [
+            {
+              "as": {
+                "cm": 2.5,
+                "ft": 76.2,
+                "in": 6.35,
+                "m": 250.0,
+                "mm": 0.25
+              },
+              "band": [
+                0.0018,
+                4.0
+              ],
+              "band_unit": "m",
+              "count": 26,
+              "informative": true,
+              "kind": "text_height",
+              "plausible": [
+                "mm",
+                "cm"
+              ],
+              "value": 250.0,
+              "weight": 0.5
+            },
+            {
+              "as": {
+                "cm": 2.0,
+                "ft": 60.96,
+                "in": 5.08,
+                "m": 200.0,
+                "mm": 0.2
+              },
+              "band": [
+                0.05,
+                1.0
+              ],
+              "band_unit": "m",
+              "count": 24,
+              "informative": true,
+              "kind": "wall_thickness",
+              "plausible": [
+                "mm"
+              ],
+              "value": 200.0,
+              "weight": 1.0
+            },
+            {
+              "as": {
+                "cm": 21480.0,
+                "ft": 19955572.992000002,
+                "in": 138580.368,
+                "m": 214800000.0,
+                "mm": 214.79999999999998
+              },
+              "band": [
+                1.0,
+                5000.0
+              ],
+              "band_unit": "m2",
+              "count": 4,
+              "informative": true,
+              "kind": "room_area",
+              "plausible": [
+                "mm"
+              ],
+              "value": 214800000.0,
+              "weight": 1.0
+            },
+            {
+              "as": {
+                "cm": 1364.0,
+                "ft": 41574.72,
+                "in": 3464.56,
+                "m": 136400.0,
+                "mm": 136.4
+              },
+              "band": [
+                0.01,
+                2000.0
+              ],
+              "band_unit": "m",
+              "count": 80,
+              "informative": true,
+              "kind": "overall_size",
+              "plausible": [
+                "mm",
+                "cm"
+              ],
+              "value": 136400.0,
+              "weight": 0.25
+            }
+          ],
+          "inferred": "mm",
+          "mm_per_unit": 1.0,
+          "scores": {
+            "cm": 0.75,
+            "ft": 0,
+            "in": 0.5,
+            "m": 0,
+            "mm": 2.75
+          },
+          "warning": "INSUNITS declares Inches (1) but the geometry reads as mm: text_height 250 = 0.25 m as mm, 6.35 m as in; wall_thickness 200 = 0.2 m as mm, 5.08 m as in; room_area 2.148e+08 = 214.8 m2 as mm, 1.386e+05 m2 as in; overall_size 136400 = 136.4 m as mm, 3465 m as in. Lengths are measured in mm; the header is not changed."
+        },
+        "units_flagged": true
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "understand_foreign"
     }
   ],
   "schema_version": "2.0",
   "summary": {
-    "attempted": 15,
+    "attempted": 21,
     "coverage_percent": 100.0,
-    "passed": 15,
+    "passed": 21,
     "score": 100.0,
-    "supported": 15,
+    "supported": 21,
     "unsupported": 0
   },
-  "timeout_seconds": 180.0
+  "timeout_seconds": 30.0
 }

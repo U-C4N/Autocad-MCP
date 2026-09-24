@@ -1,0 +1,302 @@
+{
+  "summary": {
+    "baseline_ref": "v1.5.1",
+    "total": 48,
+    "old_pass": 26,
+    "new_pass": 48,
+    "old_pct": 54.2,
+    "new_pct": 100.0,
+    "fixed": 22,
+    "regressed": 0
+  },
+  "rows": [
+    {
+      "check": "core_line_length",
+      "category": "Core",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "core_circle_radius",
+      "category": "Core",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "core_layer_create",
+      "category": "Core",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "core_polyline_closed",
+      "category": "Core",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "core_linear_dim",
+      "category": "Core",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "core_save_dxf_roundtrip",
+      "category": "Core",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "dim_aligned_no_error",
+      "category": "Dimensions",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "dim_angular_no_error",
+      "category": "Dimensions",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "array_polar_360_distinct",
+      "category": "Modify",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "point_intersection_line_line",
+      "category": "Geometry",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "point_tangent_external",
+      "category": "Geometry",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "arc_has_length",
+      "category": "Query",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "arc_select_by_length",
+      "category": "Query",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "ezdxf_bounding_box",
+      "category": "Query",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "mtext_rotation_roundtrip",
+      "category": "Entities",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "screenshot_png",
+      "category": "Render",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "dim_overlap_critique_fires",
+      "category": "Quality gate",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "iso13567_dim_layer",
+      "category": "Quality gate",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "construction_left_iso_caught",
+      "category": "Quality gate",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "gear_no_self_overlap",
+      "category": "Engineering",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "center_linetype_applied",
+      "category": "Entities",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "hatch_area_subtracts_its_island",
+      "category": "Measurement",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "boundary_area_agrees_with_measure",
+      "category": "Measurement",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "two_vertex_circle_has_area",
+      "category": "Measurement",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "diameter_dim_measures_the_diameter",
+      "category": "Dimensions",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "radius_dim_ignores_the_leader_length",
+      "category": "Dimensions",
+      "old": "pass",
+      "new": "pass"
+    },
+    {
+      "check": "pid_block_define_attdef_roundtrip",
+      "category": "P&ID",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "pid_tag_parse_fic",
+      "category": "P&ID",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "pid_graph_edge_count",
+      "category": "P&ID",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "settings_dimstyle_iso25_values",
+      "category": "Settings",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "settings_layer_state_roundtrip",
+      "category": "Settings",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "settings_pdf_mediabox_a3",
+      "category": "Settings",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "mech_part_roundtrip",
+      "category": "Mechanical",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "mech_section_hatch_area",
+      "category": "Mechanical",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "mech_iso286_on_dimension",
+      "category": "Mechanical",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "mech_thread_unrepresented_is_caught",
+      "category": "Mechanical",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "std_part_iso4014_m12",
+      "category": "Mechanical",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "sheet_frame_iso5457_a3",
+      "category": "Sheet",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "bom_balloon_link",
+      "category": "Sheet",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "arch_junction_l_t_x",
+      "category": "Architecture",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "arch_room_area_net",
+      "category": "Architecture",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "arch_opening_cuts_wall",
+      "category": "Architecture",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "arch_rooms_detect_foreign",
+      "category": "Architecture",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "scale_check_detects_schematic",
+      "category": "Understanding",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "pipe_takeoff_rmst_exact",
+      "category": "Understanding",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "cable_takeoff_roundup",
+      "category": "Understanding",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "diff_detects_known_edits",
+      "category": "Understanding",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "topology_known_defects",
+      "category": "Understanding",
+      "old": "miss",
+      "new": "pass"
+    }
+  ]
+}

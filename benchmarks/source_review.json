@@ -1,25 +1,88 @@
 {
   "schema_version": "1.0",
-  "reviewed_at": "2026-07-23",
+  "reviewed_at": "2026-09-24",
   "title": "AutoCAD MCP source-reviewed capability benchmark",
   "evidence_boundary": "source_review_not_shared_live_run",
-  "methodology": "Public source, documented behavior, and locally recorded test evidence scored with a fixed 100-point rubric. Repository stars and raw tool counts do not score points.",
+  "methodology": "Public source, documented behavior, and locally recorded test evidence scored with a fixed 100-point rubric. Repository stars and raw tool counts do not score points. The U-C4N row was re-scored for 1.6.0 on 2026-09-24 with per-category evidence; competitor rows are their July snapshots and were not re-reviewed.",
   "rubric": [
-    {"category": "Functional CAD coverage", "weight": 25},
-    {"category": "Correctness and delivery", "weight": 20},
-    {"category": "Backends and platforms", "weight": 15},
-    {"category": "Engineering production", "weight": 15},
-    {"category": "Tests and maintenance", "weight": 15},
-    {"category": "Security and operations", "weight": 10}
+    {
+      "category": "Functional CAD coverage",
+      "weight": 25
+    },
+    {
+      "category": "Correctness and delivery",
+      "weight": 20
+    },
+    {
+      "category": "Backends and platforms",
+      "weight": 15
+    },
+    {
+      "category": "Engineering production",
+      "weight": 15
+    },
+    {
+      "category": "Tests and maintenance",
+      "weight": 15
+    },
+    {
+      "category": "Security and operations",
+      "weight": 10
+    }
   ],
   "projects": [
     {
       "repository": "U-C4N/Autocad-MCP",
       "url": "https://github.com/U-C4N/Autocad-MCP",
-      "reviewed_version": "1.4.0 (PyPI release)",
-      "score": 95,
+      "reviewed_version": "1.6.0 (release)",
+      "score": 93,
       "evidence_grade": "A",
-      "note": "Dual COM/ezdxf backends, paper space, ISO 129/286/1101 annotation, closed-loop quality gates, auditable delivery; v1.4 adds CI matrix incl. Windows, PyPI packaging, and a version A/B correctness gate (21/21, 0 regressions)."
+      "note": "Scored per category, each with its evidence (roadmap criterion 8). 1.4.0 received a single overall 95; this review is stricter, and every point withheld is named. New in 1.5-1.6: P&ID, environment, mechanical, sheet, architecture, understanding and takeoffs; A/B 48/48 with 0 regressions; live COM smokes on every track.",
+      "category_scores": [
+        {
+          "category": "Functional CAD coverage",
+          "weight": 25,
+          "score": 24,
+          "evidence": "247 tools: drafting, ISO 129/286/1101 annotation, paper space, styles and page setup, environment, P&ID (ISO 10628-2 / ISA-5.1, read back with confidence), a mechanical part model with standard parts, ISO 5457/7200/7573/6433 sheets, an architectural plan engine, drawing understanding, diff, topology and plant takeoffs. Not covered: electrical schematics, image-to-CAD tracing, Plant 3D, obstacle-avoiding routing, headless REGION/3DSOLID."
+        },
+        {
+          "category": "Correctness and delivery",
+          "weight": 20,
+          "score": 19,
+          "evidence": "A/B gate against v1.5.1: 48/48 checks, 0 regressions (ab-v1.5.1-vs-v1.6.0.json). Matrix v7: 21 tasks whose gates can fail (zero critique issues and a finalize score of at least 90, PDF /MediaBox, rooms within 0.1 %, takeoff lengths exact). drawing_deliver writes a manifest and checks reopen parity. A field test on a real P&ID pair drove nine fixes. Minus: a headless DIMENSION does not re-render, and a takeoff on a real P&ID still needs the engineer's scope decisions."
+        },
+        {
+          "category": "Backends and platforms",
+          "weight": 15,
+          "score": 14,
+          "evidence": "COM and ezdxf behind one typed contract, with capability-map parity enforced by a test. Every 1.6 track's COM path ran live on AutoCAD 2026. CI runs Linux 3.11/3.12 and Windows. Minus: BricsCAD, ZWCAD and GstarCAD are unverified."
+        },
+        {
+          "category": "Engineering production",
+          "weight": 15,
+          "score": 14,
+          "evidence": "Transcribed standards tables (ISO 4014/4017/4032/7089/4762, ISO 15, ISO 286, ISO 5457, ISO 7200, ISO 7573) and one part model and view engine. 18 domain critique focuses (P&ID 6, mechanical 6, architecture 3, topology 3) feed drawing_finalize's 0-100 score. Minus: four DIN/ISO feature tables ship empty until verified rows exist."
+        },
+        {
+          "category": "Tests and maintenance",
+          "weight": 15,
+          "score": 14,
+          "evidence": "About 4,990 tests on a locked dependency graph. The release gate re-runs three OS/Python lanes; a document-number gate and the per-release A/B suite also run. The perf lane is published (perf-v1.4.0-vs-v1.6.0.json). Minus: entity creation is 1.25x (2,000 lines) and 1.38x (10,000-line roundtrip) slower than v1.4.0, so roadmap criterion 7 is not met."
+        },
+        {
+          "category": "Security and operations",
+          "weight": 10,
+          "score": 8,
+          "evidence": "Per-tool path validation, a loopback-only HTTP bind unless a bearer token is set, the audit middleware, and a field-test script that refuses to write inside the repository. Minus: ALLOWED_PATHS is empty, and so unscoped, by default; command and LISP filtering is a denylist, which is a guardrail rather than a security boundary."
+        }
+      ],
+      "history": [
+        {
+          "version": "1.4.0",
+          "score": 95,
+          "reviewed_at": "2026-07-23"
+        }
+      ]
     },
     {
       "repository": "varavista/autocad-mcp",
@@ -85,5 +148,6 @@
       "evidence_grade": "C",
       "note": "Basic COM drawing tool set with SQLite persistence; reviewed from the documented tool surface only, execution path not exercised locally."
     }
-  ]
+  ],
+  "competitors_reviewed_at": "2026-07-23"
 }

@@ -41,13 +41,14 @@ Unsupported tasks remain in the fixed-matrix denominator with score zero,
 preventing partial implementations from receiving an inflated score.
 
 ```bash
-python -m benchmarks.run_competitors --list --matrix v5
-python -m benchmarks.run_competitors --server autocad-mcp-pro --backend ezdxf --matrix v5 --json
+python -m benchmarks.run_competitors --list --matrix v7
+python -m benchmarks.run_competitors --server autocad-mcp-pro --backend ezdxf --matrix v7 --json
 python -m benchmarks.run_competitors --task table_mleader --task hatch_islands --json
 ```
 
-The release-machine ezdxf self-check is **18/18 (100.0)** on the v5 matrix
-(`--matrix v4` / `--matrix v3` / `--matrix v2` reproduce the earlier sets).
+The release-machine ezdxf self-check is **21/21 (100.0)** on the v7 matrix
+(`--matrix v6` … `--matrix v2` reproduce the earlier sets); the published
+report is [`results/published/autocad-mcp-pro.json`](results/published/autocad-mcp-pro.json).
 Repository stars and raw tool counts do not contribute to the score. Adapter
 registration lives in `competitors.yaml`.
 
@@ -145,13 +146,13 @@ MCP stdio, against commits pinned in `competitors.yaml`:
 
 | Server | Matrix | Pinned | Score | Pass | Coverage |
 |---|---|---|---:|---:|---:|
-| autocad-mcp-pro (reference) | v3 (15) | working tree | 100.0 | 15/15 | 100% |
+| autocad-mcp-pro (reference) | v7 (21) | 1.6.0 tree | 100.0 | 21/21 | 100% |
 | beiming183-cloud/AutoCAD-MCP | v2 (10) | `11f7c47e` | 50.0 | 5/10 | 50% |
 | puran-water/autocad-mcp | v2 (10) | `95476a33` | 45.0 | 4/10 | 50% |
 
 The competitor rows are the v1.4 runs, unchanged. Read the matrix column
-before the score column: the denominators differ because the five v3 tasks
-were added after those runs and have not been put to them.
+before the score column: the denominators differ because the eleven tasks
+added since v2 came after those runs and have not been put to them.
 
 Method and boundaries:
 
@@ -205,36 +206,77 @@ python -m benchmarks.perf_suite --out benchmarks/results/published/perf-ezdxf.js
 python -m benchmarks.render_perf_chart
 ```
 
-### What the call-timeout guard costs
+### v1.4.0 against v1.6.0, and what the call-timeout guard costs
 
 The published v1.4 report was recorded on CPython 3.14 and the later ones on
-3.11.15, so comparing those two files directly shows an apparent 2–6× speedup
-that is almost entirely the interpreter. The comparison that means something is
-the guard against no guard, on one interpreter, back to back. Three runs of
-each configuration, median taken by hand — `perf_suite` executes each workload
-once per invocation and cannot produce a median itself:
+3.11.15, so comparing those files directly shows an apparent speedup that is
+almost entirely the interpreter. The comparison that means something runs one
+interpreter and one ezdxf over each tree's own code: 1.6.0's `perf_suite.py`
+(v1.4.0 had none) against a v1.4.0 worktree, against 1.6.0, and against 1.6.0
+with the guard off — five rounds, the three configurations alternating within
+a round. Medians, from
+[`results/published/perf-v1.4.0-vs-v1.6.0.json`](results/published/perf-v1.4.0-vs-v1.6.0.json),
+which keeps every run:
 
-| Workload | `EZDXF_CALL_TIMEOUT=0` | default (120 s) | Cost |
+| Workload | v1.4.0 | v1.6.0 | v1.6.0, `EZDXF_CALL_TIMEOUT=0` |
 |---|---:|---:|---:|
-| `create_lines_2k` | 243.7 ms | 294.3 ms | **+20.8%** |
-| `roundtrip_10k` | 1,709.6 ms | 2,049.2 ms | **+19.9%** |
+| `create_lines_2k` | 244.5 ms | 306.1 ms (1.25×) | 284.9 ms (1.17×) |
+| `roundtrip_10k` | 1,847.9 ms | 2,553.5 ms (1.38×) | 2,216.4 ms (1.20×) |
+| `region_query_10k` | 665.2 ms | 712.2 ms (1.07×) | 783.9 ms (1.18×) |
+| `premium_pass` | 150.6 ms | 65.3 ms (0.43×) | 69.9 ms (0.46×) |
 
-v1.5.0 paid 28.6% on the first workload; v1.5.1 rebuilt the wrapper around a
-single `asyncio.timeout_at` instead of two `asyncio.wait_for`s — `wait_for`
-wraps its awaitable in a Task, so the old shape created two extra Tasks and two
-timer handles per call — which recovered about a third of the overhead. The
-rest is the Task the abandon-on-timeout design genuinely needs. The guard is
-what stops one hung ezdxf call wedging a server whose document lock is a single
-`asyncio.Lock`, so it stays; the knob is documented rather than hidden.
+The guard explains part of the creation cost, not all of it. v1.5.1 rebuilt
+the wrapper around one `asyncio.timeout_at` instead of two `asyncio.wait_for`s
+(`wait_for` wraps its awaitable in a Task, so the old shape created two extra
+Tasks and two timer handles per call), which recovered about a third of its
+overhead; the rest is the Task the abandon-on-timeout design needs. With the
+guard off, creation is still 1.17× and 1.20× v1.4.0's time. A cProfile of the
+event-loop thread over the 2,000 creates counts **491,071** function calls on
+1.6.0 against **319,038** on v1.4.0: per-call work added since 1.4 that 1.6
+has not removed. The region-query row, whose guard-off median is the slower
+one, is this machine's noise floor (about ±10 %).
 
-These figures are hand-collected and have **no published artifact** —
-`perf-ezdxf.json` records one default-configuration run only. Reproduce:
+Roadmap criterion 7 — headless creation throughput back to v1.4.0's numbers —
+is therefore **not met** and moves to 1.7. Earlier versions of this page said
+that `EZDXF_CALL_TIMEOUT=0` returned creation to v1.4.0's numbers; measured
+this way, it does not. The guard stays: it is what stops one hung ezdxf call
+wedging a server whose document lock is a single `asyncio.Lock`.
+
+`perf-ezdxf.json`, the chart's input, is the median of the five
+default-configuration runs, with every run kept in `runs_ms`.
+
+Reproduce (the v1.4.0 tree needs 1.6.0's `benchmarks/perf_suite.py` copied in):
 
 ```bash
-for i in 1 2 3; do
-  python -m benchmarks.perf_suite --out /tmp/on-$i.json
-  EZDXF_CALL_TIMEOUT=0 python -m benchmarks.perf_suite --out /tmp/off-$i.json
+git worktree add ../v140 v1.4.0 && cp benchmarks/perf_suite.py ../v140/benchmarks/
+for i in 1 2 3 4 5; do
+  python -m benchmarks.perf_suite --json > main-$i.json
+  EZDXF_CALL_TIMEOUT=0 python -m benchmarks.perf_suite --json > off-$i.json
+  (cd ../v140 && python -m benchmarks.perf_suite --json) > v140-$i.json
 done
+```
+
+The profile, run from each tree's root:
+
+```python
+import asyncio, cProfile, pstats
+from backends.ezdxf_backend import EzdxfBackend
+
+
+async def work():
+    b = EzdxfBackend()
+    await b.connect()
+    await b.drawing_new()
+    for i in range(2000):
+        await b.entity_create_line(0, i, 100, i)
+    await b.disconnect()
+
+
+pr = cProfile.Profile()
+pr.enable()
+asyncio.run(work())
+pr.disable()
+print(pstats.Stats(pr).total_calls)
 ```
 
 ## Correctness A/B suite
@@ -253,15 +295,15 @@ python benchmarks/compare_versions.py v1.0.0     # vs a tag/ref
 python benchmarks/compare_versions.py --json results.json
 ```
 
-### Result — this branch (1.6.0-dev) vs v1.5.1 (release gate)
+### Result — v1.6.0 vs v1.5.1 (release gate)
 
 48 checks, ezdxf backend, one subprocess per check. Machine-readable report:
-[`results/published/ab-v1.5.1-vs-v1.6.0-dev.json`](results/published/ab-v1.5.1-vs-v1.6.0-dev.json).
+[`results/published/ab-v1.5.1-vs-v1.6.0.json`](results/published/ab-v1.5.1-vs-v1.6.0.json).
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---------|----------------|-----------|-------|-----------|
 | **v1.5.1** (baseline)     | 26 / 48 | 54.2 % | — | — |
-| **v1.6.0-dev** (this branch) | 48 / 48 | 100 % | 22 | **0** |
+| **v1.6.0** (this release) | 48 / 48 | 100 % | 22 | **0** |
 
 The twenty-two are all `miss → pass` — v1.5.1 has none of the methods. Five are track H: `scale_check_detects_schematic` (the synthetic P&ID is schematic against its layout; a uniform 2× copy is to scale with factor 2), `pipe_takeoff_rmst_exact` (eight routable runs, each exactly the rectilinear MST of its tags), `cable_takeoff_roundup` (9 / 17 / 19 / 10 m, the unstated power left empty), `diff_detects_known_edits` (five known edits and nothing else) and `topology_known_defects` (one near miss, one crossing, a clean T). Four are track F: `arch_junction_l_t_x` (L, T and X junction outlines against hand-computed corners and wall areas), `arch_room_area_net` (a 4 × 5 m room between 200 mm walls is labelled 20.00 m², not its 21.84 m² axis area), `arch_opening_cuts_wall` (both faces interrupted across a door, two jambs) and `arch_rooms_detect_foreign` (plain lines on a WALLS layer read as 20 and 15 m² at confidence 0.6, nothing written). Seven
 are tracks B and G: `mech_part_roundtrip` (a part read back from its own
@@ -286,7 +328,7 @@ through the lister; `settings_layer_state_roundtrip`: save → change → restor
 puts the layer table back and the state survives save/reopen as an XRECORD in
 the file; `settings_pdf_mediabox_a3`: the plotted PDF's own `/MediaBox` reads
 420 × 297 mm). Every one of the 26 checks it was released on still passes, so
-the four tracks added capability without moving a number it had already earned.
+the five tracks added capability without moving a number it had already earned.
 
 ### Result — v1.5.1 vs v1.5.0
 

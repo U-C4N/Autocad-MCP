@@ -158,12 +158,3 @@ def test_competitor_reports_carry_no_result_for_the_new_tasks(filename):
         "result here would be fabricated"
     )
     assert report.get("matrix", "v2") == "v2"
-
-
-def test_the_published_reference_report_covers_the_whole_v3_matrix():
-    report = json.loads((PUBLISHED / "autocad-mcp-pro.json").read_text(encoding="utf-8"))
-    scored = {item["task_id"] for item in report["results"]}
-
-    assert scored == {task.task_id for task in TASKS_V3}
-    assert report["matrix"] == "v3"
-    assert report["summary"]["score"] == 100.0

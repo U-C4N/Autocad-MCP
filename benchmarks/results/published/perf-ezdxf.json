@@ -14,23 +14,37 @@
         "entity_count": 2000
       },
       "metric": "entities_per_second",
-      "metric_value": 5715.8,
-      "wall_ms": 349.9,
-      "workload_id": "create_lines_2k"
+      "wall_ms": 306.1,
+      "workload_id": "create_lines_2k",
+      "runs_ms": [
+        287.6,
+        373.6,
+        298.2,
+        425.1,
+        306.1
+      ],
+      "metric_value": 6533.8
     },
     {
       "description": "Create 10,000 lines, export DXF, reopen and verify",
       "detail": {
-        "build_ms": 1633.1,
+        "build_ms": 2149.4,
         "entity_count": 10000,
-        "export_ms": 273.0,
-        "file_bytes": 1369663,
-        "reopen_ms": 272.1
+        "export_ms": 516.6,
+        "file_bytes": 1369662,
+        "reopen_ms": 535.2
       },
       "metric": "entities_per_second",
-      "metric_value": 4590.8,
-      "wall_ms": 2178.3,
-      "workload_id": "roundtrip_10k"
+      "wall_ms": 2553.5,
+      "workload_id": "roundtrip_10k",
+      "runs_ms": [
+        3201.3,
+        2550.0,
+        3118.3,
+        2553.5,
+        2289.4
+      ],
+      "metric_value": 3916.2
     },
     {
       "description": "Crossing-selection region query over 10,000 entities",
@@ -39,8 +53,15 @@
       },
       "metric": "entities_matched",
       "metric_value": 2500.0,
-      "wall_ms": 2466.9,
-      "workload_id": "region_query_10k"
+      "wall_ms": 712.2,
+      "workload_id": "region_query_10k",
+      "runs_ms": [
+        712.2,
+        806.7,
+        295.1,
+        836.4,
+        300.6
+      ]
     },
     {
       "description": "Plate with hole: ISO layers, geometry, dimensions and full critique",
@@ -49,8 +70,16 @@
       },
       "metric": "critique_issues",
       "metric_value": 0.0,
-      "wall_ms": 255.7,
-      "workload_id": "premium_pass"
+      "wall_ms": 65.3,
+      "workload_id": "premium_pass",
+      "runs_ms": [
+        76.3,
+        65.3,
+        36.9,
+        83.8,
+        41.3
+      ]
     }
-  ]
+  ],
+  "aggregation": "median of 5 default-configuration runs, one machine, one interpreter"
 }

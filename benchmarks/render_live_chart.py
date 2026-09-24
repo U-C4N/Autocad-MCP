@@ -103,8 +103,8 @@ def render_chart(reports: list[dict[str, Any]], output: Path) -> None:
     ax.text(
         0,
         -0.22,
-        "Unsupported tasks score 0 within a server's own matrix. The five v3 tasks were "
-        "added after the competitor runs and were never put to them; per-task statuses are "
+        "Unsupported tasks score 0 within a server's own matrix. The tasks added after v2 "
+        "were never put to the pinned competitor runs; per-task statuses are "
         "in benchmarks/results/published/.",
         transform=ax.transAxes,
         color="#8b949e",

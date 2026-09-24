@@ -29,9 +29,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 #: The published A/B report the README and benchmarks/README quote. Bump this,
 #: the two row labels below and the prose together, or the gate reports drift.
-AB_REPORT = "benchmarks/results/published/ab-v1.5.1-vs-v1.6.0-dev.json"
+AB_REPORT = "benchmarks/results/published/ab-v1.5.1-vs-v1.6.0.json"
 AB_BASELINE_LABEL = r"v1\.5\.1"
-AB_CURRENT_LABEL = r"v1\.6\.0-dev"
+AB_CURRENT_LABEL = r"v1\.6\.0"
 
 
 def _read(relative: str) -> str:
@@ -160,7 +160,7 @@ CHECKS: list[tuple[str, str, str, str]] = [
         "README.md",
         "A/B fixed count",
         AB_CURRENT_LABEL
-        + r"\*\* \*\(this branch\)\* \| \*\*\d+ / \d+\*\* \| \*\*\d+ %\*\* \| (\d+)",
+        + r"\*\* \*\(this release\)\* \| \*\*\d+ / \d+\*\* \| \*\*\d+ %\*\* \| (\d+)",
         "ab_fixed",
     ),
     (
@@ -172,7 +172,7 @@ CHECKS: list[tuple[str, str, str, str]] = [
     (
         "benchmarks/README.md",
         "A/B fixed count",
-        r"\*\*" + AB_CURRENT_LABEL + r"\*\* \(this branch\) \| \d+ / \d+ \| \d+ % \| (\d+)",
+        r"\*\*" + AB_CURRENT_LABEL + r"\*\* \(this release\) \| \d+ / \d+ \| \d+ % \| (\d+)",
         "ab_fixed",
     ),
     ("CLAUDE.md", "A/B suite size", r"correctness_suite\.py` \((\d+) checks\)", "ab_total"),

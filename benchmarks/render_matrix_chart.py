@@ -133,8 +133,8 @@ def render_chart(reports: list[dict[str, Any]], output: Path) -> None:
         Patch(facecolor=STATUS_COLORS["fail"], label="fail"),
         Patch(facecolor=STATUS_COLORS["unsupported"], label="unsupported (no equivalent)"),
         # Real rows now, not a theoretical state: the competitor reports were
-        # pinned and run against the v2 matrix, so the five v3 tasks were
-        # never put to them. An invented zero would look identical to a
+        # pinned and run against the v2 matrix, so every task added since v2
+        # was never put to them. An invented zero would look identical to a
         # measured one, so they stay blank and say why.
         Patch(facecolor=STATUS_COLORS["not_run"], edgecolor="#30363d", label="not run"),
     ]

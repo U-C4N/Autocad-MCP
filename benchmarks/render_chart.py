@@ -95,7 +95,7 @@ def render_chart(data: dict[str, Any], output: Path) -> None:
     ax.set_title(
         "Public AutoCAD MCP leaderboard — Source-reviewed capability benchmark",
         loc="left",
-        fontsize=17,
+        fontsize=15,
         fontweight="bold",
         color="#e6edf3",
         pad=28,

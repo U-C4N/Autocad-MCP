@@ -1,0 +1,142 @@
+{
+  "schema_version": "perf-ab/1.0",
+  "method": "benchmarks/perf_suite.py of 1.6.0 run against each tree's own code with one CPython 3.11.15 and one ezdxf, five rounds, the three configurations alternating within a round; medians of wall_ms. v1.4.0 had no perf suite; the 1.6.0 script drives the same backend methods.",
+  "environment": {
+    "implementation": "CPython",
+    "machine": "AMD64",
+    "platform": "Windows-10-10.0.26200-SP0",
+    "python": "3.11.15"
+  },
+  "medians_ms": {
+    "v1.4.0": {
+      "create_lines_2k": 244.5,
+      "roundtrip_10k": 1847.9,
+      "region_query_10k": 665.2,
+      "premium_pass": 150.6
+    },
+    "v1.6.0": {
+      "create_lines_2k": 306.1,
+      "roundtrip_10k": 2553.5,
+      "region_query_10k": 712.2,
+      "premium_pass": 65.3
+    },
+    "v1.6.0 EZDXF_CALL_TIMEOUT=0": {
+      "create_lines_2k": 284.9,
+      "roundtrip_10k": 2216.4,
+      "region_query_10k": 783.9,
+      "premium_pass": 69.9
+    }
+  },
+  "ratios_to_v1_4_0": {
+    "v1.6.0": {
+      "create_lines_2k": 1.25,
+      "roundtrip_10k": 1.38,
+      "region_query_10k": 1.07,
+      "premium_pass": 0.43
+    },
+    "v1.6.0 EZDXF_CALL_TIMEOUT=0": {
+      "create_lines_2k": 1.17,
+      "roundtrip_10k": 1.2,
+      "region_query_10k": 1.18,
+      "premium_pass": 0.46
+    }
+  },
+  "runs": {
+    "v1.4.0": [
+      {
+        "create_lines_2k": 244.5,
+        "roundtrip_10k": 1936.8,
+        "region_query_10k": 670.3,
+        "premium_pass": 160.3
+      },
+      {
+        "create_lines_2k": 221.9,
+        "roundtrip_10k": 1592.5,
+        "region_query_10k": 638.2,
+        "premium_pass": 150.6
+      },
+      {
+        "create_lines_2k": 236.7,
+        "roundtrip_10k": 1706.6,
+        "region_query_10k": 927.2,
+        "premium_pass": 140.2
+      },
+      {
+        "create_lines_2k": 261.0,
+        "roundtrip_10k": 1979.2,
+        "region_query_10k": 665.2,
+        "premium_pass": 191.4
+      },
+      {
+        "create_lines_2k": 308.4,
+        "roundtrip_10k": 1847.9,
+        "region_query_10k": 296.5,
+        "premium_pass": 70.3
+      }
+    ],
+    "v1.6.0": [
+      {
+        "create_lines_2k": 287.6,
+        "roundtrip_10k": 3201.3,
+        "region_query_10k": 712.2,
+        "premium_pass": 76.3
+      },
+      {
+        "create_lines_2k": 373.6,
+        "roundtrip_10k": 2550.0,
+        "region_query_10k": 806.7,
+        "premium_pass": 65.3
+      },
+      {
+        "create_lines_2k": 298.2,
+        "roundtrip_10k": 3118.3,
+        "region_query_10k": 295.1,
+        "premium_pass": 36.9
+      },
+      {
+        "create_lines_2k": 425.1,
+        "roundtrip_10k": 2553.5,
+        "region_query_10k": 836.4,
+        "premium_pass": 83.8
+      },
+      {
+        "create_lines_2k": 306.1,
+        "roundtrip_10k": 2289.4,
+        "region_query_10k": 300.6,
+        "premium_pass": 41.3
+      }
+    ],
+    "v1.6.0 EZDXF_CALL_TIMEOUT=0": [
+      {
+        "create_lines_2k": 285.3,
+        "roundtrip_10k": 1817.2,
+        "region_query_10k": 926.5,
+        "premium_pass": 61.4
+      },
+      {
+        "create_lines_2k": 256.1,
+        "roundtrip_10k": 2520.9,
+        "region_query_10k": 750.3,
+        "premium_pass": 80.2
+      },
+      {
+        "create_lines_2k": 260.2,
+        "roundtrip_10k": 1714.1,
+        "region_query_10k": 783.9,
+        "premium_pass": 76.7
+      },
+      {
+        "create_lines_2k": 351.7,
+        "roundtrip_10k": 3057.1,
+        "region_query_10k": 940.8,
+        "premium_pass": 69.9
+      },
+      {
+        "create_lines_2k": 284.9,
+        "roundtrip_10k": 2216.4,
+        "region_query_10k": 311.2,
+        "premium_pass": 41.7
+      }
+    ]
+  }
+}
