@@ -19,8 +19,12 @@ moment it is matched:
 2. **Handle.** A record left over on both sides with the same handle and the
    same type is the same entity, edited. A save that renumbers handles would
    make this stage pair strangers, so it runs only while handles look stable:
-   when at least half of the exact matches kept their handle. The report says
-   which way it went (``handles_stable``).
+   when there is at least one exact match and at least half of the exact
+   matches kept their handle. With no exact match there is no evidence either
+   way - two fresh files hand out handles from the same seed, and a drawing
+   moved as a whole matches nothing exactly - so the stage does not run. The
+   report says which way it went (``handles_stable``) and on what evidence
+   (``handle_evidence``: the exact matches and how many kept their handle).
 3. **Position.** Within one (type, layer, space), a leftover new record is
    paired with the nearest leftover old record whose anchor (the mean of its
    points, else the centre of its box) lies within ``move_tol``; the closest
@@ -29,8 +33,15 @@ moment it is matched:
    anchor of both revisions - so one stray entity kilometres away cannot
    inflate it.
 
-What is left is added (new side) or removed (old side). A matched pair that
-is not identical is *changed*, and the row says what changed: ``moved_by``
+What is left is added (new side) or removed (old side). A matched pair is
+compared field by field, each number within half a ``tol`` of its old value
+counting as equal - the same test a move uses. A pair with nothing to report
+is *unchanged*: the signature snaps every value to the ``tol`` grid, so a
+value one ulp either side of a half-grid point (AutoCAD writes 0.145 for the
+0.14500000000000002 it was given) lands in another bucket, misses the exact
+stage and is paired later, yet nothing was edited. Such a pair counts under
+``unchanged`` and gets no row and no cloud. Any other matched pair is
+*changed*, and the row says what changed: ``moved_by``
 (dx, dy) when the geometry is the old geometry translated, else ``geometry``
 from -> to; ``text``, ``attribs`` (by tag), ``radius``, ``angles``,
 ``height``, ``rotation``, ``scale``, ``block``, ``layer``, ``space``,
@@ -48,8 +59,8 @@ reference, so a redrawn definition changes every drawn copy while every INSERT
 record stays identical.
 
 The 2 % move tolerance, the 1st/99th percentiles, the half-of-the-matches
-handle rule and the cluster padding are this module's declared defaults, not
-values from a standard.
+(and at least one) handle rule, the half-a-``tol`` equality and the cluster
+padding are this module's declared defaults, not values from a standard.
 """
 
 from __future__ import annotations
@@ -248,11 +259,21 @@ def _nearest_pairs(
 
 
 def _number_changed(a, b, tol: float, *, modulo: float | None = None) -> bool:
+    """More than half a ``tol`` apart (around the circle when ``modulo``).
+
+    A difference, never two grid buckets: ``_q`` puts 0.14500000000000002
+    and 0.145 in different buckets at ``tol=0.01``.
+    """
     if a is None or b is None:
         return (a is None) != (b is None)
+    a, b = float(a), float(b)
+    if not (math.isfinite(a) and math.isfinite(b)):
+        return repr(a) != repr(b)
+    difference = abs(a - b)
     if modulo is not None:
-        a, b = a % modulo, b % modulo
-    return _q(a, tol) != _q(b, tol)
+        difference %= modulo
+        difference = min(difference, modulo - difference)
+    return difference > tol / 2.0
 
 
 def _movement(o: EntityRecord, n: EntityRecord, tol: float) -> dict:
@@ -302,7 +323,9 @@ def _changes(o: EntityRecord, n: EntityRecord, tol: float) -> dict:
     if o.space != n.space:
         out["space"] = {"from": o.space, "to": n.space}
     out.update(_movement(o, n, tol))
-    if tuple(_q(b, tol) for b in o.bulges) != tuple(_q(b, tol) for b in n.bulges):
+    if len(o.bulges) != len(n.bulges) or any(
+        _number_changed(a, b, tol) for a, b in zip(o.bulges, n.bulges, strict=False)
+    ):
         out["bulges"] = {"from": list(o.bulges), "to": list(n.bulges)}
     if bool(o.closed) != bool(n.closed):
         out["closed"] = {"from": bool(o.closed), "to": bool(n.closed)}
@@ -441,7 +464,9 @@ def diff_snapshots(
         exact += 1
         kept_handle += int(olds[i].handle == rec.handle)
     left_old = [i for i in range(len(olds)) if i not in used_old]
-    handles_stable = exact == 0 or 2 * kept_handle >= exact
+    # No exact match is no evidence: strangers from two fresh files share
+    # handles, and so do the entities of a drawing that moved as a whole.
+    handles_stable = exact > 0 and 2 * kept_handle >= exact
 
     pairs: list[tuple[int, int, str]] = []
     # 2. handle
@@ -468,10 +493,16 @@ def diff_snapshots(
 
     changed: list[dict] = []
     items: list[tuple[str, Box, int]] = []
-    for key, (i, j, how) in enumerate(
-        sorted(pairs, key=lambda p: (olds[p[0]].handle, news[p[1]].handle))
-    ):
+    same = 0
+    for i, j, how in sorted(pairs, key=lambda p: (olds[p[0]].handle, news[p[1]].handle)):
         o, n = olds[i], news[j]
+        changes = _changes(o, n, tol)
+        if not changes:
+            # the signature grid split an unedited pair (a value 1 ulp across a
+            # half-grid point): unchanged, no row and no cloud
+            same += 1
+            continue
+        key = len(changed)
         at = anchor(n)
         changed.append(
             {
@@ -482,7 +513,7 @@ def diff_snapshots(
                 "space": n.space,
                 "matched_by": how,
                 "at": None if at is None else [at[0], at[1]],
-                "changes": _changes(o, n, tol),
+                "changes": changes,
             }
         )
         for rec in (o, n):
@@ -504,10 +535,11 @@ def diff_snapshots(
         "tol": tol,
         "move_tol": move_tol,
         "handles_stable": handles_stable,
+        "handle_evidence": {"exact_matches": exact, "kept_handle": kept_handle},
         "summary": {
             "old_entities": len(olds),
             "new_entities": len(news),
-            "unchanged": exact,
+            "unchanged": exact + same,
             "changed": len(changed),
             "added": len(added),
             "removed": len(removed),
@@ -623,11 +655,16 @@ def read_revision(path: str, *, tol: float = DEFAULT_TOL) -> tuple[Snapshot, dic
     """One read of a DXF revision: its records and its block signatures.
 
     Refused before reading: a file that cannot be stat'ed and one over
-    ``MAX_DXF_BYTES`` (the size and the variable named); a file ezdxf cannot
-    parse is refused with ezdxf's reason.
+    ``MAX_DXF_BYTES`` (the size and the variable named). A file ezdxf cannot
+    parse or walk is refused as ``not a readable DXF`` with the reason -
+    whatever ezdxf raised: a truncated file (an interrupted save, a partial
+    copy) raises ``StopIteration`` from inside its tag reader, which
+    ``asyncio.to_thread`` cannot hand back to an awaiting caller, so letting it
+    through would hang ``drawing_diff`` instead of refusing.
     """
     import ezdxf
 
+    tol = _positive("tol", tol)
     limit = int(config.settings.max_dxf_bytes)
     try:
         size = os.path.getsize(path)
@@ -640,6 +677,12 @@ def read_revision(path: str, *, tol: float = DEFAULT_TOL) -> tuple[Snapshot, dic
         )
     try:
         doc = ezdxf.readfile(path)
-    except (OSError, ezdxf.DXFError) as exc:
-        raise ValueError(f"{path}: not a readable DXF ({exc})") from exc
-    return records_from_doc(doc, source=str(path)), block_signatures(doc, tol=tol)
+        return records_from_doc(doc, source=str(path)), block_signatures(doc, tol=tol)
+    except MemoryError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - every parse failure is one refusal
+        if isinstance(exc, StopIteration):
+            reason = "the file ends early - an interrupted save or a partial copy?"
+        else:
+            reason = str(exc) or type(exc).__name__
+        raise ValueError(f"{path}: not a readable DXF ({reason})") from exc

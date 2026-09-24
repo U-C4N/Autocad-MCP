@@ -125,6 +125,20 @@ async def test_a_revision_that_is_neither_dxf_nor_dwg_is_refused_by_parameter(cl
     assert "old_path:" in text and "reads a .dxf or a .dwg" in text
 
 
+async def test_a_truncated_revision_is_refused_not_hung(client, tmp_path):
+    import asyncio
+
+    half = tmp_path / "half.dxf"
+    half.write_bytes(b"  0\nSECTION\n  2\nHEADER\n  9\n$ACADVER\n  1\nAC1015\n")
+    result = await asyncio.wait_for(
+        client.call_tool("drawing_diff", {"old_path": str(half)}, raise_on_error=False),
+        timeout=30,
+    )
+    assert result.is_error is True
+    text = result.content[0].text
+    assert "old_path:" in text and "not a readable DXF" in text
+
+
 async def test_the_diff_is_advertised_as_non_destructive(client):
     tools = {tool.name: tool for tool in await client.list_tools()}
     assert tools["drawing_diff"].annotations.destructiveHint is False

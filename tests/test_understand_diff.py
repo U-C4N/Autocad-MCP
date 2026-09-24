@@ -146,12 +146,94 @@ def test_renumbered_handles_never_pair_strangers_that_share_a_handle():
     assert [r["at"] for r in result["added"]] == [[5000.0, 5000.0]]
 
 
+def test_no_exact_match_is_no_evidence_that_handles_are_stable():
+    # two fresh files hand out handles from one seed; every circle moved +1000 in x
+    # and the new file added them in reverse order, so equal handles are strangers
+    old = snap(
+        *(rec(f"{0x20 + i:X}", "CIRCLE", "EQ", ((0, 200 * i),), radius=10.0) for i in range(8))
+    )
+    new = snap(
+        *(
+            rec(f"{0x20 + k:X}", "CIRCLE", "EQ", ((1000, 200 * i),), radius=10.0)
+            for k, i in enumerate(reversed(range(8)))
+        )
+    )
+    result = diff_snapshots(old, new)
+    assert result["handles_stable"] is False
+    assert result["handle_evidence"] == {"exact_matches": 0, "kept_handle": 0}
+    assert result["changed"] == []
+    assert (result["summary"]["added"], result["summary"]["removed"]) == (8, 8)
+    # given a move tolerance that reaches, the position stage finds the true move
+    moved = diff_snapshots(old, new, move_tol=1001.0)
+    assert {row["matched_by"] for row in moved["changed"]} == {"position"}
+    assert {tuple(row["changes"]["moved_by"]) for row in moved["changed"]} == {(1000.0, 0.0)}
+
+
 def test_beyond_move_tol_a_line_is_removed_and_another_added():
     old = snap(*STILL, line("D", 0, 200, 100, 200))
     new = snap(*STILL, line("E", 0, 700, 100, 700))
     result = diff_snapshots(old, new, move_tol=10.0)
     assert (result["summary"]["added"], result["summary"]["removed"]) == (1, 1)
     assert result["changed"] == []
+
+
+# -- a value split by the signature grid ----------------------------------------------
+
+
+def test_a_value_one_ulp_across_a_half_grid_point_is_unchanged():
+    # AutoCAD writes 16 significant digits: 0.14 + 0.005 = 0.14500000000000002 comes
+    # back as 0.145, and at tol=0.01 the two snap to buckets 15 and 14
+    assert 0.14 + 0.005 != 0.145
+    edge = 0.14 + 0.005
+    assert signature(line("L", edge, 300, 50, 300)) != signature(line("L", 0.145, 300, 50, 300))
+    old = snap(*STILL, line("L", edge, 300, 50, 300))
+    for new in (
+        snap(*STILL, line("L", 0.145, 300, 50, 300)),  # paired by handle
+        snap(*RENUMBERED, line("1L", 0.145, 300, 50, 300)),  # paired by position
+    ):
+        result = diff_snapshots(old, new, move_tol=10.0)
+        assert result["summary"]["unchanged"] == 4
+        assert (result["summary"]["changed"], result["summary"]["added"]) == (0, 0)
+        assert result["summary"]["removed"] == 0
+        assert result["changed"] == [] and result["clusters"] == []
+        assert result["by_layer"] == {} and result["by_type"] == {}
+
+
+def test_numbers_one_ulp_across_a_grid_boundary_are_not_changes():
+    # at tol=1, 12.500000000000002 and 12.5 snap to 13 and 12
+    edge = 12.500000000000002
+    old = snap(
+        *STILL,
+        rec("R", "CIRCLE", "PIPE", ((edge, 0),), radius=edge),
+        rec("T", "TEXT", "NOTES", ((10, 10),), text="X", height=edge, rotation=edge),
+        rec("P", "LWPOLYLINE", "PIPE", ((0, 0), (10, 0)), bulges=(edge, 0.0)),
+    )
+    new = snap(
+        *STILL,
+        rec("R", "CIRCLE", "PIPE", ((12.5, 0),), radius=12.5),
+        rec("T", "TEXT", "NOTES", ((10, 10),), text="X", height=12.5, rotation=12.5),
+        rec("P", "LWPOLYLINE", "PIPE", ((0, 0), (10, 0)), bulges=(12.5, 0.0)),
+    )
+    result = diff_snapshots(old, new, tol=1.0)
+    assert result["summary"]["unchanged"] == 6
+    assert result["changed"] == [] and result["clusters"] == []
+
+
+def test_a_real_edit_next_to_a_grid_split_is_still_reported():
+    old = snap(
+        *STILL,
+        line("L", 0.14 + 0.005, 300, 50, 300),
+        rec("R", "CIRCLE", "PIPE", ((0, 0),), radius=10.0),
+    )
+    new = snap(
+        *STILL, line("L", 0.145, 300, 50, 300), rec("R", "CIRCLE", "PIPE", ((0, 0),), radius=10.2)
+    )
+    result = diff_snapshots(old, new)
+    (row,) = result["changed"]
+    assert row["old_handle"] == "R"
+    assert row["changes"] == {"radius": {"from": 10.0, "to": 10.2}}
+    assert result["summary"]["unchanged"] == 4
+    assert [c["count"] for c in result["clusters"]] == [1]
 
 
 # -- the move tolerance ----------------------------------------------------------------
@@ -258,6 +340,22 @@ def test_read_revision_refuses_a_file_that_is_not_a_dxf(tmp_path):
     path.write_text("not a drawing\n", encoding="utf-8")
     with pytest.raises(ValueError, match=r"not a readable DXF"):
         read_revision(str(path))
+
+
+def test_read_revision_refuses_a_truncated_dxf(tmp_path):
+    # an interrupted save: ezdxf's tag reader runs out and raises StopIteration,
+    # which must surface as the refusal, not escape (it would hang asyncio.to_thread)
+    path = tmp_path / "half.dxf"
+    path.write_bytes(b"  0\nSECTION\n  2\nHEADER\n  9\n$ACADVER\n  1\nAC1015\n")
+    with pytest.raises(ValueError, match=r"half\.dxf: not a readable DXF \(the file ends early"):
+        read_revision(str(path))
+
+
+def test_read_revision_refuses_a_non_positive_tol_by_name(tmp_path):
+    path = tmp_path / "empty.dxf"
+    ezdxf.new().saveas(path)
+    with pytest.raises(ValueError, match=r"^tol must be a positive number"):
+        read_revision(str(path), tol=0)
 
 
 # -- the known edits on the synthetic plant --------------------------------------------
