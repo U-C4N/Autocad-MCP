@@ -257,8 +257,9 @@ class _Selections:
 
 
 class _Doc:
-    def __init__(self, name, log):
+    def __init__(self, name, log, full_name=""):
         self.Name = name
+        self.FullName = full_name  # "" for a drawing never saved, as AutoCAD answers
         self.log = log
         self.SelectionSets = _Selections(log)
 
@@ -276,8 +277,16 @@ class _Doc:
 
 
 class _Documents:
-    def __init__(self, log):
+    def __init__(self, log, open_docs=()):
         self.log = log
+        self.open_docs = list(open_docs)
+
+    @property
+    def Count(self):  # noqa: N802
+        return len(self.open_docs)
+
+    def Item(self, index):  # noqa: N802
+        return self.open_docs[index]
 
     def Open(self, path, read_only):  # noqa: N802
         self.log.append(("open", Path(path).name, read_only))
@@ -285,11 +294,11 @@ class _Documents:
 
 
 class _App:
-    def __init__(self, log):
-        self.Documents = _Documents(log)
+    def __init__(self, log, open_docs=()):
+        self.Documents = _Documents(log, open_docs)
 
 
-def _live(monkeypatch, log):
+def _live(monkeypatch, log, open_docs=()):
     backend = ComBackend()
 
     async def run_inline(func, *args, **kwargs):  # bypass the STA executor
@@ -301,7 +310,7 @@ def _live(monkeypatch, log):
     backend._run = run_inline
     backend._ensure_document_state = ensure_state
     active = _Doc("Drawing1.dwg", log)
-    monkeypatch.setattr(cb, "_acad_app", lambda: _App(log))
+    monkeypatch.setattr(cb, "_acad_app", lambda: _App(log, open_docs))
     monkeypatch.setattr(cb, "_acad_doc", lambda: active)
     return backend, active
 
@@ -342,3 +351,19 @@ async def test_a_dwg_on_the_live_engine_is_opened_read_only_and_closed_unsaved(
     assert ("open", "plant.dwg", True) in log
     assert ("close", False) in log
     assert log[-1] == ("ensure_document_state",)
+
+
+@pytest.mark.asyncio
+async def test_a_dwg_already_open_is_read_from_its_document_and_never_closed(monkeypatch, tmp_path):
+    # Opening a drawing AutoCAD already has open, then closing "it" unsaved, could
+    # close the operator's copy and lose its unsaved work. The open document is
+    # exported as it stands and left open: the server closes only what it opened.
+    path = tmp_path / "plant.dwg"
+    path.write_bytes(b"AC1032")
+    log: list[tuple] = []
+    theirs = _Doc("plant.dwg", log, full_name=str(path))
+    backend, _active = _live(monkeypatch, log, open_docs=[_Doc("Drawing1.dwg", log), theirs])
+    snap = await take_snapshot(backend, str(path))
+    assert snap.source == "live:plant.dwg"
+    assert ("export", "snap", "DXF") in log
+    assert not [event for event in log if event[0] in ("open", "close")]

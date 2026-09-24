@@ -33,7 +33,9 @@ Where the snapshot comes from:
     ``drawing_understand``'s docstring says so.
 
   A DWG path on the live engine is opened read-only, exported the same way and
-  closed without saving.
+  closed without saving - unless AutoCAD already has that drawing open: then
+  its open document is exported as it stands and left open, because closing
+  it could throw away the operator's unsaved work.
 
 Records hold what the readers need and nothing else: WCS points (OCS is
 translated here with ``backends/ocs.py``, so a mirrored ARC or LWPOLYLINE is
@@ -330,6 +332,21 @@ def read_snapshot(path: str) -> Snapshot:
     return _read(str(target), source=str(target))
 
 
+def _already_open(app, path: str):
+    """The document AutoCAD already has open at ``path``, or None. Opens nothing."""
+    wanted = os.path.normcase(os.path.abspath(path))
+    documents = app.Documents
+    for index in range(int(documents.Count)):
+        doc = documents.Item(index)
+        try:
+            full = str(doc.FullName or "")
+        except Exception:  # a document closing under us answers nothing; it is not ours
+            continue
+        if full and os.path.normcase(os.path.abspath(full)) == wanted:
+            return doc
+    return None
+
+
 def _com_export(backend, path: str | None) -> tuple[str, str, str]:
     """(snapshot file, its temporary folder, source) - runs on the COM thread."""
     from backends import com_backend as com
@@ -339,8 +356,13 @@ def _com_export(backend, path: str | None) -> tuple[str, str, str]:
     if path is None:
         doc = com._acad_doc()
     else:
-        opened = app.Documents.Open(str(path), True)  # read-only
-        doc = opened
+        # A drawing the operator already has open is exported as it stands and
+        # left open: opening it again and closing "it" unsaved could close their
+        # copy with its unsaved work. Only a document opened here is closed here.
+        doc = _already_open(app, str(path))
+        if doc is None:
+            opened = app.Documents.Open(str(path), True)  # read-only
+            doc = opened
     folder = tempfile.mkdtemp(prefix="acadmcp_snap_")
     try:
         name = str(backend._wait_out_rejected_call(lambda: doc.Name))
@@ -373,7 +395,9 @@ async def take_snapshot(backend, path: str | None = None) -> Snapshot:
 
     ``path`` given: a ``.dxf`` is read directly (on either engine); a ``.dwg``
     needs the live engine, which opens it read-only, exports it and closes it -
-    headlessly it is refused with the ``dwg`` capability. ``path`` None: the
+    or, when AutoCAD already has it open, exports that document as it stands
+    (unsaved edits included) and leaves it open - and headlessly it is refused
+    with the ``dwg`` capability. ``path`` None: the
     headless engine reads its in-memory document under its own lock; the live
     engine exports the active document to a temporary DXF (see the module
     docstring for what was measured) and deletes it afterwards. The snapshot of
