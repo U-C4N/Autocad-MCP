@@ -495,7 +495,7 @@ async def test_tool_groups_is_byte_identical_to_the_source_declared_grouping():
 
 
 async def test_tool_group_sizes_are_unchanged():
-    """Frozen snapshot of the surface (243 tools, 26 groups).
+    """Frozen snapshot of the surface (247 tools, 28 groups).
 
     Taken before @cad_tool landed at 131 tools; `batch` moved 2 -> 3 when
     v1.5.0's `cad_batch` joined `entity_batch_create`/`entity_batch_modify`, and
@@ -592,41 +592,19 @@ async def test_tool_group_sizes_are_unchanged():
     had grown while the tag was unranked on them returned to its
     pre-track-F value.
 
-    Track H group U opened SECTION 26 (Understanding & QA) with
-    `drawing_understand`, tagged `analysis` and `query`: `analysis` outranks
-    `query` in `_GROUP_TAG_PRIORITY`, so the reader files under `analysis`
-    (12 -> 13) beside the other whole-drawing queries, and
-    `drawing_scale_check`, tagged the same, followed it (13 -> 14). This
-    snapshot is branch-local: the track H merge task recomputes it once the
-    understand, network and diff branches have landed.
-
-    Track H group D opened its copy of SECTION 26 (Understanding & QA) with
-    `drawing_diff` and `drawing_topology_check`, both tagged `analysis` and
-    `query`; `analysis` outranks `query` in `_GROUP_TAG_PRIORITY`, so both file
-    under `analysis` (12 -> 14). This snapshot is branch-local: the track H
-    merge recomputes it once the understand, network and diff branches have
-    landed.
-
-    Merged, the two SECTION 26 halves file all four readers under `analysis`
-    (12 -> 16).
-
-    `analysis` moved 12 -> 13 when track H's SECTION 27 opened with
-    `pipe_takeoff` on the network branch. It is tagged `plant` and
-    `analysis`, and `plant` is not in `_GROUP_TAG_PRIORITY` on that
-    branch, so it files under `analysis`. This snapshot is branch-local:
-    the track H integration task gives `plant` its pack and its group
-    once every branch has landed.
-
-    It moved 13 -> 14 when `cable_takeoff` joined the same section, for
-    the same branch-local reason.
-
-    With SECTION 27 merged beside them, the four readers and the two
-    takeoffs all file under `analysis` (12 -> 18) until the track H
-    integration task ranks `understand` and `plant`.
+    `understanding` and `plant` appeared with v1.6's track H: `understanding`
+    (4, SECTION 26: `drawing_understand`, `drawing_scale_check`,
+    `drawing_diff`, `drawing_topology_check` - the readers of drawings
+    somebody else made, core pack) and `plant` (2, SECTION 27: `pipe_takeoff`
+    and `cable_takeoff`, exactly `PACK_TOOL_NAMES["plant"]`). The three
+    track-H branches tagged the six `analysis` and left the priority list
+    alone, so `analysis` grew 12 -> 18 on them; the integration tagged
+    SECTION 26 `understand` and ranked `understand` and `plant` directly
+    after `arch` in `_GROUP_TAG_PRIORITY`, and `analysis` returned to 12.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
-        "analysis": 18,
+        "analysis": 12,
         "architecture": 12,
         "batch": 3,
         "blocks": 9,
@@ -643,6 +621,7 @@ async def test_tool_group_sizes_are_unchanged():
         "mechanical": 14,
         "page_setup": 6,
         "pid": 9,
+        "plant": 2,
         "premium": 12,
         "sheet": 11,
         "solids": 5,
@@ -650,6 +629,7 @@ async def test_tool_group_sizes_are_unchanged():
         "system": 7,
         "templates": 2,
         "transactions": 3,
+        "understanding": 4,
         "validation": 1,
         "view": 4,
     }

@@ -208,3 +208,64 @@ def test_alias_text_contains_commands_and_synonyms():
     for token in (*record.acad, *record.synonyms):
         assert token in text
     assert alias_text("no_such_tool") == ""
+
+
+# ── track H: spec §12's five-language vocabulary ───────────────────────────
+#
+# One row per term the spec names, in the record(s) a plant engineer means by
+# it. Turkish comes in both spellings (diacritic and ASCII-folded): the search
+# tokenizer splits on a non-ASCII letter instead of folding it.
+
+TRACK_H_TERMS = {
+    "pipe_takeoff": (
+        "takeoff",
+        "boq",
+        "metraj",
+        "metre cetveli",
+        "boru listesi",
+        "boru metrajı",
+        "boru metraji",
+        "boru metrajı çıkar",
+        "boru metraji cikar",
+        "спецификация",  # specification: a bill of quantities
+        "ведомость",  # statement: a quantity schedule
+    ),
+    "cable_takeoff": (
+        "takeoff",
+        "boq",
+        "metraj",
+        "metre cetveli",
+        "kablo listesi",
+        "kablo metrajı",
+        "kablo metraji",
+    ),
+    "drawing_diff": (
+        "compare",
+        "dwgcompare",
+        "fark",
+        "karşılaştır",
+        "karsilastir",
+        "revizyon farkı",
+        "revizyon farki",
+        "iki revizyonu karşılaştır",
+        "iki revizyonu karsilastir",
+    ),
+    "drawing_scale_check": (
+        "scale check",
+        "ölçek",
+        "olcek",
+        "bu çizim ölçekli mi",
+        "bu cizim olcekli mi",
+    ),
+    "drawing_understand": ("birim", "çizim birimi", "cizim birimi"),
+}
+
+
+def test_track_h_records_carry_the_five_language_vocabulary():
+    missing = {
+        tool: [term for term in terms if term not in TOOL_ALIASES[tool].synonyms]
+        for tool, terms in TRACK_H_TERMS.items()
+    }
+    missing = {tool: terms for tool, terms in missing.items() if terms}
+    assert not missing, f"track-H records miss spec §12 vocabulary: {missing}"
+    assert "COMPARE" in TOOL_ALIASES["drawing_diff"].acad

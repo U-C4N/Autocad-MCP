@@ -2580,6 +2580,150 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
 }
 
 
+# ── Track H: the five-language vocabulary of spec §12 ──────────────────────
+#
+# The six track-H records were written by three branches (SECTION 26 by groups
+# U and D, SECTION 27 by group N). Spec §12's vocabulary - the words a plant
+# engineer types when asking for a takeoff, a comparison or a scale check - is
+# folded into them here, after the merge, so every branch's own phrases stay
+# and nothing is written twice. A record missing here is a KeyError at import:
+# a track-H tool without its branch's record is a merge that lost something.
+#
+# Turkish carries both spellings, diacritic and ASCII-folded, because the
+# search tokenizer splits on a non-ASCII letter instead of folding it (the
+# room records above say the same). The Russian terms are data for a client
+# that searches this corpus itself: the BM25 tokenizer keeps only [a-z0-9], so
+# it cannot index Cyrillic yet, and no golden case pretends it can.
+#
+# COMPARE is AutoCAD's drawing-compare command (the "DWG Compare" feature);
+# "dwg compare" / "dwgcompare" are how drafters name the feature, so they are
+# synonyms, not a command token.
+_TRACK_H_VOCABULARY: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "drawing_understand": (
+        (),
+        (
+            "what is in this drawing",
+            "what is in this drawing somebody sent me",
+            "understand a foreign drawing",
+            "read a drawing somebody else made",
+            "which units is this drawing in",
+            "drawing units check",
+            "birim",
+            "birim kontrolü",
+            "birim kontrolu",
+            "çizim birimi",
+            "cizim birimi",
+            "çizimi anla",
+            "cizimi anla",
+            "yabancı çizim",
+            "yabanci cizim",
+        ),
+    ),
+    "drawing_scale_check": (
+        (),
+        (
+            "scale check",
+            "is this drawing to scale",
+            "is the p&id to scale",
+            "schematic or to scale",
+            "compare distances between two drawings",
+            "ölçek",
+            "olcek",
+            "ölçek kontrolü",
+            "ölçek kontrolu",
+            "olcek kontrolu",
+            "ölçekli mi",
+            "olcekli mi",
+            "bu çizim ölçekli mi",
+            "bu cizim olcekli mi",
+        ),
+    ),
+    "drawing_diff": (
+        ("COMPARE",),
+        (
+            "compare",
+            "compare two revisions",
+            "compare two revisions of this drawing",
+            "what changed between revisions",
+            "drawing diff",
+            "dwg compare",
+            "dwgcompare",
+            "fark",
+            "revizyon farkı",
+            "revizyon farki",
+            "karşılaştır",
+            "karsilastir",
+            "iki revizyonu karşılaştır",
+            "iki revizyonu karsilastir",
+            "сравнить чертежи",  # compare drawings
+        ),
+    ),
+    "drawing_topology_check": (
+        (),
+        (
+            "find dangling line ends",
+            "find dangling line ends and gaps",
+            "uçları açık çizgiler",
+            "uclari acik cizgiler",
+            "kopuk hat",
+        ),
+    ),
+    "pipe_takeoff": (
+        (),
+        (
+            "takeoff",
+            "pipe takeoff",
+            "pipe takeoff by diameter from the p&id",
+            "pipe quantities",
+            "bill of quantities",
+            "boq",
+            "metraj",
+            "metre cetveli",
+            "boru listesi",
+            "boru metrajı",
+            "boru metraji",
+            "boru metrajı çıkar",
+            "boru metraji cikar",
+            "спецификация",  # specification: a bill of quantities
+            "ведомость",  # statement: a quantity schedule
+        ),
+    ),
+    "cable_takeoff": (
+        (),
+        (
+            "takeoff",
+            "cable takeoff",
+            "cable schedule",
+            "cable lengths to the panel",
+            "bill of quantities",
+            "boq",
+            "metraj",
+            "metre cetveli",
+            "kablo listesi",
+            "kablo metrajı",
+            "kablo metraji",
+            "kablo metrajı çıkar",
+            "kablo metraji cikar",
+            "кабельная ведомость",  # cable schedule
+            "спецификация",  # specification: a bill of quantities
+        ),
+    ),
+}
+
+
+def _fold_in(records: dict[str, ToolAliases], extra) -> None:
+    """Append ``extra``'s commands and phrases to existing records, never twice."""
+    for name, (acad, synonyms) in extra.items():
+        record = records[name]
+        records[name] = ToolAliases(
+            acad=record.acad + tuple(c for c in acad if c not in record.acad),
+            synonyms=record.synonyms + tuple(s for s in synonyms if s not in record.synonyms),
+        )
+
+
+_fold_in(TOOL_ALIASES, _TRACK_H_VOCABULARY)
+
+
 def aliases_for(tool_name: str) -> ToolAliases | None:
     """Return the alias record for ``tool_name``, or ``None`` if it has none."""
     return TOOL_ALIASES.get(tool_name)

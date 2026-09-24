@@ -163,9 +163,9 @@ def test_the_cache_arithmetic_follows_the_published_multipliers():
 
 def test_the_idle_lane_covers_the_five_advertised_surfaces(report):
     """Default, lean, search - and the two single-vertical clients:
-    TOOL_PACKS=core,mech (the default surface minus exactly the pid and settings
-    packs, and the arch pack) and TOOL_PACKS=core,arch (minus pid, settings and
-    mech)."""
+    TOOL_PACKS=core,mech (the default surface minus exactly the pid, settings,
+    arch and plant packs) and TOOL_PACKS=core,arch (minus pid, settings, mech
+    and plant)."""
     variants = {row["variant"]: row for row in report["idle"]}
     assert set(variants) == {"default", "lean", "packs_core_mech", "packs_core_arch", "search"}
     assert variants["default"]["advertised_tools"] > 100
@@ -177,12 +177,14 @@ def test_the_idle_lane_covers_the_five_advertised_surfaces(report):
         - len(packs["pid"])
         - len(packs["settings"])
         - len(packs["arch"])
+        - len(packs["plant"])
     )
     assert variants["packs_core_arch"]["advertised_tools"] == (
         variants["default"]["advertised_tools"]
         - len(packs["pid"])
         - len(packs["settings"])
         - len(packs["mech"])
+        - len(packs["plant"])
     )
     for narrowed in ("packs_core_mech", "packs_core_arch"):
         assert (

@@ -1,6 +1,6 @@
 """Golden query set for tool discovery: English in, one right tool out.
 
-Ninety-nine cases (84 tuning + 15 holdout) split into a **tuning** set and a
+One hundred and seven cases (92 tuning + 15 holdout) split into a **tuning** set and a
 **holdout** set. The split is
 the point of the file. Ranking work is measured against
 :data:`TUNING_CASES` only; :data:`HOLDOUT_CASES` were written at the same time,
@@ -204,6 +204,19 @@ TUNING_CASES: tuple[GoldenCase, ...] = (
     GoldenCase("merdiven çiz", "arch_stair", "synonym"),
     GoldenCase("vaziyet planı çiz", "arch_plan_from_spec", "synonym"),
     GoldenCase("oda alanlarını hesapla", "arch_rooms_detect", "synonym"),
+    # v1.6 track H - reading drawings somebody else made. Written before the
+    # merged alias records were measured against them; a miss is fixed by
+    # adding vocabulary to that tool's record in discovery/aliases.py, never by
+    # moving the expectation. Half of them Turkish: a takeoff is asked for in
+    # the language of the shop that prices the job.
+    GoldenCase("boru metrajı çıkar", "pipe_takeoff", "synonym"),
+    GoldenCase("kablo metrajı", "cable_takeoff", "synonym"),
+    GoldenCase("iki revizyonu karşılaştır", "drawing_diff", "synonym"),
+    GoldenCase("bu çizim ölçekli mi", "drawing_scale_check", "synonym"),
+    GoldenCase("what is in this drawing somebody sent me", "drawing_understand", "paraphrase"),
+    GoldenCase("pipe takeoff by diameter from the p&id", "pipe_takeoff", "paraphrase"),
+    GoldenCase("compare two revisions of this drawing", "drawing_diff", "paraphrase"),
+    GoldenCase("find dangling line ends and gaps", "drawing_topology_check", "paraphrase"),
 )
 
 

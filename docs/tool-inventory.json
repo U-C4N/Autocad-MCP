@@ -6,10 +6,10 @@
     "tools": 247,
     "resources": 8,
     "prompts": 5,
-    "groups": 26
+    "groups": 28
   },
   "groups": {
-    "analysis": 18,
+    "analysis": 12,
     "architecture": 12,
     "batch": 3,
     "blocks": 9,
@@ -26,6 +26,7 @@
     "mechanical": 14,
     "page_setup": 6,
     "pid": 9,
+    "plant": 2,
     "premium": 12,
     "sheet": 11,
     "solids": 5,
@@ -33,6 +34,7 @@
     "system": 7,
     "templates": 2,
     "transactions": 3,
+    "understanding": 4,
     "validation": 1,
     "view": 4
   },
@@ -545,7 +547,7 @@
     },
     {
       "name": "cable_takeoff",
-      "group": "analysis",
+      "group": "plant",
       "cost": "safe",
       "summary": "Cable takeoff: one row per load, Manhattan length to its panel, rounded up to the metre.",
       "tags": [
@@ -914,12 +916,13 @@
     },
     {
       "name": "drawing_diff",
-      "group": "analysis",
+      "group": "understanding",
       "cost": "mutate",
       "summary": "Compare two revisions of a drawing: what moved, changed, was added or removed.",
       "tags": [
         "analysis",
-        "query"
+        "query",
+        "understand"
       ],
       "annotations": {
         "title": "Drawing: Diff Two Revisions",
@@ -1147,12 +1150,13 @@
     },
     {
       "name": "drawing_scale_check",
-      "group": "analysis",
+      "group": "understanding",
       "cost": "read",
       "summary": "Is this drawing to scale against a reference? Tag distances, ratios, a verdict.",
       "tags": [
         "analysis",
-        "query"
+        "query",
+        "understand"
       ],
       "annotations": {
         "title": "Understand: Scale Check",
@@ -1206,12 +1210,13 @@
     },
     {
       "name": "drawing_topology_check",
-      "group": "analysis",
+      "group": "understanding",
       "cost": "read",
       "summary": "Find dangling ends, near misses and unjoined crossings in a pipe or cable network.",
       "tags": [
         "analysis",
-        "query"
+        "query",
+        "understand"
       ],
       "annotations": {
         "title": "Drawing: Topology Check",
@@ -1220,12 +1225,13 @@
     },
     {
       "name": "drawing_understand",
-      "group": "analysis",
+      "group": "understanding",
       "cost": "read",
       "summary": "Read a foreign drawing: units, extents, clusters, layers, tags, rooms, languages.",
       "tags": [
         "analysis",
-        "query"
+        "query",
+        "understand"
       ],
       "annotations": {
         "title": "Understand: Describe Drawing",
@@ -2597,7 +2603,7 @@
     },
     {
       "name": "pipe_takeoff",
-      "group": "analysis",
+      "group": "plant",
       "cost": "safe",
       "summary": "Pipe takeoff from a P&ID and its layout: rows by room, service and diameter.",
       "tags": [

@@ -692,6 +692,8 @@ _GROUP_TAG_PRIORITY = (
     "pid",
     "mech",
     "arch",
+    "understand",
+    "plant",
     "sheet",
     "style",
     "pagesetup",
@@ -723,6 +725,8 @@ _GROUP_TAG_LABELS = {
     "pid": "pid",
     "mech": "mechanical",
     "arch": "architecture",
+    "understand": "understanding",
+    "plant": "plant",
     "sheet": "sheet",
     "style": "styles",
     "pagesetup": "page_setup",
@@ -973,6 +977,12 @@ LEAN_TOOL_NAMES = frozenset(
         "arch_opening",
         "arch_room",
         "arch_plan_from_spec",
+        # Understanding (track H) - the one read a lean client needs before it
+        # touches a drawing somebody else made: units, extents, clusters,
+        # layers and their services, tags and rooms in one call. A core-pack
+        # tool, so TOOL_PACKS=core keeps it; with the four architectural ones
+        # above, lean is 65. The takeoffs are `plant`-pack, full-profile work.
+        "drawing_understand",
     }
 )
 
@@ -986,7 +996,7 @@ SOLID_TOOL_NAMES = frozenset(
 # mechanically should not pay for the P&ID surface, and a client that never
 # talks to a live seat should not pay for the environment surface. Styles and
 # page setup (SECTION 18/19) are drafting essentials and stay in core.
-TOOL_PACK_NAMES = ("core", "pid", "settings", "mech", "arch")
+TOOL_PACK_NAMES = ("core", "pid", "settings", "mech", "arch", "plant")
 PACK_TOOL_NAMES: dict[str, frozenset[str]] = {
     "pid": frozenset(
         {
@@ -1070,6 +1080,12 @@ PACK_TOOL_NAMES: dict[str, frozenset[str]] = {
             "arch_plan_from_spec",
         }
     ),
+    # SECTION 27 - the plant takeoffs: pipe and cable quantities whose topology
+    # comes from a P&ID and whose lengths come from its layout (track H spec
+    # §8-9, §12). SECTION 26's four readers stay in `core`: understanding,
+    # comparing and checking a drawing is not a vertical. Track D's Plant 3D
+    # readers join this pack.
+    "plant": frozenset({"pipe_takeoff", "cable_takeoff"}),
 }
 
 _active_tool_profile: dict | None = None
@@ -10569,7 +10585,7 @@ async def arch_plan_from_spec(
 )
 @mcp.tool(
     annotations={"title": "Understand: Describe Drawing", "readOnlyHint": True},
-    tags={"analysis", "query"},
+    tags={"understand", "analysis", "query"},
 )
 async def drawing_understand(
     path: Annotated[
@@ -10638,7 +10654,7 @@ async def drawing_understand(
 )
 @mcp.tool(
     annotations={"title": "Understand: Scale Check", "readOnlyHint": True},
-    tags={"analysis", "query"},
+    tags={"understand", "analysis", "query"},
 )
 async def drawing_scale_check(
     reference: Annotated[
@@ -10800,7 +10816,7 @@ async def _diff_markup(backend, result: dict, new_snap, *, rev: str, description
 )
 @mcp.tool(
     annotations={"title": "Drawing: Diff Two Revisions", "destructiveHint": False},
-    tags={"analysis", "query"},
+    tags={"understand", "analysis", "query"},
 )
 async def drawing_diff(
     old_path: Annotated[
@@ -10932,7 +10948,7 @@ async def drawing_diff(
 )
 @mcp.tool(
     annotations={"title": "Drawing: Topology Check", "readOnlyHint": True},
-    tags={"analysis", "query"},
+    tags={"understand", "analysis", "query"},
 )
 async def drawing_topology_check(
     layers: Annotated[
