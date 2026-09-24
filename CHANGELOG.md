@@ -383,6 +383,24 @@ member. Spec: `docs/superpowers/specs/2026-09-24-v1.6-understand-design.md`.
     synthetic pair the check matched 10 tags and 45 pairs (13.3 % within
     ±10 %) where the generator placed 11 and 55 (21.8 %). A callout is no
     longer a tag occurrence - the rule the line-network reader already kept.
+- **Track H, found by the field test** (the takeoffs run on a real P&ID pair
+  that stays outside the repository). Each fix has a test that failed first:
+  - The pipe network took every piping or electrical layer, so valve, pump
+    and annotation layers (sizes, materials, numbers) became pipe runs.
+    `vocab.is_network_layer` is now the one rule for the network, the
+    topology check and the `topo_*` focuses: piping or electrical at 0.9, and
+    naming neither equipment nor annotation.
+  - Measured on the P&ID, a run still needed equipment tags at both ends, so
+    a field P&ID whose pipes rarely end on a tagged outline gave an empty
+    table. On the P&ID each piece now goes to the room it lies in, with its
+    diameter kept piece by piece. A layout takeoff that cannot route every run
+    now says how many, why, and what the P&ID alternative is.
+  - TEXT caret notation (`^J`, a line break) was left in place, so a room
+    label's number read as `6^J...`. `plain()` now decodes it.
+  - A label that only mentions a room was read as a room: a control cabinet
+    naming the room it serves, or a note pointing into a room. An unnumbered
+    label naming equipment is no room. Without room faces, when the drawing
+    numbers its rooms, only numbered labels take pieces.
 
 ### Changed
 
