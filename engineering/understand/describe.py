@@ -39,6 +39,7 @@ from engineering.understand.vocab import classify_layer, room_label
 
 __all__ = [
     "describe",
+    "drawing_units",
     "find_rooms",
     "prepare",
     "tag_occurrences",
@@ -232,6 +233,25 @@ def find_rooms(records: Sequence[EntityRecord], *, tol: float, membership: dict)
     }
 
 
+def drawing_units(snap: Snapshot, *, prep: dict | None = None, rooms: dict | None = None) -> dict:
+    """`units.infer_units` the one way every reader calls it: on the records kept
+    after the outliers, with the labelled room faces as evidence.
+
+    `describe`, `scale.scale_check` and the takeoffs all read a drawing's unit
+    here, so no two tools report two units for one drawing. ``prep`` and
+    ``rooms`` are a `prepare` / `find_rooms` result the caller already holds.
+    """
+    prep = prep or prepare(snap)
+    if rooms is None:
+        tol = prep["diag"] * FACE_TOL_FRACTION if prep["diag"] > 0 else 1.0
+        rooms = find_rooms(prep["kept"], tol=tol, membership=prep["membership"])
+    return infer_units(
+        snap,
+        records=prep["kept"],
+        room_areas=[row["face"]["area"] for row, _face in rooms["labelled"]],
+    )
+
+
 def text_language(text: str) -> str:
     """``cyrillic`` | ``turkish`` | ``latin`` | ``none`` by character class, in
     that precedence (a Russian label with a Latin tag in it is Cyrillic)."""
@@ -385,11 +405,7 @@ def describe(snap: Snapshot) -> dict:
     warnings: list[str] = []
     tol = prep["diag"] * FACE_TOL_FRACTION if prep["diag"] > 0 else 1.0
     rooms = find_rooms(prep["kept"], tol=tol, membership=prep["membership"])
-    units = infer_units(
-        snap,
-        records=prep["kept"],
-        room_areas=[row["face"]["area"] for row, _face in rooms["labelled"]],
-    )
+    units = drawing_units(snap, prep=prep, rooms=rooms)
     if units["warning"]:
         warnings.append(units["warning"])
     extents = dict(prep["extents"])

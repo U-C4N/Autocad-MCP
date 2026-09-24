@@ -213,7 +213,7 @@ def test_the_method_sheet_is_generated_from_the_result(result, tmp_path):
     assert method["Units: layout"] == "INSUNITS in → mm"
     assert "x first, then y" in method["Rule: route"]
     warnings = [row[1] for row in read_csv(files["csv"][3]) if row[0] == "Warning"]
-    assert any("INSUNITS declares in" in w for w in warnings)
+    assert any("INSUNITS declares Inches (1)" in w for w in warnings)
 
 
 def test_kontrol_lists_the_unassigned_diameter(result, tmp_path):

@@ -44,9 +44,14 @@ import statistics
 from itertools import combinations
 
 from engineering.arch.faces import face_containing
-from engineering.understand.describe import FACE_TOL_FRACTION, find_rooms, prepare, tag_occurrences
+from engineering.understand.describe import (
+    FACE_TOL_FRACTION,
+    drawing_units,
+    find_rooms,
+    prepare,
+    tag_occurrences,
+)
 from engineering.understand.snapshot import Snapshot
-from engineering.understand.units import infer_units
 
 __all__ = ["MIN_TAGS", "SCHEMATIC_SHARE", "TO_SCALE_SHARE", "WITHIN", "match_tags", "scale_check"]
 
@@ -190,8 +195,7 @@ def scale_check(a: Snapshot, b: Snapshot, *, min_pair_mm=2000.0) -> dict:
         ("a", a, side_a, None),
         ("b", b, side_b, rooms_b),
     ):
-        areas = [row["face"]["area"] for row, _f in rooms["labelled"]] if rooms else []
-        u = infer_units(snap, records=side["kept"], room_areas=areas)
+        u = drawing_units(snap, prep=side, rooms=rooms)
         units[key] = {
             "unit": u["inferred"],
             "mm_per_unit": u["mm_per_unit"],

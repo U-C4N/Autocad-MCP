@@ -14,12 +14,10 @@ ways, and the rows say which:
   no layout (every row then carries `scale_verified: false`), and on a
   schematic P&ID only with `force=True`.
 
-This module also carries the takeoff's own stand-ins for three readers another
-branch of track H owns - the unit inference, the plan-copy clusters and the
-scale check (group U's `units`, `clusters` and `scale`). They follow the
-spec's rules (§5, §6) in the narrow form a takeoff needs; `pipe_rows` uses a
-`scale` result it is given before its own, so the full scale check replaces
-the stand-in wherever a caller passes it.
+Units, plan copies, scale and rooms are read through group U's readers
+(`describe.drawing_units`, `describe.prepare`, `scale.scale_check`,
+`describe.find_rooms`), so a takeoff sees exactly what `drawing_understand`
+and `drawing_scale_check` report for the same drawing.
 
 Every length leaves this module in metres, converted from the unit the
 geometry implies - never blindly from `INSUNITS`. Nothing here touches a
@@ -29,10 +27,10 @@ drawing.
 from __future__ import annotations
 
 import math
-import statistics
 from collections.abc import Iterable
 
-from engineering.arch.faces import DEFAULT_TOL, Face, face_containing, planar_faces
+from engineering.arch.faces import face_containing
+from engineering.understand.describe import FACE_TOL_FRACTION, drawing_units, find_rooms, prepare
 from engineering.understand.labels import normalize_panel, parse_electrical, wiring_target
 from engineering.understand.network import (
     MODEL,
@@ -41,8 +39,9 @@ from engineering.understand.network import (
     tag_occurrences,
 )
 from engineering.understand.route import manhattan, rmst, route_legs
+from engineering.understand.scale import scale_check
 from engineering.understand.snapshot import Pt, Snapshot
-from engineering.understand.vocab import SERVICES, classify_layer, room_label
+from engineering.understand.vocab import SERVICES
 
 __all__ = [
     "CABLE_SEARCH_SHARE",
@@ -59,7 +58,6 @@ __all__ = [
     "room_at",
     "room_regions",
     "roundup_m",
-    "scale_stand_in",
     "section_for",
     "unit_of",
 ]
@@ -69,33 +67,8 @@ DEFAULT_SERVICES = ("product", "cip_supply", "cip_return")
 LENGTH_SOURCES = ("auto", "pid", "layout")
 UNASSIGNED = "unassigned"
 
-#: INSUNITS codes this module reads, and metres per unit of each.
-INSUNITS_NAMES = {1: "in", 2: "ft", 4: "mm", 5: "cm", 6: "m"}
+#: Metres per unit of each unit a takeoff converts.
 UNIT_METRES = {"mm": 0.001, "cm": 0.01, "m": 1.0, "in": 0.0254, "ft": 0.3048}
-#: This module's heuristic, not a standard: the model-space text of any plant
-#: drawing - a P&ID sheet at 1:1 or a plan at 1:200 - stands between 0.5 mm and
-#: 1 m tall, and the drawing spans between 0.1 m and 5 km. A declared unit that
-#: puts the geometry outside either band is not believed.
-TEXT_BAND_M = (0.0005, 1.0)
-SPAN_BAND_M = (0.1, 5000.0)
-#: Among the units that fit both bands, the one nearest (in log) a 50 m plant
-#: with 0.25 m text is chosen.
-TYPICAL_SPAN_M = 50.0
-TYPICAL_TEXT_M = 0.25
-
-#: Plan copies are told apart when the gap between them exceeds 2 % of the
-#: drawing's robust span (5th-95th percentile).
-CLUSTER_GAP_SHARE = 0.02
-#: Spec §6: pairs of matched tags at least 2 m apart, a ±10 % band, 80 % / 50 %.
-MIN_PAIR_MM = 2000.0
-SCALE_BAND = 0.10
-TO_SCALE_SHARE = 0.80
-SCHEMATIC_SHARE = 0.50
-#: Fewer matched tags than this and the verdict is `insufficient`.
-MIN_TAGS = 3
-#: A wall layer is one `classify_layer` files under architecture this surely.
-WALL_CONFIDENCE = 0.9
-
 
 # -- options -----------------------------------------------------------------
 
@@ -145,177 +118,45 @@ def check_pipe_options(*, services, allowance, vertical_allowance, length_source
 # -- units -------------------------------------------------------------------
 
 
-def _model_points(snap: Snapshot) -> list[Pt]:
-    out: list[Pt] = []
-    for rec in snap.records:
-        if rec.space != MODEL:
-            continue
-        out.extend(rec.points)
-        if rec.bbox is not None:
-            out.extend(((rec.bbox[0], rec.bbox[1]), (rec.bbox[2], rec.bbox[3])))
-    return out
+def unit_of(snap: Snapshot, *, prep: dict | None = None) -> dict:
+    """The unit a drawing's geometry implies - `describe.drawing_units`, the reading
+    `drawing_understand` and `drawing_scale_check` give - in the shape a takeoff reads.
 
-
-def _robust_box(points: list[Pt]) -> tuple[float, float, float, float] | None:
-    """The 5th-95th percentile box of the points: one stray entity does not stretch it."""
-    if len(points) < 2:
-        return None
-    qx = statistics.quantiles([p[0] for p in points], n=20, method="inclusive")
-    qy = statistics.quantiles([p[1] for p in points], n=20, method="inclusive")
-    return (qx[0], qy[0], qx[-1], qy[-1])
-
-
-def _text_heights(snap: Snapshot) -> list[float]:
-    return [
-        rec.height
-        for rec in snap.records
-        if rec.space == MODEL and rec.type in TEXT_TYPES and rec.height and rec.height > 0.0
-    ]
-
-
-def unit_of(snap: Snapshot) -> dict:
-    """The unit a drawing's geometry implies, against the one INSUNITS declares.
-
-    ``{"declared", "inferred", "m_per_unit", "warning", "evidence"}``. The
-    declared unit (mm when INSUNITS declares none) stands when it puts the
-    median model-space text height between 0.5 mm and 1 m and the robust span
-    (5th-95th percentile) between 0.1 m and 5 km - this module's heuristic.
-    Otherwise the unit of mm / cm / m / in / ft that fits both bands and lies
-    nearest a 50 m drawing with 0.25 m text is taken. A disagreement is a
-    warning with the numbers - never a silent correction.
+    ``{"declared", "inferred", "m_per_unit", "warning", "evidence"}``: ``declared``
+    is the INSUNITS abbreviation (None when it names none of mm / cm / m / in /
+    ft), ``evidence`` is `infer_units`' own list. When no measurement settles
+    the unit the declared one stands, else mm, and the warning says which; a
+    takeoff never leaves a length in unknown units.
     """
-    declared = INSUNITS_NAMES.get(snap.insunits)
-    box = _robust_box(_model_points(snap))
-    span = max(box[2] - box[0], box[3] - box[1]) if box else 0.0
-    heights = _text_heights(snap)
-    height = statistics.median(heights) if heights else 0.0
-
-    def fits(unit: str) -> bool:
-        m = UNIT_METRES[unit]
-        return (span <= 0.0 or SPAN_BAND_M[0] <= span * m <= SPAN_BAND_M[1]) and (
-            height <= 0.0 or TEXT_BAND_M[0] <= height * m <= TEXT_BAND_M[1]
-        )
-
-    def score(unit: str) -> float:
-        m = UNIT_METRES[unit]
-        total = abs(math.log(span * m / TYPICAL_SPAN_M)) if span > 0.0 else 0.0
-        return total + (abs(math.log(height * m / TYPICAL_TEXT_M)) if height > 0.0 else 0.0)
-
-    base = declared or "mm"
-    inferred = base
-    if not fits(base):
-        candidates = [unit for unit in UNIT_METRES if fits(unit)]
-        if candidates:
-            inferred = min(candidates, key=lambda unit: (score(unit), unit))
-    if declared is not None:
-        said = declared
-    elif snap.insunits:
-        said = f"code {snap.insunits} (a unit this reader does not convert)"
-    else:
-        said = "no unit"
-    warning = None
-    if inferred != declared:
+    found = drawing_units(snap, prep=prep)
+    name = found["declared"]["name"]
+    declared = name if name in UNIT_METRES else None
+    inferred, warning = found["inferred"], found["warning"]
+    if inferred is None:
+        inferred = declared or "mm"
         warning = (
-            f"{snap.source}: INSUNITS declares {said} but the geometry reads "
-            f"as {inferred} (median text height {height:g}, robust span {span:g} drawing "
-            f"units); lengths are taken in {inferred}"
+            f"INSUNITS declares {found['declared']['label']} ({found['declared']['code']}) and "
+            f"no measurement settles the unit; the takeoff reads it as {inferred}."
         )
     return {
         "declared": declared,
         "inferred": inferred,
         "m_per_unit": UNIT_METRES[inferred],
-        "warning": warning,
-        "evidence": {"robust_span": span, "median_text_height": height},
+        "warning": f"{snap.source}: {warning}" if warning else None,
+        "evidence": found["evidence"],
     }
 
 
 # -- plan copies and tag positions ---------------------------------------------
 
 
-def _mark_segment(cells: set, a: Pt, b: Pt, gap: float, limit: float) -> None:
-    length = math.dist(a, b)
-    if length > limit:
-        steps = 0  # a stray line across the world marks only its ends
-    else:
-        steps = int(length / (gap / 2.0))
-    for i in range(steps + 1):
-        t = i / steps if steps else 0.0
-        x, y = a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t
-        cells.add((math.floor(x / gap), math.floor(y / gap)))
-    cells.add((math.floor(b[0] / gap), math.floor(b[1] / gap)))
-
-
-def _clusters(snap: Snapshot) -> tuple[float, list[tuple[float, float, float, float]]]:
-    """(cell size, cluster boxes): separate bodies of model-space content.
-
-    Every record's geometry marks the cells of a grid whose cell is 2 % of the
-    robust span; 8-connected cells form bodies; bodies whose boxes overlap are
-    one cluster (a label in the middle of a room belongs to the plan around it).
-    """
-    points = _model_points(snap)
-    box = _robust_box(points)
-    if box is None:
-        return 1.0, []
-    span = max(box[2] - box[0], box[3] - box[1], 1.0)
-    gap = CLUSTER_GAP_SHARE * span
-    limit = 10.0 * span
-    cells: set[tuple[int, int]] = set()
-    for rec in snap.records:
-        if rec.space != MODEL:
-            continue
-        pts = list(rec.points)
-        if rec.type in ("LINE", "LWPOLYLINE", "POLYLINE") and len(pts) >= 2:
-            ring = pts + ([pts[0]] if rec.closed else [])
-            for a, b in zip(ring, ring[1:], strict=False):
-                _mark_segment(cells, a, b, gap, limit)
-        elif rec.bbox is not None:
-            x0, y0, x1, y1 = rec.bbox
-            corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]
-            for a, b in zip(corners, corners[1:], strict=False):
-                _mark_segment(cells, a, b, gap, limit)
-        for p in pts[:1]:
-            cells.add((math.floor(p[0] / gap), math.floor(p[1] / gap)))
-    seen: set[tuple[int, int]] = set()
-    bodies: list[list[float]] = []
-    for start in sorted(cells):
-        if start in seen:
-            continue
-        seen.add(start)
-        stack, body = [start], [start[0], start[1], start[0], start[1]]
-        while stack:
-            cx, cy = stack.pop()
-            body = [min(body[0], cx), min(body[1], cy), max(body[2], cx), max(body[3], cy)]
-            for dx in (-1, 0, 1):
-                for dy in (-1, 0, 1):
-                    n = (cx + dx, cy + dy)
-                    if n in cells and n not in seen:
-                        seen.add(n)
-                        stack.append(n)
-        bodies.append(body)
-    merged = True
-    while merged:
-        merged = False
-        for i in range(len(bodies)):
-            for j in range(i + 1, len(bodies)):
-                a, b = bodies[i], bodies[j]
-                if a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] and b[1] <= a[3]:
-                    bodies[i] = [min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3])]
-                    del bodies[j]
-                    merged = True
-                    break
-            if merged:
-                break
-    boxes = [(b[0] * gap, b[1] * gap, (b[2] + 1) * gap, (b[3] + 1) * gap) for b in sorted(bodies)]
-    return gap, boxes
-
-
-def layout_tags(snap: Snapshot, wanted: Iterable[str] = ()) -> dict:
+def layout_tags(snap: Snapshot, wanted: Iterable[str] = (), *, prep: dict | None = None) -> dict:
     """Tag positions on a drawing, using only tags that are unique where they are read.
 
     When no tag is written twice the whole model space is read. Otherwise the
-    drawing is split into clusters (plan copies, sheets, a far outlier) and the
-    cluster holding the most `wanted` tags is chosen (ties: the one furthest
-    left, then lowest); a tag written more than once inside it is `ambiguous`,
+    drawing's clusters - `describe.prepare`'s, the plan copies, sheets and
+    outliers `drawing_understand` reports - are read, and the cluster holding
+    the most `wanted` tags is chosen (ties: the one furthest left, then lowest); a tag written more than once inside it is `ambiguous`,
     never picked arbitrarily. ``{"positions": {tag: Pt}, "ambiguous": [...],
     "cluster": box | None, "clusters": n}``.
     """
@@ -328,7 +169,8 @@ def layout_tags(snap: Snapshot, wanted: Iterable[str] = ()) -> dict:
             "cluster": None,
             "clusters": 1,
         }
-    _gap, boxes = _clusters(snap)
+    prep = prep or prepare(snap)
+    boxes = [tuple(cluster["box"]) for cluster in prep["clusters"]]
 
     def inside(p: Pt, box) -> bool:
         return box[0] <= p[0] <= box[2] and box[1] <= p[1] <= box[3]
@@ -357,140 +199,37 @@ def layout_tags(snap: Snapshot, wanted: Iterable[str] = ()) -> dict:
     }
 
 
-def scale_stand_in(
-    pid: Snapshot, layout: Snapshot, *, pid_tags=None, layout_found=None, layout_unit=None
-) -> dict:
-    """Spec §6 on the tags unique in both drawings - the takeoff's stand-in for scale_check.
-
-    The result has `scale_check`'s shape (group U, Task 4): for every pair of
-    matched tags at least 2 m apart on the layout, ``ratio`` is their P&ID
-    distance over their layout distance, both in millimetres of each drawing's
-    inferred unit; ``median``, ``q1``, ``q3``, ``iqr`` and ``within_10pct`` (the
-    share within ±10 % of the median) describe them. Verdict ``to_scale`` at
-    >= 80 %, ``schematic`` at <= 50 %, ``partly`` between, ``insufficient``
-    with fewer than three matched tags or no pair; ``factor`` is the median
-    only when ``to_scale``; a median that is not positive (every P&ID tag at
-    one point) is ``insufficient``. There are no per-room ``groups`` here. Tag labels
-    are not equipment centres: the band and the 2 m floor absorb that.
-    """
-    pid_occ = pid_tags if pid_tags is not None else tag_occurrences(pid)
-    pid_positions = {tag: places[0]["at"] for tag, places in pid_occ.items() if len(places) == 1}
-    found = layout_found if layout_found is not None else layout_tags(layout, pid_positions)
-    unit = layout_unit if layout_unit is not None else unit_of(layout)
-    mm_layout = unit["m_per_unit"] * 1000.0
-    mm_pid = unit_of(pid)["m_per_unit"] * 1000.0
-    tags = [tag for tag in sorted(pid_positions) if tag in found["positions"]]
-    matched = {tag: (pid_positions[tag], found["positions"][tag]) for tag in tags}
-    ambiguous = sorted(
-        {tag for tag, places in pid_occ.items() if len(places) > 1} | set(found["ambiguous"])
-    )
-    pairs = []
-    for i, a in enumerate(tags):
-        for b in tags[i + 1 :]:
-            d_layout = math.dist(matched[a][1], matched[b][1]) * mm_layout
-            if d_layout >= MIN_PAIR_MM:
-                d_pid = math.dist(matched[a][0], matched[b][0]) * mm_pid
-                pairs.append(
-                    {"tags": [a, b], "a_mm": d_pid, "b_mm": d_layout, "ratio": d_pid / d_layout}
-                )
-    out = {
-        "verdict": "insufficient",
-        "factor": None,
-        "median": None,
-        "q1": None,
-        "q3": None,
-        "iqr": None,
-        "within_10pct": None,
-        "pair_count": len(pairs),
-        "pairs": pairs,
-        "matched": [
-            {"tag": tag, "a": list(matched[tag][0]), "b": list(matched[tag][1])} for tag in tags
-        ],
-        "ambiguous": ambiguous,
-        "groups": [],
-        "notes": ["takeoff stand-in for scale_check (spec §6): no per-room groups"],
-    }
-    ratios = [pair["ratio"] for pair in pairs]
-    if len(tags) < MIN_TAGS or not ratios:
-        return out
-    median = statistics.median(ratios)
-    if median <= 0.0:
-        return out  # every P&ID tag at one point: no factor to divide by (as scale_check)
-    q1, q3 = (
-        statistics.quantiles(ratios, n=4, method="inclusive")[::2]
-        if len(ratios) >= 2
-        else (ratios[0], ratios[0])
-    )
-    within = sum(1 for r in ratios if abs(r - median) <= SCALE_BAND * median) / len(ratios)
-    if within >= TO_SCALE_SHARE:
-        verdict = "to_scale"
-    elif within <= SCHEMATIC_SHARE:
-        verdict = "schematic"
-    else:
-        verdict = "partly"
-    out.update(
-        verdict=verdict,
-        factor=median if verdict == "to_scale" else None,
-        median=median,
-        q1=q1,
-        q3=q3,
-        iqr=q3 - q1,
-        within_10pct=within,
-    )
-    return out
-
-
 # -- rooms -------------------------------------------------------------------
 
 
-def room_regions(snap: Snapshot, cluster=None) -> dict:
-    """Room polygons and room labels of a drawing.
+def room_regions(snap: Snapshot, cluster=None, *, prep: dict | None = None) -> dict:
+    """Room faces and labels - `describe.find_rooms`, the rooms `drawing_understand`
+    reports - inside ``cluster`` (a box) when one is given.
 
-    Labels are texts `room_label` reads; polygons are the faces of the wall
-    layers (`classify_layer` architecture, confidence >= 0.9, straight
-    segments) that hold a label, found by track F's planar-face finder. Inside
-    `cluster` only, when one is given. ``{"faces": [(key, Face)], "labels":
-    [(key, Pt)]}``; the key is the room number, else its name.
+    ``{"faces": [(key, Face)], "labels": [(key, Pt)]}``; the key is the room
+    number, else its name. A record belongs to the cluster when every point
+    it has lies in the box.
     """
+    prep = prep or prepare(snap)
 
-    def keep(p: Pt) -> bool:
-        return cluster is None or (
+    def keep(rec) -> bool:
+        return cluster is None or all(
             cluster[0] <= p[0] <= cluster[2] and cluster[1] <= p[1] <= cluster[3]
+            for p in rec.points
         )
 
-    labels = []
-    for rec in snap.records:
-        if rec.space != MODEL or rec.type not in TEXT_TYPES or not rec.text or not rec.points:
-            continue
-        found = room_label(rec.text)
-        if found and keep(rec.points[0]):
-            key = found.get("number") or found.get("name") or rec.text
-            labels.append((str(key), rec.points[0]))
-    walls = set()
-    for layer in {rec.layer for rec in snap.records}:  # classify each layer once
-        info = classify_layer(layer)
-        if info["discipline"] == "architecture" and info["confidence"] >= WALL_CONFIDENCE:
-            walls.add(layer)
-    segments = []
-    for rec in snap.records:
-        if rec.space != MODEL or rec.layer not in walls:
-            continue
-        if rec.type not in ("LINE", "LWPOLYLINE", "POLYLINE") or len(rec.points) < 2:
-            continue
-        pts = list(rec.points) + ([rec.points[0]] if rec.closed else [])
-        bulges = list(rec.bulges) + [0.0] * len(pts)
-        for i, (a, b) in enumerate(zip(pts, pts[1:], strict=False)):
-            if bulges[i] == 0.0 and keep(a) and keep(b):
-                segments.append((a, b))
-    faces = planar_faces(segments, tol=DEFAULT_TOL) if segments else ()
-    rooms: list[tuple[str, Face]] = []
-    taken: set[int] = set()
-    for key, at in sorted(labels):
-        face = face_containing(faces, at)
-        if face is not None and id(face) not in taken:
-            taken.add(id(face))
-            rooms.append((key, face))
-    return {"faces": rooms, "labels": sorted(labels)}
+    tol = prep["diag"] * FACE_TOL_FRACTION if prep["diag"] > 0 else 1.0
+    found = find_rooms(
+        [rec for rec in prep["kept"] if keep(rec)], tol=tol, membership=prep["membership"]
+    )
+
+    def key(row: dict) -> str:
+        return str(row["number"] or row["name"] or row["text"])
+
+    return {
+        "faces": [(key(row), face) for row, face in found["labelled"]],
+        "labels": sorted((key(row), (row["at"][0], row["at"][1])) for row in found["rooms"]),
+    }
 
 
 def _rooms_mode(regions: dict) -> str:
@@ -597,9 +336,8 @@ def pipe_rows(
 ) -> dict:
     """Takeoff rows by room x service x diameter, with the runs, checks and method behind them.
 
-    `network` is `build_network(pid)`'s result. `scale` is a scale-check
-    result (`scale_check`'s shape); omitted, the stand-in runs when a layout
-    is given. Refused by name before anything is measured: an unknown service
+    `network` is `build_network(pid)`'s result. `scale` is a `scale_check`
+    result; omitted, `scale_check(pid, layout)` runs when a layout is given. Refused by name before anything is measured: an unknown service
     or length source, an allowance outside 0-1, a negative vertical
     allowance, `length_source='layout'` without a layout, and
     `length_source='pid'` on a P&ID the scale check calls schematic unless
@@ -621,13 +359,15 @@ def pipe_rows(
     )
     allowance = options["allowance"]
     vertical = options["vertical_allowance"]
-    pid_unit = unit_of(pid)
-    layout_unit = unit_of(layout) if layout is not None else None
+    prep_pid = prepare(pid)
+    prep_layout = prepare(layout) if layout is not None else None
+    pid_unit = unit_of(pid, prep=prep_pid)
+    layout_unit = unit_of(layout, prep=prep_layout) if layout is not None else None
     wanted = {tag for run in network["runs"] for tag in run.tags}
-    found = layout_tags(layout, wanted) if layout is not None else None
+    found = layout_tags(layout, wanted, prep=prep_layout) if layout is not None else None
     if scale is None:
         scale = (
-            scale_stand_in(pid, layout, layout_found=found, layout_unit=layout_unit)
+            scale_check(pid, layout)
             if layout is not None
             else {"verdict": "not_checked", "pair_count": 0, "matched": [], "ambiguous": []}
         )
@@ -636,9 +376,9 @@ def pipe_rows(
     positions = found["positions"] if found else {}
     ambiguous = set(found["ambiguous"]) if found else set()
     regions = (
-        room_regions(layout, found["cluster"])
+        room_regions(layout, found["cluster"], prep=prep_layout)
         if found is not None and source == "layout"
-        else room_regions(pid)
+        else room_regions(pid, prep=prep_pid)
     )
     m_pid = pid_unit["m_per_unit"]
     m_layout = layout_unit["m_per_unit"] if layout_unit else None
@@ -980,11 +720,12 @@ def cable_rows(
     positions: dict[str, Pt] = {}
     ambiguous: set[str] = set()
     panels: dict[str, tuple[str, str]] = {}
-    layout_unit = unit_of(layout) if layout is not None else None
+    prep_layout = prepare(layout) if layout is not None else None
+    layout_unit = unit_of(layout, prep=prep_layout) if layout is not None else None
     cluster = None
     layout_search = None
     if layout is not None:
-        placed = layout_tags(layout, set(loads) | set(pid_callouts))
+        placed = layout_tags(layout, set(loads) | set(pid_callouts), prep=prep_layout)
         positions, ambiguous, cluster = (
             placed["positions"],
             set(placed["ambiguous"]),
@@ -1008,7 +749,9 @@ def cable_rows(
         name = normalize_panel(tag)
         if name is not None:
             panel_at[name] = p
-    regions = room_regions(layout, cluster) if layout is not None else room_regions(pid)
+    regions = (
+        room_regions(layout, cluster, prep=prep_layout) if layout is not None else room_regions(pid)
+    )
 
     rows, items = [], []
     for tag in sorted(set(loads) | set(panels)):

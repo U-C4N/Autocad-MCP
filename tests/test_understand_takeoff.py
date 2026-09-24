@@ -13,12 +13,12 @@ from __future__ import annotations
 import pytest
 
 from engineering.understand.network import build_network
+from engineering.understand.scale import scale_check
 from engineering.understand.snapshot import EntityRecord, Snapshot, read_snapshot
 from engineering.understand.takeoff import (
     DEFAULT_SERVICES,
     layout_tags,
     pipe_rows,
-    scale_stand_in,
     unit_of,
 )
 from engineering.understand.vocab import classify_layer, room_label
@@ -148,7 +148,9 @@ def test_review_focus_5_inches_declared_over_millimetres(pair):
     assert (units["declared"], units["inferred"], units["m_per_unit"]) == ("in", "mm", 0.001)
     a = run_by_tags(result, "T4100", "T4101")
     assert abs(a["layout_m"] - 28.0) < EPS  # not 28000 x 0.0254 = 711.2
-    assert any("INSUNITS declares in" in w and "as mm" in w for w in result["warnings"])
+    assert any(
+        "INSUNITS declares Inches (1)" in w and "reads as mm" in w for w in result["warnings"]
+    )
     assert unit_of(pid)["warning"] is None  # the P&ID's mm is what its geometry says
 
 
@@ -306,7 +308,7 @@ def test_without_a_layout_auto_measures_the_pid_unverified(pair):
         pipe_rows(network, pid, None, length_source="layout")
 
 
-def test_the_stand_in_recognises_a_uniform_scale_and_a_rearranged_one():
+def test_scale_check_recognises_a_uniform_scale_and_a_rearranged_one():
     places = {
         "T4100": (2000.0, 3000.0),
         "T4101": (30000.0, 3000.0),
@@ -320,7 +322,7 @@ def test_the_stand_in_recognises_a_uniform_scale_and_a_rearranged_one():
         "l",
     )
     half = snap([text(t, t, (x * 0.5, y * 0.5), 50.0) for t, (x, y) in places.items()], 4, "p")
-    uniform = scale_stand_in(half, layout)
+    uniform = scale_check(half, layout)
     assert uniform["verdict"] == "to_scale"
     assert uniform["factor"] == pytest.approx(0.5, abs=EPS)  # P&ID mm per layout mm
     assert uniform["pair_count"] == 6  # four tags, every pair at least 2 m apart
@@ -331,17 +333,17 @@ def test_the_stand_in_recognises_a_uniform_scale_and_a_rearranged_one():
         "T4103": (30000.0, 3000.0),
     }
     other = snap([text(t, t, p, 50.0) for t, p in shuffled.items()], 4, "p")
-    assert scale_stand_in(other, layout)["verdict"] == "schematic"
+    assert scale_check(other, layout)["verdict"] == "schematic"
 
 
-def test_the_stand_in_calls_coinciding_pid_tags_insufficient_not_to_scale():
+def test_scale_check_calls_coinciding_pid_tags_insufficient_not_to_scale():
     # every P&ID tag at one point: each ratio is 0, the median 0 - a factor of 0
     # would divide every length by zero, so the verdict is insufficient (the
     # same rule as group U's scale_check: a median that is not positive)
     places = {"T4100": (2000.0, 3000.0), "T4101": (30000.0, 3000.0), "T4102": (30000.0, 15000.0)}
     layout = snap([text(t, t, p, 250.0) for t, p in places.items()], 4, "l")
     pid = snap([text(t, t, (100.0, 100.0), 50.0) for t in places], 4, "p")
-    result = scale_stand_in(pid, layout)
+    result = scale_check(pid, layout)
     assert result["pair_count"] == 3
     assert (result["verdict"], result["factor"]) == ("insufficient", None)
 
@@ -350,7 +352,7 @@ def test_an_insunits_code_this_reader_does_not_convert_is_named_not_called_none(
     drawing = snap(layout_records(), 14, "layout.dxf")  # 14 = decimetres
     found = unit_of(drawing)
     assert (found["declared"], found["inferred"]) == (None, "mm")
-    assert "INSUNITS declares code 14 (a unit this reader does not convert)" in found["warning"]
+    assert "INSUNITS declares Decimeters (14) but the geometry reads as mm" in found["warning"]
     assert "no unit" not in found["warning"]
 
 
@@ -412,7 +414,7 @@ def test_review_focus_5_the_synthetic_layout_is_read_in_millimetres(plant):
     result = pipe_rows(network, pid, layout, services=truth_services(truth), length_source="layout")
     assert result["units"]["layout"]["inferred"] == truth["layout_true_unit"] == "mm"
     assert result["units"]["layout"]["m_per_unit"] == 0.001
-    assert any("INSUNITS declares in" in w for w in result["warnings"])
+    assert any("INSUNITS declares Inches (1)" in w for w in result["warnings"])
 
 
 def test_routed_lengths_land_in_the_synthetic_rooms(plant):
