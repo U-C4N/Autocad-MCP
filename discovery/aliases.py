@@ -2465,6 +2465,54 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "mimari plan",
         ),
     ),
+    # ── Understanding & QA (SECTION 26, track H group U) ────────────────────
+    # No AutoCAD command reads a foreign drawing back as a report, so `acad`
+    # is empty. UNITS stays with drawing_settings (it sets units; this reads
+    # what the geometry implies), and no synonym here says "layers", "blocks"
+    # or "how big", the words the golden layer_list / block_list /
+    # analysis_bounding_box queries lean on.
+    "drawing_understand": ToolAliases(
+        acad=(),
+        synonyms=(
+            "understand this drawing",
+            "read a foreign drawing",
+            "summarise a client drawing",
+            "drawing report",
+            "which unit is this drawing really in",
+            "wrong insunits",
+            "inches or millimetres",
+            "two copies of the plan",
+            "stray entity far away",
+            "what is on this p&id",
+            "birim",
+            "birimi ne",
+            "çizimi anla",
+            "cizimi anla",
+            "çizim raporu",
+            "cizim raporu",
+            "yabancı çizim",
+            "yabanci cizim",
+        ),
+    ),
+    "drawing_scale_check": ToolAliases(
+        acad=(),
+        synonyms=(
+            "scale check",
+            "is the p&id to scale",
+            "is this drawing to scale",
+            "schematic or to scale",
+            "unscaled p&id",
+            "tag distances against the layout",
+            "can i measure pipe on the p&id",
+            "ölçek",
+            "olcek",
+            "ölçek kontrolü",
+            "olcek kontrolu",
+            "ölçekli mi",
+            "olcekli mi",
+            "масштаб",
+        ),
+    ),
 }
 
 

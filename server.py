@@ -10555,6 +10555,165 @@ async def arch_plan_from_spec(
 
 
 # ---------------------------------------------------------------------------
+# ── SECTION 26: Understanding & QA (2 tools) ────────────────────────────────
+# ---------------------------------------------------------------------------
+
+
+@cad_tool(
+    summary="Read a foreign drawing: units, extents, clusters, layers, tags, rooms, languages.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Understand: Describe Drawing", "readOnlyHint": True},
+    tags={"analysis", "query"},
+)
+async def drawing_understand(
+    path: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="DXF file to read (a DWG only on a live seat); omitted: the current "
+            "document.",
+        ),
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """One report on a drawing somebody else made, every claim with its evidence
+    and a confidence. Never modifies the drawing: a file is read as it is, and
+    the current document through a snapshot (headless: the document in memory;
+    live: a `Document.Export` DXF copy in a temporary folder, deleted after).
+    An xref's own entities are not read - the host drawing is.
+
+    - `units`: `$INSUNITS` as declared against the unit the geometry implies
+      (text heights, wall thickness, door swings, labelled room areas, overall
+      size - each item with its median and its value under every candidate
+      unit). A disagreement is a warning with the numbers, never a silent
+      correction.
+    - `extents`: declared, computed and robust boxes and the `outliers` that
+      stretch them, farthest first, by handle.
+    - `clusters`: separate bodies of model-space content (plan copies, sheets,
+      details), each with its box, entity count, commonest layers and tallest
+      labels.
+    - `layers`: entity count, drawn length (and metres in the inferred unit)
+      and the discipline / service each most likely carries - the vocabulary's
+      confidence (0.9) for a name keyword, 0.6 when most texts on the layer
+      agree, 0.4 when fewer do.
+    - `equipment_tags` (a tag found more than once is `ambiguous`), `rooms`
+      (room labels in five languages, each with the wall-layer face it sits in
+      and its measured area), `languages` (Latin / Turkish / Cyrillic character
+      classes), `blocks` (named / anonymous, kinds by name), `layouts`,
+      `title_block` and `warnings`.
+
+    Refused before anything is read: a `path` that does not exist, a DXF over
+    `MAX_DXF_BYTES` (the refusal names the size and the variable), and a file
+    the engine cannot parse (a DWG headlessly: ezdxf reads DXF only).
+    """
+    import asyncio
+
+    from ezdxf.lldxf.const import DXFError
+
+    from engineering.understand.describe import describe
+    from engineering.understand.snapshot import take_snapshot
+
+    target = None
+    if path:
+        target = validate_path(path)
+        if not target.is_file():
+            raise ToolError(f"path: no such file {str(target)!r}")
+    await ctx.info(f"drawing_understand: {target or 'current document'}")
+    try:
+        snap = await take_snapshot(_backend(ctx), str(target) if target else None)
+    except (ValueError, OSError, RuntimeError, DXFError) as exc:
+        raise ToolError(str(exc)) from exc
+    return await asyncio.to_thread(describe, snap)
+
+
+@cad_tool(
+    summary="Is this drawing to scale against a reference? Tag distances, ratios, a verdict.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Understand: Scale Check", "readOnlyHint": True},
+    tags={"analysis", "query"},
+)
+async def drawing_scale_check(
+    reference: Annotated[
+        str,
+        Field(
+            description="The reference drawing of the same plant (a DXF, usually the layout): "
+            "distances on it are the ones the other drawing is measured against."
+        ),
+    ],
+    path: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="The drawing to check (usually the P&ID); omitted: the current document.",
+        ),
+    ] = None,
+    min_pair_mm: Annotated[
+        float,
+        Field(
+            default=2000.0,
+            gt=0,
+            description="Tag pairs closer than this on the reference (mm) are left out: a tag "
+            "label is not an equipment centre.",
+        ),
+    ] = 2000.0,
+    ctx: Context = None,
+) -> dict:
+    """Is the drawing to scale against the reference - or a schematic whose lengths
+    are lengths of drawn line, not of pipe? Read-only on both drawings.
+
+    Equipment tags are matched between the two (a Cyrillic look-alike such as
+    `Т4100` is the Latin `T4100`). Only a tag found exactly once in each is used;
+    a tag found more than once (plan copies, a legend, a second sheet) is listed
+    in `ambiguous` and takes no part. When a drawing holds several bodies of
+    content (two copies of one plan), the pair of scopes - whole drawing or one
+    cluster on each side - that matches the most tags is used and named in
+    `scope`. For every two matched tags at least `min_pair_mm` apart on the
+    reference, the ratio of their distances is taken (both in millimetres by
+    each drawing's inferred unit, see `drawing_understand`). The result gives
+    the matched tags, the median ratio, the quartiles and their range, the
+    share of pairs within +/-10 % of the median, the same per room of the
+    reference (or per cluster for tags in no room) in `groups`, and a verdict:
+    `to_scale` (at least 80 % within the band; `factor` is the median, so a
+    uniform other scale is recognised), `schematic` (50 % or less), `partly`
+    in between, `insufficient` with fewer than three matched tags or no pair
+    above the floor. Tag labels are not equipment centres; the band and the
+    floor absorb that offset, and the result's `notes` say so.
+
+    Refused before anything is read: a `reference` or `path` that does not
+    exist, a DXF over `MAX_DXF_BYTES` (the refusal names the size and the
+    variable), a file the engine cannot parse (a DWG headlessly), and a
+    `min_pair_mm` that is not a positive finite number.
+    """
+    import asyncio
+
+    from ezdxf.lldxf.const import DXFError
+
+    from engineering.understand.scale import scale_check
+    from engineering.understand.snapshot import take_snapshot
+
+    ref = validate_path(reference)
+    if not ref.is_file():
+        raise ToolError(f"reference: no such file {str(ref)!r}")
+    target = None
+    if path:
+        target = validate_path(path)
+        if not target.is_file():
+            raise ToolError(f"path: no such file {str(target)!r}")
+    await ctx.info(f"drawing_scale_check: {target or 'current document'} against {ref}")
+    backend = _backend(ctx)
+    try:
+        checked = await take_snapshot(backend, str(target) if target else None)
+        against = await take_snapshot(backend, str(ref))
+        return await asyncio.to_thread(scale_check, checked, against, min_pair_mm=min_pair_mm)
+    except (ValueError, OSError, RuntimeError, DXFError) as exc:
+        raise ToolError(str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
 # ── RESOURCES ───────────────────────────────────────────────────────────────
 # ---------------------------------------------------------------------------
 
