@@ -245,6 +245,105 @@ def test_continuity_stops_at_a_reducer():
     assert result["stats"]["reducers"] == 1
 
 
+def test_continuity_stops_at_a_reducer_the_line_is_broken_at():
+    # BREAK-at-point: two LINEs share a vertex inside the reducer's box, no free end there
+    result = net(
+        line("1", (0.0, 0.0), (1030.0, 0.0)),
+        line("2", (1030.0, 0.0), (2000.0, 0.0)),
+        insert("R", "REDUCER_51_38", (1000.0, -30.0, 1060.0, 30.0)),
+        text("D", "Ø51", (400.0, 5.0)),
+    )
+    by_handle = {edge["handles"]: edge for edge in result["runs"][0].edges}
+    assert by_handle[("1",)]["diameter"] == "Ø51"
+    assert by_handle[("2",)]["diameter_source"] == "unassigned"
+    assert (result["stats"]["fittings"], result["stats"]["reducers"]) == (1, 1)
+
+
+def test_a_polyline_drawn_through_a_reducer_is_cut_there():
+    poly = rec("P", "LWPOLYLINE", PIPE, ((0.0, 0.0), (2000.0, 0.0)))
+    result = net(
+        poly,
+        line("BR", (1500.0, 0.0), (1500.0, 800.0)),
+        insert("R", "REDUCER_51_38", (1000.0, -30.0, 1060.0, 30.0)),
+        text("D", "Ø51", (400.0, 5.0)),
+    )
+    (run,) = result["runs"]
+    # cut at the foot of the box centre (1030, 0): 1030 + 470 + 500 + 800 branch
+    assert abs(total(run) - 2800.0) < EPS
+    by_span = {(edge["a"][0], edge["b"][0], edge["handles"]): edge for edge in run.edges}
+    labelled = by_span[(0.0, 1030.0, ("P",))]
+    assert (labelled["diameter"], labelled["diameter_source"]) == ("Ø51", "direct")
+    # the label holds for the polyline only up to the reducer; nothing crosses it
+    others = [edge for edge in run.edges if edge is not labelled]
+    assert len(others) == 3
+    assert {edge["diameter_source"] for edge in others} == {"unassigned"}
+    assert result["stats"]["reducers"] == 1
+
+
+def test_a_pipe_running_beside_a_reducer_is_not_cut():
+    # a parallel pipe grazing the reducer's box edge does not pass through its middle
+    result = net(
+        line("1", (0.0, 30.0), (2000.0, 30.0)),
+        insert("R", "REDUCER_51_38", (1000.0, -30.0, 1060.0, 30.0)),
+        text("D", "Ø51", (400.0, 35.0)),
+    )
+    (run,) = result["runs"]
+    assert len(run.edges) == 1
+    assert run.edges[0]["diameter_source"] == "direct"
+    assert result["stats"]["reducers"] == 0
+
+
+@pytest.mark.parametrize("order", ["ABC", "BAC", "CAB", "ACB", "BCA", "CBA"])
+def test_a_three_way_valve_guesses_nothing_whatever_the_record_order(order):
+    # C leaves the valve 1000 from A (Ø51) and 1000 from B (DN20): equally near
+    records = {
+        "A": line("A", (0.0, 0.0), (1000.0, 0.0)),
+        "B": line("B", (1100.0, 0.0), (2100.0, 0.0)),
+        "C": line("C", (1050.0, 50.0), (1050.0, 1050.0)),
+    }
+    result = net(
+        *[records[name] for name in order],
+        insert("V", "3WAY_VALVE", (1000.0, -50.0, 1100.0, 50.0)),
+        text("TA", "Ø51", (400.0, 5.0)),
+        text("TB", "DN20", (1500.0, 5.0)),
+    )
+    (run,) = result["runs"]
+    c = next(edge for edge in run.edges if edge["handles"] == ("C",))
+    assert (c["diameter"], c["diameter_source"]) == (None, "unassigned")
+    assert [u["reason"] for u in result["unassigned"]] == ["two different diameters equally near"]
+    assert run.ends == ((0.0, 0.0), (1050.0, 1050.0), (2100.0, 0.0))
+
+
+def test_a_label_nearer_to_a_pipe_on_an_unread_layer_is_not_taken():
+    # the label stands 5 below the WATER line and 22.5 above PRODUCT (search 25)
+    drawing = snap(
+        line("1", (0.0, 0.0), (1000.0, 0.0), PIPE),
+        line("W", (0.0, 30.0), (1000.0, 30.0), "WATER"),
+        text("D", "DN20", (400.0, 20.0)),
+    )
+    assert "WATER" not in default_layers(drawing)
+    result = build_network(drawing)
+    assert result["runs"][0].edges[0]["diameter_source"] == "unassigned"
+    assert result["stats"]["labels_skipped"] == [
+        {
+            "handle": "D",
+            "text": "DN20",
+            "reason": "nearer to a line on layer WATER, which is not read",
+        }
+    ]
+
+
+def test_an_equipment_outline_does_not_take_a_pipe_label():
+    # closed outlines are shapes, not pipes: a label beside the pipe end stays the pipe's
+    result = net(
+        tank("A", "T4100", (-500.0, -500.0, 0.0, 500.0)),
+        line("1", (0.0, 0.0), (1000.0, 0.0)),
+        text("D", "Ø51", (2.0, 5.0)),
+    )
+    edge = result["runs"][0].edges[0]
+    assert (edge["diameter"], edge["diameter_source"]) == ("Ø51", "direct")
+
+
 def test_continuity_crosses_a_valve():
     result = net(
         line("1", (0.0, 0.0), (1000.0, 0.0)),

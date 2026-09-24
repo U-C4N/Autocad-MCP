@@ -21,19 +21,28 @@ The algorithm, in the order it runs:
    drawn over a polyline, into identical pieces; each piece is kept once and
    the length the copies would have added is `stats.overlap_length`.
 5. **Fittings.** An INSERT whose box (grown by `tol`) holds two to four free
-   ends is an inline fitting - valve, coupling, reducer - and those ends are
-   joined through it; the fitting adds no length. An INSERT that a tag labels
-   is equipment and never a fitting. A block whose name contains reducer /
-   переход / redüksiyon / verloop / Reduzier(stück) is a reducer.
+   ends is an inline fitting - valve, coupling, reducer - and every one of
+   those ends is joined to every other through it (a three- or four-way
+   fitting has no hub port, so nothing depends on record order); the fitting
+   adds no length. An INSERT that a tag labels is equipment and never a
+   fitting. A block whose name contains reducer / переход / redüksiyon /
+   verloop / Reduzier(stück) is a reducer, and a reducer is found however the
+   pipe meets it: free ends in its box, pieces meeting at a vertex inside its
+   box (a line broken at the reducer), or a straight segment drawn through
+   the middle of its box (its line within a quarter of the box's smaller side
+   of the centre), which is cut at the foot of the centre before step 3.
 6. **Runs.** A connected component of pieces and fittings is a run.
 7. **Diameter.** Each diameter label goes to the piece nearest to it within
-   `label_search` (default 5 x the median text height) and holds for every
-   piece of that drawn entity (*direct*; when two labels reach one piece, the
-   nearer wins and the pair is listed in `stats.diameter_conflicts`). An
-   unlabelled piece takes the diameter of the nearest direct piece along the
-   run, measured along the pipe and never across a reducer (*continuity*); two
-   different diameters equally near, or none, leave it *unassigned*. Labels are
-   kept as drawn: Ø51, SMS51 and DN20 are different sizes.
+   `label_search` (default 5 x the median text height) - unless an open line
+   on a layer that is not read stands strictly nearer, in which case the label
+   is that line's and is listed in `stats.labels_skipped` - and holds for
+   every piece of that drawn entity on the same side of every reducer
+   (*direct*; when two labels reach one piece, the nearer wins and the pair is
+   listed in `stats.diameter_conflicts`). An unlabelled piece takes the
+   diameter of the nearest direct piece along the run, measured along the
+   pipe and never across a reducer (*continuity*); two different diameters
+   equally near, or none, leave it *unassigned*. Labels are kept as drawn:
+   Ø51, SMS51 and DN20 are different sizes.
 8. **Service.** A run's service is the length-weighted service of its layers,
    overridden for the whole run by a supply / return word within
    `label_search` of one of its pieces - a layer alone never splits CIP supply
@@ -432,11 +441,14 @@ def _arc_segment(rec: EntityRecord):
     return a, b, math.tan(math.radians(sweep) / 4.0)
 
 
-def _segments(snap: Snapshot, layers) -> list[tuple[Pt, Pt, float, str, str]]:
+def _segments(snap: Snapshot, layers, *, open_only=False) -> list[tuple[Pt, Pt, float, str, str]]:
+    """Every LINE_TYPES segment in model space on `layers`; `open_only` skips closed polylines."""
     wanted = set(layers)
     out = []
     for rec in snap.records:
         if rec.space != MODEL or rec.layer not in wanted or rec.type not in LINE_TYPES:
+            continue
+        if open_only and rec.closed and rec.type in ("LWPOLYLINE", "POLYLINE"):
             continue
         if rec.type == "LINE":
             if len(rec.points) >= 2:
@@ -456,26 +468,55 @@ def _segments(snap: Snapshot, layers) -> list[tuple[Pt, Pt, float, str, str]]:
     return out
 
 
-class _PieceIndex:
-    """Grid of pieces for 'nearest piece within `search`' queries."""
+class _ChordIndex:
+    """Grid of chords (a, b) for 'which chords lie within `search` of p, or cross this box'."""
 
-    def __init__(self, pieces: list[dict], points: list[Pt], search: float) -> None:
-        lengths = [p["length"] for p in pieces] or [search]
+    def __init__(self, chords: list[tuple[Pt, Pt]], search: float) -> None:
+        lengths = [math.dist(a, b) for a, b in chords] or [search]
         self.cell = max(search, statistics.median(lengths), _EPS)
         self.search = search
         self.cells: dict[tuple[int, int], list[int]] = {}
-        for k, piece in enumerate(pieces):
-            a, b = points[piece["u"]], points[piece["v"]]
-            x0 = math.floor((min(a[0], b[0]) - search) / self.cell)
-            x1 = math.floor((max(a[0], b[0]) + search) / self.cell)
-            y0 = math.floor((min(a[1], b[1]) - search) / self.cell)
-            y1 = math.floor((max(a[1], b[1]) + search) / self.cell)
+        for k, (a, b) in enumerate(chords):
+            box = (min(a[0], b[0]), min(a[1], b[1]), max(a[0], b[0]), max(a[1], b[1]))
+            x0, y0, x1, y1 = _cell_range(box, search, self.cell)
             for cx in range(x0, x1 + 1):
                 for cy in range(y0, y1 + 1):
                     self.cells.setdefault((cx, cy), []).append(k)
 
     def candidates(self, p: Pt) -> list[int]:
         return self.cells.get((math.floor(p[0] / self.cell), math.floor(p[1] / self.cell)), [])
+
+    def in_box(self, box) -> list[int]:
+        """The chords filed in any cell `box` covers, each once, in index order."""
+        x0, y0, x1, y1 = _cell_range(box, 0.0, self.cell)
+        return sorted(
+            {
+                k
+                for cx in range(x0, x1 + 1)
+                for cy in range(y0, y1 + 1)
+                for k in self.cells.get((cx, cy), ())
+            }
+        )
+
+
+def _through_middle(a: Pt, b: Pt, box, tol: float) -> Pt | None:
+    """Where a straight segment passing through the middle of `box` is cut, else None.
+
+    The middle: the segment's line runs within a quarter of the box's smaller
+    side (plus `tol`) of the box centre - a pipe drawn through a symbol, not a
+    parallel pipe grazing its edge. The cut is the foot of the centre on the
+    segment, which must lie strictly between the segment's ends.
+    """
+    length = math.dist(a, b)
+    if length <= _EPS:
+        return None
+    centre = ((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0)
+    s, off = _along(centre, a, b)
+    reach = min(box[2] - box[0], box[3] - box[1]) / 4.0 + tol
+    if off > reach or not tol < s < length - tol:
+        return None
+    t = s / length
+    return (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]))
 
 
 def build_network(snap: Snapshot, *, layers=None, tol=1.0, label_search=None) -> dict:
@@ -502,6 +543,37 @@ def build_network(snap: Snapshot, *, layers=None, tol=1.0, label_search=None) ->
         u, v = verts.index(a), verts.index(b)
         if u != v:
             snapped.append((u, v, bulge, handle, layer))
+
+    # equipment first: an INSERT a tag labels is never a fitting
+    occurrences = tag_occurrences(snap)
+    equipment = equipment_boxes(
+        snap, occurrences, exclude_layers=chosen, search=EQUIPMENT_SEARCH_SHARE * search
+    )
+    equipment_handles = {box["handle"] for boxes in equipment.values() for box in boxes}
+    inserts = [
+        rec
+        for rec in snap.records
+        if rec.space == MODEL
+        and rec.type == "INSERT"
+        and rec.bbox is not None
+        and rec.handle not in equipment_handles
+    ]
+    reducer_boxes = [rec.bbox for rec in inserts if is_reducer(rec.block)]
+
+    # a straight segment drawn through the middle of a reducer is cut there, so
+    # the reducer separates its two sides (the split below makes the cut)
+    if reducer_boxes:
+        chords = [(verts.points[u], verts.points[v]) for u, v, _b, _h, _l in snapped]
+        chord_index = _ChordIndex(chords, tol)
+        for box in reducer_boxes:
+            for n in chord_index.in_box((box[0] - tol, box[1] - tol, box[2] + tol, box[3] + tol)):
+                u, v, bulge, _handle, _layer = snapped[n]
+                a, b = verts.points[u], verts.points[v]
+                if bulge != 0.0 or _in_box(a, box, tol) or _in_box(b, box, tol):
+                    continue
+                cut = _through_middle(a, b, box, tol)
+                if cut is not None:
+                    verts.index(cut)
     pts = verts.points
 
     # split straight segments at every vertex lying on them (T-junctions, overlaps)
@@ -556,40 +628,34 @@ def build_network(snap: Snapshot, *, layers=None, tol=1.0, label_search=None) ->
         at_vertex.setdefault(piece["u"], []).append(k)
         at_vertex.setdefault(piece["v"], []).append(k)
 
-    # equipment first: an INSERT a tag labels is never a fitting
-    occurrences = tag_occurrences(snap)
-    equipment = equipment_boxes(
-        snap, occurrences, exclude_layers=chosen, search=EQUIPMENT_SEARCH_SHARE * search
-    )
-    equipment_handles = {box["handle"] for boxes in equipment.values() for box in boxes}
-
     free = sorted(vertex for vertex, ks in at_vertex.items() if len(ks) == 1)
-    inserts = [
-        rec
-        for rec in snap.records
-        if rec.space == MODEL
-        and rec.type == "INSERT"
-        and rec.bbox is not None
-        and rec.handle not in equipment_handles
-    ]
-    free_grid = _PointGrid(
-        ((vertex, pts[vertex]) for vertex in free),
-        _typical_size([rec.bbox for rec in inserts], search),
-    )
+    joined = sorted(vertex for vertex, ks in at_vertex.items() if len(ks) > 1)
+    cell = _typical_size([rec.bbox for rec in inserts], search)
+    free_grid = _PointGrid(((vertex, pts[vertex]) for vertex in free), cell)
+    joined_grid = _PointGrid(((vertex, pts[vertex]) for vertex in joined), cell)
     bridges: list[tuple[int, int, bool, str]] = []
+    # vertices where pieces meet inside a reducer's box: a line broken at the
+    # reducer, or cut above where it was drawn straight through it
+    reducer_vertices: set[int] = set()
     fittings, reducers, skipped = 0, 0, []
     for rec in inserts:
+        reducer = is_reducer(rec.block)
         inside = free_grid.in_box(rec.bbox, tol)
-        if len(inside) < 2:
-            continue
+        through = joined_grid.in_box(rec.bbox, tol) if reducer else []
         if len(inside) > MAX_FITTING_ENDS:
             skipped.append(rec.handle)
             continue
-        reducer = is_reducer(rec.block)
+        if len(inside) < 2 and not through:
+            continue
         fittings += 1
         reducers += int(reducer)
-        for vertex in inside[1:]:
-            bridges.append((inside[0], vertex, reducer, rec.handle))
+        reducer_vertices.update(through)
+        if len(inside) < 2:
+            continue
+        # every port joins every other: a three- or four-way fitting has no hub
+        for n, u in enumerate(inside):
+            for v in inside[n + 1 :]:
+                bridges.append((u, v, reducer, rec.handle))
 
     # runs: union-find over pieces and bridges
     parent = list(range(len(pts)))
@@ -617,23 +683,25 @@ def build_network(snap: Snapshot, *, layers=None, tol=1.0, label_search=None) ->
         for k in ks:
             run_of[k] = r
 
-    # neighbours for continuity: shared vertices, and bridges that are not reducers
+    # neighbours for continuity: shared vertices and bridges, each flagged when a
+    # reducer stands between the two pieces
     neighbours: dict[int, set[tuple[int, bool]]] = {k: set() for k in range(len(pieces))}
-    for ks in at_vertex.values():
+    for vertex, ks in at_vertex.items():
+        across = vertex in reducer_vertices
         for k in ks:
-            neighbours[k].update((j, False) for j in ks if j != k)
+            neighbours[k].update((j, across) for j in ks if j != k)
     for u, v, reducer, _handle in bridges:
         for k in at_vertex.get(u, ()):
             neighbours[k].update((j, reducer) for j in at_vertex.get(v, ()))
         for k in at_vertex.get(v, ()):
             neighbours[k].update((j, reducer) for j in at_vertex.get(u, ()))
 
-    # labels: diameters and supply / return words go to the nearest piece
-    index = _PieceIndex(pieces, pts, search)
-    by_handle: dict[str, list[int]] = {}
-    for k, piece in enumerate(pieces):
-        for handle in piece["handles"]:
-            by_handle.setdefault(handle, []).append(k)
+    # labels: diameters and supply / return words go to the nearest piece, unless
+    # a line on a layer that is not read stands nearer - the label is that line's
+    index = _ChordIndex([(pts[piece["u"]], pts[piece["v"]]) for piece in pieces], search)
+    unread = set(_layer_names(snap)) - set(chosen)
+    others = [(a, b, layer) for a, b, _bulge, _h, layer in _segments(snap, unread, open_only=True)]
+    other_index = _ChordIndex([(a, b) for a, b, _layer in others], search)
 
     def nearest(p: Pt) -> tuple[int, float] | None:
         found = []
@@ -646,6 +714,29 @@ def build_network(snap: Snapshot, *, layers=None, tol=1.0, label_search=None) ->
             return None
         d, k = min(found)
         return k, d
+
+    def nearer_unread(p: Pt, dist: float) -> str | None:
+        """The layer of the nearest unread line strictly nearer to p than `dist`, else None."""
+        found = []
+        for n in other_index.candidates(p):
+            a, b, layer = others[n]
+            d = _segment_distance(p, a, b)
+            if d < dist - _EPS * max(1.0, dist):
+                found.append((d, layer))
+        return min(found)[1] if found else None
+
+    def entity_side(k: int) -> list[int]:
+        """The pieces of k's drawn entities reached from k without crossing a reducer."""
+        handles = pieces[k]["handles"]
+        seen, stack = {k}, [k]
+        while stack:
+            i = stack.pop()
+            for j, via_reducer in neighbours[i]:
+                if via_reducer or j in seen or not pieces[j]["handles"] & handles:
+                    continue
+                seen.add(j)
+                stack.append(j)
+        return sorted(seen)
 
     reaching: dict[int, list[tuple[float, str, str]]] = {}
     votes: dict[int, list[tuple[float, str, str | None, str]]] = {}
@@ -664,17 +755,26 @@ def build_network(snap: Snapshot, *, layers=None, tol=1.0, label_search=None) ->
         if hit is None:
             continue
         k, dist = hit
+        owner = nearer_unread(where, dist)
+        if owner is not None:
+            labels_skipped.append(
+                {
+                    "handle": rec.handle,
+                    "text": rec.text,
+                    "reason": f"nearer to a line on layer {owner}, which is not read",
+                }
+            )
+            continue
         if len(tokens) > 1:
             labels_skipped.append(
                 {"handle": rec.handle, "text": rec.text, "reason": "more than one diameter"}
             )
         elif tokens:
-            for handle in pieces[k]["handles"]:
-                for j in by_handle[handle]:
-                    q = pieces[j]
-                    reaching.setdefault(j, []).append(
-                        (_segment_distance(where, pts[q["u"]], pts[q["v"]]), tokens[0], rec.handle)
-                    )
+            for j in entity_side(k):
+                q = pieces[j]
+                reaching.setdefault(j, []).append(
+                    (_segment_distance(where, pts[q["u"]], pts[q["v"]]), tokens[0], rec.handle)
+                )
         if direction is not None:
             family = _family_of(rec.text)
             votes.setdefault(run_of[k], []).append((dist, direction, family, rec.handle))
