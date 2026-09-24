@@ -1,4 +1,5 @@
-"""pipe_takeoff over the MCP wire, on the synthetic plant pair - never on a client drawing."""
+"""pipe_takeoff and cable_takeoff over the MCP wire, on the synthetic plant pair - never on a
+client drawing."""
 
 from __future__ import annotations
 
@@ -99,5 +100,43 @@ async def test_the_drawings_are_never_modified(client, plant, tmp_path):
 async def test_the_tool_says_it_writes_a_file_and_destroys_nothing(client):
     tools = {tool.name: tool for tool in await client.list_tools()}
     annotations = tools["pipe_takeoff"].annotations
+    assert annotations.readOnlyHint is False
+    assert annotations.destructiveHint is False
+
+
+async def test_cable_takeoff_gives_every_synthetic_load_its_rounded_cable(client, plant, tmp_path):
+    arguments = {
+        "pid_path": plant["pid"],
+        "layout_path": plant["layout"],
+        "output": str(tmp_path / "cables.xlsx"),
+        "lang": "ru",
+    }
+    result = (await client.call_tool("cable_takeoff", arguments)).structured_content
+    rows = {row["tag"]: row for row in result["rows"]}
+    for expected in plant["cable_rows"]:
+        assert rows[expected["tag"]]["cable_m"] == expected["roundup_m"], expected["tag"]
+    assert Path(result["files"]["csv"][0]).name == "cables_metraj.csv"
+
+
+async def test_cable_takeoff_without_a_layout_leaves_every_length_empty(client, plant):
+    result = (
+        await client.call_tool("cable_takeoff", {"pid_path": plant["pid"]})
+    ).structured_content
+    assert result["rows"], "the synthetic P&ID carries electrical loads"
+    assert all(row["cable_m"] is None for row in result["rows"])
+    no_layout = {item["tag"] for item in result["open_items"] if item["item"] == "no_layout"}
+    assert no_layout == {row["tag"] for row in result["rows"]}
+
+
+async def test_a_malformed_section_rule_is_refused_by_path(client, plant):
+    arguments = {"pid_path": plant["pid"], "section_rules": [{"max_kw": 5}]}
+    result = await client.call_tool("cable_takeoff", arguments, raise_on_error=False)
+    assert result.is_error is True
+    assert "section_rules[0].section: expected a non-empty text" in result.content[0].text
+
+
+async def test_the_cable_tool_says_it_writes_a_file_and_destroys_nothing(client):
+    tools = {tool.name: tool for tool in await client.list_tools()}
+    annotations = tools["cable_takeoff"].annotations
     assert annotations.readOnlyHint is False
     assert annotations.destructiveHint is False

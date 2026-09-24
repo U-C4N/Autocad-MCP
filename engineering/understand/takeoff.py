@@ -33,23 +33,34 @@ import statistics
 from collections.abc import Iterable
 
 from engineering.arch.faces import DEFAULT_TOL, Face, face_containing, planar_faces
-from engineering.understand.network import MODEL, TEXT_TYPES, tag_occurrences
-from engineering.understand.route import rmst, route_legs
+from engineering.understand.labels import normalize_panel, parse_electrical, wiring_target
+from engineering.understand.network import (
+    MODEL,
+    TEXT_TYPES,
+    label_search_default,
+    tag_occurrences,
+)
+from engineering.understand.route import manhattan, rmst, route_legs
 from engineering.understand.snapshot import Pt, Snapshot
 from engineering.understand.vocab import SERVICES, classify_layer, room_label
 
 __all__ = [
+    "CABLE_SEARCH_SHARE",
     "DEFAULT_SERVICES",
     "LENGTH_SOURCES",
     "UNIT_METRES",
     "apportion",
+    "cable_rows",
     "check_allowance",
     "check_pipe_options",
+    "check_section_rules",
     "layout_tags",
     "pipe_rows",
     "room_at",
     "room_regions",
+    "roundup_m",
     "scale_stand_in",
+    "section_for",
     "unit_of",
 ]
 
@@ -829,6 +840,303 @@ def pipe_rows(
             "label_search": network["stats"]["label_search"],
             "overlap_length_m": network["stats"]["overlap_length"] * m_pid,
             "route": "rectilinear MST of the tag positions; each connection x first, then y",
+            "rooms": _rooms_mode(regions),
+        },
+    }
+
+
+# -- cable rows ----------------------------------------------------------------
+
+#: A load's power block stands under its symbol rather than on a line, so its
+#: electrical texts and its wiring callout are searched twice as far as a
+#: diameter label: 10 x the median text height.
+CABLE_SEARCH_SHARE = 2.0
+SECTION_RULE_KEYS = ("max_kw", "section", "phases")
+
+
+def check_section_rules(section_rules) -> tuple[dict, ...]:
+    """The caller's own cable-section rule table, validated and sorted by max_kw.
+
+    Each rule is ``{"max_kw": > 0, "section": text, "phases": 1 | 3 (optional)}``;
+    a load takes the first rule whose max_kw it does not exceed and whose
+    phases, when the rule names them, equal the load's. No standard table exists
+    in this repository: without rules no section is proposed.
+    """
+    if section_rules is None:
+        return ()
+    if not isinstance(section_rules, (list, tuple)):
+        raise ValueError("section_rules: expected a list of {max_kw, section[, phases]}")
+    rules = []
+    for i, rule in enumerate(section_rules):
+        where = f"section_rules[{i}]"
+        if not isinstance(rule, dict):
+            raise ValueError(f"{where}: expected {{max_kw, section[, phases]}}, got {rule!r}")
+        unknown = sorted(set(rule) - set(SECTION_RULE_KEYS))
+        if unknown:
+            raise ValueError(f"{where}: unknown key(s) {', '.join(map(str, unknown))}")
+        max_kw = _number(rule.get("max_kw"), f"{where}.max_kw")
+        if max_kw <= 0.0:
+            raise ValueError(f"{where}.max_kw: must be greater than zero, got {max_kw:g}")
+        section = rule.get("section")
+        if not isinstance(section, str) or not section.strip():
+            raise ValueError(
+                f"{where}.section: expected a non-empty text such as '5x2.5', got {section!r}"
+            )
+        phases = rule.get("phases")
+        if phases is not None and phases not in (1, 3):
+            raise ValueError(f"{where}.phases: 1 or 3, got {phases!r}")
+        rules.append({"max_kw": max_kw, "section": section.strip(), "phases": phases})
+    return tuple(sorted(rules, key=lambda r: (r["max_kw"], r["phases"] or 0)))
+
+
+def section_for(kw: float | None, phases: int | None, rules) -> str | None:
+    """The first rule the load fits, or None - never a guessed section."""
+    if kw is None:
+        return None
+    for rule in rules:
+        if kw <= rule["max_kw"] and (rule["phases"] is None or rule["phases"] == phases):
+            return rule["section"]
+    return None
+
+
+def roundup_m(length_m: float, allowance: float) -> int:
+    """ROUNDUP(length x (1 + allowance)) to the metre, on the value rounded to 1e-6 m first.
+
+    The rounding keeps binary noise from buying a metre of cable: 50 m with a
+    10 % allowance is 55.00000000000001 in floating point, and 55 m on the sheet.
+    """
+    return math.ceil(round(length_m * (1.0 + allowance), 6))
+
+
+def _nearest_tag(at: Pt, places: dict[str, list[Pt]], search: float) -> str | None:
+    found = [
+        (math.dist(at, p), tag)
+        for tag, points in places.items()
+        for p in points
+        if math.dist(at, p) <= search
+    ]
+    return min(found)[1] if found else None
+
+
+def _inside_box(p: Pt, box) -> bool:
+    return box is None or (box[0] <= p[0] <= box[2] and box[1] <= p[1] <= box[3])
+
+
+def cable_rows(
+    pid: Snapshot, layout: Snapshot | None, *, allowance=0.20, section_rules=None
+) -> dict:
+    """One row per electrical load, the cable method made repeatable (spec §9).
+
+    Loads are the P&ID tags with electrical texts near them (`parse_electrical`:
+    kW, phases, voltage, + N, VFD) and the tags a wiring callout names. The
+    panel comes from the layout's callouts (`wiring_target`: 'Wiring to CP1'
+    -> CP-1), else the P&ID's. The length is the Manhattan distance on the
+    layout from the load's tag to its panel's tag, and the cable is
+    `roundup_m(length, allowance)`. **Power is never invented**: a load with no
+    stated kW keeps an empty cell and an open item. With no layout, lengths
+    stay empty and every row gets an open item - the P&ID is not a length
+    source for cables. A load wired to a panel that itself states a power is
+    part of that package: room and panel totals count the package's power and
+    not its children's. Sections come only from `section_rules`.
+
+    Refused by name before anything is read: an allowance outside 0-1 and a
+    malformed section rule.
+    """
+    allowance = check_allowance(allowance)
+    rules = check_section_rules(section_rules)
+    pid_places = {tag: [p["at"] for p in places] for tag, places in tag_occurrences(pid).items()}
+    pid_search = CABLE_SEARCH_SHARE * label_search_default(pid)
+
+    loads: dict[str, list] = {}
+    orphans: list[str] = []
+    pid_callouts: dict[str, str] = {}
+    for rec in pid.records:
+        if rec.space != MODEL or rec.type not in TEXT_TYPES or not rec.text or not rec.points:
+            continue
+        at = rec.points[0]
+        target = wiring_target(rec.text)
+        if target is not None:
+            tag = _nearest_tag(at, pid_places, pid_search)
+            if tag is not None:
+                pid_callouts.setdefault(tag, target)
+            continue
+        found = parse_electrical(rec.text)
+        if found["kw"] is None and not (found["phases"] or found["voltage"] or found["vfd"]):
+            continue
+        tag = _nearest_tag(at, pid_places, pid_search)
+        if tag is None:
+            orphans.append(rec.handle)
+            continue
+        distance = min(math.dist(at, p) for p in pid_places[tag])
+        loads.setdefault(tag, []).append((distance, rec.handle, found))
+
+    positions: dict[str, Pt] = {}
+    ambiguous: set[str] = set()
+    panels: dict[str, tuple[str, str]] = {}
+    layout_unit = unit_of(layout) if layout is not None else None
+    cluster = None
+    layout_search = None
+    if layout is not None:
+        placed = layout_tags(layout, set(loads) | set(pid_callouts))
+        positions, ambiguous, cluster = (
+            placed["positions"],
+            set(placed["ambiguous"]),
+            placed["cluster"],
+        )
+        layout_search = CABLE_SEARCH_SHARE * label_search_default(layout)
+        layout_places = {tag: [p] for tag, p in positions.items()}
+        for rec in layout.records:
+            if rec.space != MODEL or rec.type not in TEXT_TYPES or not rec.text or not rec.points:
+                continue
+            target = wiring_target(rec.text)
+            if target is None or not _inside_box(rec.points[0], cluster):
+                continue
+            tag = _nearest_tag(rec.points[0], layout_places, layout_search)
+            if tag is not None:
+                panels.setdefault(tag, (target, "layout"))
+    for tag, target in pid_callouts.items():
+        panels.setdefault(tag, (target, "pid"))
+    panel_at = {}
+    for tag, p in positions.items():
+        name = normalize_panel(tag)
+        if name is not None:
+            panel_at[name] = p
+    regions = room_regions(layout, cluster) if layout is not None else room_regions(pid)
+
+    rows, items = [], []
+    for tag in sorted(set(loads) | set(panels)):
+        texts = sorted(loads.get(tag, []), key=lambda item: item[:2])
+        powers = [(d, f["kw"]) for d, _h, f in texts if f["kw"] is not None]
+        kw = powers[0][1] if powers else None
+        if len({value for _d, value in powers}) > 1:
+            items.append(
+                {
+                    "tag": tag,
+                    "item": "conflicting_power",
+                    "detail": ", ".join(f"{value:g} kW" for _d, value in powers),
+                }
+            )
+        phases = next((f["phases"] for _d, _h, f in texts if f["phases"]), None)
+        voltage = next((f["voltage"] for _d, _h, f in texts if f["voltage"]), None)
+        panel, panel_source = panels.get(tag, (None, None))
+        row = {
+            "tag": tag,
+            "room": "",
+            "at": None,
+            "kw": kw,
+            "phases": phases,
+            "voltage": voltage,
+            "neutral": any(f["neutral"] for _d, _h, f in texts),
+            "vfd": any(f["vfd"] for _d, _h, f in texts),
+            "panel": panel,
+            "panel_source": panel_source,
+            "length_m": None,
+            "allowance": allowance,
+            "cable_m": None,
+            "section": section_for(kw, phases, rules),
+            "package": None,
+        }
+        if kw is None:
+            items.append(
+                {
+                    "tag": tag,
+                    "item": "missing_power",
+                    "detail": "no power is stated near the tag on the P&ID",
+                }
+            )
+        if panel is None:
+            items.append(
+                {
+                    "tag": tag,
+                    "item": "missing_panel",
+                    "detail": "no wiring callout names a panel for this tag",
+                }
+            )
+        if rules and kw is not None and row["section"] is None:
+            items.append(
+                {"tag": tag, "item": "no_section_rule", "detail": f"no rule covers {kw:g} kW"}
+            )
+        if layout is None:
+            items.append(
+                {
+                    "tag": tag,
+                    "item": "no_layout",
+                    "detail": "no layout given: the P&ID is not a length source for cables",
+                }
+            )
+            if pid_places.get(tag):
+                row["room"] = room_at(regions, pid_places[tag][0])
+        else:
+            here = positions.get(tag)
+            if here is None:
+                items.append(
+                    {
+                        "tag": tag,
+                        "item": "tag_ambiguous" if tag in ambiguous else "tag_not_on_layout",
+                        "detail": "the load's tag cannot be placed on the layout",
+                    }
+                )
+            else:
+                row["at"] = here
+                row["room"] = room_at(regions, here)
+            if panel is not None and panel not in panel_at:
+                items.append(
+                    {
+                        "tag": tag,
+                        "item": "panel_not_on_layout",
+                        "detail": f"{panel} is not written once on the layout",
+                    }
+                )
+            if here is not None and panel in panel_at:
+                row["length_m"] = manhattan(here, panel_at[panel]) * layout_unit["m_per_unit"]
+                row["cable_m"] = roundup_m(row["length_m"], allowance)
+        rows.append(row)
+
+    stated = {
+        (normalize_panel(r["tag"]) or r["tag"]): r["tag"] for r in rows if r["kw"] is not None
+    }
+    for row in rows:
+        owner = stated.get(row["panel"]) if row["panel"] else None
+        if owner is not None and owner != row["tag"]:
+            row["package"] = owner
+
+    def counted(row: dict) -> float:
+        return row["kw"] if row["kw"] is not None and row["package"] is None else 0.0
+
+    summary = {}
+    for name, field in (("by_room", "room"), ("by_panel", "panel")):
+        summary[name] = [
+            {
+                "key": key,
+                "loads": sum(1 for r in rows if (r[field] or "") == key),
+                "kw": sum(counted(r) for r in rows if (r[field] or "") == key),
+                "cable_m": sum(r["cable_m"] or 0 for r in rows if (r[field] or "") == key),
+            }
+            for key in sorted({row[field] or "" for row in rows})
+        ]
+    units = {"pid": unit_of(pid), "layout": layout_unit}
+    warnings = [unit["warning"] for unit in units.values() if unit and unit["warning"]]
+    if orphans:
+        warnings.append(f"electrical text(s) near no tag, not used: {', '.join(orphans)}")
+    return {
+        "kind": "cable",
+        "rows": rows,
+        "open_items": items,
+        "summary": summary,
+        "totals": {
+            "loads": len(rows),
+            "known_kw": sum(counted(r) for r in rows),
+            "cable_m": sum(r["cable_m"] or 0 for r in rows),
+            "open_items": len(items),
+            "packages": sum(1 for r in rows if r["package"]),
+        },
+        "units": units,
+        "warnings": warnings,
+        "method": {
+            "sources": {"pid": pid.source, "layout": layout.source if layout else None},
+            "allowance": allowance,
+            "search": {"pid": pid_search, "layout": layout_search},
+            "section_rules": [dict(rule) for rule in rules],
             "rooms": _rooms_mode(regions),
         },
     }

@@ -15,9 +15,15 @@ import math
 from engineering.understand.network import build_network
 from engineering.understand.report import check_lang, write_workbook
 from engineering.understand.snapshot import take_snapshot
-from engineering.understand.takeoff import check_pipe_options, pipe_rows
+from engineering.understand.takeoff import (
+    cable_rows,
+    check_allowance,
+    check_pipe_options,
+    check_section_rules,
+    pipe_rows,
+)
 
-__all__ = ["run_pipe_takeoff"]
+__all__ = ["run_cable_takeoff", "run_pipe_takeoff"]
 
 
 def _check_tol(tol) -> float:
@@ -80,6 +86,33 @@ async def run_pipe_takeoff(
     result = await asyncio.to_thread(compute)
     result["files"] = (
         await asyncio.to_thread(write_workbook, result, kind="pipe", lang=lang, path=output)
+        if output
+        else None
+    )
+    return result
+
+
+async def run_cable_takeoff(
+    backend,
+    *,
+    pid_path: str | None = None,
+    layout_path: str | None = None,
+    output: str | None = None,
+    lang: str = "en",
+    allowance: float = 0.20,
+    section_rules=None,
+) -> dict:
+    """`cable_rows` over a P&ID and an optional layout, plus the workbook when `output` is named."""
+    check_lang(lang)
+    allowance = check_allowance(allowance)
+    rules = check_section_rules(section_rules)
+    pid = await take_snapshot(backend, pid_path)
+    layout = await take_snapshot(backend, layout_path) if layout_path else None
+    result = await asyncio.to_thread(
+        cable_rows, pid, layout, allowance=allowance, section_rules=list(rules) or None
+    )
+    result["files"] = (
+        await asyncio.to_thread(write_workbook, result, kind="cable", lang=lang, path=output)
         if output
         else None
     )

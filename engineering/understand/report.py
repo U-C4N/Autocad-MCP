@@ -158,6 +158,47 @@ LABELS: dict[str, tuple[str, str, str]] = {
     ),
     "services": ("Kapsanan hizmetler", "Services taken off", "Учтённые среды"),
     "warning": ("Uyarı", "Warning", "Предупреждение"),
+    # cable takeoff
+    "tag": ("Etiket", "Tag", "Тег"),
+    "kw": ("Güç (kW)", "Power (kW)", "Мощность (кВт)"),
+    "phases": ("Faz", "Phases", "Фазы"),
+    "voltage": ("Gerilim (V)", "Voltage (V)", "Напряжение (В)"),
+    "neutral": ("Nötr", "Neutral", "Нейтраль"),
+    "vfd": ("Sürücü (VFD)", "VFD", "ЧРП"),
+    "panel": ("Pano", "Panel", "Шкаф"),
+    "length_m": ("Mesafe (m)", "Distance (m)", "Расстояние (м)"),
+    "cable_m": ("Kablo (m)", "Cable (m)", "Кабель (м)"),
+    "section": ("Kesit", "Section", "Сечение"),
+    "package": ("Paket", "Package", "Комплект"),
+    "loads": ("Yük sayısı", "Loads", "Нагрузок"),
+    "item": ("Madde", "Item", "Пункт"),
+    "detail": ("Ayrıntı", "Detail", "Подробности"),
+    "by_panel": ("Panoya göre", "By panel", "По шкафу"),
+    "missing_power": ("Güç yazılmamış", "No power stated", "Мощность не указана"),
+    "missing_panel": ("Pano belirtilmemiş", "No panel named", "Шкаф не указан"),
+    "no_layout": ("Yerleşim yok", "No layout", "Нет планировки"),
+    "panel_not_on_layout": (
+        "Pano yerleşimde yok",
+        "Panel not on the layout",
+        "Шкафа нет на планировке",
+    ),
+    "no_section_rule": ("Kesit kuralı yok", "No section rule covers it", "Нет правила сечения"),
+    "conflicting_power": (
+        "Çelişen güç yazıları",
+        "Conflicting power texts",
+        "Противоречивая мощность",
+    ),
+    "rule_cable_route": ("Kural: kablo güzergâhı", "Rule: cable route", "Правило: трасса кабеля"),
+    "rule_rounding": ("Kural: yuvarlama", "Rule: rounding", "Правило: округление"),
+    "rule_power": ("Kural: güç", "Rule: power", "Правило: мощность"),
+    "rule_panel": ("Kural: pano", "Rule: panel", "Правило: шкаф"),
+    "rule_package": ("Kural: pano paketleri", "Rule: panel packages", "Правило: комплектные шкафы"),
+    "rule_section": ("Kural: kesit", "Rule: section", "Правило: сечение"),
+    "section_rules": (
+        "Kesit kuralları (çağıranın)",
+        "Section rules (the caller's)",
+        "Правила сечений (вызывающего)",
+    ),
 }
 
 #: The method sheet's sentences, as (tr, en, ru).
@@ -243,6 +284,55 @@ TEXTS: dict[str, tuple[str, str, str]] = {
         "drawn length on the P&ID.",
         "Линия с несколькими диаметрами делит длину между ними пропорционально их длине на "
         "схеме P&ID.",
+    ),
+    "rule_cable_route": (
+        "Uzunluk = yerleşimde yükün etiketinden panosunun etiketine Manhattan mesafesi.",
+        "Length = the Manhattan distance on the layout from the load's tag to its panel's tag.",
+        "Длина = манхэттенское расстояние на планировке от тега нагрузки до тега её шкафа.",
+    ),
+    "rule_rounding": (
+        "Kablo = YUKARIYUVARLA(uzunluk × (1 + pay)) tam metreye; uzunluk önce 1e-6 m'ye "
+        "yuvarlanır.",
+        "Cable = ROUNDUP(length × (1 + allowance)) to the whole metre; the length is rounded to "
+        "1e-6 m first.",
+        "Кабель = ОКРВВЕРХ(длина × (1 + запас)) до целого метра; длина сначала округляется до "
+        "1e-6 м.",
+    ),
+    "rule_power": (
+        "Güç, P&ID'de her etiketin yakınındaki elektrik yazılarından okunur; gücü yazılmamış "
+        "yükün hücresi boş kalır ve açık madde olur - güç asla uydurulmaz.",
+        "Power is read from the P&ID's electrical texts near each tag; a load with no stated "
+        "power keeps an empty cell and an open item - power is never invented.",
+        "Мощность берётся из электрических надписей P&ID рядом с каждым тегом; у нагрузки без "
+        "указанной мощности ячейка пуста и заводится открытый вопрос — мощность никогда не "
+        "выдумывается.",
+    ),
+    "rule_panel": (
+        "Pano, yerleşimdeki bağlantı notlarından ('Wiring to CP1' gibi), yoksa P&ID'den alınır; "
+        "adlar normalleştirilir (CP 1 → CP-1).",
+        "The panel comes from the layout's wiring callouts ('Wiring to CP1' and its variants), "
+        "else from the P&ID; names are normalised (CP 1 → CP-1).",
+        "Шкаф берётся из выносок подключения на планировке ('Wiring to CP1' и варианты), иначе "
+        "из P&ID; имена нормализуются (CP 1 → CP-1).",
+    ),
+    "rule_package": (
+        "Pano paketleri: kendisi güç belirten bir panoya bağlı yük o paketin parçasıdır; mahal ve "
+        "pano toplamları paketin gücünü sayar, alt yüklerini saymaz - hiçbir güç iki kez "
+        "sayılmaz.",
+        "Panel packages: a load wired to a panel that itself states a power is part of that "
+        "package; room and panel totals count the package's power and not its child loads, so "
+        "no power is counted twice.",
+        "Комплектные шкафы: нагрузка, подключённая к шкафу с собственной указанной мощностью, "
+        "входит в его комплект; итоги по помещениям и шкафам учитывают мощность комплекта, а не "
+        "его дочерних нагрузок, — ничего не учитывается дважды.",
+    ),
+    "rule_section": (
+        "Kablo kesitleri yalnız çağıranın section_rules tablosundan gelir; tablo yoksa sütun "
+        "boş kalır. Hiçbir standart tablo uygulanmaz.",
+        "Cable sections come only from the caller's section_rules; without them the column "
+        "stays blank. No standard table is applied.",
+        "Сечения кабелей — только из таблицы section_rules вызывающего; без неё столбец пуст. "
+        "Никакая стандартная таблица не применяется.",
     ),
 }
 
@@ -441,7 +531,106 @@ def _pipe_method(result: dict, lang: str) -> list[list]:
     return [[_t(topic, lang), value] for topic, value in rows]
 
 
-_BUILDERS = {"pipe": _pipe_sheets}
+def _cable_sheets(result: dict, lang: str) -> dict[str, tuple[list, list]]:
+    columns = (
+        "tag",
+        "room",
+        "kw",
+        "phases",
+        "voltage",
+        "neutral",
+        "vfd",
+        "panel",
+        "length_m",
+        "allowance",
+        "cable_m",
+        "section",
+        "package",
+    )
+    rows = [
+        [
+            row["tag"],
+            row["room"],
+            row["kw"],
+            row["phases"],
+            row["voltage"],
+            _yes(row["neutral"], lang),
+            _yes(row["vfd"], lang),
+            row["panel"],
+            _num(row["length_m"]),
+            row["allowance"],
+            row["cable_m"],
+            row["section"],
+            row["package"],
+        ]
+        for row in result["rows"]
+    ]
+    totals = result["totals"]
+    rows.append(
+        [
+            _t("total", lang),
+            None,
+            _num(totals["known_kw"]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            totals["cable_m"],
+            None,
+            None,
+        ]
+    )
+    summary = []
+    for group in ("by_room", "by_panel"):
+        for item in result["summary"][group]:
+            summary.append(
+                [_t(group, lang), item["key"], item["loads"], _num(item["kw"]), item["cable_m"]]
+            )
+    summary.append(
+        [_t("total", lang), None, totals["loads"], _num(totals["known_kw"]), totals["cable_m"]]
+    )
+    control = [
+        [item["tag"], _t(item["item"], lang), item["detail"]] for item in result["open_items"]
+    ]
+    return {
+        "Metraj": ([_t(c, lang) for c in columns], rows),
+        "Özet": ([_t(c, lang) for c in ("group", "key", "loads", "kw", "cable_m")], summary),
+        "Kontrol": ([_t(c, lang) for c in ("tag", "item", "detail")], control),
+        "Metodoloji": ([_t("topic", lang), _t("value", lang)], _cable_method(result, lang)),
+    }
+
+
+def _cable_method(result: dict, lang: str) -> list[list]:
+    method = result["method"]
+    rules = method["section_rules"]
+    rows = [
+        ["source_pid", method["sources"]["pid"]],
+        ["source_layout", method["sources"]["layout"] or "—"],
+        ["units_pid", _unit_text(result["units"]["pid"])],
+        ["units_layout", _unit_text(result["units"]["layout"])],
+        ["rule_cable_route", _say("rule_cable_route", lang)],
+        ["rule_allowance", method["allowance"]],
+        ["rule_rounding", _say("rule_rounding", lang)],
+        ["rule_power", _say("rule_power", lang)],
+        ["rule_panel", _say("rule_panel", lang)],
+        ["rule_package", _say("rule_package", lang)],
+        ["rule_section", _say("rule_section", lang)],
+        ["section_rules", "; ".join(_rule_text(rule) for rule in rules) or "—"],
+        ["label_search", round(float(method["search"]["pid"]), 6)],
+    ]
+    rows += [["warning", warning] for warning in result["warnings"]]
+    return [[_t(topic, lang), value] for topic, value in rows]
+
+
+def _rule_text(rule: dict) -> str:
+    phases = "" if rule["phases"] is None else f" / {rule['phases']} ph"
+    return f"<= {rule['max_kw']:g} kW{phases}: {rule['section']}"
+
+
+_BUILDERS = {"pipe": _pipe_sheets, "cable": _cable_sheets}
 
 
 def write_workbook(result: dict, *, kind: str, lang: str, path: str) -> dict:

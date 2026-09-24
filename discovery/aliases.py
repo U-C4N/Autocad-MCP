@@ -2487,6 +2487,23 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "ведомость трубопроводов",
         ),
     ),
+    "cable_takeoff": ToolAliases(
+        acad=(),
+        synonyms=(
+            "cable takeoff",
+            "cable schedule",
+            "cable lengths",
+            "cable list",
+            "how much cable",
+            "motor cable lengths",
+            "kablo metrajı",
+            "kablo metraji",
+            "kablo listesi",
+            "kablo cetveli",
+            "кабельный журнал",
+            "ведомость кабелей",
+        ),
+    ),
 }
 
 

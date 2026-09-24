@@ -3,13 +3,13 @@
   "schema_version": 1,
   "package_version": "1.5.1",
   "totals": {
-    "tools": 242,
+    "tools": 243,
     "resources": 8,
     "prompts": 5,
     "groups": 26
   },
   "groups": {
-    "analysis": 13,
+    "analysis": 14,
     "architecture": 12,
     "batch": 3,
     "blocks": 9,
@@ -540,6 +540,21 @@
       ],
       "annotations": {
         "title": "Trace Boundary",
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "cable_takeoff",
+      "group": "analysis",
+      "cost": "safe",
+      "summary": "Cable takeoff: one row per load, Manhattan length to its panel, rounded up to the metre.",
+      "tags": [
+        "analysis",
+        "plant"
+      ],
+      "annotations": {
+        "title": "Plant: Cable Takeoff",
+        "readOnlyHint": false,
         "destructiveHint": false
       }
     },

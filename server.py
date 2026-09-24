@@ -10555,7 +10555,7 @@ async def arch_plan_from_spec(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 27: Plant Takeoffs (1 tool) ─────────────────────────────────────
+# ── SECTION 27: Plant Takeoffs (2 tools) ────────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -10709,6 +10709,111 @@ async def pipe_takeoff(
             force=force,
             layers=layers,
             tol=tol,
+        )
+    except (ValueError, OSError) as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@cad_tool(
+    summary="Cable takeoff: one row per load, Manhattan length to its panel, rounded up to the metre.",
+    cost="safe",
+)
+@mcp.tool(
+    annotations={
+        "title": "Plant: Cable Takeoff",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+    },
+    tags={"plant", "analysis"},
+)
+async def cable_takeoff(
+    pid_path: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="The P&ID carrying the electrical texts (kW, phases, voltage, VFD). "
+            "Omit to read the current drawing.",
+        ),
+    ] = None,
+    layout_path: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="The layout with the tags, the panels and the 'Wiring to CPn' "
+            "callouts. Omitted, every length stays empty with an open item.",
+        ),
+    ] = None,
+    output: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Workbook to write (.xlsx); the four sheets are also written as CSV "
+            "beside it. Omit to return the rows only.",
+        ),
+    ] = None,
+    lang: Annotated[
+        str, Field(default="en", description="Headers and method text: tr | en | ru.")
+    ] = "en",
+    allowance: Annotated[
+        float,
+        Field(
+            default=0.20,
+            ge=0.0,
+            le=1.0,
+            description="Allowance before rounding up to the metre (0.20 = 20 %).",
+        ),
+    ] = 0.20,
+    section_rules: Annotated[
+        list[dict] | None,
+        Field(
+            default=None,
+            description="Your own section table: [{max_kw, section, phases (1|3, optional)}], "
+            "e.g. [{'max_kw': 5.5, 'section': '5x2.5'}]. Omitted, no section is proposed.",
+        ),
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """A cable takeoff: one row per electrical load, the shop's cable method made repeatable.
+
+    Power, phases, voltage, neutral and VFD come from the P&ID's electrical
+    texts near each tag (Russian, Turkish and English spellings). **Power is
+    never invented**: a load with no stated kW keeps an empty cell and an open
+    item. The panel comes from the layout's wiring callouts ('Wiring to CP1'
+    and its variants, normalised to CP-1), else from the P&ID. The length is the
+    Manhattan distance on the layout from the load's tag to its panel's tag,
+    and the cable is ROUNDUP(length x (1 + allowance)) to the metre. Room and
+    panel totals count known power once: a load wired to a panel that states
+    its own power is part of that package, and the package's power is counted
+    instead of its children's - the rule is written on the method sheet.
+    Sections only from `section_rules`; no standard table is applied. Open
+    items: missing power, missing panel, a tag or panel not on the layout, no
+    layout at all, a load no section rule covers.
+
+    Read-only on both drawings. With `output` it writes one workbook - Metraj,
+    Özet, Kontrol, Metodoloji - as XLSX and, always, as CSV beside it.
+
+    Refused before a drawing is read: `lang` outside tr / en / ru, an allowance
+    outside 0-1 and a malformed section rule (named by its path,
+    `section_rules[0].section: ...`). A missing, unreadable or oversize drawing
+    is refused by the reader, which names MAX_DXF_BYTES. Without openpyxl the
+    XLSX is not written and `files.refused` carries `capability: "xlsx_write"`
+    naming the `office` extra; the CSV files are written all the same.
+    """
+    from engineering.understand.draw import run_cable_takeoff
+
+    pid = str(validate_path(pid_path)) if pid_path else None
+    layout = str(validate_path(layout_path)) if layout_path else None
+    target = str(validate_path(output, allow_write=True)) if output else None
+    await ctx.info(f"cable_takeoff: {pid or 'current drawing'} / {layout or 'no layout'}")
+    try:
+        return await run_cable_takeoff(
+            _backend(ctx),
+            pid_path=pid,
+            layout_path=layout,
+            output=target,
+            lang=lang,
+            allowance=allowance,
+            section_rules=section_rules,
         )
     except (ValueError, OSError) as exc:
         raise ToolError(str(exc)) from exc
