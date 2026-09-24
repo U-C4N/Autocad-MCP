@@ -163,6 +163,16 @@ def test_text_without_a_tag():
     assert parse_tag(None) is None
 
 
+def test_a_line_number_is_not_an_equipment_tag():
+    # A line number starts with its size: read as a tag, '100-P-001' would give
+    # 'P-001', which can capture a valve beside the line or collide with a real
+    # pump P-001. A word that begins with a digit holds no tag.
+    assert parse_tag("100-P-001") is None
+    assert parse_tag('2"-P-1001-A1') is None
+    assert parse_tag("LINE 100-P-001 TO T101") == "T101"
+    assert parse_tag("P-001") == "P-001"  # the pump itself is still a tag
+
+
 # -- panels and wiring callouts ----------------------------------------------------
 
 

@@ -229,9 +229,15 @@ def parse_tag(text: str | None) -> str | None:
     ``"Т4100"`` (Cyrillic Т) -> ``"T4100"``; ``"pump M41A"`` -> ``"M41A"``;
     ``"CP-M82"`` stays ``"CP-M82"``. A size label (``DN20``, ``SMS51``), a
     pressure rating (``PN16``) or an IP code (``IP65``) is not a tag; a token
-    that keeps a Cyrillic letter without a Latin twin is not one either.
+    that keeps a Cyrillic letter without a Latin twin is not one either, and
+    neither is the tail of a word that begins with a digit - a line number
+    such as ``100-P-001`` names a pipe, not the pump ``P-001``.
     """
-    for match in _TAG_TOKEN.finditer(plain(text)):
+    source = plain(text)
+    for match in _TAG_TOKEN.finditer(source):
+        word_start = max(source.rfind(" ", 0, match.start()), source.rfind("\n", 0, match.start()))
+        if source[word_start + 1 : match.start()][:1].isdigit():
+            continue
         token = fold_lookalikes(match.group(0)).rstrip(".-")
         if not _TAG_RE.fullmatch(token):
             continue
