@@ -135,6 +135,15 @@ _WIRING_PHRASES = (
 )
 #: Turkish puts the panel first: ``CP1 panosuna`` ("to the CP1 panel").
 _WIRING_PHRASES_AFTER = ("panosuna", "panosundan")
+#: The bare Russian preposition к / ко ("to") with the panel as the next word,
+#: optionally after "щиту" / "шкафу" / "панели" (switchboard / cabinet / panel):
+#: a Russian P&ID closes a load's text with ``к CP1``. Only a whole word counts,
+#: so the к of кВт is no preposition.
+_RU_TO_PANEL = re.compile(
+    r"(?:^|\s)ко?\s+"
+    r"(?:(?:щиту|шкафу|панели)\s+)?",
+    re.IGNORECASE,
+)
 
 
 def plain(text: str | None) -> str:
@@ -295,7 +304,9 @@ def wiring_target(text: str | None) -> str | None:
 
     ``"Wiring to CP1"`` -> ``"CP-1"``; ``"подключение к шкафу CP-1"`` ->
     ``"CP-1"``; ``"CP 2 panosuna"`` -> ``"CP-2"`` (Turkish names the panel
-    first). None when the text has no wiring phrase or no panel beside it.
+    first); ``"... кВт\\nк CP1"`` -> ``"CP-1"`` (the bare Russian "to", the
+    panel as the next word). None when the text has no wiring phrase or no
+    panel beside it.
     """
     body = plain(text)
     lowered = body.lower()
@@ -311,4 +322,8 @@ def wiring_target(text: str | None) -> str | None:
             matches = list(_PANEL_RE.finditer(fold_lookalikes(body[:at])))
             if matches:
                 return f"{matches[-1].group(1)}-{matches[-1].group(2)}"
+    for to in _RU_TO_PANEL.finditer(body):
+        panel = _PANEL_RE.match(fold_lookalikes(body[to.end() :]))
+        if panel is not None:
+            return f"{panel.group(1)}-{panel.group(2)}"
     return None

@@ -212,6 +212,16 @@ def test_wiring_callouts_in_four_languages():
     assert wiring_target("CP 2 panosuna") == "CP-2"
 
 
+def test_the_russian_to_before_a_panel_is_a_wiring_callout():
+    # A Russian P&ID closes a load's text with the panel it is wired to: 'к CP1'
+    # ('to CP1'), or 'к щиту CP-2' ('to switchboard CP-2'). The unit кВт holds
+    # the same letter and is no preposition.
+    assert wiring_target("к CP1") == "CP-1"
+    assert wiring_target("P = 2,2 кВт\nк CP1") == "CP-1"
+    assert wiring_target("к щиту CP-2") == "CP-2"
+    assert wiring_target("P = 2,2 кВт") is None
+
+
 def test_a_callout_without_a_wiring_phrase_names_no_panel():
     assert wiring_target("CP1") is None
     assert wiring_target("Wiring to") is None
