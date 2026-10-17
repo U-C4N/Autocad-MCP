@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import itertools
 import logging
 import math
 import os
@@ -40,6 +41,7 @@ from .base import (
     normalize_lineweight,
     shoelace_area,
 )
+from .contracts.layers import refuse_reserved_layer_delete
 from .contracts.settings import (
     SUMMARY_FIELDS,
     custom_key_fold,
@@ -296,12 +298,20 @@ def _add_linetype_from_fallback(doc, name: str) -> bool:
     return True
 
 
-def _ensure_linetype_loaded(doc, name: str) -> None:
+def _ensure_linetype_loaded(doc, name: str, *, strict: bool = True) -> None:
     """Add `name` to doc.linetypes if not already present.
 
-    Lookup order: ezdxf.tools.standards → AutoCAD fallback table → warn.
+    Lookup order: ezdxf.tools.standards → AutoCAD fallback table → refuse.
     Lets callers write `linetype="CENTER"` (or HIDDEN, BORDER) without
     separately loading it.
+
+    A name neither table defines is refused with ``ValueError`` — the live
+    engine refuses the same name (``Linetypes.Load`` answers 'Undefined
+    linetype'). Assigning it anyway used to write a dangling reference into the
+    DXF that ``drawing_audit`` then had to delete (``UNDEFINED_LINETYPE``).
+    ``strict=False`` keeps the old warn-and-assign behaviour for paths that
+    replay what a file already holds (a stored layer state), where refusing
+    would block a restore over a linetype the file itself names.
     """
     if not name or name.lower() in _BUILTIN_LINETYPES:
         return
@@ -318,12 +328,107 @@ def _ensure_linetype_loaded(doc, name: str) -> None:
         pass
     if _add_linetype_from_fallback(doc, name):
         return
+    if strict:
+        loaded = sorted(lt.dxf.name for lt in doc.linetypes)
+        raise ValueError(
+            f"linetype {name!r} is not defined in this drawing and is not a standard "
+            f"linetype this server can load (loaded: {', '.join(loaded)}). Load it with "
+            "linetype_load, or use one of the standard names (CENTER, HIDDEN, DASHED, "
+            "PHANTOM, DOT, BORDER, DIVIDE, ...)."
+        )
     log.warning(
         "ezdxf backend: linetype %r is not in ezdxf's standard set or AutoCAD "
         "fallback table; name will be assigned but renders as Continuous until "
         "properly defined.",
         name,
     )
+
+
+def _layer_or_none(doc, name):
+    """The layer table entry for ``name`` (case-insensitive), or None.
+
+    ``doc.layers.get`` raises ``DXFTableEntryError`` for a missing name rather
+    than returning None, so a ``get`` followed by ``is None`` never fires.
+    """
+    if not name or name not in doc.layers:
+        return None
+    return doc.layers.get(name)
+
+
+def _ttf_face(font_file: str) -> tuple[str, bool, bool]:
+    """``(family, bold, italic)`` of a TrueType file, from ezdxf's font index.
+
+    Falls back to the file stem (and a regular face) for a font this machine
+    does not have — a DXF stores only names, so the family is still written.
+    """
+    try:
+        from ezdxf.fonts import fonts
+
+        face = fonts.font_manager.get_font_face(font_file)
+        style = str(face.style or "").lower()
+        return (
+            str(face.family or Path(font_file).stem),
+            int(face.weight or 400) >= 600 or "bold" in style,
+            "italic" in style or "oblique" in style,
+        )
+    except Exception as exc:  # an unknown font is not an error here
+        log.debug("font face of %s unreadable: %s", font_file, exc)
+        return Path(font_file).stem, False, False
+
+
+def _segments(points: list, closed: bool) -> list[tuple]:
+    """Consecutive vertex pairs, wrapping round to the first one when ``closed``."""
+    pairs = list(itertools.pairwise(points))
+    if closed and len(points) > 1:
+        pairs.append((points[-1], points[0]))
+    return pairs
+
+
+def _retire_issued_handles(doc, issued_seed: str | None) -> int:
+    """Keep every handle issued before a snapshot restore from meaning something else.
+
+    ``doc`` is a snapshot just read back (undo, redo, transaction rollback);
+    ``issued_seed`` is the next free handle of the document it replaces, so
+    every handle a caller has seen this session is below it. Two things could
+    otherwise hand one of those handles to a different entity:
+
+    * ezdxf writes an INSERT without attributes with no SEQEND (the DXF rule)
+      and creates one when it reads the file back, numbered from the file's
+      ``$HANDSEED`` — exactly the handles the rolled-back work used. Measured:
+      a circle drawn inside a transaction after one ``dimension_linear`` got
+      ``46``; after the rollback ``entity_get("46")`` answered the SEQEND of
+      the dimension block's arrow INSERT instead of "not found".
+    * the next entity drawn would be numbered from that same seed.
+
+    So the load-made SEQENDs are moved above ``issued_seed`` and the seed is
+    raised to it. Only SEQENDs: they are linked to their INSERT/POLYLINE by
+    position, never by handle, so renumbering one cannot leave a dangling
+    pointer — anything else a load creates may be referenced by its handle.
+    Returns how many entities were renumbered.
+    """
+    if not issued_seed:
+        return 0
+    try:
+        issued = int(str(issued_seed), 16)
+        file_seed = int(str(doc.header.get("$HANDSEED", "0")), 16)
+    except ValueError:
+        return 0
+    db = doc.entitydb
+    current = int(str(db.handles), 16)
+    if current < issued:
+        db.handles.reset(f"{issued:X}")
+    moved = 0
+    if file_seed < issued:
+        for entity in list(db.values()):
+            if entity.dxftype() != "SEQEND":
+                continue
+            try:
+                value = int(str(entity.dxf.handle), 16)
+            except (TypeError, ValueError):
+                continue
+            if file_seed <= value < issued and db.reset_handle(entity, db.next_handle()):
+                moved += 1
+    return moved
 
 
 #: Types whose area lives in ACIS solid data. ezdxf stores SAT/SAB opaquely and
@@ -1332,6 +1437,11 @@ def _entity_info_dxf(ent) -> EntityInfo:
             }
     except Exception as exc:
         log.debug("bbox extents failed for %s: %s", ent_type, exc)
+
+    # Only when present, so an entity without one reads exactly as before.
+    if ent.dxf.hasattr("true_color"):
+        r, g, b = ent.rgb
+        props["true_color"] = f"#{r:02X}{g:02X}{b:02X}"
 
     return EntityInfo(
         handle=str(handle),
@@ -2388,8 +2498,49 @@ class EzdxfBackend(AutoCADBackend):
 
         return await self._async(_sync)
 
-    async def drawing_export_dxf(self, path: str) -> dict:
-        return await self.drawing_save_as(path, "dxf")
+    async def drawing_export_dxf(self, path: str, version: str | None = None) -> dict:
+        """``drawing_save_as(path, "dxf")``, or a copy in another DXF release.
+
+        With ``version`` the drawing is written as a *copy* — the open document
+        keeps its own release and file name. R12 goes through ezdxf's
+        ``r12export`` (LWPOLYLINE becomes POLYLINE, MTEXT becomes TEXT, a
+        HATCH its boundary and fill as R12 entities); R2000 and later write
+        the same entities under that release's header. ``acadver`` is read
+        back from the written file, not assumed.
+        """
+        if version is None:
+            return await self.drawing_save_as(path, "dxf")
+        from backends.contracts.drawing import read_acadver, resolve_dxf_version
+
+        label, code = resolve_dxf_version(version)
+        if _is_dwg_path(path):
+            raise _refuse_dwg("drawing_export_dxf", path)
+
+        def _sync():
+            doc = self._require_doc()
+            self._refuse_path_held_elsewhere("drawing_export_dxf", path)
+            if code == "AC1009":
+                from ezdxf.addons import r12export
+
+                r12export.saveas(doc, path)
+            else:
+                original = doc.dxfversion
+                try:
+                    doc.dxfversion = code
+                    with open(path, "w", encoding=doc.output_encoding, errors="dxfreplace") as fp:
+                        doc.write(fp)
+                finally:
+                    doc.dxfversion = original
+            return {
+                "ok": True,
+                "path": path,
+                "format": "dxf",
+                "dxf_version": label,
+                "acadver": read_acadver(path),
+                "document_rebound": False,
+            }
+
+        return await self._async(_sync)
 
     # ── external references, rasters and DWG (v1.6 track G) ──────────────────
 
@@ -3175,7 +3326,7 @@ class EzdxfBackend(AutoCADBackend):
                 if "color" in props:
                     lyr.color = int(snap["color"])
                 if "linetype" in props:
-                    _ensure_linetype_loaded(doc, snap["linetype"])
+                    _ensure_linetype_loaded(doc, snap["linetype"], strict=False)
                     lyr.dxf.linetype = snap["linetype"]
                 if "lineweight" in props:
                     lyr.dxf.lineweight = int(snap["lineweight"])
@@ -4602,20 +4753,43 @@ class EzdxfBackend(AutoCADBackend):
     def _apply_attrs(
         self, entity, layer: str | None, color: int | None, linetype: str | None = None
     ):
-        if layer is not None:
-            entity.dxf.layer = layer
-            # Ensure layer exists
-            doc = self._require_doc()
-            if layer not in doc.layers:
-                doc.layers.add(layer)
-        if color is not None:
-            entity.dxf.color = int(color)
-        if linetype is not None:
-            # R24: load HIDDEN/CENTER/etc. on demand before assignment so the
-            # linetype actually renders instead of silently falling back to
-            # Continuous. Same loader used in entity_set_properties/layer_*.
-            _ensure_linetype_loaded(self._require_doc(), linetype)
-            entity.dxf.linetype = linetype
+        """Apply the common attributes to an entity this call has just created.
+
+        Every caller hands over a fresh entity, so a refusal here (an unknown
+        linetype, a colour that is not a number) removes it again before the
+        error propagates: a create that fails leaves nothing behind, the same
+        contract the live engine keeps (``_com_created``).
+        """
+        try:
+            if layer is not None:
+                entity.dxf.layer = layer
+                # Ensure layer exists
+                doc = self._require_doc()
+                if layer not in doc.layers:
+                    doc.layers.add(layer)
+            if color is not None:
+                entity.dxf.color = int(color)
+            if linetype is not None:
+                # R24: load HIDDEN/CENTER/etc. on demand before assignment so the
+                # linetype actually renders instead of silently falling back to
+                # Continuous. Same loader used in entity_set_properties/layer_*.
+                _ensure_linetype_loaded(self._require_doc(), linetype)
+                entity.dxf.linetype = linetype
+        except Exception:
+            self._discard_new_entity(entity)
+            raise
+
+    @staticmethod
+    def _discard_new_entity(entity) -> None:
+        """Delete an entity a failed create left in its layout (best effort)."""
+        try:
+            layout = entity.get_layout()
+            if layout is not None:
+                layout.delete_entity(entity)
+            elif entity.is_alive:
+                entity.destroy()
+        except Exception as exc:  # never mask the refusal that got us here
+            log.warning("could not remove the half-created %s: %s", entity.dxftype(), exc)
 
     def _mark_dirty(self):
         self._dirty = True
@@ -4674,7 +4848,10 @@ class EzdxfBackend(AutoCADBackend):
                 pass
 
     def _restore_snapshot(self, path: Path) -> None:
-        self._doc = ezdxf.readfile(str(path))
+        issued = self._doc.entitydb.handles if self._doc is not None else None
+        doc = ezdxf.readfile(str(path))
+        _retire_issued_handles(doc, str(issued) if issued is not None else None)
+        self._doc = doc
         _normalise_dimstyle_rounding(self._doc)
         self._current_layer = str(self._doc.header.get("$CLAYER", "0"))
         self._dirty = True
@@ -4824,7 +5001,14 @@ class EzdxfBackend(AutoCADBackend):
         rotation=0.0,
         layer=None,
         color=None,
+        *,
+        attachment=None,
+        line_spacing=None,
     ) -> EntityInfo:
+        from backends.contracts.entity_creation import resolve_mtext_layout
+
+        attach_code, spacing = resolve_mtext_layout(attachment, line_spacing)
+
         def _sync():
             msp = self._msp()
             ent = msp.add_mtext(
@@ -4838,6 +5022,10 @@ class EzdxfBackend(AutoCADBackend):
             ent.dxf.insert = (float(x), float(y), 0.0)
             if rotation:
                 ent.dxf.rotation = float(rotation)  # NEW-mtext-1: honor caller rotation
+            if attach_code is not None:
+                ent.dxf.attachment_point = attach_code
+            if spacing is not None:
+                ent.dxf.line_spacing_factor = spacing
             self._apply_attrs(ent, layer, color)
             self._mark_dirty()
             return _entity_info_dxf(ent)
@@ -5797,10 +5985,140 @@ class EzdxfBackend(AutoCADBackend):
                 self._mark_dirty()
                 return _entity_info_dxf(new_ent)
 
+            elif ent_type == "ARC":
+                # Same rule as the circle: a side point inside the radius
+                # shrinks, anything else (or no point) grows. The angles stay.
+                _extrusion = tuple(ent.dxf.get("extrusion", _IDENTITY_EXTRUSION))
+                if not ocs.is_wcs_frame(_extrusion):
+                    raise UnsupportedCapabilityError(
+                        "ocs_tilted_plane",
+                        f"entity_offset: ARC {handle} lies in a plane tilted out of WCS XY",
+                    )
+                cx, cy = float(ent.dxf.center.x), float(ent.dxf.center.y)
+                sign = 1.0
+                if side_x is not None and side_y is not None:
+                    if math.hypot(float(side_x) - cx, float(side_y) - cy) < ent.dxf.radius:
+                        sign = -1.0
+                new_r = ent.dxf.radius + d * sign
+                if new_r <= 0:
+                    raise ValueError("Offset distance too large for arc")
+                new_ent = self._msp().add_arc(
+                    (cx, cy),
+                    new_r,
+                    float(ent.dxf.start_angle),
+                    float(ent.dxf.end_angle),
+                    dxfattribs={"layer": ent.dxf.layer},
+                )
+                self._mark_dirty()
+                return _entity_info_dxf(new_ent)
+
+            elif ent_type == "LWPOLYLINE":
+                new_ent = self._offset_lwpolyline(ent, d, side_x, side_y)
+                self._mark_dirty()
+                return _entity_info_dxf(new_ent)
+
             else:
-                raise RuntimeError(f"Offset not supported for {ent_type}")
+                raise RuntimeError(
+                    f"Offset not supported for {ent_type} on the headless backend "
+                    "(LINE, CIRCLE, ARC and straight-segment LWPOLYLINE are)"
+                )
 
         return await self._async(_sync)
+
+    def _offset_lwpolyline(self, ent, distance: float, side_x, side_y):
+        """A parallel copy of a straight-segment LWPOLYLINE (mitred corners).
+
+        The side follows the circle rule for a closed outline — a side point
+        inside shrinks it; outside, or no point, grows it — and the line rule
+        for an open one: the side of the nearest segment the point lies on,
+        left of the drawing direction by default. Corners are
+        mitred, which is what AutoCAD's OFFSET does with OFFSETGAPTYPE=0 (its
+        default). Bulged (arc) segments are refused rather than approximated:
+        an arc's offset is another arc with a different radius, and turning it
+        into chords would silently change the geometry the caller asked for.
+        Works in the entity's own plane (OCS), so a mirrored outline offsets
+        the right way; a plane tilted out of WCS XY is refused.
+        """
+        from ezdxf.math import is_point_in_polygon_2d, offset_vertices_2d
+
+        handle = ent.dxf.handle
+        extrusion = tuple(ent.dxf.get("extrusion", _IDENTITY_EXTRUSION))
+        if not ocs.is_flat_frame(extrusion):
+            raise UnsupportedCapabilityError(
+                "ocs_tilted_plane",
+                f"entity_offset: LWPOLYLINE {handle} lies in a plane tilted out of WCS XY",
+            )
+        rows = list(ent.get_points("xyseb"))
+        if any(abs(float(row[4])) > 1e-12 for row in rows):
+            raise ValueError(
+                f"entity_offset: LWPOLYLINE {handle} has arc (bulged) segments, which the "
+                "headless backend does not offset; explode it first or use the live backend"
+            )
+        if any(abs(float(row[2])) > 1e-12 or abs(float(row[3])) > 1e-12 for row in rows):
+            log.debug("entity_offset: LWPOLYLINE %s segment widths are not carried over", handle)
+        points = [Vec2(float(row[0]), float(row[1])) for row in rows]
+        # Drop repeated vertices: a zero-length segment has no direction to offset along.
+        cleaned = [points[0]] if points else []
+        for point in points[1:]:
+            if not point.isclose(cleaned[-1], abs_tol=1e-9):
+                cleaned.append(point)
+        closed = bool(ent.closed)
+        if closed and len(cleaned) > 2 and cleaned[0].isclose(cleaned[-1], abs_tol=1e-9):
+            cleaned.pop()
+        if len(cleaned) < 2 or (closed and len(cleaned) < 3):
+            raise ValueError(f"entity_offset: LWPOLYLINE {handle} has too few distinct vertices")
+        elevation = float(ent.dxf.get("elevation", 0.0))
+
+        side = None
+        if side_x is not None and side_y is not None:
+            sx, sy, _ = ocs.from_wcs(extrusion, float(side_x), float(side_y), elevation)
+            side = Vec2(sx, sy)
+
+        if closed:
+            signed_area = sum(a.x * b.y - b.x * a.y for a, b in _segments(cleaned, True))
+            # offset_vertices_2d offsets to the LEFT of the drawing direction,
+            # which is the inside of a counter-clockwise outline.
+            inside_sign = 1.0 if signed_area > 0 else -1.0
+            inward = side is not None and is_point_in_polygon_2d(side, cleaned) >= 0
+            offset = abs(distance) * (inside_sign if inward else -inside_sign)
+        else:
+            sign = 1.0
+            if side is not None:
+                best = None
+                for a, b in _segments(cleaned, False):
+                    seg = b - a
+                    t = max(0.0, min(1.0, (side - a).dot(seg) / seg.dot(seg)))
+                    dist = (a + seg * t - side).magnitude
+                    if best is None or dist < best[0]:
+                        best = (dist, a, seg)
+                _, a, seg = best
+                if seg.x * (side.y - a.y) - seg.y * (side.x - a.x) < 0:
+                    sign = -1.0
+            offset = abs(distance) * sign
+
+        new_points = [Vec2(p) for p in offset_vertices_2d(cleaned, offset, closed=closed)]
+        # A mitred offset that runs past a segment's length turns that segment
+        # around (a rectangle offset inward by more than half its width comes
+        # back rotated 180 degrees with the same orientation, so an area-sign
+        # test cannot see it). Every offset segment must keep its direction.
+        pairs = _segments(cleaned, closed)
+        new_pairs = _segments(new_points, closed)
+        for (a, b), (c, e) in zip(pairs, new_pairs, strict=True):
+            if (e - c).dot(b - a) <= 0:
+                raise ValueError(
+                    f"entity_offset: distance {distance:g} is too large for LWPOLYLINE "
+                    f"{handle} — a segment would turn around (the outline collapses or "
+                    "self-intersects); use a smaller distance"
+                )
+        return self._msp().add_lwpolyline(
+            [(p.x, p.y) for p in new_points],
+            close=closed,
+            dxfattribs={
+                "layer": ent.dxf.layer,
+                "elevation": elevation,
+                "extrusion": extrusion,
+            },
+        )
 
     async def entity_delete(self, handle) -> dict:
         def _sync():
@@ -5895,6 +6213,9 @@ class EzdxfBackend(AutoCADBackend):
                 ent.dxf.layer = layer
             if color is not None:
                 ent.dxf.color = int(color)
+                # An ACI write replaces a true colour, as it does in AutoCAD;
+                # left in place, group 420 would keep overriding the new ACI.
+                ent.dxf.discard("true_color")
             if linetype is not None:
                 _ensure_linetype_loaded(self._require_doc(), linetype)
                 ent.dxf.linetype = linetype
@@ -5904,6 +6225,21 @@ class EzdxfBackend(AutoCADBackend):
                 ent.dxf.invisible = not bool(visible)
             self._mark_dirty()
             return {"ok": True, "handle": handle}
+
+        return await self._async(_sync)
+
+    async def entity_set_true_color(self, handle, rgb) -> dict:
+        from backends.contracts.entity_modification import parse_true_color, true_color_hex
+
+        color = parse_true_color(rgb)
+
+        def _sync():
+            ent = self._get_entity(handle)
+            if not ent.dxf.is_supported("true_color"):
+                raise ValueError(f"{ent.dxftype()} {handle} cannot carry a true colour")
+            ent.rgb = color
+            self._mark_dirty()
+            return {"ok": True, "handle": handle, "true_color": true_color_hex(color)}
 
         return await self._async(_sync)
 
@@ -6395,28 +6731,78 @@ class EzdxfBackend(AutoCADBackend):
         color=7,
         linetype="Continuous",
         lineweight=-3,
+        *,
+        exist_ok: bool = False,
     ) -> LayerInfo:
+        """Add a layer; with ``exist_ok`` an existing one is updated in place.
+
+        A duplicate name without ``exist_ok`` is refused with ``ValueError``
+        (it used to escape as ezdxf's ``DXFTableEntryError`` — an "Internal
+        error" to the client, even for the ``DIM`` / ``Defpoints`` layers
+        ``drawing_new`` had just made). The live engine keeps the same rule.
+        """
+
         def _sync():
             doc = self._require_doc()
+            existing = _layer_or_none(doc, name)
+            if existing is not None and not exist_ok:
+                raise ValueError(
+                    f"layer {existing.dxf.name!r} already exists; pass exist_ok=true to "
+                    "update it in place, or use layer_modify"
+                )
             _ensure_linetype_loaded(doc, linetype)
-            lyr = doc.layers.add(
-                name,
-                color=int(color),
-                linetype=linetype,
-                lineweight=normalize_lineweight(lineweight),
-            )
+            if existing is not None:
+                existing.dxf.color = int(color)
+                existing.dxf.discard("true_color")
+                existing.dxf.linetype = linetype
+                existing.dxf.lineweight = normalize_lineweight(lineweight)
+                lyr = existing
+            else:
+                lyr = doc.layers.add(
+                    name,
+                    color=int(color),
+                    linetype=linetype,
+                    lineweight=normalize_lineweight(lineweight),
+                )
             self._mark_dirty()
             return _layer_info_dxf(lyr, self._current_layer)
 
         return await self._async(_sync)
 
     async def layer_delete(self, name) -> dict:
+        """Delete an empty layer — refused with the reason AutoCAD would give.
+
+        Refused: a missing layer, ``0`` and ``Defpoints``, the current layer,
+        and a layer entities still sit on (in any layout or block definition).
+        Deleting the current layer used to succeed and leave ``$CLAYER``
+        naming a layer the file no longer has; deleting a used one left every
+        entity on it pointing at a missing table entry.
+        """
+
         def _sync():
             doc = self._require_doc()
-            if name in doc.layers:
-                doc.layers.remove(name)
-                self._mark_dirty()
-            return {"ok": True, "deleted": name}
+            layer = _layer_or_none(doc, name)
+            if layer is None:
+                raise ValueError(f"layer {name!r} not found")
+            real = str(layer.dxf.name)
+            refuse_reserved_layer_delete(real, str(self._current_layer))
+            used = sum(
+                1
+                for entity in doc.entitydb.values()
+                if entity.is_alive
+                and entity.dxf.hasattr("layer")
+                and str(entity.dxf.layer).lower() == real.lower()
+                and entity.dxftype() not in ("LAYER", "SEQEND")
+                and entity.dxf.owner is not None
+            )
+            if used:
+                raise ValueError(
+                    f"layer {real!r} still holds {used} entities; move them to another layer "
+                    "(entity_set_properties) or delete them first"
+                )
+            doc.layers.remove(real)
+            self._mark_dirty()
+            return {"ok": True, "deleted": real}
 
         return await self._async(_sync)
 
@@ -6444,11 +6830,12 @@ class EzdxfBackend(AutoCADBackend):
     ) -> LayerInfo:
         def _sync():
             doc = self._require_doc()
-            lyr = doc.layers.get(name)
+            lyr = _layer_or_none(doc, name)
             if lyr is None:
-                raise RuntimeError(f"Layer '{name}' not found.")
+                raise ValueError(f"Layer '{name}' not found.")
             if color is not None:
                 lyr.dxf.color = int(color)
+                lyr.dxf.discard("true_color")
             if linetype is not None:
                 _ensure_linetype_loaded(doc, linetype)
                 lyr.dxf.linetype = linetype
@@ -6456,6 +6843,22 @@ class EzdxfBackend(AutoCADBackend):
                 lyr.dxf.lineweight = normalize_lineweight(lineweight)
             self._mark_dirty()
             return _layer_info_dxf(lyr, self._current_layer)
+
+        return await self._async(_sync)
+
+    async def layer_set_true_color(self, name, rgb) -> dict:
+        from backends.contracts.entity_modification import parse_true_color, true_color_hex
+
+        color = parse_true_color(rgb)
+
+        def _sync():
+            doc = self._require_doc()
+            lyr = _layer_or_none(doc, name)
+            if lyr is None:
+                raise ValueError(f"Layer '{name}' not found.")
+            lyr.rgb = color
+            self._mark_dirty()
+            return {"ok": True, "layer": str(lyr.dxf.name), "true_color": true_color_hex(color)}
 
         return await self._async(_sync)
 
@@ -7965,10 +8368,10 @@ class EzdxfBackend(AutoCADBackend):
                 return {"ok": False, "error": "No active transaction to rollback"}
             p = self._transaction_stack.pop()
             try:
-                self._doc = ezdxf.readfile(str(p))
-                _normalise_dimstyle_rounding(self._doc)
-                self._current_layer = str(self._doc.header.get("$CLAYER", "0"))
-                self._dirty = True
+                # Same path as undo: the restore must not let a handle issued
+                # inside the rolled-back transaction come back meaning another
+                # entity (see _retire_issued_handles).
+                self._restore_snapshot(p)
             finally:
                 try:
                     p.unlink()
@@ -8256,16 +8659,18 @@ class EzdxfBackend(AutoCADBackend):
         width_factor: float = 1.0,
         oblique_deg: float = 0.0,
         set_current: bool = False,
+        bold: bool | None = None,
+        italic: bool | None = None,
     ) -> dict:
         from engineering.standards.textstyles import validate_textstyle
 
-        spec = validate_textstyle(name, font, height, width_factor, oblique_deg)
+        spec = validate_textstyle(name, font, height, width_factor, oblique_deg, bold, italic)
 
         def _sync():
             doc = self._require_doc()
             if doc.styles.has_entry(spec["name"]):
                 raise ValueError(f"textstyle_create: text style {spec['name']!r} already exists")
-            doc.styles.new(
+            style = doc.styles.new(
                 spec["name"],
                 dxfattribs={
                     "font": spec["font_file"],
@@ -8274,6 +8679,15 @@ class EzdxfBackend(AutoCADBackend):
                     "height": spec["height"],
                 },
             )
+            if spec.get("bold") is not None or spec.get("italic") is not None:
+                # AutoCAD keeps a TrueType face in the ACAD XDATA of the STYLE
+                # record (family + 1071 flags) — what its STYLE dialog writes.
+                family, own_bold, own_italic = _ttf_face(spec["font_file"])
+                style.set_extended_font_data(
+                    family,
+                    bold=own_bold if spec.get("bold") is None else spec["bold"],
+                    italic=own_italic if spec.get("italic") is None else spec["italic"],
+                )
             if set_current:
                 doc.header["$TEXTSTYLE"] = spec["name"]
             self._mark_dirty()
@@ -8285,6 +8699,8 @@ class EzdxfBackend(AutoCADBackend):
                 # and *said* to be unresolved, never refused.
                 "font_resolved": spec["known"] or _font_available(spec["font_file"]),
                 "current": bool(set_current),
+                # Reported only when asked for, so a plain style reads as before.
+                **{k: spec[k] for k in ("bold", "italic") if spec.get(k) is not None},
             }
 
         return await self._async(_sync)

@@ -79,6 +79,26 @@ class Settings:
         # otherwise block the single-thread STA executor forever.
         self.com_call_timeout: float = float(os.environ.get("COM_CALL_TIMEOUT", "60"))
 
+        # How long one COM call AutoCAD answers RPC_E_CALL_REJECTED ("Call was
+        # rejected by callee" — it was busy and did *not* run the call) is
+        # retried by the COM message filter before it fails. The retry happens
+        # per COM call, inside COM, so the property write after an `Add...`
+        # is retried on its own instead of failing after the entity exists.
+        # 0 turns the filter off (every rejection fails at once, as before
+        # v1.7). Kept well inside COM_CALL_TIMEOUT.
+        self.com_rejected_retry_s: float = max(
+            0.0, float(os.environ.get("COM_REJECTED_RETRY_S", "15"))
+        )
+
+        # Tools to advertise on top of TOOL_PROFILE / TOOL_PACKS: a comma list
+        # of tool names (e.g. "entity_create_hatch,layout_create,viewport_create").
+        # Lets a lean client add the few tools one workflow needs without
+        # paying for the whole catalogue. Unknown names are ignored with a
+        # warning at startup.
+        self.tool_include: list[str] = [
+            name.strip() for name in os.environ.get("TOOL_INCLUDE", "").split(",") if name.strip()
+        ]
+
         # Per-call timeout for the headless ezdxf backend. Every ezdxf method
         # runs under one document lock, so a single hung call (pathological DXF,
         # a render that never returns) would otherwise hold that lock forever

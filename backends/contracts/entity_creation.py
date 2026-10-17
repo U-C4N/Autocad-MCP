@@ -85,6 +85,9 @@ class EntityCreationContract(ABC):
         rotation: float = 0.0,
         layer: str | None = None,
         color: int | None = None,
+        *,
+        attachment: str | None = None,
+        line_spacing: float | None = None,
     ) -> EntityInfo: ...
 
     @abstractmethod
@@ -253,3 +256,60 @@ class EntityCreationContract(ABC):
         that case is refused rather than returned as a rectangle.
         """
         ...
+
+
+#: MTEXT attachment point names → the code DXF group 71 and ActiveX
+#: ``AcAttachmentPoint`` share (1 top-left … 9 bottom-right).
+MTEXT_ATTACHMENTS: dict[str, int] = {
+    "top_left": 1,
+    "top_center": 2,
+    "top_right": 3,
+    "middle_left": 4,
+    "middle_center": 5,
+    "middle_right": 6,
+    "bottom_left": 7,
+    "bottom_center": 8,
+    "bottom_right": 9,
+}
+_ATTACHMENT_ALIASES = {
+    "tl": "top_left",
+    "tc": "top_center",
+    "tr": "top_right",
+    "ml": "middle_left",
+    "mc": "middle_center",
+    "mr": "middle_right",
+    "bl": "bottom_left",
+    "bc": "bottom_center",
+    "br": "bottom_right",
+    "center": "middle_center",
+    "centre": "middle_center",
+}
+
+
+def resolve_mtext_layout(attachment, line_spacing) -> tuple[int | None, float | None]:
+    """``(attachment code, line spacing factor)`` for an MTEXT, or ``ValueError``.
+
+    ``attachment`` is a name (``top_left`` … ``bottom_right``, ``tl`` … ``br``,
+    ``center``; ``-`` or space for ``_``) — the insertion point is that point of
+    the text box. ``line_spacing`` is AutoCAD's factor, 0.25 – 4.0 (1.0 = the
+    font's normal spacing). ``None`` leaves either as AutoCAD's default.
+    """
+    code = None
+    if attachment is not None:
+        key = str(attachment).strip().lower().replace("-", "_").replace(" ", "_")
+        key = _ATTACHMENT_ALIASES.get(key, key).replace("centre", "center")
+        if key not in MTEXT_ATTACHMENTS:
+            raise ValueError(
+                f"attachment: {attachment!r} is not an MTEXT attachment point; use one of "
+                f"{', '.join(MTEXT_ATTACHMENTS)}"
+            )
+        code = MTEXT_ATTACHMENTS[key]
+    factor = None
+    if line_spacing is not None:
+        try:
+            factor = float(line_spacing)
+        except (TypeError, ValueError):
+            raise ValueError(f"line_spacing: {line_spacing!r} is not a number") from None
+        if not 0.25 <= factor <= 4.0:
+            raise ValueError(f"line_spacing: {factor:g} is outside AutoCAD's 0.25 - 4.0")
+    return code, factor

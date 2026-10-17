@@ -81,9 +81,13 @@ def validate_textstyle(
     height: float = 0.0,
     width_factor: float = 1.0,
     oblique_deg: float = 0.0,
+    bold: bool | None = None,
+    italic: bool | None = None,
 ) -> dict:
     """The typed request both engines write, or a ``ValueError``/``TypeError``
-    naming the field. ``height`` 0 is AutoCAD's "prompt per text" and is legal;
+    naming the field. ``bold`` / ``italic`` (``None`` = the font file's own
+    face) select a TrueType face and are refused for an SHX font, which has
+    none — AutoCAD would accept the flag and draw the same strokes. ``height`` 0 is AutoCAD's "prompt per text" and is legal;
     the width factor must be positive; the oblique angle is AutoCAD's ±85°;
     every number must be finite. The name obeys the DXF symbol-name rule
     (``engineering.standards.names``) — this is the only gate on the
@@ -102,6 +106,14 @@ def validate_textstyle(
         raise ValueError(
             f"oblique_deg: {oblique_deg!r} is outside AutoCAD's +/-{MAX_OBLIQUE_DEG:g} degrees"
         )
+    for label, flag in (("bold", bold), ("italic", italic)):
+        if flag is not None and not isinstance(flag, bool):
+            raise TypeError(f"{label}: must be true, false or null, got {flag!r}")
+    if (bold or italic) and str(font_file).lower().endswith(".shx"):
+        raise ValueError(
+            f"bold/italic: {font_file!r} is an SHX font, which has no bold or italic face; "
+            "use a TrueType font (e.g. arial.ttf) or a bold SHX file"
+        )
     return {
         "name": clean,
         "font_file": font_file,
@@ -109,4 +121,6 @@ def validate_textstyle(
         "height": height_value,
         "width_factor": width_value,
         "oblique_deg": oblique_value,
+        # Present only when asked for: None means "the font file's own face".
+        **{k: v for k, v in (("bold", bold), ("italic", italic)) if v is not None},
     }

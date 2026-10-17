@@ -1128,11 +1128,31 @@ def _profile_enabled_names(profile: str, registered: set[str]) -> set[str]:
     enabled = set(registered) - hidden_by_pack
     if profile == "lean":
         enabled &= LEAN_TOOL_NAMES
+    # TOOL_INCLUDE adds named tools on top of the profile and packs, so a lean
+    # client can take the few a workflow needs (a label sheet needs hatch,
+    # layout and viewport tools lean does not carry) without the whole catalogue.
+    enabled |= set(config.settings.tool_include) & set(registered)
     if not config.settings.enable_3d:
         # Capability-aware discovery: don't advertise opt-in 3D tools that
         # would only reject the call.
         enabled -= SOLID_TOOL_NAMES
     return enabled
+
+
+def _tool_include_report(registered: set[str]) -> dict:
+    """What TOOL_INCLUDE asked for, what it added and which names it ignored."""
+    requested = list(dict.fromkeys(config.settings.tool_include))
+    unknown = [name for name in requested if name not in registered]
+    for name in unknown:
+        log.warning("Unknown TOOL_INCLUDE entry %r ignored (no tool by that name).", name)
+    blocked = [
+        name for name in requested if name in SOLID_TOOL_NAMES and not config.settings.enable_3d
+    ]
+    return {
+        "requested": requested,
+        "ignored": unknown,
+        "blocked": blocked,
+    }
 
 
 async def _apply_tool_profile(profile: str | None = None) -> dict:
@@ -1193,6 +1213,8 @@ async def _apply_tool_profile(profile: str | None = None) -> dict:
         "available": list(TOOL_PACK_NAMES),
         "ignored": ignored,
     }
+    if config.settings.tool_include:
+        _active_tool_profile["tool_include"] = _tool_include_report(registered)
     if requested != selected:
         # Surface the fallback where an MCP client can actually see it: a
         # warning on a STDIO server's stderr is routinely invisible.
@@ -1406,12 +1428,30 @@ async def drawing_save_as(
 )
 async def drawing_export_dxf(
     path: Annotated[str, "Output .dxf file path"],
+    dxf_version: Annotated[
+        str | None,
+        "DXF release: R12 | R2000 | R2004 | R2007 | R2010 | R2013 | R2018 (default: the "
+        "drawing's own). R12/R2000 for older cutters, plotters and CNC software.",
+    ] = None,
     ctx: Context = None,
 ) -> dict:
-    """Export the current drawing as a DXF file."""
+    """Export the current drawing as a DXF file.
+
+    With `dxf_version` the file is written in that release and `acadver` is
+    read back from it. Headlessly that is a copy (the open drawing keeps its
+    release); on the live engine AutoCAD's SaveAs rebinds the document to the
+    new file (`document_rebound: true`). R12 has no LWPOLYLINE, MTEXT or
+    HATCH: they are written as POLYLINE, TEXT and plain geometry.
+    """
     validated = validate_path(path, allow_write=True)
     await ctx.info(f"Exporting DXF: {validated}")
-    return await _backend(ctx).drawing_export_dxf(str(validated))
+    backend = _backend(ctx)
+    if dxf_version is None:
+        return await backend.drawing_export_dxf(str(validated))
+    try:
+        return await backend.drawing_export_dxf(str(validated), dxf_version)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 @cad_tool(summary="Plot the drawing, or one paper-space layout, to PDF.", cost="mutate")
@@ -1679,13 +1719,44 @@ async def entity_create_mtext(
     rotation: Annotated[float, "Rotation in degrees, CCW from +X"] = 0.0,
     layer: Annotated[str | None, "Layer name"] = None,
     color: Annotated[int | None, "ACI color code"] = None,
+    attachment: Annotated[
+        str | None,
+        "Which point of the text box (x, y) is: top_left (default) | top_center | top_right | "
+        "middle_left | middle_center | middle_right | bottom_left | bottom_center | "
+        "bottom_right (or tl/tc/.../br, center).",
+    ] = None,
+    line_spacing: Annotated[
+        float | None, "Line spacing factor 0.25-4.0 (1.0 = the font's normal spacing)."
+    ] = None,
     ctx: Context = None,
 ) -> dict:
-    """Create a multi-line text entity (MTEXT) with word-wrap at the specified width."""
+    """Create a multi-line text entity (MTEXT) with word-wrap at the specified width.
+
+    `attachment` anchors the box at one of its nine points — `middle_center`
+    centres a label on (x, y) whatever its length, without `\\pxqc;` codes.
+    """
     await ctx.debug(f"Creating mtext at ({x},{y}) w={width}")
-    result = await _backend(ctx).entity_create_mtext(
-        text, x, y, width, height, rotation, layer, color
-    )
+    backend = _backend(ctx)
+    if attachment is None and line_spacing is None:
+        result = await backend.entity_create_mtext(
+            text, x, y, width, height, rotation, layer, color
+        )
+    else:
+        try:
+            result = await backend.entity_create_mtext(
+                text,
+                x,
+                y,
+                width,
+                height,
+                rotation,
+                layer,
+                color,
+                attachment=attachment,
+                line_spacing=line_spacing,
+            )
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
     return _dc(result)
 
 
@@ -2532,13 +2603,31 @@ async def entity_set_properties(
     ] = None,
     lineweight: Annotated[int | None, "Lineweight in 0.01mm units (-3=ByLayer, -2=ByBlock)"] = None,
     visible: Annotated[bool | None, "Set entity visibility"] = None,
+    true_color: Annotated[
+        str | list[int] | None,
+        "24-bit colour '#RRGGBB', 'R,G,B' or [R, G, B] (e.g. '#25282A' for PMS 426 C). "
+        "Overrides the ACI color; a later ACI color removes it.",
+    ] = None,
     ctx: Context = None,
 ) -> dict:
-    """Change one or more properties of an entity (layer, color, linetype, lineweight, visibility)."""
+    """Change one or more properties of an entity (layer, color, true colour, linetype,
+    lineweight, visibility)."""
     await ctx.debug(f"Setting properties for entity {handle}")
-    return await _backend(ctx).entity_set_properties(
+    backend = _backend(ctx)
+    if true_color is not None:
+        from backends.contracts.entity_modification import parse_true_color
+
+        try:
+            rgb = parse_true_color(true_color)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
+    result = await backend.entity_set_properties(
         handle, layer, color, linetype, lineweight, visible
     )
+    if true_color is not None:
+        applied = await backend.entity_set_true_color(handle, rgb)
+        result = {**result, "true_color": applied["true_color"]}
+    return result
 
 
 @cad_tool(
@@ -2983,12 +3072,44 @@ async def layer_create(
     lineweight: Annotated[
         int, "Lineweight (-3=ByLayer, 0=0.00mm, 13=0.13mm, 25=0.25mm, 50=0.50mm)"
     ] = -3,
+    exist_ok: Annotated[
+        bool,
+        "True: a layer that already exists (e.g. DIM or Defpoints after drawing_new) is "
+        "updated in place instead of refused.",
+    ] = False,
+    true_color: Annotated[
+        str | list[int] | None, "Optional 24-bit layer colour '#RRGGBB' / 'R,G,B' / [R, G, B]."
+    ] = None,
     ctx: Context = None,
 ) -> dict:
-    """Create a new layer with specified properties."""
+    """Create a new layer with specified properties.
+
+    A name that already exists is refused (Invalid params) unless
+    `exist_ok=true`, which updates that layer's colour, linetype and lineweight
+    in place — `created` says which happened.
+    """
     await ctx.info(f"Creating layer '{name}' color={color}")
-    result = await _backend(ctx).layer_create(name, color, linetype, lineweight)
-    return _dc(result)
+    backend = _backend(ctx)
+    rgb = None
+    if true_color is not None:
+        from backends.contracts.entity_modification import parse_true_color
+
+        try:
+            rgb = parse_true_color(true_color)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
+    created = True
+    if exist_ok:
+        created = not any(
+            row.name.lower() == str(name).lower() for row in await backend.layer_list()
+        )
+        result = await backend.layer_create(name, color, linetype, lineweight, exist_ok=True)
+    else:
+        result = await backend.layer_create(name, color, linetype, lineweight)
+    payload = {**_dc(result), "created": created}
+    if rgb is not None:
+        payload["true_color"] = (await backend.layer_set_true_color(name, rgb))["true_color"]
+    return payload
 
 
 @cad_tool(summary="Remove an empty layer from the drawing.", cost="destructive")
@@ -3029,11 +3150,26 @@ async def layer_modify(
     color: Annotated[int | None, "New ACI color code"] = None,
     linetype: Annotated[str | None, "New linetype name"] = None,
     lineweight: Annotated[int | None, "New lineweight value"] = None,
+    true_color: Annotated[
+        str | list[int] | None,
+        "24-bit layer colour '#RRGGBB' / 'R,G,B' / [R, G, B]; overrides the ACI color.",
+    ] = None,
     ctx: Context = None,
 ) -> dict:
-    """Modify an existing layer's color, linetype, and/or lineweight."""
-    result = await _backend(ctx).layer_modify(name, color, linetype, lineweight)
-    return _dc(result)
+    """Modify an existing layer's color, true colour, linetype, and/or lineweight."""
+    backend = _backend(ctx)
+    rgb = None
+    if true_color is not None:
+        from backends.contracts.entity_modification import parse_true_color
+
+        try:
+            rgb = parse_true_color(true_color)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
+    result = _dc(await backend.layer_modify(name, color, linetype, lineweight))
+    if rgb is not None:
+        result["true_color"] = (await backend.layer_set_true_color(name, rgb))["true_color"]
+    return result
 
 
 @cad_tool(summary="Freeze a layer so it stops drawing and regenerating.", cost="safe")
@@ -7309,6 +7445,12 @@ async def textstyle_create(
     width_factor: Annotated[float, Field(default=1.0, gt=0, description="Width factor")] = 1.0,
     oblique_deg: Annotated[float, "Obliquing angle in degrees, -85..85"] = 0.0,
     set_current: Annotated[bool, "Also make it the current text style"] = False,
+    bold: Annotated[
+        bool | None, "TrueType only: bold face (null = the font file's own face)"
+    ] = None,
+    italic: Annotated[
+        bool | None, "TrueType only: italic face (null = the font file's own face)"
+    ] = None,
     ctx: Context = None,
 ) -> dict:
     """Create a text style.
@@ -7323,11 +7465,21 @@ async def textstyle_create(
     STYLE dialog does — the record carries `arial.ttf`, never a machine
     path), an SHX by the file name. Refuses, before any write on both
     engines: a name that exists, an empty font, `width_factor <= 0`,
-    `height < 0`, an oblique angle outside ±85°.
+    `height < 0`, an oblique angle outside ±85°, `bold`/`italic` on an SHX font.
+
+    `bold` / `italic` pick the TrueType face (`SetFont` live; the STYLE
+    record's ACAD extended font data headlessly). A family with no real bold
+    file (Bahnschrift) is drawn synthetically bold by AutoCAD, or not at all
+    by some PDF viewers — pick a font that ships a bold face when it matters.
     """
     await ctx.info(f"Text style {name!r} with font {font!r}")
-    return await _backend(ctx).textstyle_create(
-        name, font, height, width_factor, oblique_deg, set_current
+    backend = _backend(ctx)
+    if bold is None and italic is None:
+        return await backend.textstyle_create(
+            name, font, height, width_factor, oblique_deg, set_current
+        )
+    return await backend.textstyle_create(
+        name, font, height, width_factor, oblique_deg, set_current, bold=bold, italic=italic
     )
 
 
@@ -7499,6 +7651,16 @@ async def page_setup_apply(
         "[top, bottom, left, right] in mm. Headless only: AutoCAD takes margins from the .pc3.",
     ] = None,
     center: Annotated[bool, "Centre the plot on the paper."] = True,
+    full_bleed: Annotated[
+        bool,
+        "Use the device's zero-margin media (ISO_full_bleed_A4_..., ANSI_full_bleed_B_...): "
+        "the whole sheet is printable, so a 1:1 sheet the size of the paper plots uncut.",
+    ] = False,
+    paper_units: Annotated[
+        str | None,
+        "What one paper-space unit means at the plot scale: mm (default) | inches | null "
+        "(keep the layout's units).",
+    ] = "mm",
     ctx: Context = None,
 ) -> dict:
     """AutoCAD's PAGESETUP as one call, on both engines.
@@ -7515,13 +7677,28 @@ async def page_setup_apply(
     is refused (the .pc3 owns them) and a media the device does not offer is
     refused with the device's names for the same paper.
 
+    `full_bleed=true` picks the zero-margin media DWG To PDF ships for every
+    size (the standard ANSI_B media keeps 17 mm top and bottom, so a 1:1 sheet
+    the size of the paper would be cut). AutoCAD resets the paper units when
+    the media changes; they are always written back afterwards (`paper_units`,
+    or the layout's own units when it is null).
+
     The proof is the PDF: `batch_plot` reads each sheet's `/MediaBox` back.
     """
     from engineering.standards.papers import resolve_page_setup
 
     try:
         setup = resolve_page_setup(
-            paper, orientation, plot_style, scale, plot_area, device, margins_mm, center
+            paper,
+            orientation,
+            plot_style,
+            scale,
+            plot_area,
+            device,
+            margins_mm,
+            center,
+            paper_units=paper_units,
+            full_bleed=full_bleed,
         )
         await ctx.info(f"Applying page setup {setup['paper']} {orientation} to {layout}")
         return await _backend(ctx).page_setup_apply(layout, setup)

@@ -91,8 +91,12 @@ class StylesContract(ABC):
         width_factor: float = 1.0,
         oblique_deg: float = 0.0,
         set_current: bool = False,
+        bold: bool | None = None,
+        italic: bool | None = None,
     ) -> dict:
-        """Create a text style. Returns ``{ok, name, font, font_resolved, current}``.
+        """Create a text style. Returns ``{ok, name, font, font_resolved, current, bold, italic}``.
+
+        ``bold`` / ``italic`` pick a TrueType face (``None`` keeps the file's own).
 
         ``font`` is a preset (``ISOCP`` / ``isocp.shx`` / ``isocp``, any case)
         or any file name. A file that is neither a preset nor found on the

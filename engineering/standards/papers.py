@@ -282,9 +282,19 @@ def paper_size_mm(paper: str, orientation: str = "landscape") -> tuple[float, fl
     return float(short), float(long)
 
 
-def canonical_media_name(paper: str, orientation: str = "landscape") -> str:
+def canonical_media_name(
+    paper: str, orientation: str = "landscape", full_bleed: bool = False
+) -> str:
     """AutoCAD's spelling of the media: ``ISO_A3_(420.00_x_297.00_MM)`` for
-    landscape A3, ``ANSI_B_(17.00_x_11.00_Inches)`` for landscape ANSI B."""
+    landscape A3, ``ANSI_B_(17.00_x_11.00_Inches)`` for landscape ANSI B.
+
+    ``full_bleed`` names the zero-margin twin DWG To PDF.pc3 ships for every
+    ISO and ANSI size: ``ISO_full_bleed_A4_(210.00_x_297.00_MM)``,
+    ``ANSI_full_bleed_B_(17.00_x_11.00_Inches)`` (both used live on AutoCAD
+    2026, 2026-10-18). The standard ANSI_B media carries 17 mm margins top and
+    bottom (read with ``GetPaperMargins``), so a 1:1 sheet taller than 245 mm
+    cannot plot whole on it — the reason the twin exists.
+    """
     name = _paper_key(paper)
     if name in PAPER_INCHES:
         short, long = PAPER_INCHES[name]
@@ -293,7 +303,11 @@ def canonical_media_name(paper: str, orientation: str = "landscape") -> str:
         short, long = PAPER_SIZES[name]
         unit = "MM"
     width, height = (long, short) if _orientation(orientation) == "landscape" else (short, long)
-    return f"{name}_({width:.2f}_x_{height:.2f}_{unit})"
+    media = name
+    if full_bleed:
+        family, size = name.split("_", 1)
+        media = f"{family}_full_bleed_{size}"
+    return f"{media}_({width:.2f}_x_{height:.2f}_{unit})"
 
 
 def paper_from_size(width_mm, height_mm, tolerance: float = 0.5) -> str | None:
@@ -468,6 +482,7 @@ def resolve_page_setup(
     margins_mm=None,
     center: bool = True,
     paper_units: str | None = "mm",
+    full_bleed: bool = False,
 ) -> dict:
     """Validate a page setup request and resolve it to what both engines write.
 
@@ -483,6 +498,11 @@ def resolve_page_setup(
     own Page Setup does when a media is chosen. A write that moves the units
     rescales every paper-space unit by 25.4; both engines report it in
     ``changed`` and ``warnings``.
+
+    ``full_bleed`` selects the device's zero-margin media
+    (``canonical_media_name``) and resolves the margins to ``[0, 0, 0, 0]`` —
+    written headlessly, and on the live engine what the media itself carries.
+    Asking for non-zero ``margins_mm`` with it is refused.
     """
     name = _paper_key(paper)
     width, height = paper_size_mm(name, _orientation(orientation))
@@ -524,6 +544,16 @@ def resolve_page_setup(
             )
         margins = values
 
+    if not isinstance(full_bleed, bool):
+        raise ValueError(f"full_bleed: must be true or false, got {full_bleed!r}")
+    if full_bleed:
+        if margins is not None and any(v != 0 for v in margins):
+            raise ValueError(
+                f"margins_mm: {margins} contradicts full_bleed=true, whose media has no "
+                "margins; drop one of them"
+            )
+        margins = [0.0, 0.0, 0.0, 0.0]
+
     if not isinstance(center, bool):
         raise ValueError(f"center: must be true or false, got {center!r}")
     plot_type = PLOT_AREAS[plot_area]
@@ -541,7 +571,7 @@ def resolve_page_setup(
         "paper": name,
         "orientation": orientation,
         "size_mm": [width, height],
-        "canonical_media_name": canonical_media_name(name, orientation),
+        "canonical_media_name": canonical_media_name(name, orientation, full_bleed),
         "plot_style": style,
         "plot_style_known": plot_style_known(style),
         "scale": label,
@@ -555,6 +585,7 @@ def resolve_page_setup(
         "margins_mm": margins,
         "center": center if center_applies(plot_type) else None,
         "paper_units": units,
+        "full_bleed": full_bleed,
     }
 
 

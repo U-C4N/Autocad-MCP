@@ -11,7 +11,7 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-1f6feb?logo=python&logoColor=white)](https://github.com/U-C4N/Autocad-MCP/blob/main/pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-3fb950)](https://github.com/U-C4N/Autocad-MCP/blob/main/LICENSE)
 
-[Install](#install) · [What's new](#whats-new-in-16) · [Tools](#what-you-get) · [Engines](#the-two-engines) · [Evidence](#evidence) · [Limits](#what-this-release-is-bad-at) · [Config](#configuration) · [Changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md)
+[Install](#install) · [What's new](#whats-new-in-17) · [Tools](#what-you-get) · [Engines](#the-two-engines) · [Evidence](#evidence) · [Limits](#what-this-release-is-bad-at) · [Config](#configuration) · [Changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md)
 
 <img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/autocad-mcp-showcase.png" alt="ISO A3 sheet: a module-6, 24-tooth spur gear with a keyed bore, its section A-A, ISO 129 dimensions with an H7 bore fit, and an ISO 7200 title block" width="800">
 
@@ -19,9 +19,34 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 
 </div>
 
-> **v1.6 release snapshot:** 247 tools · 8 resources · 5 prompt templates · 4992 collected tests.
+> **This is a fork** of [U-C4N/Autocad-MCP](https://github.com/U-C4N/Autocad-MCP) carrying the 1.7
+> reliability fixes below; everything else is upstream 1.6.0. Install it from this repository
+> (`pip install "git+https://github.com/suanlong06/Autocad-MCP@main#egg=autocad-mcp-pro[full]"`).
+
+> **v1.7 release snapshot:** 247 tools · 8 resources · 5 prompt templates · 5065 collected tests.
 > 247 is the **registered** count; a default install advertises 242 over `tools/list`,
 > because `ENABLE_3D` is unset. `system_about` is the runtime authority.
+
+## What's new in 1.7
+
+Fourteen defects found by a real production job — an 11x17 customer approval sheet and a 1:1
+cutter file built through this server on AutoCAD 2026 and headlessly — fixed, each with a test,
+and the COM paths run live by `scripts/smoke_v17_com.py`. Details in the
+[changelog](CHANGELOG.md#170--2026-10-18).
+
+| Area | 1.6 | 1.7 |
+|---|---|---|
+| AutoCAD busy ("Call was rejected by callee") | the call failed; 1–6 of 72 batch steps at random | a COM message filter retries the refused call itself (`COM_REJECTED_RETRY_S`, 15 s); measured 4/10 → 0/10 refused |
+| A create refused half-way | the entity stayed while the tool reported failure → duplicates on retry, a hatch left on layer 0 | all-or-nothing on both engines |
+| A seat stuck at a prompt / a locked session | raw HRESULT | `system_status.seat` (quiescent, active commands, lock state, hint) and an explaining error |
+| `viewport_create` | content shifted by the old view centre | centred from inside the viewport; `view_center` read back from `VIEWCTR` |
+| `layout_create` | AutoCAD's default viewport plotted a second, scaled copy | no default viewport |
+| Full-bleed paper | none (ANSI B keeps 17 mm margins) | `page_setup_apply(full_bleed=true)` |
+| Colour | ACI only | `true_color` on entities and layers (`#25282A` for PMS 426 C) |
+| Text | no faces, no anchoring | bold/italic text styles; MTEXT `attachment` + `line_spacing` |
+| DXF for older machines | the drawing's own release | `drawing_export_dxf(dxf_version="R12" … "R2018")` |
+| Lean clients | all-or-nothing profile | `TOOL_INCLUDE=entity_create_hatch,layout_create,…` |
+| Headless checks | unknown linetype accepted, rolled-back handle → SEQEND, current layer deletable, no polyline offset, duplicate layer = internal error | all refused or fixed |
 
 ## What's new in 1.6
 
@@ -364,7 +389,7 @@ A `.dwt` template is the same case (`dwt_write`): a `.dwt` is a DWG container, s
 Nothing loads a `.env` file — export these, or set them in your MCP client's `env` block.
 
 <details>
-<summary><b>All 17 environment variables</b></summary>
+<summary><b>All 19 environment variables</b></summary>
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -372,6 +397,7 @@ Nothing loads a `.env` file — export these, or set them in your MCP client's `
 | `CAD_PROGID` | `AutoCAD.Application` | COM ProgID the live backend attaches to |
 | `TOOL_PROFILE` | `full` | `lean` (65 curated tools, 55 with `TOOL_PACKS=core`) or `full` |
 | `TOOL_PACKS` | `all` | Vertical packs to advertise: `core,pid,settings,mech,arch,plant` (`core` always on) |
+| `TOOL_INCLUDE` | *(empty)* | Extra tools to advertise on top of the profile and packs (comma list of names) |
 | `DISCOVERY_MODE` | `off` | `search` replaces the catalog with `search_tools` + `call_tool` |
 | `ENABLE_3D` | `false` | Expose the opt-in `solid_*` tools (COM) |
 | `LOG_LEVEL` | `INFO` | Python logging level |
@@ -381,6 +407,7 @@ Nothing loads a `.env` file — export these, or set them in your MCP client's `
 | `MAX_DXF_BYTES` | `536870912` | Reject larger DXF input (512 MB); `0` disables |
 | `MAX_LIST_LIMIT` | `5000` | Bound list/selection response sizes |
 | `COM_CALL_TIMEOUT` | `60` | Per-call live AutoCAD timeout (s); `0` disables |
+| `COM_REJECTED_RETRY_S` | `15` | How long a call AutoCAD refuses while busy is retried (s); `0` disables |
 | `EZDXF_CALL_TIMEOUT` | `120` | Per-call headless timeout (s); `0` disables |
 | `DANGEROUS_COMMANDS_ENABLED` | `false` | Allow blocked commands/LISP; reported as unsafe mode |
 | `ALLOW_REMOTE_HTTP` | `false` | Permit a non-loopback HTTP bind |

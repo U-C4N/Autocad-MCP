@@ -7,6 +7,105 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-10-18
+
+Fork release ([suanlong06/Autocad-MCP](https://github.com/suanlong06/Autocad-MCP)):
+the fourteen defects a production label sheet found on AutoCAD 2026 (an 11x17
+customer approval sheet and a 1:1 cutter file, built through the server on
+both engines), fixed with a test each, plus the upgrades that job asked for.
+No tool was added or removed (247 registered); every change is a fix, a new
+optional parameter or a new environment variable. The COM paths were run
+live once by `scripts/smoke_v17_com.py` (AutoCAD 2026, 25.1s).
+
+### Fixed — live engine (COM)
+
+- **Calls AutoCAD refuses while busy are retried (#1, #5).** A COM message
+  filter (`backends/com_message_filter.py`, `CoRegisterMessageFilter` through
+  ctypes — pywin32 does not expose it) answers `RetryRejectedCall`, so COM
+  re-sends *that one call* for up to `COM_REJECTED_RETRY_S` (default 15 s)
+  instead of raising `RPC_E_CALL_REJECTED` ("Call was rejected by callee").
+  Measured live: with a second client holding AutoCAD in `_.DELAY`, 4 of 10
+  `entity_create_line` calls were refused without the filter and 0 of 10
+  with it (3 calls retried).
+- **Entity creates are all-or-nothing (#1).** A property write refused after
+  `AddLine` / `AddHatch` / `AddDim…` used to leave the entity in the drawing
+  while the tool reported failure, so a retry drew a duplicate (4, 1 and 6
+  duplicates over three 72-step batches) and one hatch stayed on layer 0
+  without colour. `_com_created` deletes what a failed create made; hatch
+  layer and colour are written before the loop is evaluated, and the
+  temporary boundary is removed whatever happens. The headless engine keeps
+  the same contract (`_apply_attrs`).
+- **A refusing seat is explained (#4).** The error names the causes (an active
+  command or prompt — press ESC in AutoCAD; a modal dialog; a locked Windows
+  session) and says the call did not run. `system_status` carries `seat`:
+  `quiescent`, `active_commands` (`CMDNAMES`), `session_locked`
+  (`WTSQuerySessionInformation`), a `hint` and the retry filter's counters.
+- **`viewport_create` looks where it is asked (#2).** It set `Target`, which
+  keeps the old view-centre offset (a PDF off by ~216 x 123 mm). The view is
+  now centred from inside the viewport (paper view zoomed to the viewport —
+  AutoCAD refuses `MSpace` otherwise —, `ActivePViewport`, `ZoomCenter`,
+  `CustomScale`) and `view_center` is read back from `VIEWCTR`.
+- **`layout_create` leaves no default viewport (#3).** The tab is initialised
+  with `LAYOUTCREATEVIEWPORT` 0 (restored afterwards); a viewport AutoCAD adds
+  anyway is deleted (`default_viewports_removed`). Measured: an activated tab
+  otherwise carries the overall viewport plus a scaled-to-fit copy.
+- **`viewport_list` no longer crashes (#8)** on a makepy-narrowed
+  `IAcadEntity`; rows report `view_center: null` and `target` (the orbit
+  point), because ActiveX has no view-centre member.
+- **`system_set_variable` writes 16-bit variables (#9).** A refused `VT_I4` is
+  re-sent as `VT_I2`. Measured: `SetVariable("LAYOUTCREATEVIEWPORT", 0)` →
+  "Error setting system variable"; the `VT_I2` form succeeds.
+- **`page_setup_apply(paper_units=None)` keeps the layout's units (#7)**: a
+  media write that moved them (an inch-named ANSI media resets them to inches)
+  is undone.
+- **`layer_create` refuses a duplicate (#14)** instead of silently restyling it
+  (`Layers.Add` returns the existing layer); `layer_delete` refuses `0`,
+  `Defpoints` and the current layer by name.
+
+### Fixed — headless engine (ezdxf)
+
+- **Unknown linetypes are refused (#10)** with the loaded names, like the live
+  engine, instead of writing a dangling reference `drawing_audit` had to
+  delete; the refused entity is removed.
+- **A rolled-back or undone handle stays gone (#11).** ezdxf writes an
+  attribute-less INSERT without a SEQEND and numbers a new one from
+  `$HANDSEED` on reload — the handles the rolled-back work had used, so
+  `entity_get` on a rolled-back circle answered a SEQEND. Restores renumber
+  load-made SEQENDs and raise the seed past every handle already issued.
+- **`layer_delete` refuses the current layer, `0`, `Defpoints`, a missing name
+  and a layer entities still sit on (#12)** — it deleted all of them.
+- **`entity_offset` handles LWPOLYLINE and ARC (#13)**: mitred corners, the
+  circle rule for closed outlines (a side point inside shrinks), the line rule
+  for open ones; arc segments and an offset that would collapse are refused.
+- **`layer_create` on an existing name is `ValueError`, not an internal error
+  (#14).**
+
+### Added
+
+- `page_setup_apply(full_bleed=True)` — the zero-margin `ISO_full_bleed_…` /
+  `ANSI_full_bleed_…` media DWG To PDF ships, so a sheet the size of the paper
+  plots 1:1 uncut (#6; the standard ANSI B media keeps 17 mm top and bottom).
+  `paper_units` is now a tool parameter too.
+- True colour: `entity_set_properties(true_color=)`, `layer_create` /
+  `layer_modify(true_color=)` — `#RRGGBB`, `R,G,B` or `[R, G, B]`; new contract
+  members `entity_set_true_color` / `layer_set_true_color`. An ACI write
+  removes it again, as in AutoCAD. Headless `entity_get` reports `true_color`.
+- `textstyle_create(bold=, italic=)` for TrueType faces (`SetFont` live; the
+  STYLE record's ACAD extended font data headlessly); refused for SHX.
+- `entity_create_mtext(attachment=, line_spacing=)` — nine attachment points
+  (`middle_center` centres a label on its point) and a 0.25–4.0 spacing factor.
+- `drawing_export_dxf(dxf_version=)` — R12, R2000 … R2018 for older cutters
+  and CNC software; `acadver` is read back from the file. Headlessly a copy
+  (R12 through ezdxf's `r12export`); live, AutoCAD's SaveAs rebinds the
+  document (`document_rebound: true`).
+- `layer_create(exist_ok=True)` updates an existing layer in place and reports
+  `created`.
+- `TOOL_INCLUDE` — tools to advertise on top of `TOOL_PROFILE` / `TOOL_PACKS`
+  (e.g. a lean client plus `entity_create_hatch,layout_create,viewport_create`);
+  `system_about` reports what it added and ignored.
+- `COM_REJECTED_RETRY_S` (default 15; 0 disables the filter).
+- `scripts/smoke_v17_com.py` — the live run of every path above.
+
 ## [1.6.0] — 2026-09-25
 
 The v1.6 roadmap, shipped as five tracks: 154 → 247 registered tools in 28

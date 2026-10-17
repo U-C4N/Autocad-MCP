@@ -123,3 +123,54 @@ class EntityModificationContract(ABC):
         editing it would either do nothing or break the association.
         """
         ...
+
+    @abstractmethod
+    async def entity_set_true_color(self, handle: str, rgb: tuple[int, int, int]) -> dict:
+        """Give an entity a 24-bit colour. ``{ok, handle, true_color: "#RRGGBB"}``.
+
+        ACI has 255 colours and no dark warm grey, so a Pantone swatch such as
+        PMS 426 C (#25282A) printed as ACI 250 — visibly lighter (report of
+        2026-10-18). The true colour overrides the ACI number on every engine,
+        as in AutoCAD; setting an ACI ``color`` afterwards removes it again.
+        """
+        ...
+
+
+def parse_true_color(value) -> tuple[int, int, int]:
+    """``"#25282A"`` / ``"25282A"`` / ``"37,40,42"`` / ``[37, 40, 42]`` → ``(37, 40, 42)``.
+
+    Raises ``ValueError`` naming the accepted spellings for anything else; every
+    channel must be an integer 0-255.
+    """
+    rgb: list[int]
+    if isinstance(value, str):
+        text = value.strip()
+        hex_text = text[1:] if text.startswith("#") else text
+        if len(hex_text) == 6 and all(c in "0123456789abcdefABCDEF" for c in hex_text):
+            rgb = [int(hex_text[i : i + 2], 16) for i in (0, 2, 4)]
+        else:
+            try:
+                rgb = [int(part.strip()) for part in text.split(",")]
+            except ValueError:
+                rgb = []
+    elif isinstance(value, (list, tuple)):
+        try:
+            rgb = [int(v) for v in value]
+        except (TypeError, ValueError):
+            rgb = []
+        if any(isinstance(v, float) and not float(v).is_integer() for v in value):
+            rgb = []
+    else:
+        rgb = []
+    if len(rgb) != 3 or any(not 0 <= c <= 255 for c in rgb):
+        raise ValueError(
+            f"true_color: {value!r} is not a colour; use '#RRGGBB', 'R,G,B' or [R, G, B] "
+            "with each channel 0-255"
+        )
+    return rgb[0], rgb[1], rgb[2]
+
+
+def true_color_hex(rgb) -> str:
+    """``(37, 40, 42)`` → ``"#25282A"``."""
+    r, g, b = (int(c) for c in rgb)
+    return f"#{r:02X}{g:02X}{b:02X}"

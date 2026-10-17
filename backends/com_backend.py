@@ -24,7 +24,7 @@ import config
 from engineering.measure import is_self_intersecting, polygon_area_perimeter
 from security import sanitize_macro_argument, sanitize_symbol_name, validate_path
 
-from . import ocs
+from . import com_message_filter, ocs
 from .base import (
     AutoCADBackend,
     BlockInfo,
@@ -39,6 +39,7 @@ from .base import (
     rad2deg,
     shoelace_area,
 )
+from .contracts.layers import refuse_reserved_layer_delete
 from .contracts.settings import SUMMARY_FIELDS, validate_drawing_properties
 
 log = logging.getLogger(__name__)
@@ -125,9 +126,17 @@ _COM_STATE: dict[str, Any] = {}  # keys: "app"
 
 
 def _com_init():
-    """COM thread initializer – called once by the ThreadPoolExecutor."""
+    """COM thread initializer – called once by the ThreadPoolExecutor.
+
+    Also installs the retry message filter (``backends/com_message_filter``):
+    a call AutoCAD refuses while busy (``RPC_E_CALL_REJECTED``) is re-sent by
+    COM itself for up to ``COM_REJECTED_RETRY_S`` instead of failing — per
+    COM call, so the write after an ``Add...`` can no longer fail on its own
+    and leave a half-made entity behind.
+    """
     if _COM_IMPORTS_OK:
         pythoncom.CoInitialize()
+        com_message_filter.register(config.settings.com_rejected_retry_s)
 
 
 def _com_teardown():
@@ -139,6 +148,7 @@ def _com_teardown():
     """
     _COM_STATE.pop("app", None)
     if _COM_IMPORTS_OK:
+        com_message_filter.revoke()
         try:
             pythoncom.CoUninitialize()
         except Exception:
@@ -520,6 +530,206 @@ def _apply_entity_attrs(entity, layer: str | None, color: int | None, linetype: 
         entity.Linetype = linetype
 
 
+class _com_created:
+    """Make an entity create all-or-nothing on the live seat.
+
+    ``with _com_created() as made: ent = made(space.AddLine(...)); ...`` —
+    every entity passed to ``made`` is deleted again when the block raises, so
+    a create that fails after its ``Add...`` (a property write AutoCAD
+    refused, an unknown layer, a hatch loop that would not evaluate) leaves
+    nothing behind. Before v1.7 the entity stayed in the drawing while the
+    tool reported failure: a retry of the step drew a duplicate (measured: 4,
+    1 and 6 duplicates over three 72-step batches) and one hatch was left on
+    layer 0 with no colour. The headless engine keeps the same contract in
+    ``EzdxfBackend._apply_attrs``.
+    """
+
+    def __init__(self):
+        self._made: list = []
+
+    def __call__(self, entity):
+        self._made.append(entity)
+        return entity
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            return False
+        leftovers: list[str] = []
+        for entity in reversed(self._made):
+            try:
+                entity.Delete()
+            except Exception as del_exc:
+                try:
+                    handle = str(entity.Handle)
+                except Exception:
+                    handle = "?"
+                leftovers.append(handle)
+                log.warning("could not remove half-created entity %s: %s", handle, del_exc)
+        if leftovers:
+            # The caller must learn that something stayed behind, or a retry
+            # duplicates it — the exact failure this guard exists to prevent.
+            raise RuntimeError(
+                f"{exc} — and the half-created entit{'y' if len(leftovers) == 1 else 'ies'} "
+                f"{', '.join(leftovers)} could NOT be removed; delete "
+                f"{'it' if len(leftovers) == 1 else 'them'} before retrying"
+            ) from exc
+        return False
+
+
+def _com_true_color(rgb):
+    """An ``AcCmColor`` holding ``rgb`` — what ``TrueColor`` accepts (COM thread only).
+
+    The ProgID carries the release number (``AutoCAD.AcCmColor.25`` on 2025 and
+    2026, the one ``hatch_gradient`` was verified with); the running seat's
+    own major version is tried first, then the recent releases.
+    """
+    app = _acad_app()
+    major = str(getattr(app, "Version", "")).split(".")[0].strip()
+    candidates = [f"AutoCAD.AcCmColor.{major}"] if major.isdigit() else []
+    candidates += [f"AutoCAD.AcCmColor.{n}" for n in (25, 24, 23) if str(n) != major]
+    last: Exception | None = None
+    for progid in candidates:
+        try:
+            color = app.GetInterfaceObject(progid)
+            break
+        except Exception as exc:
+            last = exc
+    else:
+        raise RuntimeError(f"AutoCAD offers no AcCmColor object ({candidates}): {last}")
+    color.SetRGB(*(int(c) for c in rgb))
+    return color
+
+
+def _com_set_short_variable(doc, name: str, value: int) -> None:
+    """``SetVariable`` for an integer system variable, retried in the 16-bit width.
+
+    Python ints travel as ``VT_I4``, which most integer variables accept. Some —
+    the registry-stored ones such as ``LAYOUTCREATEVIEWPORT`` — refused it with
+    a bare "Exception occurred" (report #9, AutoCAD 2026) while ``(setvar ...)``
+    succeeded, so a refused plain int is sent again as ``VT_I2`` when it fits.
+    The original refusal is what propagates when the second form fails too.
+    """
+    value = int(value)
+    try:
+        doc.SetVariable(name, value)
+        return
+    except Exception as first:
+        if not -32768 <= value <= 32767 or not _COM_IMPORTS_OK:
+            raise
+        try:
+            doc.SetVariable(name, win32com.client.VARIANT(pythoncom.VT_I2, value))
+        except Exception:
+            raise first from None
+        log.debug("SetVariable(%s) took VT_I2 after refusing VT_I4 (%s)", name, first)
+
+
+def _windows_session_locked() -> bool | None:
+    """True when the interactive Windows session is locked, None when unknown.
+
+    A locked session is one of the ways AutoCAD ends up refusing every COM
+    call. ``WTSQuerySessionInformationW(WTSSessionInfoEx)`` reads the flag
+    without touching the desktop. ``WTSINFOEXW`` is ``DWORD Level`` then a
+    union aligned to 8 bytes (it holds LARGE_INTEGERs), so ``SessionId``,
+    ``SessionState`` and ``SessionFlags`` (0 locked, 1 unlocked) sit at byte
+    offsets 8, 12 and 16 — measured on Windows 11: ``[1, 0, 1, 0, 1, ...]``
+    as 32-bit words for an unlocked console session. Reading offset 12 took
+    ``SessionState`` (``WTSActive`` = 0) for the flag and called every
+    active session locked.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        wtsapi = ctypes.windll.wtsapi32
+        buffer = ctypes.c_void_p()
+        size = wintypes.DWORD()
+        WTS_CURRENT_SESSION = 0xFFFFFFFF
+        WTS_SESSION_INFO_EX = 25
+        if not wtsapi.WTSQuerySessionInformationW(
+            None,
+            wintypes.DWORD(WTS_CURRENT_SESSION),
+            ctypes.c_int(WTS_SESSION_INFO_EX),
+            ctypes.byref(buffer),
+            ctypes.byref(size),
+        ):
+            return None
+        try:
+            if size.value < 20 or not buffer.value:
+                return None
+            fields = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_long * 5)).contents
+            level, flags = int(fields[0]), int(fields[4])
+            if level != 1 or flags not in (0, 1):
+                return None
+            return flags == 0
+        finally:
+            wtsapi.WTSFreeMemory(buffer)
+    except Exception as exc:  # pragma: no cover - diagnostic only
+        log.debug("session lock state unreadable: %s", exc)
+        return None
+
+
+def _rejected_call_message(budget_s: float) -> str:
+    """What to tell a caller whose call AutoCAD kept refusing (RPC_E_CALL_REJECTED)."""
+    waited = (
+        f"for {budget_s:g} s of retries" if budget_s > 0 else "(COM_REJECTED_RETRY_S=0: no retry)"
+    )
+    locked = _windows_session_locked()
+    cause = (
+        "The Windows session is locked — unlock it."
+        if locked
+        else "Usual causes: a command or prompt is still active in AutoCAD (press ESC "
+        "there), a modal dialog is open, or the Windows session is locked."
+    )
+    return (
+        f"AutoCAD refused the call {waited} (RPC_E_CALL_REJECTED: busy — the call did "
+        f"NOT run). {cause} An entity create removes what it had made (or names what it "
+        "could not remove); run system_status for a diagnosis, then retry."
+    )
+
+
+def _seat_diagnosis(app) -> dict:
+    """Why AutoCAD might be refusing calls: quiescence, active commands, lock state.
+
+    Each probe is independent and guarded; a probe the seat refuses reports
+    ``None`` rather than failing the status call. Runs with a short retry
+    budget so a busy seat answers in about a second instead of waiting out
+    ``COM_REJECTED_RETRY_S`` per probe.
+    """
+    diagnosis: dict[str, Any] = {"session_locked": _windows_session_locked()}
+    with com_message_filter.budget_override(1000):
+        try:
+            diagnosis["quiescent"] = bool(app.GetAcadState().IsQuiescent)
+        except Exception as exc:
+            diagnosis["quiescent"] = None
+            log.debug("GetAcadState unreadable: %s", exc)
+        try:
+            names = str(app.ActiveDocument.GetVariable("CMDNAMES") or "").strip()
+            diagnosis["active_commands"] = names or None
+        except Exception as exc:
+            diagnosis["active_commands"] = None
+            log.debug("CMDNAMES unreadable: %s", exc)
+    if diagnosis["session_locked"]:
+        hint = "The Windows session is locked: AutoCAD may refuse COM calls until it is unlocked."
+    elif diagnosis["quiescent"] is False or diagnosis.get("active_commands"):
+        hint = (
+            "AutoCAD is busy or waiting at a prompt"
+            + (f" ({diagnosis['active_commands']})" if diagnosis.get("active_commands") else "")
+            + ": press ESC in AutoCAD (in its window, not a background keystroke) and retry."
+        )
+    elif diagnosis["quiescent"] is None:
+        hint = "AutoCAD did not answer the probes: it may be busy, showing a dialog, or locked."
+    else:
+        hint = None
+    diagnosis["hint"] = hint
+    diagnosis["retry_filter"] = com_message_filter.stats()
+    return diagnosis
+
+
 def _regen():
     """Regen the active viewport so new entities appear immediately on screen."""
     if _COM_STATE.get("batch_mode"):
@@ -803,7 +1013,9 @@ def _com_locate_font(key: str, font_file: str) -> _ComFont:
     return _ComFont(font_file, path, face)
 
 
-def _com_write_font(style, font: _ComFont) -> None:
+def _com_write_font(
+    style, font: _ComFont, bold: bool | None = None, italic: bool | None = None
+) -> None:
     """Set ``style``'s font from a ``_com_locate_font`` result.
 
     Measured on AutoCAD 2026: ``fontFile = "isocp.shx"`` (an SHX on the
@@ -822,8 +1034,14 @@ def _com_write_font(style, font: _ComFont) -> None:
     if font.face is None:
         style.fontFile = font.font_file
     else:
-        family, bold, italic = font.face
-        style.SetFont(family, bold, italic, 0, 0)
+        family, own_bold, own_italic = font.face
+        style.SetFont(
+            family,
+            own_bold if bold is None else bool(bold),
+            own_italic if italic is None else bool(italic),
+            0,
+            0,
+        )
 
 
 def _com_delete_quietly(obj, what: str) -> None:
@@ -835,7 +1053,16 @@ def _com_delete_quietly(obj, what: str) -> None:
 
 
 def _com_create_textstyle(
-    doc, name: str, font_file: str, *, width: float, oblique_deg: float, height: float, key: str
+    doc,
+    name: str,
+    font_file: str,
+    *,
+    width: float,
+    oblique_deg: float,
+    height: float,
+    key: str,
+    bold: bool | None = None,
+    italic: bool | None = None,
 ):
     """``TextStyles.Add`` plus its font, width, oblique and height — or nothing.
 
@@ -847,7 +1074,7 @@ def _com_create_textstyle(
     font = _com_locate_font(key, font_file)
     style = doc.TextStyles.Add(name)
     try:
-        _com_write_font(style, font)
+        _com_write_font(style, font, bold, italic)
         style.Width = float(width)
         style.ObliqueAngle = deg2rad(oblique_deg)
         style.Height = float(height)
@@ -1883,6 +2110,10 @@ class ComBackend(AutoCADBackend):
             if hr in (-2147221246, -2147221005, -2147417842):
                 _COM_STATE.pop("app", None)
                 self._connected = False
+            if hr == _RPC_E_CALL_REJECTED:
+                raise RuntimeError(
+                    _rejected_call_message(config.settings.com_rejected_retry_s)
+                ) from e
             raise RuntimeError(
                 f"AutoCAD COM error ({hr:#010x}): {e.args[1] if len(e.args) > 1 else e}"
             ) from e
@@ -2006,8 +2237,44 @@ class ComBackend(AutoCADBackend):
 
         return await self._run(_sync)
 
-    async def drawing_export_dxf(self, path: str) -> dict:
-        return await self.drawing_save_as(path, "dxf")
+    #: AcSaveAsType for each DXF release (the DWG code + 1; acR12_dxf = 1).
+    _DXF_SAVE_AS = {
+        "AC1009": 1,
+        "AC1015": 13,
+        "AC1018": 25,
+        "AC1021": 37,
+        "AC1024": 49,
+        "AC1027": 61,
+        "AC1032": 65,
+    }
+
+    async def drawing_export_dxf(self, path: str, version: str | None = None) -> dict:
+        """``SaveAs(path, <dxf code>)``; ``version`` picks the release.
+
+        ``SaveAs`` rebinds the open document to the file it wrote, as the SAVEAS
+        command does (and as this tool always did) — said in
+        ``document_rebound`` so a later ``drawing_save`` is not a surprise. Save
+        the DWG first when the drawing must stay a DWG.
+        """
+        if version is None:
+            return await self.drawing_save_as(path, "dxf")
+        from backends.contracts.drawing import read_acadver, resolve_dxf_version
+
+        label, code = resolve_dxf_version(version)
+
+        def _sync():
+            doc = _acad_doc()
+            doc.SaveAs(path, self._DXF_SAVE_AS[code])
+            return {
+                "ok": True,
+                "path": path,
+                "format": "dxf",
+                "dxf_version": label,
+                "acadver": read_acadver(path),
+                "document_rebound": True,
+            }
+
+        return await self._run(_sync)
 
     # ── external references, rasters and DWG (v1.6 track G) ──────────────────
     #
@@ -2281,15 +2548,62 @@ class ComBackend(AutoCADBackend):
         return await self._run(_sync)
 
     async def layout_create(self, name: str) -> dict:
+        """``Layouts.Add`` — and a sheet with no viewport AutoCAD invented.
+
+        AutoCAD gives a layout its default viewport the first time the tab is
+        *initialised* (activated) while ``LAYOUTCREATEVIEWPORT`` is 1, which
+        is what ``viewport_create`` does next. Measured on AutoCAD 2026
+        (2026-10-18): the PDF then carried a second, scaled-to-fit copy of
+        model space under the caller's 1:1 viewport. The headless engine
+        creates a tab with only its paper-space viewport, so the live one now
+        matches it: the tab is initialised here once with the variable at 0
+        (restored afterwards — it lives in the registry), and if a viewport
+        appeared anyway it is deleted. ``default_viewports_removed`` says
+        how many; the overall paper-space viewport (the first one AutoCAD
+        makes, lowest handle) is never touched.
+        """
+
         def _sync():
             doc = _acad_doc()
-            existing = {doc.Layouts.Item(i).Name for i in range(doc.Layouts.Count)}
-            if name in existing:
+            if self._find_layout(doc, name) is not None:
                 return {"ok": False, "error": f"Layout already exists: {name}"}
-            doc.Layouts.Add(name)
-            return {"ok": True, "layout": name}
+            layout = doc.Layouts.Add(name)
+            removed = self._com_initialise_bare_layout(doc, layout)
+            return {"ok": True, "layout": name, "default_viewports_removed": removed}
 
         return await self._run(_sync)
+
+    def _com_initialise_bare_layout(self, doc, layout) -> int:
+        """Initialise a new tab with no default viewport; return how many were removed."""
+        previous_tab = doc.ActiveLayout.Name
+        previous_var = None
+        try:
+            previous_var = int(doc.GetVariable("LAYOUTCREATEVIEWPORT"))
+            if previous_var != 0:
+                _com_set_short_variable(doc, "LAYOUTCREATEVIEWPORT", 0)
+        except Exception as exc:
+            log.debug("LAYOUTCREATEVIEWPORT not writable (%s); deleting instead", exc)
+        removed = 0
+        try:
+            doc.ActiveLayout = layout
+            viewports = sorted(self._com_viewports(layout), key=lambda vp: int(str(vp.Handle), 16))
+            # The first viewport is the sheet's own paper-space viewport.
+            for viewport in viewports[1:]:
+                viewport.Delete()
+                removed += 1
+        finally:
+            try:
+                if previous_tab != layout.Name:
+                    doc.ActiveLayout = doc.Layouts.Item(previous_tab)
+            finally:
+                if previous_var not in (None, 0):
+                    try:
+                        _com_set_short_variable(doc, "LAYOUTCREATEVIEWPORT", previous_var)
+                    except Exception as exc:
+                        log.warning(
+                            "LAYOUTCREATEVIEWPORT not restored to %s: %s", previous_var, exc
+                        )
+        return removed
 
     async def layout_set_current(self, name: str) -> dict:
         def _sync():
@@ -2459,33 +2773,98 @@ class ComBackend(AutoCADBackend):
             if previous != layout:
                 doc.ActiveLayout = target
             try:
-                viewport = doc.PaperSpace.AddPViewport(
-                    _apoint(center_x, center_y), float(width), float(height)
-                )
-                viewport.Display(True)
-                try:
-                    viewport.CustomScale = float(scale)
-                except Exception:  # some verticals expose StandardScale only
-                    pass
-                # `Target`, not `ViewCenter`: AcadPViewport has no ViewCenter
-                # member at all. Verified against AutoCAD 2026 — the old call
-                # raised every single time and the bare `except: pass` around
-                # it swallowed that, so view_center_x/y were silently ignored
-                # and every COM viewport looked at the model origin instead of
-                # where the caller asked. The failure is reported now.
-                viewport.Target = _apoint(view_center_x, view_center_y)
+                with _com_created() as made:
+                    viewport = made(
+                        doc.PaperSpace.AddPViewport(
+                            _apoint(center_x, center_y), float(width), float(height)
+                        )
+                    )
+                    viewport.Display(True)
+                    view_center = self._com_center_viewport_view(
+                        doc,
+                        viewport,
+                        float(view_center_x),
+                        float(view_center_y),
+                        float(height) / float(scale),
+                        float(scale),
+                        paper_box=(
+                            float(center_x) - float(width) / 2.0,
+                            float(center_y) - float(height) / 2.0,
+                            float(center_x) + float(width) / 2.0,
+                            float(center_y) + float(height) / 2.0,
+                        ),
+                    )
                 return {
                     "ok": True,
                     "handle": viewport.Handle,
                     "layout": layout,
                     "scale": scale,
                     "view_height": float(height) / float(scale),
+                    "view_center": view_center,
                 }
             finally:
                 if previous != layout:
                     doc.ActiveLayout = doc.Layouts.Item(previous)
 
         return await self._run(_sync)
+
+    @staticmethod
+    def _com_center_viewport_view(doc, viewport, cx, cy, view_height, scale, paper_box=None):
+        """Point a new viewport at model ``(cx, cy)`` at ``scale``; return the measured centre.
+
+        AcadPViewport has no ``ViewCenter`` member, and writing ``Target`` —
+        what v1.4-1.6 did — moves the point the view orbits about but keeps
+        the old centre *offset*, so the content was shifted by the previous
+        view centre (report #2: a PDF off by about 216 x 123 mm). The view
+        centre can only be set the way the operator sets it: from inside the
+        viewport. So: model space on, this viewport active, ``ZoomCenter`` at
+        the requested point with the view height the scale implies, then
+        ``CustomScale`` (which keeps the centre), then paper space again.
+        ``VIEWCTR`` read inside the viewport is the evidence returned.
+
+        ``MSpace = True`` is refused ("There is no active modelspace
+        viewport") while the new viewport lies outside the paper-space view
+        on screen — always the case on a tab just set up, whose view still
+        shows the old sheet (measured on AutoCAD 2026, 2026-10-18: refused
+        after ``Regen`` and after ``ActiveSpace = paper``, accepted after a
+        ``ZoomWindow`` over the viewport). So the paper view is zoomed to
+        ``paper_box`` first, and to the sheet's extents afterwards.
+        """
+        app = _acad_app()
+        was_model = bool(doc.MSpace)
+        measured = None
+        try:
+            if paper_box is not None:
+                x0, y0, x1, y1 = paper_box
+                app.ZoomWindow(_apoint(x0, y0), _apoint(x1, y1))
+            doc.MSpace = True
+            doc.ActivePViewport = viewport
+            app.ZoomCenter(_apoint(cx, cy), float(view_height))
+            try:
+                viewport.CustomScale = float(scale)
+            except Exception:  # some verticals expose StandardScale only
+                log.debug("CustomScale not writable; the zoom height stands")
+            try:
+                centre = doc.GetVariable("VIEWCTR")
+                measured = [round(float(centre[0]), 6), round(float(centre[1]), 6)]
+            except Exception as exc:
+                log.debug("VIEWCTR unreadable inside the viewport: %s", exc)
+        except Exception as exc:
+            raise RuntimeError(
+                f"viewport_create: could not centre the view on ({cx:g}, {cy:g}): "
+                f"{_com_error_description(exc)}"
+            ) from exc
+        finally:
+            try:
+                doc.MSpace = was_model
+            except Exception as exc:
+                log.warning("viewport_create: could not return to paper space: %s", exc)
+            if paper_box is not None and not was_model:
+                try:
+                    app.ZoomExtents()  # show the whole sheet again
+                except Exception as exc:
+                    log.debug("viewport_create: paper ZoomExtents failed: %s", exc)
+        return measured
 
     # ---------------------------------------------------------------------------
     # ── environment (track E) ───────────────────────────────────────────────────
@@ -3929,10 +4308,21 @@ class ComBackend(AutoCADBackend):
 
     @staticmethod
     def _com_viewports(layout):
+        """The layout's viewports, each re-dispatched on its concrete class.
+
+        ``Block.Item`` is declared ``IAcadEntity*``: on any machine with a
+        makepy cache for AutoCAD the item comes back as a gen_py
+        ``IAcadEntity`` wrapper, and ``viewport_list`` died on its first
+        ``.Center`` (report #8: "IAcadEntity ... has no attribute 'Center'").
+        ``_com_unnarrow`` is the same cure the style dictionaries use.
+        """
         block = layout.Block
-        return [
-            block.Item(i) for i in range(block.Count) if block.Item(i).ObjectName == "AcDbViewport"
-        ]
+        found = []
+        for i in range(block.Count):
+            item = block.Item(i)
+            if item.ObjectName == "AcDbViewport":
+                found.append(_com_unnarrow(item))
+        return found
 
     def _resolve_com_viewport(self, doc, handle: str):
         """``(viewport, layout_name, None)`` or ``(None, None, refusal)``."""
@@ -3966,9 +4356,13 @@ class ComBackend(AutoCADBackend):
     @staticmethod
     def _com_viewport_row(viewport, layout_name: str) -> dict:
         center = viewport.Center
-        # The model point the viewport looks at is `Target`; there is no
-        # `ViewCenter` member on AcadPViewport (verified against AutoCAD 2026).
-        view_center = viewport.Target
+        # AcadPViewport has no `ViewCenter` member (verified against AutoCAD
+        # 2026), and `Target` is not the view centre: it is the point the view
+        # orbits about, which a pan or ZoomCenter leaves where it was (v1.7
+        # viewport_create centres with ZoomCenter and leaves Target at the
+        # origin). Reading the centre means activating the viewport, which a
+        # list must not do — so it is reported unknown and Target as itself.
+        target = viewport.Target
         height = float(viewport.Height)
         try:
             scale = float(viewport.CustomScale)
@@ -3980,7 +4374,8 @@ class ComBackend(AutoCADBackend):
             "center": [float(center[0]), float(center[1])],
             "width": float(viewport.Width),
             "height": height,
-            "view_center": [float(view_center[0]), float(view_center[1])],
+            "view_center": None,
+            "target": [float(target[0]), float(target[1])],
             "view_height": (height / scale if scale else None),
             "scale": scale,
             "locked": bool(viewport.DisplayLocked),
@@ -4017,7 +4412,11 @@ class ComBackend(AutoCADBackend):
                 "ok": True,
                 "viewports": rows,
                 "count": len(rows),
-                "note": "ActiveX exposes no main-viewport predicate, so is_main is null",
+                "note": (
+                    "ActiveX exposes no main-viewport predicate, so is_main is null; nor a "
+                    "view-centre member, so view_center is null (target is the orbit point, "
+                    "not the centre)"
+                ),
             }
 
         return await self._run(_sync)
@@ -4240,7 +4639,7 @@ class ComBackend(AutoCADBackend):
         )
 
         resolved = require_page_setup(setup)
-        if resolved["margins_mm"] is not None:
+        if resolved["margins_mm"] is not None and not resolved.get("full_bleed"):
             raise ValueError(
                 "page_setup_apply: margins_mm cannot be written on the COM backend — AutoCAD "
                 "takes the printable margins from the plotter configuration (.pc3). Omit "
@@ -4296,13 +4695,21 @@ class ComBackend(AutoCADBackend):
                         f"{media!r} (same paper on this device: "
                         f"{', '.join(nearest) or 'none'}; {len(names)} media in total)"
                     )
+                units_before = target.PaperUnits
                 step = "CanonicalMediaName"
                 _set("CanonicalMediaName", media)
                 if resolved["paper_units"] is not None:
-                    # None keeps the layout's units — what AutoCAD's own Page
-                    # Setup does when a media is chosen.
                     step = "PaperUnits"
                     _set("PaperUnits", PAPER_UNITS[resolved["paper_units"]])
+                elif target.PaperUnits != units_before:
+                    # None keeps the layout's units — what AutoCAD's own Page
+                    # Setup does when a media is chosen. But a media write
+                    # moves PaperUnits as a side effect (measured on AutoCAD
+                    # 2026: an inch-named ANSI media resets it to inches, so
+                    # "1:1" became 1 inch = 1 unit and the PDF came out blank —
+                    # report #7), so the layout's units are written back.
+                    step = "PaperUnits"
+                    _set("PaperUnits", units_before)
                 step = "PlotRotation"
                 _set("PlotRotation", self._AC_NO_ROTATION)
                 step = "StyleSheet"
@@ -4680,8 +5087,10 @@ class ComBackend(AutoCADBackend):
     ) -> EntityInfo:
         def _sync():
             mspace = _msp()
-            line = mspace.AddLine(_apoint(x1, y1, z1), _apoint(x2, y2, z2))
-            _apply_entity_attrs(line, layer, color, linetype)
+            with _com_created() as made:
+                line = mspace.AddLine(_apoint(x1, y1, z1), _apoint(x2, y2, z2))
+                made(line)
+                _apply_entity_attrs(line, layer, color, linetype)
             _regen()
             return _entity_info(line)
 
@@ -4697,8 +5106,10 @@ class ComBackend(AutoCADBackend):
     ) -> EntityInfo:
         def _sync():
             mspace = _msp()
-            circle = mspace.AddCircle(_apoint(cx, cy), float(radius))
-            _apply_entity_attrs(circle, layer, color, None)
+            with _com_created() as made:
+                circle = mspace.AddCircle(_apoint(cx, cy), float(radius))
+                made(circle)
+                _apply_entity_attrs(circle, layer, color, None)
             _regen()
             return _entity_info(circle)
 
@@ -4716,13 +5127,15 @@ class ComBackend(AutoCADBackend):
     ) -> EntityInfo:
         def _sync():
             mspace = _msp()
-            arc = mspace.AddArc(
-                _apoint(cx, cy),
-                float(radius),
-                deg2rad(start_angle),
-                deg2rad(end_angle),
-            )
-            _apply_entity_attrs(arc, layer, color, None)
+            with _com_created() as made:
+                arc = mspace.AddArc(
+                    _apoint(cx, cy),
+                    float(radius),
+                    deg2rad(start_angle),
+                    deg2rad(end_angle),
+                )
+                made(arc)
+                _apply_entity_attrs(arc, layer, color, None)
             _regen()
             return _entity_info(arc)
 
@@ -4740,9 +5153,11 @@ class ComBackend(AutoCADBackend):
             flat = []
             for pt in points:
                 flat.extend([float(pt[0]), float(pt[1])])
-            pline = mspace.AddLightWeightPolyline(_av(flat))
-            pline.Closed = closed
-            _apply_entity_attrs(pline, layer, color, None)
+            with _com_created() as made:
+                pline = mspace.AddLightWeightPolyline(_av(flat))
+                made(pline)
+                pline.Closed = closed
+                _apply_entity_attrs(pline, layer, color, None)
             _regen()
             return _entity_info(pline)
 
@@ -4760,9 +5175,11 @@ class ComBackend(AutoCADBackend):
     ) -> EntityInfo:
         def _sync():
             mspace = _msp()
-            txt = mspace.AddText(text, _apoint(x, y), float(height))
-            txt.Rotation = deg2rad(rotation)
-            _apply_entity_attrs(txt, layer, color, None)
+            with _com_created() as made:
+                txt = mspace.AddText(text, _apoint(x, y), float(height))
+                made(txt)
+                txt.Rotation = deg2rad(rotation)
+                _apply_entity_attrs(txt, layer, color, None)
             _regen()
             return _entity_info(txt)
 
@@ -4778,14 +5195,30 @@ class ComBackend(AutoCADBackend):
         rotation=0.0,
         layer=None,
         color=None,
+        *,
+        attachment=None,
+        line_spacing=None,
     ) -> EntityInfo:
+        from backends.contracts.entity_creation import resolve_mtext_layout
+
+        attach_code, spacing = resolve_mtext_layout(attachment, line_spacing)
+
         def _sync():
             mspace = _msp()
-            mt = mspace.AddMText(_apoint(x, y), float(width), text)
-            mt.Height = float(height)
-            if rotation:
-                mt.Rotation = deg2rad(rotation)  # NEW-mtext-1: honor caller rotation
-            _apply_entity_attrs(mt, layer, color, None)
+            with _com_created() as made:
+                mt = mspace.AddMText(_apoint(x, y), float(width), text)
+                made(mt)
+                mt.Height = float(height)
+                if rotation:
+                    mt.Rotation = deg2rad(rotation)  # NEW-mtext-1: honor caller rotation
+                if attach_code is not None:
+                    # AutoCAD keeps the text where it was and moves the
+                    # insertion point; put the point back where it was asked.
+                    mt.AttachmentPoint = attach_code
+                    mt.InsertionPoint = _apoint(x, y)
+                if spacing is not None:
+                    mt.LineSpacingFactor = spacing
+                _apply_entity_attrs(mt, layer, color, None)
             _regen()
             return _entity_info(mt)
 
@@ -4809,25 +5242,27 @@ class ComBackend(AutoCADBackend):
 
         def _sync():
             mspace = _msp()
-            table = mspace.AddTable(
-                _apoint(x, y),
-                layout.row_count,
-                layout.column_count,
-                layout.row_height,
-                layout.column_widths[0],
-            )
-            for column, width in enumerate(layout.column_widths):
-                table.SetColumnWidth(column, width)
-            # MEASURED on AutoCAD 2026: IAcadTable has no TextHeight property
-            # (the old `table.TextHeight = h` raised and was swallowed, leaving
-            # the Standard style's 6.0 / 4.5 - illegible at 1:50). The member
-            # is SetCellTextHeight(row, col, h), set per cell.
-            for row_index, row in enumerate(layout.cells):
-                table.SetRowHeight(row_index, layout.row_height)
-                for column_index, value in enumerate(row):
-                    table.SetText(row_index, column_index, value)
-                    table.SetCellTextHeight(row_index, column_index, layout.text_height)
-            _apply_entity_attrs(table, layer, None, None)
+            with _com_created() as made:
+                table = mspace.AddTable(
+                    _apoint(x, y),
+                    layout.row_count,
+                    layout.column_count,
+                    layout.row_height,
+                    layout.column_widths[0],
+                )
+                made(table)
+                for column, width in enumerate(layout.column_widths):
+                    table.SetColumnWidth(column, width)
+                # MEASURED on AutoCAD 2026: IAcadTable has no TextHeight property
+                # (the old `table.TextHeight = h` raised and was swallowed, leaving
+                # the Standard style's 6.0 / 4.5 - illegible at 1:50). The member
+                # is SetCellTextHeight(row, col, h), set per cell.
+                for row_index, row in enumerate(layout.cells):
+                    table.SetRowHeight(row_index, layout.row_height)
+                    for column_index, value in enumerate(row):
+                        table.SetText(row_index, column_index, value)
+                        table.SetCellTextHeight(row_index, column_index, layout.text_height)
+                _apply_entity_attrs(table, layer, None, None)
             _regen()
             info = _entity_info(table)
             info.type = "TABLE"
@@ -4870,12 +5305,14 @@ class ComBackend(AutoCADBackend):
             flat = []
             for px, py in normalized:
                 flat.extend([px, py, 0.0])
-            leader = _msp().AddMLeader(_av(flat), 0)
-            leader.TextString = str(text)
-            leader.TextHeight = float(text_height)
-            leader.LandingGap = float(landing_gap)
-            leader.ArrowheadSize = float(arrow_size)
-            _apply_entity_attrs(leader, layer, None, None)
+            with _com_created() as made:
+                leader = _msp().AddMLeader(_av(flat), 0)
+                made(leader)
+                leader.TextString = str(text)
+                leader.TextHeight = float(text_height)
+                leader.LandingGap = float(landing_gap)
+                leader.ArrowheadSize = float(arrow_size)
+                _apply_entity_attrs(leader, layer, None, None)
             _regen()
             info = _entity_info(leader)
             info.type = "MLEADER"
@@ -4909,20 +5346,31 @@ class ComBackend(AutoCADBackend):
         def _sync():
             mspace = _msp()
             # acPatternTypePreDefined = 0
-            hatch = mspace.AddHatch(0, pattern, False)
-            hatch.PatternScale = float(scale)
-            hatch.PatternAngle = deg2rad(angle)
-            # Build outer loop as a temporary lwpolyline
             flat = []
             for pt in boundary_points:
                 flat.extend([float(pt[0]), float(pt[1])])
-            bnd_pline = mspace.AddLightWeightPolyline(_av(flat))
-            bnd_pline.Closed = True
-            outer = win32com.client.VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_DISPATCH, [bnd_pline])
-            hatch.AppendOuterLoop(outer)
-            hatch.Evaluate()
-            bnd_pline.Delete()
-            _apply_entity_attrs(hatch, layer, color, None)
+            with _com_created() as made:
+                hatch = mspace.AddHatch(0, pattern, False)
+                made(hatch)
+                # Layer and colour first: a hatch refused half-way used to be
+                # left on layer 0 with no colour, drawn over the text after it.
+                _apply_entity_attrs(hatch, layer, color, None)
+                hatch.PatternScale = float(scale)
+                hatch.PatternAngle = deg2rad(angle)
+                # Build outer loop as a temporary lwpolyline, removed whatever happens.
+                bnd_pline = mspace.AddLightWeightPolyline(_av(flat))
+                try:
+                    bnd_pline.Closed = True
+                    outer = win32com.client.VARIANT(
+                        pythoncom.VT_ARRAY | pythoncom.VT_DISPATCH, [bnd_pline]
+                    )
+                    hatch.AppendOuterLoop(outer)
+                    hatch.Evaluate()
+                finally:
+                    try:
+                        bnd_pline.Delete()
+                    except Exception as exc:
+                        log.warning("entity_create_hatch: temporary boundary not removed: %s", exc)
             _regen()
             return _entity_info(hatch)
 
@@ -4939,12 +5387,14 @@ class ComBackend(AutoCADBackend):
             flat = []
             for pt in fit_points:
                 flat.extend([float(pt[0]), float(pt[1]), 0.0])
-            sp = mspace.AddSpline(
-                _av(flat),
-                _apoint(0, 1),  # start tangent
-                _apoint(0, 1),  # end tangent
-            )
-            _apply_entity_attrs(sp, layer, color, None)
+            with _com_created() as made:
+                sp = mspace.AddSpline(
+                    _av(flat),
+                    _apoint(0, 1),  # start tangent
+                    _apoint(0, 1),  # end tangent
+                )
+                made(sp)
+                _apply_entity_attrs(sp, layer, color, None)
             _regen()
             return _entity_info(sp)
 
@@ -4962,12 +5412,14 @@ class ComBackend(AutoCADBackend):
     ) -> EntityInfo:
         def _sync():
             mspace = _msp()
-            ellipse = mspace.AddEllipse(
-                _apoint(cx, cy),
-                _apoint(major_x, major_y),  # major axis vector
-                float(ratio),  # ratio of minor to major axis
-            )
-            _apply_entity_attrs(ellipse, layer, color, None)
+            with _com_created() as made:
+                ellipse = mspace.AddEllipse(
+                    _apoint(cx, cy),
+                    _apoint(major_x, major_y),  # major axis vector
+                    float(ratio),  # ratio of minor to major axis
+                )
+                made(ellipse)
+                _apply_entity_attrs(ellipse, layer, color, None)
             _regen()
             return _entity_info(ellipse)
 
@@ -4982,8 +5434,10 @@ class ComBackend(AutoCADBackend):
     ) -> EntityInfo:
         def _sync():
             mspace = _msp()
-            pt = mspace.AddPoint(_apoint(x, y))
-            _apply_entity_attrs(pt, layer, color, None)
+            with _com_created() as made:
+                pt = mspace.AddPoint(_apoint(x, y))
+                made(pt)
+                _apply_entity_attrs(pt, layer, color, None)
             _regen()
             return _entity_info(pt)
 
@@ -5002,16 +5456,18 @@ class ComBackend(AutoCADBackend):
         def _sync():
             _require_block_defined(_acad_doc(), name)
             mspace = _msp()
-            ref = mspace.InsertBlock(
-                _apoint(x, y),
-                name,
-                float(scale_x),
-                float(scale_y),
-                1.0,
-                deg2rad(rotation),
-            )
-            if layer:
-                ref.Layer = layer
+            with _com_created() as made:
+                ref = mspace.InsertBlock(
+                    _apoint(x, y),
+                    name,
+                    float(scale_x),
+                    float(scale_y),
+                    1.0,
+                    deg2rad(rotation),
+                )
+                made(ref)
+                if layer:
+                    ref.Layer = layer
             _regen()
             return _entity_info(ref)
 
@@ -5038,15 +5494,17 @@ class ComBackend(AutoCADBackend):
             mspace = _msp()
             # The ActiveX API has no AddDimLinear — rotated linear dims are
             # created with AddDimRotated (GH issue #3).
-            dim = mspace.AddDimRotated(
-                _apoint(x1, y1),
-                _apoint(x2, y2),
-                _apoint(dim_x, dim_y),
-                deg2rad(rotation),
-            )
-            if layer:
-                dim.Layer = layer
-            _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode, text_override)
+            with _com_created() as made:
+                dim = mspace.AddDimRotated(
+                    _apoint(x1, y1),
+                    _apoint(x2, y2),
+                    _apoint(dim_x, dim_y),
+                    deg2rad(rotation),
+                )
+                made(dim)
+                if layer:
+                    dim.Layer = layer
+                _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode, text_override)
             _regen()
             return _entity_info(dim)
 
@@ -5064,9 +5522,11 @@ class ComBackend(AutoCADBackend):
     ) -> EntityInfo:
         def _sync():
             mspace = _msp()
-            dim = mspace.AddDimAligned(_apoint(x1, y1), _apoint(x2, y2), _apoint(dim_x, dim_y))
-            if layer:
-                dim.Layer = layer
+            with _com_created() as made:
+                dim = mspace.AddDimAligned(_apoint(x1, y1), _apoint(x2, y2), _apoint(dim_x, dim_y))
+                made(dim)
+                if layer:
+                    dim.Layer = layer
             _regen()
             return _entity_info(dim)
 
@@ -5086,14 +5546,16 @@ class ComBackend(AutoCADBackend):
     ) -> EntityInfo:
         def _sync():
             mspace = _msp()
-            dim = mspace.AddDimAngular(
-                _apoint(vx, vy),
-                _apoint(x1, y1),
-                _apoint(x2, y2),
-                _apoint(tx, ty),
-            )
-            if layer:
-                dim.Layer = layer
+            with _com_created() as made:
+                dim = mspace.AddDimAngular(
+                    _apoint(vx, vy),
+                    _apoint(x1, y1),
+                    _apoint(x2, y2),
+                    _apoint(tx, ty),
+                )
+                made(dim)
+                if layer:
+                    dim.Layer = layer
             _regen()
             return _entity_info(dim)
 
@@ -5114,12 +5576,14 @@ class ComBackend(AutoCADBackend):
     ) -> EntityInfo:
         def _sync():
             mspace = _msp()
-            dim = mspace.AddDimRadial(
-                _apoint(cx, cy), _apoint(chord_x, chord_y), float(leader_length)
-            )
-            if layer:
-                dim.Layer = layer
-            _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode, text_override)
+            with _com_created() as made:
+                dim = mspace.AddDimRadial(
+                    _apoint(cx, cy), _apoint(chord_x, chord_y), float(leader_length)
+                )
+                made(dim)
+                if layer:
+                    dim.Layer = layer
+                _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode, text_override)
             _regen()
             return _entity_info(dim)
 
@@ -5140,10 +5604,12 @@ class ComBackend(AutoCADBackend):
     ) -> EntityInfo:
         def _sync():
             mspace = _msp()
-            dim = mspace.AddDimDiametric(_apoint(x1, y1), _apoint(x2, y2), float(leader_length))
-            if layer:
-                dim.Layer = layer
-            _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode, text_override)
+            with _com_created() as made:
+                dim = mspace.AddDimDiametric(_apoint(x1, y1), _apoint(x2, y2), float(leader_length))
+                made(dim)
+                if layer:
+                    dim.Layer = layer
+                _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode, text_override)
             _regen()
             return _entity_info(dim)
 
@@ -5374,6 +5840,19 @@ class ComBackend(AutoCADBackend):
 
         return await self._run(_sync)
 
+    async def entity_set_true_color(self, handle, rgb) -> dict:
+        from backends.contracts.entity_modification import parse_true_color, true_color_hex
+
+        color = parse_true_color(rgb)
+
+        def _sync():
+            doc = _acad_doc()
+            ent = doc.HandleToObject(handle)
+            ent.TrueColor = _com_true_color(color)
+            return {"ok": True, "handle": handle, "true_color": true_color_hex(color)}
+
+        return await self._run(_sync)
+
     async def entity_edit_text(
         self,
         handle,
@@ -5542,12 +6021,29 @@ class ComBackend(AutoCADBackend):
         color=7,
         linetype="Continuous",
         lineweight=-3,
+        *,
+        exist_ok: bool = False,
     ) -> LayerInfo:
+        """``Layers.Add`` — refused for an existing name unless ``exist_ok``.
+
+        ``Layers.Add`` itself returns the existing layer for a name already in
+        the table, so without this check the live engine silently restyled a
+        layer the headless engine refused. Both engines now refuse a duplicate
+        with ``ValueError`` and update it in place under ``exist_ok=True``.
+        """
+
         def _sync():
             doc = _acad_doc()
-            lyr = doc.Layers.Add(name)
-            lyr.color = int(color)
+            existing = _com_named(doc.Layers, str(name))
+            if existing is not None and not exist_ok:
+                raise ValueError(
+                    f"layer {str(existing.Name)!r} already exists; pass exist_ok=true to "
+                    "update it in place, or use layer_modify"
+                )
+            # Load before Add, so an unknown linetype refuses before anything changes.
             _ensure_linetype_loaded(linetype)
+            lyr = existing if existing is not None else doc.Layers.Add(name)
+            lyr.color = int(color)
             try:
                 lyr.Linetype = linetype
             except Exception as exc:
@@ -5558,11 +6054,29 @@ class ComBackend(AutoCADBackend):
         return await self._run(_sync)
 
     async def layer_delete(self, name) -> dict:
+        """Delete an empty layer, refused by name for the cases AutoCAD refuses.
+
+        ``Layer.Delete`` on the current layer, ``0`` or ``Defpoints`` fails with
+        a localised COM message that names no cause; these are now refused up
+        front with the same words the headless engine uses. A layer that still
+        holds objects is left to AutoCAD's own refusal, reported as such.
+        """
+
         def _sync():
             doc = _acad_doc()
-            lyr = doc.Layers.Item(name)
-            lyr.Delete()
-            return {"ok": True, "deleted": name}
+            lyr = _com_named(doc.Layers, str(name))
+            if lyr is None:
+                raise ValueError(f"layer {name!r} not found")
+            real = str(lyr.Name)
+            refuse_reserved_layer_delete(real, str(doc.ActiveLayer.Name))
+            try:
+                lyr.Delete()
+            except Exception as exc:
+                raise ValueError(
+                    f"AutoCAD refused to delete layer {real!r} ({_com_error_description(exc)}); "
+                    "it most likely still holds objects (in a layout or a block definition)"
+                ) from exc
+            return {"ok": True, "deleted": real}
 
         return await self._run(_sync)
 
@@ -5593,6 +6107,21 @@ class ComBackend(AutoCADBackend):
             if lineweight is not None:
                 lyr.Lineweight = normalize_lineweight(lineweight)
             return _layer_info(lyr, doc.ActiveLayer.Name)
+
+        return await self._run(_sync)
+
+    async def layer_set_true_color(self, name, rgb) -> dict:
+        from backends.contracts.entity_modification import parse_true_color, true_color_hex
+
+        color = parse_true_color(rgb)
+
+        def _sync():
+            doc = _acad_doc()
+            lyr = _com_named(doc.Layers, str(name))
+            if lyr is None:
+                raise ValueError(f"Layer '{name}' not found.")
+            lyr.TrueColor = _com_true_color(color)
+            return {"ok": True, "layer": str(lyr.Name), "true_color": true_color_hex(color)}
 
         return await self._run(_sync)
 
@@ -6889,9 +7418,10 @@ class ComBackend(AutoCADBackend):
         def _sync():
             try:
                 app = _acad_app()
-                version = app.Version
-                doc_count = app.Documents.Count
-                active_doc = app.ActiveDocument.Name if doc_count > 0 else None
+                with com_message_filter.budget_override(1500):
+                    version = app.Version
+                    doc_count = app.Documents.Count
+                    active_doc = app.ActiveDocument.Name if doc_count > 0 else None
                 return {
                     "backend": "com",
                     "connected": True,
@@ -6915,15 +7445,29 @@ class ComBackend(AutoCADBackend):
                         "lisp_execution",
                         "entities_2d",
                     ],
+                    # Why a seat might refuse calls, read on every status call
+                    # (quiescent / active_commands / session_locked / hint).
+                    "seat": _seat_diagnosis(app),
                 }
             except Exception as exc:
                 log.debug("system_status: _acad_app check failed: %s", exc)
-                return {
+                hr = exc.args[0] if isinstance(exc, _COM_ERROR) and exc.args else None
+                result = {
                     "backend": "com",
                     "connected": False,
                     "cad_progid": config.settings.cad_progid,
                     "error": str(exc),
                 }
+                if hr == _RPC_E_CALL_REJECTED:
+                    # AutoCAD is running and answering — it is refusing. The
+                    # raw HRESULT alone told the operator nothing (report #4).
+                    result["error"] = _rejected_call_message(1.5)
+                    try:
+                        result["seat"] = _seat_diagnosis(_COM_STATE["app"])
+                    except Exception as diag_exc:
+                        log.debug("seat diagnosis failed: %s", diag_exc)
+                        result["seat"] = {"session_locked": _windows_session_locked()}
+                return result
 
         return await self._run(_sync)
 
@@ -6968,7 +7512,11 @@ class ComBackend(AutoCADBackend):
                 payload = _av(coerced) if isinstance(current, (tuple, list)) else coerced
             except Exception as exc:
                 log.debug("set_variable type probe for %s failed: %s", name, exc)
-            doc.SetVariable(name, payload)
+            if isinstance(payload, int) and not isinstance(payload, bool):
+                # 16-bit first: see _com_set_short_variable (report #9).
+                _com_set_short_variable(doc, name, payload)
+            else:
+                doc.SetVariable(name, payload)
             return {"ok": True, "variable": name, "value": coerced}
 
         return await self._run(_sync)
@@ -7229,10 +7777,12 @@ class ComBackend(AutoCADBackend):
         width_factor: float = 1.0,
         oblique_deg: float = 0.0,
         set_current: bool = False,
+        bold: bool | None = None,
+        italic: bool | None = None,
     ) -> dict:
         from engineering.standards.textstyles import validate_textstyle
 
-        spec = validate_textstyle(name, font, height, width_factor, oblique_deg)
+        spec = validate_textstyle(name, font, height, width_factor, oblique_deg, bold, italic)
 
         def _sync():
             doc = _acad_doc()
@@ -7250,6 +7800,8 @@ class ComBackend(AutoCADBackend):
                 oblique_deg=spec["oblique_deg"],
                 height=spec["height"],
                 key="font",
+                bold=spec.get("bold"),
+                italic=spec.get("italic"),
             )
             if set_current:
                 doc.ActiveTextStyle = style
@@ -7261,6 +7813,8 @@ class ComBackend(AutoCADBackend):
                 # was refused above, never written.
                 "font_resolved": True,
                 "current": bool(set_current),
+                # Reported only when asked for, so a plain style reads as before.
+                **{k: spec[k] for k in ("bold", "italic") if spec.get(k) is not None},
             }
 
         return await self._run(_sync)
