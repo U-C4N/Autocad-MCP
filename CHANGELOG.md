@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Found by running five hard 2D practice drawings (SourceCAD 2D-26, 2D-13, 2D-16, 2D-14, 2D-18) through
+the server on AutoCAD 2026 and headlessly, and comparing the result with an independent answer key
+(`autocad/tools/run_exams.py`, `native_probe.py`). 248 registered tools (+1).
+
+### Fixed
+
+- **`boundary_from_entities` works on the live engine.** ActiveX has no edge graph, so it was refused
+  (`boundary_trace`), and with it the only way to get a closed outline - and its exact area - out of loose
+  LINEs and ARCs on a live seat. Each LINE / ARC / LWPOLYLINE is now read over COM and chained by
+  `engineering/edge_chain.py` (depth-first with backtracking; a gap is refused and named), then stored as
+  one closed LWPOLYLINE with a bulge on every arc edge, exactly as the headless engine does. New capability
+  key `boundary_chain` (true on both engines); `boundary_trace` (seed point, command-only) stays refused
+  on COM.
+- **`analysis_select_by_type("LWPOLYLINE")` returned nothing on AutoCAD.** ActiveX calls it
+  `AcDbPolyline`; the tool compared the spelling exactly while `entity_list` already used
+  `_type_filter_matches`. `DIMENSION` and `INSERT` had the same problem.
+- **A dimension could be placed but not checked.** `entity_get` and the `dimension_*` results now carry
+  `measurement` (`Dimension.Measurement` live, `Dimension.get_measurement()` headless; degrees for angular).
+
+- **`entity_trim` and `entity_extend` did nothing on AutoCAD while reporting `ok`.** Measured on
+  AutoCAD 2026: a line crossed by a cutter came back whole, a line stopping short of a boundary stayed
+  short (the `_TRIM` / `_EXTEND` keyword sequences no longer match the prompts, and a command that does
+  not run is not an error to `SendCommand`). Both now edit the entities through ActiveX members from a
+  pure plan (`engineering/trim.py`, `engineering/extend.py`) that the headless engine applies too, so the
+  two engines cut and extend in the same place. `entity_trim` also keeps the piece holding the keep
+  point on both (the old command would have removed the picked piece).
+
+### Added
+
+- **`region_boolean`** (+1 tool, 249): union / subtract / intersect closed 2D entities into one REGION
+  with AutoCAD's own kernel. Live engine only; headless refuses with capability `region_boolean` (no ACIS)
+  and names the substitute (chain with `boundary_from_entities`, subtract the measured areas). Sources are
+  deleted unless `keep_sources`; a failed boolean leaves nothing behind. Verified on AutoCAD 2026 (disc R10
+  minus disc R3 = 285.884931, equal to the exact value).
+- **`boundary_from_entities(closed=false)`** joins LINE / ARC / LWPOLYLINE into one OPEN polyline (the Join
+  command), returning `length`; a loop, a branch or several pieces are refused by name. Both engines.
+- **`entity_create_circle_ttr(as_arc=true)`** draws only the short arc between the tangent points.
+- **`drawing_apply_standard(dim_scale=)`**: the preset's 2.5 mm text and arrows are paper sizes, so a part a
+  few tens of units wide needs DIMSCALE below 1 (the exam parts were 14 units wide and their dimensions
+  were bigger than the part). Validated before anything is written; needs `units=true`.
+- **`entity_trim` / `entity_extend` take LINE, ARC and CIRCLE** (LINE+LINE only before): a cutter is an
+  infinite line or a whole circle; a CIRCLE cut twice becomes the kept ARC (new handle); a cutter that
+  crosses only the target's line beyond its end is refused (that is EXTEND's job), as is a boundary behind
+  the chosen end.
+- **`entity_fillet` takes any pair of LINE / ARC / CIRCLE** (it refused everything but LINE+LINE:
+  "V2 will add LINE+ARC"). Optional `near_x` / `near_y` choose among the several tangent circles; a CIRCLE is
+  never trimmed; a LINE or ARC keeps the end farther from the corner. Both engines run the same planner
+  (`engineering/corners.py`); on the live engine the new path uses ActiveX members, not the FILLET command,
+  so nothing can be left waiting at a prompt.
+- **`entity_create_circle_ttr`** - AutoCAD's `CIRCLE` > `Ttr` (circle tangent to two lines / arcs / circles
+  with a radius). One concrete contract method, so both engines inherit it; returns the centre, both tangent
+  points, whether a line had to be extended and how many solutions exist (`engineering/tangent.py`).
+- **`entity_create_polyline(bulges=[...])`** - arc segments in a polyline (a slot or a rounded outline is
+  one entity). Validated before anything is drawn: one finite value per point, and no bulge on the closing
+  segment of an open polyline.
+- **`point_intersection` accepts ARC** (LINE-ARC, ARC-CIRCLE, ARC-ARC; only candidates on the arc's own
+  extent are kept, and meeting beyond its end is refused by name).
+
 ## [1.7.0] — 2026-10-18
 
 Fork release ([suanlong06/Autocad-MCP](https://github.com/suanlong06/Autocad-MCP)):

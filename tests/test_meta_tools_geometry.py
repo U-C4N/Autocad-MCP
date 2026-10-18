@@ -81,11 +81,11 @@ class TestPointIntersection:
             await backend.point_intersection(c1.handle, c2.handle)
 
     async def test_unsupported_types_raise(self, backend):
-        """ARC-ARC is not supported."""
-        a1 = await backend.entity_create_arc(0, 0, 10, 0, 90)
-        a2 = await backend.entity_create_arc(20, 0, 10, 90, 180)
+        """Text has no geometry to intersect (ARC became supported with the practice-exam fixes)."""
+        text = await backend.entity_create_text("x", 0, 0)
+        line = await backend.entity_create_line(-5, 0, 5, 0)
         with pytest.raises(RuntimeError, match="unsupported"):
-            await backend.point_intersection(a1.handle, a2.handle)
+            await backend.point_intersection(text.handle, line.handle)
 
 
 # ---------------------------------------------------------------------------

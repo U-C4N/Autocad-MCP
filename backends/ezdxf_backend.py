@@ -1415,6 +1415,13 @@ def _entity_info_dxf(ent) -> EntityInfo:
                     props["text_position"] = _pt(tm)  # group code 11 — OCS
             except Exception:
                 pass
+            # Parity with the live engine's Dimension.Measurement: the value the
+            # dimension measures (drawing units; degrees for angular). Needed to
+            # compare a placed dimension with the number printed on a drawing.
+            try:
+                props["measurement"] = round(float(ent.get_measurement()), 9)
+            except Exception as exc:
+                log.debug("dimension measurement for %s: %s", ent_type, exc)
     except Exception as exc:
         log.debug("extracting entity properties for %s: %s", ent_type, exc)
 
@@ -1734,6 +1741,12 @@ class EzdxfBackend(AutoCADBackend):
                     True,
                     "computed",
                     reason="straight_edges_split_at_intersections;curved_edges_not_split",
+                ),
+                "region_boolean": FeatureCapability(
+                    False, reason="acis_region_kernel_requires_live_autocad"
+                ),
+                "boundary_chain": FeatureCapability(
+                    True, "computed", reason="ezdxf_edgeminer_loop_search"
                 ),
                 "hatch_edge_paths": FeatureCapability(True, "native"),
                 "chspace": FeatureCapability(
@@ -4953,11 +4966,22 @@ class EzdxfBackend(AutoCADBackend):
         closed=False,
         layer=None,
         color=None,
+        bulges=None,
     ) -> EntityInfo:
+        from backends.contracts.entity_creation import resolve_polyline_bulges
+
         def _sync():
             msp = self._msp()
             pts_2d = [(float(p[0]), float(p[1])) for p in points]
-            ent = msp.add_lwpolyline(pts_2d, close=closed)
+            bl = resolve_polyline_bulges(pts_2d, bulges, closed)
+            if any(bl):
+                ent = msp.add_lwpolyline(
+                    [(x, y, 0.0, 0.0, b) for (x, y), b in zip(pts_2d, bl, strict=True)],
+                    format="xyseb",
+                    close=closed,
+                )
+            else:
+                ent = msp.add_lwpolyline(pts_2d, close=closed)
             self._apply_attrs(ent, layer, color)
             self._mark_dirty()
             return _entity_info_dxf(ent)
@@ -8025,7 +8049,79 @@ class EzdxfBackend(AutoCADBackend):
 
         return await self._async(_sync)
 
-    async def boundary_from_entities(self, handles, tolerance: float = 1e-9) -> dict:
+    def _join_open(self, handles, tolerance: float) -> dict:
+        """boundary_from_entities(closed=False): one open LWPOLYLINE from LINE / ARC / LWPOLYLINE edges."""
+        from engineering.edge_chain import (
+            arc_edge,
+            chain_path,
+            line_edge,
+            path_vertices,
+            polyline_edges,
+        )
+        from engineering.measure import polygon_area_perimeter
+
+        doc = self._require_doc()
+        edges = []
+        for raw in handles:
+            key = str(raw or "").strip().upper()
+            ent = doc.entitydb.get(key)
+            if ent is None or not ent.is_alive:
+                return {"ok": False, "error": f"Entity handle not found: {raw}"}
+            kind = ent.dxftype()
+            if kind == "LINE":
+                (x1, y1), (x2, y2) = self._line_endpoints(ent)
+                edges.append(line_edge((x1, y1), (x2, y2), key))
+            elif kind == "ARC":
+                c = ent.dxf.center
+                edges.append(
+                    arc_edge(
+                        c.x,
+                        c.y,
+                        ent.dxf.radius,
+                        math.radians(ent.dxf.start_angle),
+                        math.radians(ent.dxf.end_angle),
+                        key,
+                    )
+                )
+            elif kind == "LWPOLYLINE":
+                pts = list(ent.get_points("xyb"))
+                flat = [v for p in pts for v in (p[0], p[1])]
+                edges.extend(polyline_edges(flat, [p[2] for p in pts], bool(ent.closed), key))
+            else:
+                return {
+                    "ok": False,
+                    "error": f"Handle {key} is a {kind}; a path can only be joined from LINE, ARC or LWPOLYLINE",
+                }
+        path = chain_path(edges, max(float(tolerance), 1e-9))
+        if not path:
+            return {
+                "ok": False,
+                "error": (
+                    "These entities do not form one open path: they are a closed loop (use closed=true), "
+                    "branch, or fall into several pieces"
+                ),
+            }
+        vertices = path_vertices(path)
+        pl = self._msp().add_lwpolyline(
+            [(x, y, 0.0, 0.0, b) for x, y, b in vertices], format="xyseb", close=False
+        )
+        self._mark_dirty()
+        return {
+            "ok": True,
+            "handle": pl.dxf.handle,
+            "vertices": len(vertices),
+            "length": round(polygon_area_perimeter(vertices, closed=False)[1], 6),
+            "closed": False,
+        }
+
+    async def boundary_from_entities(
+        self, handles, tolerance: float = 1e-9, closed: bool = True
+    ) -> dict:
+        if not closed:
+            if not handles or len(handles) < 2:
+                return {"ok": False, "error": "At least 2 entity handles are needed to join a path"}
+            return await self._async(lambda: self._join_open(handles, tolerance))
+
         def _sync():
             from ezdxf import edgeminer as em
             from ezdxf import edgesmith
@@ -8790,40 +8886,38 @@ class EzdxfBackend(AutoCADBackend):
 
     async def entity_trim(self, target_handle, cutter_handle, keep_x, keep_y) -> EntityInfo:
         def _sync():
-            from ezdxf.math import Vec2, intersection_line_line_2d
+            from engineering import trim as trim_plan
 
-            target = self._get_entity(target_handle)
-            cutter = self._get_entity(cutter_handle)
-            if target.dxftype() != "LINE" or cutter.dxftype() != "LINE":
-                raise RuntimeError(
-                    f"entity_trim V1 supports LINE+LINE only "
-                    f"(got {target.dxftype()}+{cutter.dxftype()}). V2 will add LINE+ARC."
-                )
             if target_handle == cutter_handle:
                 raise RuntimeError("entity_trim: target and cutter cannot be the same entity.")
-            t_start, t_end = self._line_endpoints(target)
-            c_start, c_end = self._line_endpoints(cutter)
-            # virtual=True so cutter can extend in the target's direction
-            # (AutoCAD's default trim behaviour = "implied extend").
-            ip = intersection_line_line_2d(
-                (Vec2(*t_start), Vec2(*t_end)),
-                (Vec2(*c_start), Vec2(*c_end)),
-                virtual=True,
-            )
-            if ip is None:
-                raise RuntimeError(
-                    "entity_trim: target and cutter are parallel or do not intersect."
+            target, t_src = self._fillet_source(target_handle)
+            _cutter, c_src = self._fillet_source(cutter_handle)
+            try:
+                plan = trim_plan.plan_trim(t_src, c_src, (float(keep_x), float(keep_y)))
+            except ValueError as exc:
+                raise RuntimeError(f"entity_trim: {exc}.") from exc
+            if plan.kind == "line":
+                target.dxf.start = (plan.p[0], plan.p[1], 0.0)
+                target.dxf.end = (plan.q[0], plan.q[1], 0.0)
+                result = target
+            elif plan.kind == "arc":
+                target.dxf.start_angle = plan.a0 % 360.0
+                target.dxf.end_angle = plan.a1 % 360.0
+                result = target
+            else:  # a circle cut twice becomes the arc that was kept
+                result = self._msp().add_arc(
+                    center=(t_src.c[0], t_src.c[1]),
+                    radius=t_src.r,
+                    start_angle=plan.a0,
+                    end_angle=plan.a1,
+                    dxfattribs={"layer": target.dxf.layer},
                 )
-            ix, iy = float(ip.x), float(ip.y)
-            keep = (float(keep_x), float(keep_y))
-            d_start = self._dist2(t_start, keep)
-            d_end = self._dist2(t_end, keep)
-            if d_start <= d_end:
-                target.dxf.end = (ix, iy, 0.0)
-            else:
-                target.dxf.start = (ix, iy, 0.0)
+                for attr in ("color", "linetype", "lineweight", "true_color"):
+                    if target.dxf.hasattr(attr):
+                        result.dxf.set(attr, target.dxf.get(attr))
+                self._msp().delete_entity(target)
             self._mark_dirty()
-            return _entity_info_dxf(target)
+            return _entity_info_dxf(result)
 
         return await self._async(_sync)
 
@@ -8835,41 +8929,23 @@ class EzdxfBackend(AutoCADBackend):
         end_y=None,
     ) -> EntityInfo:
         def _sync():
-            from ezdxf.math import Vec2, intersection_line_line_2d
+            from engineering.extend import plan_extend
 
-            target = self._get_entity(target_handle)
-            boundary = self._get_entity(boundary_handle)
-            if target.dxftype() != "LINE" or boundary.dxftype() != "LINE":
-                raise RuntimeError(
-                    f"entity_extend V1 supports LINE+LINE only "
-                    f"(got {target.dxftype()}+{boundary.dxftype()}). V2 will add LINE+ARC."
-                )
             if target_handle == boundary_handle:
                 raise RuntimeError("entity_extend: target and boundary cannot be the same entity.")
-            t_start, t_end = self._line_endpoints(target)
-            b_start, b_end = self._line_endpoints(boundary)
-            ip = intersection_line_line_2d(
-                (Vec2(*t_start), Vec2(*t_end)),
-                (Vec2(*b_start), Vec2(*b_end)),
-                virtual=True,  # treat lines as infinite for extend
-            )
-            if ip is None:
-                raise RuntimeError(
-                    "entity_extend: target and boundary are parallel; no extension possible."
-                )
-            ix, iy = float(ip.x), float(ip.y)
-            if end_x is None or end_y is None:
-                # auto: extend the endpoint nearest the boundary midpoint
-                b_mid = ((b_start[0] + b_end[0]) / 2, (b_start[1] + b_end[1]) / 2)
-                ref = b_mid
+            target, t_src = self._fillet_source(target_handle)
+            _boundary, b_src = self._fillet_source(boundary_handle)
+            pick = (float(end_x), float(end_y)) if end_x is not None and end_y is not None else None
+            try:
+                plan = plan_extend(t_src, b_src, pick)
+            except ValueError as exc:
+                raise RuntimeError(f"entity_extend: {exc}.") from exc
+            if plan.kind == "line":
+                target.dxf.start = (plan.p[0], plan.p[1], 0.0)
+                target.dxf.end = (plan.q[0], plan.q[1], 0.0)
             else:
-                ref = (float(end_x), float(end_y))
-            d_start = self._dist2(t_start, ref)
-            d_end = self._dist2(t_end, ref)
-            if d_start <= d_end:
-                target.dxf.start = (ix, iy, 0.0)
-            else:
-                target.dxf.end = (ix, iy, 0.0)
+                target.dxf.start_angle = plan.a0 % 360.0
+                target.dxf.end_angle = plan.a1 % 360.0
             self._mark_dirty()
             return _entity_info_dxf(target)
 
@@ -8885,8 +8961,7 @@ class EzdxfBackend(AutoCADBackend):
         line2 = self._get_entity(handle2)
         if line1.dxftype() != "LINE" or line2.dxftype() != "LINE":
             raise RuntimeError(
-                f"entity_{op} V1 supports LINE+LINE only "
-                f"(got {line1.dxftype()}+{line2.dxftype()}). V2 will add LINE+ARC."
+                f"entity_{op} supports LINE+LINE only (got {line1.dxftype()}+{line2.dxftype()})."
             )
         if handle1 == handle2:
             raise RuntimeError(f"entity_{op}: handle1 and handle2 cannot be the same.")
@@ -8920,8 +8995,68 @@ class EzdxfBackend(AutoCADBackend):
             )
         return line1, line2, Pv, d1, d2, A_far, B_far, theta
 
-    async def entity_fillet(self, handle1, handle2, radius, trim=True) -> EntityInfo:
+    def _fillet_source(self, handle: str):
+        """A LINE / ARC / CIRCLE as the planner's plain value, WCS XY only."""
+        from engineering import corners
+
+        ent = self._get_entity(handle)
+        kind = ent.dxftype()
+        if kind == "LINE":
+            (x1, y1), (x2, y2) = self._line_endpoints(ent)
+            return ent, corners.SourceLine((x1, y1), (x2, y2))
+        if kind in ("ARC", "CIRCLE"):
+            if not ocs.is_wcs_frame(tuple(ent.dxf.get("extrusion", _IDENTITY_EXTRUSION))):
+                raise UnsupportedCapabilityError(
+                    "ocs_tilted_plane",
+                    f"entity_fillet: {kind} {handle} lies in a plane tilted out of WCS XY",
+                )
+            c = (float(ent.dxf.center.x), float(ent.dxf.center.y))
+            if kind == "CIRCLE":
+                return ent, corners.SourceCircle(c, float(ent.dxf.radius))
+            return ent, corners.SourceArc(
+                c, float(ent.dxf.radius), float(ent.dxf.start_angle), float(ent.dxf.end_angle)
+            )
+        raise RuntimeError(f"entity_fillet supports LINE, ARC and CIRCLE (got {kind}).")
+
+    def _fillet_curves(self, handle1, handle2, radius, trim, near_x, near_y):
+        """FILLET between any two of LINE / ARC / CIRCLE: solve the tangent circle, add its arc, trim."""
+        from engineering import corners
+
+        if handle1 == handle2:
+            raise RuntimeError("entity_fillet: handle1 and handle2 cannot be the same.")
+        e1, s1 = self._fillet_source(handle1)
+        e2, s2 = self._fillet_source(handle2)
+        near = (float(near_x), float(near_y)) if near_x is not None and near_y is not None else None
+        try:
+            plan = corners.plan_fillet(s1, s2, float(radius), near, bool(trim))
+        except ValueError as exc:
+            raise RuntimeError(f"entity_fillet: {exc}.") from exc
+        arc = self._msp().add_arc(
+            center=(plan.center[0], plan.center[1]),
+            radius=plan.radius,
+            start_angle=plan.start_deg,
+            end_angle=plan.end_deg,
+            dxfattribs={"layer": e1.dxf.layer},
+        )
+        for edit in plan.edits:
+            ent = (e1, e2)[edit.index]
+            if edit.kind == "line":
+                ent.dxf.start = (edit.p[0], edit.p[1], 0.0)
+                ent.dxf.end = (edit.q[0], edit.q[1], 0.0)
+            else:
+                ent.dxf.start_angle = edit.a0 % 360.0
+                ent.dxf.end_angle = edit.a1 % 360.0
+        self._mark_dirty()
+        return _entity_info_dxf(arc)
+
+    async def entity_fillet(
+        self, handle1, handle2, radius, trim=True, near_x=None, near_y=None
+    ) -> EntityInfo:
         def _sync():
+            t1 = self._get_entity(handle1).dxftype()
+            t2 = self._get_entity(handle2).dxftype()
+            if not (t1 == "LINE" and t2 == "LINE"):
+                return self._fillet_curves(handle1, handle2, radius, trim, near_x, near_y)
             line1, line2, P, d1, d2, A_far, B_far, theta = self._fillet_chamfer_setup(
                 handle1, handle2, "fillet"
             )

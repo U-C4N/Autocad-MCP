@@ -690,6 +690,28 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
         acad=("CIRCLE",),
         synonyms=("circle", "hole", "bore", "round hole", "pitch circle", "disc"),
     ),
+    "entity_create_circle_ttr": ToolAliases(
+        acad=("TTR",),
+        synonyms=(
+            "circle ttr",
+            "tangent circle",
+            "circle tangent to two lines",
+            "tan tan radius",
+            "circle touching two curves",
+            "ttr circle",
+        ),
+    ),
+    "region_boolean": ToolAliases(
+        acad=("REGION",),
+        synonyms=(
+            "merge shapes",
+            "cut a shape out of another",
+            "subtract one shape from another",
+            "union of regions",
+            "combine closed shapes",
+            "net area of a part with holes",
+        ),
+    ),
     "entity_create_ellipse": ToolAliases(
         acad=("ELLIPSE", "EL"),
         synonyms=("ellipse", "oval", "elliptical shape", "squashed circle"),

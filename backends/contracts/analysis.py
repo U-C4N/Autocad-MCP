@@ -47,19 +47,43 @@ class AnalysisContract(ABC):
         ...
 
     @capability(  # noqa: B027 — @capability supplies the body
-        "boundary_trace",
+        "boundary_chain",
         reason=(
-            "Chaining arbitrary entities into a loop needs the same edge graph BOUNDARY "
-            "does, which ActiveX does not expose. Use the headless backend "
-            "(AUTOCAD_MCP_BACKEND=ezdxf)."
+            "This engine cannot read the edges of the given entities. "
+            "Use the headless backend (AUTOCAD_MCP_BACKEND=ezdxf)."
         ),
     )
-    async def boundary_from_entities(self, handles: list[str], tolerance: float = 1e-9) -> dict:
+    async def boundary_from_entities(
+        self, handles: list[str], tolerance: float = 1e-9, closed: bool = True
+    ) -> dict:
         """Chain the given entities into one closed polyline.
 
         Returns ``{ok, handle, vertices, area, closed}``. Refuses a chain that
         does not close, naming the coordinates of the endpoint that dangles —
         "these do not form a loop" is not actionable without the gap.
+
+        ``closed=False`` joins the entities into one OPEN polyline instead (the Join command):
+        the result has ``length`` rather than ``area``, and a set of entities that is a
+        loop, branches, or falls into several pieces is refused by name.
+        """
+        ...
+
+    @capability(  # noqa: B027 - @capability supplies the body
+        "region_boolean",
+        reason=(
+            "Region booleans run on AutoCAD's ACIS kernel, which ezdxf does not have. "
+            "Chain the outline with boundary_from_entities and subtract the areas instead."
+        ),
+    )
+    async def region_boolean(
+        self, handles: list[str], operation: str, keep_sources: bool = False
+    ) -> dict:
+        """Union / subtract / intersect closed 2D entities into one REGION (live engine only).
+
+        ``handles[0]`` is the base; for ``subtract`` every later handle is cut out of it, for
+        ``union`` / ``intersect`` they are combined with it. Each handle must be a closed curve
+        (CIRCLE, ELLIPSE, closed LWPOLYLINE ...). Returns ``{ok, handle, operation, area,
+        sources_removed}``; ``analysis_measure_entity`` reads the region's exact area.
         """
         ...
 

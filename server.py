@@ -1565,7 +1565,7 @@ async def drawing_redo(ctx: Context = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 2: Entity Creation (19 tools) ───────────────────────────────────
+# ── SECTION 2: Entity Creation (20 tools) ───────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -1611,6 +1611,45 @@ async def entity_create_circle(
     return _dc(result)
 
 
+@cad_tool(
+    summary="Draw a circle of a given radius tangent to two lines, arcs or circles (TTR).",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Create Circle (Tangent, Tangent, Radius)", "readOnlyHint": False},
+    tags={"entity", "create"},
+)
+async def entity_create_circle_ttr(
+    handle1: Annotated[str, "First entity handle (LINE, ARC or CIRCLE)"],
+    handle2: Annotated[str, "Second entity handle (LINE, ARC or CIRCLE)"],
+    radius: Annotated[float, Field(description="Radius of the new circle", gt=0)],
+    near_x: Annotated[
+        float | None, "X of a point near the wanted centre (picks between the several solutions)"
+    ] = None,
+    near_y: Annotated[float | None, "Y of that point"] = None,
+    layer: Annotated[str | None, "Layer name"] = None,
+    color: Annotated[int | None, "ACI color code"] = None,
+    as_arc: Annotated[
+        bool, "True: draw only the short ARC between the two tangent points, not the whole circle"
+    ] = False,
+    ctx: Context = None,
+) -> dict:
+    """AutoCAD's CIRCLE > Ttr: a circle of `radius` tangent to two entities.
+
+    Two curves have up to eight tangent circles of one radius. `near_x`/`near_y` pick the one whose
+    centre is nearest that point; without them the solution that needs the least extension of the
+    sources wins. A LINE is treated as infinite, so `extended: true` flags a tangent point past a real
+    end. Returns the new circle's `handle`, `center`, both tangent points and how many solutions
+    existed (`candidates`). No solution is refused by name: a circle of diameter 8 cannot bridge a gap
+    of 10. `as_arc=true` draws just the short arc between the tangent points (a TTR arc); `entity_fillet`
+    also trims the sources.
+    """
+    await ctx.debug(f"Circle TTR r={radius} between {handle1} and {handle2}")
+    return await _backend(ctx).entity_create_circle_ttr(
+        handle1, handle2, radius, near_x, near_y, layer, color, as_arc
+    )
+
+
 @cad_tool(summary="Draw a circular arc from a centre, a radius and two angles.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Create Arc", "readOnlyHint": False},
@@ -1647,14 +1686,23 @@ async def entity_create_polyline(
     closed: Annotated[bool, "Whether to close the polyline"] = False,
     layer: Annotated[str | None, "Layer name"] = None,
     color: Annotated[int | None, "ACI color code"] = None,
+    bulges: Annotated[
+        list[float] | None,
+        "One bulge per point (DXF rule): bulges[i] turns the segment from point i to i+1 into an arc "
+        "of tan(sweep/4), positive counter-clockwise; 0 = straight. 1 is a CCW semicircle, -1 a CW one.",
+    ] = None,
     ctx: Context = None,
 ) -> dict:
     """Create a lightweight 2D polyline through the given points.
 
     Example: points=[[0,0],[100,0],[100,100],[0,100]], closed=true → rectangle
+
+    With `bulges` the polyline carries arc segments, so a slot or a rounded outline is ONE
+    entity (and one `analysis_measure_entity` away from its exact area): a 40 x 10 slot is
+    points=[[0,0],[40,0],[40,10],[0,10]], bulges=[0,1,0,1], closed=true.
     """
     await ctx.debug(f"Creating polyline with {len(points)} points, closed={closed}")
-    result = await _backend(ctx).entity_create_polyline(points, closed, layer, color)
+    result = await _backend(ctx).entity_create_polyline(points, closed, layer, color, bulges)
     return _dc(result)
 
 
@@ -2418,16 +2466,20 @@ async def entity_offset(
     tags={"entity", "modify", "corner"},
 )
 async def entity_trim(
-    target_handle: Annotated[str, "Handle of the line being trimmed"],
-    cutter_handle: Annotated[str, "Handle of the cutting line"],
-    keep_x: Annotated[float, "X of a point on the side of the target to KEEP"],
-    keep_y: Annotated[float, "Y of a point on the side of the target to KEEP"],
+    target_handle: Annotated[str, "Handle of the LINE, ARC or CIRCLE being trimmed"],
+    cutter_handle: Annotated[str, "Handle of the cutting LINE, ARC or CIRCLE"],
+    keep_x: Annotated[float, "X of a point on the piece of the target to KEEP"],
+    keep_y: Annotated[float, "Y of a point on the piece of the target to KEEP"],
     ctx: Context = None,
 ) -> dict:
-    """Trim `target` against `cutter`, keeping the segment containing (keep_x, keep_y).
+    """Trim `target` against `cutter`, keeping the piece containing (keep_x, keep_y).
 
-    V1 supports LINE+LINE only. Cutter is treated as an infinite ray (AutoCAD's
-    default 'implied extend' trim mode). Raises if the lines are parallel.
+    LINE, ARC and CIRCLE work in any pair. The cutter is an infinite line or the whole
+    circle of an ARC / CIRCLE (AutoCAD's 'extend' edge mode); the target is never
+    extended - a cutter that crosses only the target's line beyond its end is refused
+    (use `entity_extend`). With several crossings the piece holding the keep point
+    survives. A CIRCLE cut twice becomes the kept ARC, which has a NEW handle.
+    Refused by name: parallel or non-intersecting entities, the same entity twice.
     """
     result = await _backend(ctx).entity_trim(target_handle, cutter_handle, keep_x, keep_y)
     return _dc(result)
@@ -2439,8 +2491,8 @@ async def entity_trim(
     tags={"entity", "modify", "corner"},
 )
 async def entity_extend(
-    target_handle: Annotated[str, "Handle of the line being extended"],
-    boundary_handle: Annotated[str, "Handle of the boundary line"],
+    target_handle: Annotated[str, "Handle of the LINE or ARC being extended"],
+    boundary_handle: Annotated[str, "Handle of the boundary LINE, ARC or CIRCLE"],
     end_x: Annotated[float | None, "X of a point near the endpoint to extend (None = auto)"] = None,
     end_y: Annotated[float | None, "Y of a point near the endpoint to extend (None = auto)"] = None,
     ctx: Context = None,
@@ -2448,7 +2500,9 @@ async def entity_extend(
     """Extend `target` to meet `boundary`. If end_x/end_y is None, the target
     endpoint nearest the boundary is auto-selected.
 
-    V1 supports LINE+LINE only. Raises if the lines are parallel.
+    A LINE or ARC can be extended to a LINE (taken as infinite) or to the whole circle of
+    an ARC / CIRCLE. An intersection behind the chosen end is not an extension and is
+    refused by name, as are parallel lines and the same entity twice.
     """
     result = await _backend(ctx).entity_extend(target_handle, boundary_handle, end_x, end_y)
     return _dc(result)
@@ -2468,11 +2522,23 @@ async def entity_fillet(
     trim: Annotated[
         bool, "If true, trim source entities to the tangent points (AutoCAD default)"
     ] = True,
+    near_x: Annotated[
+        float | None,
+        "X of a point near the wanted fillet centre (picks between several tangent circles)",
+    ] = None,
+    near_y: Annotated[float | None, "Y of that point"] = None,
     ctx: Context = None,
 ) -> dict:
     """Round a corner with a tangent arc. Returns info on the new ARC entity
-    (or the first source line for radius=0). V1 supports LINE+LINE only."""
-    result = await _backend(ctx).entity_fillet(handle1, handle2, radius, trim)
+    (or the first source line for radius=0).
+
+    LINE, ARC and CIRCLE work in any pair (line-arc, arc-arc, circle-circle ...).
+    Between curves of one radius there can be several tangent circles; `near_x` /
+    `near_y` pick the one whose centre is nearest that point, and without them the
+    solution that needs the least extension of the sources wins. A CIRCLE is never
+    trimmed; a LINE or ARC keeps the end farther from the corner. radius=0 is
+    LINE+LINE only."""
+    result = await _backend(ctx).entity_fillet(handle1, handle2, radius, trim, near_x, near_y)
     return _dc(result)
 
 
@@ -3547,7 +3613,7 @@ async def block_find_references(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 8: Analysis & Query (12 tools) ──────────────────────────────────
+# ── SECTION 8: Analysis & Query (13 tools) ──────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -3583,15 +3649,51 @@ async def boundary_trace(
 async def boundary_from_entities(
     handles: Annotated[list[str], "Handles of the 2D entities that form the loop."],
     tolerance: Annotated[float, "Gap tolerance for joining endpoints."] = 1e-9,
+    closed: Annotated[
+        bool,
+        "True: one closed loop (default). False: join into one OPEN polyline (the Join command).",
+    ] = True,
     ctx: Context = None,
 ) -> dict:
-    """Chain the given entities into one closed polyline.
+    """Chain the given entities (LINE, ARC, LWPOLYLINE) into one polyline.
 
     The handles may arrive in any order — putting them in chain order is the
     tool's job. A chain that does not close is refused, and the error names the
-    coordinates of the gap.
+    coordinates of the gap. Arc edges keep their curvature as bulges, so the area
+    `analysis_measure_entity` reports is exact.
+
+    With `closed=false` the result is one open polyline (`length` instead of `area`);
+    a set that is a loop, branches, or falls into pieces is refused by name.
     """
-    return await _backend(ctx).boundary_from_entities(handles, tolerance)
+    return await _backend(ctx).boundary_from_entities(handles, tolerance, closed)
+
+
+@cad_tool(
+    summary="Union, subtract or intersect closed shapes into one REGION (live AutoCAD only).",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Region Boolean", "readOnlyHint": False, "destructiveHint": True},
+    tags={"analysis", "measure"},
+)
+async def region_boolean(
+    handles: Annotated[
+        list[str], "Closed entities: the first is the base, the rest act on it (>= 2)."
+    ],
+    operation: Annotated[str, "union | subtract | intersect"],
+    keep_sources: Annotated[bool, "Keep the source entities (default: delete them)."] = False,
+    ctx: Context = None,
+) -> dict:
+    """Combine closed 2D entities (CIRCLE, ELLIPSE, closed LWPOLYLINE ...) with AutoCAD's REGION kernel.
+
+    `subtract` cuts every later handle out of the first; `union` / `intersect` combine them.
+    The result is one REGION: `analysis_measure_entity(handle)` reads its exact area. Needs the live
+    engine (ACIS): headless refuses with capability `region_boolean` - there, chain the outline with
+    `boundary_from_entities` and subtract the measured areas. The sources are deleted unless
+    `keep_sources`; a failed boolean leaves nothing behind.
+    """
+    await ctx.debug(f"Region {operation} over {len(handles)} entities")
+    return await _backend(ctx).region_boolean(handles, operation, keep_sources)
 
 
 @cad_tool(summary="Dump every DXF property of one entity, like LIST.", cost="read")
@@ -6257,8 +6359,8 @@ async def point_from_snap(
     tags={"premium", "snap"},
 )
 async def point_intersection(
-    handle1: Annotated[str, "First entity handle (LINE or CIRCLE)"],
-    handle2: Annotated[str, "Second entity handle (LINE or CIRCLE)"],
+    handle1: Annotated[str, "First entity handle (LINE, CIRCLE or ARC)"],
+    handle2: Annotated[str, "Second entity handle (LINE, CIRCLE or ARC)"],
     ref_x: Annotated[
         float | None, "Reference X to pick nearest candidate when multiple exist"
     ] = None,
@@ -6266,7 +6368,8 @@ async def point_intersection(
     ctx: Context = None,
 ) -> dict:
     """Compute the intersection of two geometry entities (LINE-LINE, LINE-CIRCLE,
-    CIRCLE-CIRCLE). When two candidates exist, ref_x/ref_y selects the nearest.
+    CIRCLE-CIRCLE; an ARC counts as a CIRCLE and keeps only the candidates on its extent).
+    When two candidates exist, ref_x/ref_y selects the nearest.
     Returns {x, y}.
     """
     pt = await _backend(ctx).point_intersection(handle1, handle2, ref_x, ref_y)
@@ -7569,6 +7672,11 @@ async def drawing_apply_standard(
     units: Annotated[
         bool, "Also write INSUNITS mm, LUNITS/AUNITS decimal, LTSCALE 1, DIMSCALE 1"
     ] = True,
+    dim_scale: Annotated[
+        float | None,
+        "DIMSCALE to write instead of 1 (needs units=True). The standard's text and arrows are 2.5 mm "
+        "on paper: on a part a few tens of units wide, use about part_width / 100 (0.2 for a 14-wide part).",
+    ] = None,
     ctx: Context = None,
 ) -> dict:
     """One call for the common case: the standard's dimension style (created
@@ -7587,7 +7695,7 @@ async def drawing_apply_standard(
     from engineering.standards.apply import apply_standard
 
     await ctx.info(f"Applying the {standard} drafting standard")
-    return await apply_standard(_backend(ctx), standard, layers, units)
+    return await apply_standard(_backend(ctx), standard, layers, units, dim_scale)
 
 
 # ---------------------------------------------------------------------------
@@ -9369,9 +9477,9 @@ async def hatch_material(
     Refusals: an unknown material (named, with the full list, before anything
     is drawn), neither `boundary` nor `handles` (or both), a boundary with
     fewer than three points, and a non-positive `scale`. With `handles` the
-    loop is chained by `boundary_from_entities`, which the COM engine refuses
-    (capability `boundary_trace`) - pass `boundary` on a live seat, or run
-    headlessly. The HATCH layer is created first when the drawing lacks it:
+    loop is chained by `boundary_from_entities` (both engines: the live one reads
+    each LINE / ARC / LWPOLYLINE over ActiveX and chains it itself, capability
+    `boundary_chain`). The HATCH layer is created first when the drawing lacks it:
     ActiveX refuses an entity on an absent layer and would otherwise leave the
     hatch orphaned on layer 0.
 

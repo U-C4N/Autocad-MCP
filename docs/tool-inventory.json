@@ -3,13 +3,13 @@
   "schema_version": 1,
   "package_version": "1.7.0",
   "totals": {
-    "tools": 247,
+    "tools": 249,
     "resources": 8,
     "prompts": 5,
     "groups": 28
   },
   "groups": {
-    "analysis": 12,
+    "analysis": 13,
     "architecture": 12,
     "batch": 3,
     "blocks": 9,
@@ -17,7 +17,7 @@
     "dimensions": 5,
     "drawing": 11,
     "engineering": 10,
-    "entity_creation": 18,
+    "entity_creation": 19,
     "entity_modification": 16,
     "entity_query": 9,
     "environment": 22,
@@ -1402,6 +1402,20 @@
       }
     },
     {
+      "name": "entity_create_circle_ttr",
+      "group": "entity_creation",
+      "cost": "mutate",
+      "summary": "Draw a circle of a given radius tangent to two lines, arcs or circles (TTR).",
+      "tags": [
+        "create",
+        "entity"
+      ],
+      "annotations": {
+        "title": "Create Circle (Tangent, Tangent, Radius)",
+        "readOnlyHint": false
+      }
+    },
+    {
       "name": "entity_create_ellipse",
       "group": "entity_creation",
       "cost": "mutate",
@@ -2672,6 +2686,21 @@
       "annotations": {
         "title": "Point: Tangent from external point",
         "readOnlyHint": true
+      }
+    },
+    {
+      "name": "region_boolean",
+      "group": "analysis",
+      "cost": "mutate",
+      "summary": "Union, subtract or intersect closed shapes into one REGION (live AutoCAD only).",
+      "tags": [
+        "analysis",
+        "measure"
+      ],
+      "annotations": {
+        "title": "Region Boolean",
+        "readOnlyHint": false,
+        "destructiveHint": true
       }
     },
     {

@@ -23,8 +23,8 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 > reliability fixes below; everything else is upstream 1.6.0. Install it from this repository
 > (`pip install "git+https://github.com/suanlong06/Autocad-MCP@main#egg=autocad-mcp-pro[full]"`).
 
-> **v1.7 release snapshot:** 247 tools · 8 resources · 5 prompt templates · 5065 collected tests.
-> 247 is the **registered** count; a default install advertises 242 over `tools/list`,
+> **v1.7 release snapshot:** 249 tools · 8 resources · 5 prompt templates · 5142 collected tests.
+> 249 is the **registered** count; a default install advertises 244 over `tools/list`,
 > because `ENABLE_3D` is unset. `system_about` is the runtime authority.
 
 ## What's new in 1.7
@@ -50,7 +50,7 @@ and the COM paths run live by `scripts/smoke_v17_com.py`. Details in the
 
 ## What's new in 1.6
 
-Five tracks of one [roadmap](https://github.com/U-C4N/Autocad-MCP/blob/main/docs/superpowers/specs/2026-09-15-v1.6-roadmap-design.md), 154 → 247 registered tools. Each track has its own design spec, correctness checks that can fail, and a live AutoCAD 2026 run of its COM paths recorded in the [changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md).
+Five tracks of one [roadmap](https://github.com/U-C4N/Autocad-MCP/blob/main/docs/superpowers/specs/2026-09-15-v1.6-roadmap-design.md), 154 → 249 registered tools. Each track has its own design spec, correctness checks that can fail, and a live AutoCAD 2026 run of its COM paths recorded in the [changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md).
 
 | Track | What it adds | Pack |
 |---|---|---|
@@ -86,7 +86,7 @@ Five tracks of one [roadmap](https://github.com/U-C4N/Autocad-MCP/blob/main/docs
 
 **A big MCP server is expensive to be connected to.** The full catalog costs a client **83,921 tokens** before it has asked for anything. Discovery mode replaces it with two tools and costs **356**.
 
-**A drafter searches for `FILLET`, not `entity_fillet`.** Before the corpus, those command names appeared in no tool name or description. That was `df = 0` against a stock index: the tools were not ranked badly, they were *absent*. The fix was data: an authored corpus of **206 AutoCAD command names and 1439 synonym phrases** covering all 247 tools. A test refuses to let a tool exist without one.
+**A drafter searches for `FILLET`, not `entity_fillet`.** Before the corpus, those command names appeared in no tool name or description. That was `df = 0` against a stock index: the tools were not ranked badly, they were *absent*. The fix was data: an authored corpus of **206 AutoCAD command names and 1439 synonym phrases** covering all 249 tools. A test refuses to let a tool exist without one.
 
 | Advertised surface | Tools seen | Idle cost |
 |---|---:|---:|
@@ -178,7 +178,7 @@ It works with Claude Desktop, Cursor, or any stdio MCP host. For HTTP, run `auto
 | Quality loop | `drawing_preflight` → `drawing_plan` → `drawing_critique` → `drawing_refine` → `drawing_finalize` (0–100 score); 18 domain critique focuses (P&ID 6, mechanical 6, architecture 3, topology 3), each silent on a drawing outside its domain |
 | Delivery | `drawing_deliver`: DXF/PDF/PNG + SHA-256 manifest + reopen-parity checks |
 
-<sub>247 tools in 28 groups. <code>TOOL_PACKS=core</code> hides these from a client that needs none of them: the nine <code>pid_*</code> tools, the 22 environment tools, the 14 mechanical tools, the 12 architectural tools and the two plant takeoffs. <code>TOOL_PACKS=core,mech</code> keeps the mechanical ones, <code>TOOL_PACKS=core,arch</code> the architectural ones, and <code>TOOL_PACKS=core,plant</code> the takeoffs. There are also 8 resources that cost nothing in the tool budget (<code>autocad://drawing/info</code>, <code>layers</code>, <code>blocks</code>, <code>entities/stats</code>, <code>entities/{layer_name}</code>, <code>system/status</code>, <code>pid/symbols</code>, <code>standards/isa51</code>) and 5 prompt templates.</sub>
+<sub>249 tools in 28 groups. <code>TOOL_PACKS=core</code> hides these from a client that needs none of them: the nine <code>pid_*</code> tools, the 22 environment tools, the 14 mechanical tools, the 12 architectural tools and the two plant takeoffs. <code>TOOL_PACKS=core,mech</code> keeps the mechanical ones, <code>TOOL_PACKS=core,arch</code> the architectural ones, and <code>TOOL_PACKS=core,plant</code> the takeoffs. There are also 8 resources that cost nothing in the tool budget (<code>autocad://drawing/info</code>, <code>layers</code>, <code>blocks</code>, <code>entities/stats</code>, <code>entities/{layer_name}</code>, <code>system/status</code>, <code>pid/symbols</code>, <code>standards/isa51</code>) and 5 prompt templates.</sub>
 
 **Two rules worth knowing.**
 

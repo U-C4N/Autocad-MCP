@@ -47,11 +47,12 @@ class TestTrim:
         with pytest.raises(RuntimeError, match="same"):
             await backend.entity_trim(line.handle, line.handle, 50, 0)
 
-    async def test_trim_non_line_raises(self, backend):
+    async def test_trim_unsupported_target_raises(self, backend):
+        # LINE/ARC/CIRCLE trim in any pair since the practice-exam fixes; text still cannot.
         line = await backend.entity_create_line(0, 0, 100, 0)
-        circle = await backend.entity_create_circle(50, 0, 10)
-        with pytest.raises(RuntimeError, match="LINE\\+LINE only"):
-            await backend.entity_trim(line.handle, circle.handle, 80, 0)
+        text = await backend.entity_create_text("x", 0, 0)
+        with pytest.raises(RuntimeError, match="supports LINE, ARC and CIRCLE"):
+            await backend.entity_trim(text.handle, line.handle, 80, 0)
 
 
 # ─── EXTEND ────────────────────────────────────────────────────────────────

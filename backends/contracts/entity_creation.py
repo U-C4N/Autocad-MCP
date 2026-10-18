@@ -60,7 +60,11 @@ class EntityCreationContract(ABC):
         closed: bool = False,
         layer: str | None = None,
         color: int | None = None,
-    ) -> EntityInfo: ...
+        bulges: list[float] | None = None,
+    ) -> EntityInfo:
+        """A lightweight 2D polyline. ``bulges`` (one per point, the DXF rule) turns segment *i*
+        into an arc: ``tan(sweep / 4)``, positive counter-clockwise. See ``resolve_polyline_bulges``."""
+        ...
 
     @abstractmethod
     async def entity_create_text(
@@ -313,3 +317,37 @@ def resolve_mtext_layout(attachment, line_spacing) -> tuple[int | None, float | 
         if not 0.25 <= factor <= 4.0:
             raise ValueError(f"line_spacing: {factor:g} is outside AutoCAD's 0.25 - 4.0")
     return code, factor
+
+
+def resolve_polyline_bulges(points, bulges, closed: bool) -> list[float]:
+    """One finite bulge per vertex, validated before anything is drawn (shared by both engines).
+
+    ``bulges[i]`` shapes the segment from vertex *i* to *i+1*; the last vertex's value only has a
+    segment to shape when the polyline is closed, and a non-zero value there on an open polyline is
+    refused rather than silently dropped. ``None`` / ``[]`` means all straight.
+    """
+    import math
+
+    n = len(points)
+    if not bulges:
+        return [0.0] * n
+    if len(bulges) != n:
+        raise ValueError(
+            f"bulges needs one value per point ({n}), got {len(bulges)}. "
+            "bulges[i] shapes the segment from point i to point i+1; use 0 for a straight segment."
+        )
+    out = []
+    for i, b in enumerate(bulges):
+        try:
+            v = float(b)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"bulges[{i}] must be a number, got {b!r}") from exc
+        if not math.isfinite(v):
+            raise ValueError(f"bulges[{i}] must be finite, got {b!r}")
+        out.append(v)
+    if not closed and out[-1] != 0.0:
+        raise ValueError(
+            "the last bulge shapes the closing segment, and an open polyline has none: "
+            f"bulges[{n - 1}] must be 0 (or close the polyline)."
+        )
+    return out

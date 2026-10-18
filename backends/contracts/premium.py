@@ -376,7 +376,8 @@ class PremiumContract(ABC):
     ) -> tuple[float, float]:
         """Return the intersection point of two geometry entities.
 
-        Supports LINE-LINE, LINE-CIRCLE, and CIRCLE-CIRCLE cases. When
+        Supports LINE-LINE, LINE-CIRCLE, and CIRCLE-CIRCLE cases, and ARC wherever a CIRCLE is
+        accepted (an arc keeps only the candidates inside its own extent). When
         multiple intersections exist (e.g. two circles), ``ref_x``/``ref_y``
         selects the candidate nearest to that reference point. If omitted the
         first candidate is returned.
@@ -405,7 +406,9 @@ class PremiumContract(ABC):
             t = ((x3 - x1) * dy2 - (y3 - y1) * dx2) / denom
             candidates = [(x1 + t * dx1, y1 + t * dy1)]
 
-        elif {t1, t2} == {"LINE", "CIRCLE"}:
+        elif (t1 == "LINE" and t2 in ("CIRCLE", "ARC")) or (
+            t2 == "LINE" and t1 in ("CIRCLE", "ARC")
+        ):
             line_p = props1 if t1 == "LINE" else props2
             circ_p = props2 if t1 == "LINE" else props1
             lx1, ly1 = line_p["start"][0], line_p["start"][1]
@@ -425,7 +428,7 @@ class PremiumContract(ABC):
                 t = (-b + sign * sq) / (2.0 * a)
                 candidates.append((lx1 + t * dx, ly1 + t * dy))
 
-        elif t1 == "CIRCLE" and t2 == "CIRCLE":
+        elif t1 in ("CIRCLE", "ARC") and t2 in ("CIRCLE", "ARC"):
             cx1, cy1, r1 = props1["center"][0], props1["center"][1], props1["radius"]
             cx2, cy2, r2 = props2["center"][0], props2["center"][1], props2["radius"]
             dx, dy = cx2 - cx1, cy2 - cy1
@@ -447,8 +450,28 @@ class PremiumContract(ABC):
         else:
             raise RuntimeError(
                 f"point_intersection: unsupported entity combination {t1}+{t2}. "
-                "Supported: LINE-LINE, LINE-CIRCLE, CIRCLE-CIRCLE."
+                "Supported: LINE-LINE, LINE-CIRCLE/ARC, CIRCLE/ARC-CIRCLE/ARC."
             )
+
+        # An ARC is only part of its circle: keep the candidates inside its CCW extent.
+        for t_, pr_ in ((t1, props1), (t2, props2)):
+            if t_ != "ARC":
+                continue
+            acx, acy = pr_["center"][0], pr_["center"][1]
+            a0, a1 = float(pr_["start_angle"]), float(pr_["end_angle"])
+            sweep = (a1 - a0) % 360.0 or 360.0
+
+            def _on_arc(pt, acx=acx, acy=acy, a0=a0, sweep=sweep):
+                ang = math.degrees(math.atan2(pt[1] - acy, pt[0] - acx))
+                return (ang - a0) % 360.0 <= sweep + 1e-7
+
+            on_arc = [c for c in candidates if _on_arc(c)]
+            if not on_arc:
+                raise RuntimeError(
+                    "point_intersection: the entities meet only beyond the end of the ARC "
+                    "(on the circle it belongs to)."
+                )
+            candidates = on_arc
 
         if len(candidates) == 1:
             return candidates[0]

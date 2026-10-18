@@ -55,7 +55,11 @@ def _same(old: Any, new: Any) -> bool:
 
 
 async def apply_standard(
-    backend: AutoCADBackend, standard: str, layers: bool = True, units: bool = True
+    backend: AutoCADBackend,
+    standard: str,
+    layers: bool = True,
+    units: bool = True,
+    dim_scale: float | None = None,
 ) -> dict:
     """Styles created (or reused) and made current, units written, layers bootstrapped.
 
@@ -80,9 +84,22 @@ async def apply_standard(
     key, row = resolve_standard(standard)
     if not isinstance(layers, bool) or not isinstance(units, bool):
         raise TypeError("layers and units must be booleans")
+    sysvars = STANDARD_SYSVARS
+    if dim_scale is not None:
+        # The preset's text and arrows are paper sizes (2.5 mm): on a 14-unit part at DIMSCALE 1 they
+        # are bigger than the part's features. A small part wants DIMSCALE below 1.
+        if isinstance(dim_scale, bool) or not isinstance(dim_scale, int | float):
+            raise TypeError("dim_scale must be a number")
+        if not (0.0 < float(dim_scale) <= 1e6) or float(dim_scale) != float(dim_scale):
+            raise ValueError(f"dim_scale must be in (0, 1e6]; got {dim_scale!r}")
+        if not units:
+            raise ValueError("dim_scale is a units setting: pass units=True with it")
+        sysvars = tuple(
+            (v, float(dim_scale) if v == "DIMSCALE" else val) for v, val in STANDARD_SYSVARS
+        )
 
     if units:  # the refusal gate: every variable readable before anything is written
-        for var, _value in STANDARD_SYSVARS:
+        for var, _value in sysvars:
             try:
                 await backend.system_get_variable(var)
             except Exception as exc:
@@ -109,7 +126,7 @@ async def apply_standard(
 
     changed: dict[str, list] = {}
     if units:
-        for var, value in STANDARD_SYSVARS:
+        for var, value in sysvars:
             # Re-read after the style switch: the gate value is stale for
             # DIM* once another dimension style has been made current.
             old = await backend.system_get_variable(var)

@@ -1722,8 +1722,17 @@ def _entity_info(entity) -> EntityInfo:
             # AcDbDiametricDimension, WCS). ModelSpace.Item hands the entity
             # over narrowed to IAcadEntity, which has no TextPosition - measured
             # AttributeError - so it is read through the concrete class.
-            text = _com_unnarrow(entity).TextPosition
+            dim = _com_unnarrow(entity)
+            text = dim.TextPosition
             props["text_position"] = [text[0], text[1]]
+            # What the dimension measures (AcDbDimension.Measurement): the number a
+            # drafter compares with the printed value. Linear/radius/diameter in
+            # drawing units, angular in degrees. entity_get / dimension_* never
+            # returned it, so a dimension could be placed but not checked.
+            try:
+                props["measurement"] = round(float(dim.Measurement), 9)
+            except Exception as exc:
+                log.debug("Dimension.Measurement read failed: %s", exc)
     except Exception as exc:
         log.debug("Type-specific entity properties extraction failed: %s", exc)
 
@@ -1905,6 +1914,12 @@ class ComBackend(AutoCADBackend):
                     False, reason="backgroundfillcolor_absent_verified_autocad_2026"
                 ),
                 "boundary_trace": FeatureCapability(False, reason="no_activex_member_command_only"),
+                "region_boolean": FeatureCapability(True, "native"),
+                "boundary_chain": FeatureCapability(
+                    True,
+                    "computed",
+                    reason="line_arc_lwpolyline_read_over_com;chained_client_side;stored_as_bulged_lwpolyline",
+                ),
                 "hatch_edge_paths": FeatureCapability(
                     True,
                     "native",
@@ -4968,6 +4983,56 @@ class ComBackend(AutoCADBackend):
 
         return await self._run(_sync)
 
+    async def region_boolean(self, handles, operation: str, keep_sources: bool = False) -> dict:
+        """Union / subtract / intersect closed 2D entities through AutoCAD's own REGION kernel."""
+
+        def _sync():
+            op = (operation or "").strip().lower()
+            codes = {"union": 0, "intersect": 1, "intersection": 1, "subtract": 2}  # AcBooleanType
+            if op not in codes:
+                raise ValueError(
+                    f"Unknown boolean operation {operation!r}. Use union | subtract | intersect."
+                )
+            if not handles or len(handles) < 2:
+                raise ValueError(
+                    "region_boolean needs at least 2 handles (the base and what acts on it)"
+                )
+            doc = _acad_doc()
+            regions = []
+            with _com_created() as made:
+                for h in handles:
+                    reg = self._region_from_profile(doc, str(h))
+                    regions.append(made(reg))
+                base = regions[0]
+                for other in regions[1:]:
+                    base.Boolean(codes[op], other)  # consumes `other`
+                regions = [base]
+            removed = False
+            if not keep_sources:
+                removed = True
+                for h in handles:
+                    try:
+                        doc.HandleToObject(str(h)).Delete()
+                    except Exception:
+                        removed = False
+                        log.debug("region_boolean: could not delete source %s", h, exc_info=True)
+            _regen()
+            area = None
+            try:
+                area = round(float(base.Area), 6)
+            except Exception:
+                log.debug("region_boolean: Area unavailable", exc_info=True)
+            return {
+                "ok": True,
+                "handle": str(base.Handle),
+                "type": "REGION",
+                "operation": op,
+                "area": area,
+                "sources_removed": removed,
+            }
+
+        return await self._run(_sync)
+
     async def drawing_purge(self) -> dict:
         def _sync():
             doc = _acad_doc()
@@ -5042,6 +5107,129 @@ class ComBackend(AutoCADBackend):
                     "the detail exists."
                 ),
                 "log_path": log_path,
+            }
+
+        return await self._run(_sync)
+
+    async def boundary_from_entities(
+        self, handles, tolerance: float = 1e-9, closed: bool = True
+    ) -> dict:
+        """Chain LINE / ARC / LWPOLYLINE entities into one closed LWPOLYLINE, over ActiveX.
+
+        ActiveX has no edge graph (BOUNDARY is command-only, which is why ``boundary_trace``
+        stays refused here), but nothing in a chain needs one: each source entity is read through
+        its own members and the loop is found by ``engineering.edge_chain.chain_loop``. The result
+        is stored the way the headless engine stores it - one closed polyline, a bulge on every
+        arc edge - and the source entities are left in place.
+        """
+        from engineering.edge_chain import (
+            arc_edge,
+            chain_loop,
+            chain_path,
+            dangling_endpoint,
+            line_edge,
+            loop_vertices,
+            path_vertices,
+            polyline_edges,
+        )
+
+        def _sync():
+            if not handles or len(handles) < 2:
+                return {"ok": False, "error": "At least 2 entity handles are needed to form a loop"}
+            doc = _acad_doc()
+            edges = []
+            for raw in handles:
+                key = str(raw or "").strip().upper()
+                try:
+                    ent = _com_unnarrow(doc.HandleToObject(key))
+                except Exception:
+                    return {"ok": False, "error": f"Entity handle not found: {raw}"}
+                kind = getattr(ent, "ObjectName", "")
+                if kind == "AcDbLine":
+                    s, e = ent.StartPoint, ent.EndPoint
+                    edges.append(line_edge((s[0], s[1]), (e[0], e[1]), key))
+                elif kind == "AcDbArc":
+                    c = ent.Center
+                    edges.append(
+                        arc_edge(
+                            c[0],
+                            c[1],
+                            float(ent.Radius),
+                            float(ent.StartAngle),
+                            float(ent.EndAngle),
+                            key,
+                        )
+                    )
+                elif kind == "AcDbPolyline":
+                    coords = list(ent.Coordinates)
+                    pl_closed = bool(ent.Closed)
+                    bulges = _com_bulges(ent, coords, pl_closed, getattr(ent, "Length", None))
+                    edges.extend(polyline_edges(coords, bulges, pl_closed, key))
+                else:
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"Handle {key} is a {kind.replace('AcDb', '').upper()}; a boundary can only be "
+                            "chained from 2D linear entities"
+                        ),
+                    }
+            gap_tol = max(float(tolerance), 1e-9)
+            if not closed:
+                path = chain_path(edges, gap_tol)
+                if not path:
+                    return {
+                        "ok": False,
+                        "error": (
+                            "These entities do not form one open path: they are a closed loop "
+                            "(use closed=true), branch, or fall into several pieces"
+                        ),
+                    }
+                vertices = path_vertices(path)
+                flat = [v for x, y, _b in vertices for v in (float(x), float(y))]
+                with _com_created() as made:
+                    pline = made(_msp().AddLightWeightPolyline(_av(flat)))
+                    pline.Closed = False
+                    for i, (_x, _y, bulge) in enumerate(vertices):
+                        if bulge:
+                            pline.SetBulge(i, float(bulge))
+                _regen()
+                return {
+                    "ok": True,
+                    "handle": str(pline.Handle),
+                    "vertices": len(vertices),
+                    "length": round(polygon_area_perimeter(vertices, closed=False)[1], 6),
+                    "closed": False,
+                }
+            chain = chain_loop(edges, gap_tol)
+            if not chain or len(chain) != len(edges):
+                start, end = dangling_endpoint(edges, gap_tol)
+                return {
+                    "ok": False,
+                    "error": (
+                        f"These entities do not close: there is a gap at ({start[0]:g}, "
+                        f"{start[1]:g}) -> ({end[0]:g}, {end[1]:g})"
+                    ),
+                }
+            vertices = loop_vertices(chain)
+            flat = []
+            for x, y, _b in vertices:
+                flat.extend([float(x), float(y)])
+            with _com_created() as made:
+                mspace = _msp()
+                pline = mspace.AddLightWeightPolyline(_av(flat))
+                made(pline)
+                pline.Closed = True
+                for i, (_x, _y, bulge) in enumerate(vertices):
+                    if bulge:
+                        pline.SetBulge(i, float(bulge))
+            _regen()
+            area = round(abs(polygon_area_perimeter(vertices, closed=True)[0]), 6)
+            return {
+                "ok": True,
+                "handle": str(pline.Handle),
+                "vertices": len(vertices),
+                "area": area,
+                "closed": True,
             }
 
         return await self._run(_sync)
@@ -5147,16 +5335,23 @@ class ComBackend(AutoCADBackend):
         closed=False,
         layer=None,
         color=None,
+        bulges=None,
     ) -> EntityInfo:
+        from backends.contracts.entity_creation import resolve_polyline_bulges
+
         def _sync():
             mspace = _msp()
             flat = []
             for pt in points:
                 flat.extend([float(pt[0]), float(pt[1])])
+            bl = resolve_polyline_bulges(points, bulges, closed)
             with _com_created() as made:
                 pline = mspace.AddLightWeightPolyline(_av(flat))
                 made(pline)
                 pline.Closed = closed
+                for i, b in enumerate(bl):
+                    if b:
+                        pline.SetBulge(i, b)
                 _apply_entity_attrs(pline, layer, color, None)
             _regen()
             return _entity_info(pline)
@@ -7197,11 +7392,15 @@ class ComBackend(AutoCADBackend):
             _acad_doc()
             mspace = _msp()
             results = []
-            et_upper = entity_type.upper()
             for i in range(mspace.Count):
                 try:
                     ent = mspace.Item(i)
-                    if et_upper == ent.ObjectName.replace("AcDb", "").upper():
+                    # The documented names are DXF's (LWPOLYLINE, DIMENSION, INSERT); ActiveX
+                    # spells them AcDbPolyline, AcDb<Kind>Dimension, AcDbBlockReference. An exact
+                    # compare made analysis_select_by_type("LWPOLYLINE") return nothing live.
+                    if _type_filter_matches(
+                        entity_type, ent.ObjectName.replace("AcDb", "").upper()
+                    ):
                         results.append(_entity_info(ent))
                 except Exception as exc:
                     log.debug("analysis_select_by_type: skip entity at index %d: %s", i, exc)
@@ -7956,14 +8155,102 @@ class ComBackend(AutoCADBackend):
                     pass
 
     async def entity_trim(self, target_handle, cutter_handle, keep_x, keep_y) -> EntityInfo:
+        """Trim through ActiveX members, not ``_TRIM``.
+
+        The command route returned ``ok`` while leaving the line untouched (measured on AutoCAD
+        2026: a line crossed by a cutter came back unchanged), and TRIM would have removed the picked
+        piece where this tool's contract keeps it. The plan is the headless engine's
+        (``engineering.trim``), so both engines cut in the same place.
+        """
+
         def _sync():
+            from engineering import trim as trim_plan
+
+            if str(target_handle) == str(cutter_handle):
+                raise RuntimeError("entity_trim: target and cutter cannot be the same entity.")
             doc = _acad_doc()
-            cmd = f'_TRIM\n(handent "{cutter_handle}")\n\n{float(keep_x)},{float(keep_y)}\n\n'
-            self._safe_send_command(doc, cmd)
-            ent = doc.HandleToObject(target_handle)
-            return _entity_info(ent)
+
+            def source(handle):
+                from engineering import corners
+
+                ent = _com_unnarrow(doc.HandleToObject(str(handle)))
+                kind = getattr(ent, "ObjectName", "")
+                if kind == "AcDbLine":
+                    a, b = ent.StartPoint, ent.EndPoint
+                    return ent, corners.SourceLine((a[0], a[1]), (b[0], b[1]))
+                if kind == "AcDbCircle":
+                    c = ent.Center
+                    return ent, corners.SourceCircle((c[0], c[1]), float(ent.Radius))
+                if kind == "AcDbArc":
+                    c = ent.Center
+                    return ent, corners.SourceArc(
+                        (c[0], c[1]),
+                        float(ent.Radius),
+                        rad2deg(float(ent.StartAngle)),
+                        rad2deg(float(ent.EndAngle)),
+                    )
+                raise RuntimeError(
+                    f"entity_trim supports LINE, ARC and CIRCLE (got {kind.replace('AcDb', '').upper()})."
+                )
+
+            target, t_src = source(target_handle)
+            _cutter, c_src = source(cutter_handle)
+            try:
+                plan = trim_plan.plan_trim(t_src, c_src, (float(keep_x), float(keep_y)))
+            except ValueError as exc:
+                raise RuntimeError(f"entity_trim: {exc}.") from exc
+            if plan.kind == "line":
+                target.StartPoint = _apoint(plan.p[0], plan.p[1])
+                target.EndPoint = _apoint(plan.q[0], plan.q[1])
+                result = target
+            elif plan.kind == "arc":
+                target.StartAngle = deg2rad(plan.a0 % 360.0)
+                target.EndAngle = deg2rad(plan.a1 % 360.0)
+                result = target
+            else:  # a circle cut twice becomes the arc that was kept
+                with _com_created() as made:
+                    result = made(
+                        _msp().AddArc(
+                            _apoint(t_src.c[0], t_src.c[1]),
+                            float(t_src.r),
+                            deg2rad(plan.a0),
+                            deg2rad(plan.a1),
+                        )
+                    )
+                    for attr in ("Layer", "color", "Linetype"):
+                        try:
+                            setattr(result, attr, getattr(target, attr))
+                        except Exception:
+                            log.debug("trimmed circle: could not copy %s", attr, exc_info=True)
+                target.Delete()
+            _regen()
+            return _entity_info(result)
 
         return await self._run(_sync)
+
+    def _com_curve_source(self, handle, op: str):
+        """A LINE / ARC / CIRCLE read over ActiveX as the planners' plain value."""
+        from engineering import corners
+
+        ent = _com_unnarrow(_acad_doc().HandleToObject(str(handle)))
+        kind = getattr(ent, "ObjectName", "")
+        if kind == "AcDbLine":
+            a, b = ent.StartPoint, ent.EndPoint
+            return ent, corners.SourceLine((a[0], a[1]), (b[0], b[1]))
+        if kind == "AcDbCircle":
+            c = ent.Center
+            return ent, corners.SourceCircle((c[0], c[1]), float(ent.Radius))
+        if kind == "AcDbArc":
+            c = ent.Center
+            return ent, corners.SourceArc(
+                (c[0], c[1]),
+                float(ent.Radius),
+                rad2deg(float(ent.StartAngle)),
+                rad2deg(float(ent.EndAngle)),
+            )
+        raise RuntimeError(
+            f"{op} supports LINE, ARC and CIRCLE (got {kind.replace('AcDb', '').upper()})."
+        )
 
     async def entity_extend(
         self,
@@ -7972,35 +8259,112 @@ class ComBackend(AutoCADBackend):
         end_x=None,
         end_y=None,
     ) -> EntityInfo:
+        """Extend through ActiveX members, not ``_EXTEND`` (which reported ok and moved nothing live)."""
+
         def _sync():
-            doc = _acad_doc()
-            target = doc.HandleToObject(target_handle)
-            boundary = doc.HandleToObject(boundary_handle)
-            if end_x is None or end_y is None:
-                # Auto: pick the target endpoint nearest the boundary midpoint.
-                try:
-                    ts = target.StartPoint
-                    te = target.EndPoint
-                    bs = boundary.StartPoint
-                    be_ = boundary.EndPoint
-                    bm = ((bs[0] + be_[0]) / 2.0, (bs[1] + be_[1]) / 2.0)
-                    ds = (ts[0] - bm[0]) ** 2 + (ts[1] - bm[1]) ** 2
-                    de = (te[0] - bm[0]) ** 2 + (te[1] - bm[1]) ** 2
-                    pick = ts if ds <= de else te
-                    ex, ey = float(pick[0]), float(pick[1])
-                except Exception:
-                    ex, ey = 0.0, 0.0
+            from engineering.extend import plan_extend
+
+            if str(target_handle) == str(boundary_handle):
+                raise RuntimeError("entity_extend: target and boundary cannot be the same entity.")
+            target, t_src = self._com_curve_source(target_handle, "entity_extend")
+            _boundary, b_src = self._com_curve_source(boundary_handle, "entity_extend")
+            pick = (float(end_x), float(end_y)) if end_x is not None and end_y is not None else None
+            try:
+                plan = plan_extend(t_src, b_src, pick)
+            except ValueError as exc:
+                raise RuntimeError(f"entity_extend: {exc}.") from exc
+            if plan.kind == "line":
+                target.StartPoint = _apoint(plan.p[0], plan.p[1])
+                target.EndPoint = _apoint(plan.q[0], plan.q[1])
             else:
-                ex, ey = float(end_x), float(end_y)
-            cmd = f'_EXTEND\n(handent "{boundary_handle}")\n\n{ex},{ey}\n\n'
-            self._safe_send_command(doc, cmd)
-            return _entity_info(doc.HandleToObject(target_handle))
+                target.StartAngle = deg2rad(plan.a0 % 360.0)
+                target.EndAngle = deg2rad(plan.a1 % 360.0)
+            _regen()
+            return _entity_info(target)
 
         return await self._run(_sync)
 
-    async def entity_fillet(self, handle1, handle2, radius, trim=True) -> EntityInfo:
+    def _fillet_curves_sync(self, handle1, handle2, radius, trim, near_x, near_y) -> EntityInfo:
+        """FILLET between any two of LINE / ARC / CIRCLE through ActiveX members, not the FILLET command.
+
+        Same planner as the headless engine (``engineering.corners``), so both engines pick the same
+        tangent circle for the same ``near`` point. No SendCommand: nothing here can be left waiting
+        at a prompt, and the new arc is created all-or-nothing.
+        """
+        from engineering import corners
+
+        if str(handle1) == str(handle2):
+            raise RuntimeError("entity_fillet: handle1 and handle2 cannot be the same.")
+        doc = _acad_doc()
+
+        def source(handle):
+            ent = _com_unnarrow(doc.HandleToObject(str(handle)))
+            kind = getattr(ent, "ObjectName", "")
+            if kind == "AcDbLine":
+                a, b = ent.StartPoint, ent.EndPoint
+                return ent, corners.SourceLine((a[0], a[1]), (b[0], b[1]))
+            c = getattr(ent, "Center", None)
+            if kind == "AcDbCircle":
+                return ent, corners.SourceCircle((c[0], c[1]), float(ent.Radius))
+            if kind == "AcDbArc":
+                return ent, corners.SourceArc(
+                    (c[0], c[1]),
+                    float(ent.Radius),
+                    rad2deg(float(ent.StartAngle)),
+                    rad2deg(float(ent.EndAngle)),
+                )
+            raise RuntimeError(
+                f"entity_fillet supports LINE, ARC and CIRCLE (got {kind.replace('AcDb', '').upper()})."
+            )
+
+        e1, s1 = source(handle1)
+        e2, s2 = source(handle2)
+        near = (float(near_x), float(near_y)) if near_x is not None and near_y is not None else None
+        try:
+            plan = corners.plan_fillet(s1, s2, float(radius), near, bool(trim))
+        except ValueError as exc:
+            raise RuntimeError(f"entity_fillet: {exc}.") from exc
+        with _com_created() as made:
+            arc = made(
+                _msp().AddArc(
+                    _apoint(plan.center[0], plan.center[1]),
+                    float(plan.radius),
+                    deg2rad(plan.start_deg),
+                    deg2rad(plan.end_deg),
+                )
+            )
+            try:
+                arc.Layer = e1.Layer
+            except Exception:
+                log.debug("fillet arc keeps layer 0", exc_info=True)
+            for edit in plan.edits:
+                ent = (e1, e2)[edit.index]
+                if edit.kind == "line":
+                    ent.StartPoint = _apoint(edit.p[0], edit.p[1])
+                    ent.EndPoint = _apoint(edit.q[0], edit.q[1])
+                else:
+                    ent.StartAngle = deg2rad(edit.a0 % 360.0)
+                    ent.EndAngle = deg2rad(edit.a1 % 360.0)
+        _regen()
+        return _entity_info(arc)
+
+    async def entity_fillet(
+        self, handle1, handle2, radius, trim=True, near_x=None, near_y=None
+    ) -> EntityInfo:
         def _sync():
             doc = _acad_doc()
+            kinds = []
+            for h in (handle1, handle2):
+                try:
+                    kinds.append(
+                        getattr(_com_unnarrow(doc.HandleToObject(str(h))), "ObjectName", "")
+                    )
+                except Exception:
+                    kinds.append("")
+            if kinds != ["AcDbLine", "AcDbLine"] and all(
+                k in ("AcDbLine", "AcDbArc", "AcDbCircle") for k in kinds
+            ):
+                return self._fillet_curves_sync(handle1, handle2, radius, trim, near_x, near_y)
             t = "T" if trim else "N"  # T=Trim, N=No-trim
             cmd = (
                 f"_FILLET\n_R\n{float(radius)}\n_T\n_{t}\n"
