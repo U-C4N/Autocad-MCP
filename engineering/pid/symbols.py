@@ -31,7 +31,8 @@ from .geometry import (
 )
 
 #: Written into every INSERT's XDATA; bump on any change to shipped geometry or ports.
-#: "2" (1.7.0): column trays are clipped to the dished heads.
+#: "2" (1.7.0): column trays are clipped to the dished heads; the diaphragm
+#: valve's dome stands on its bow-tie; the air-cooler fan cross ends on its circle.
 CATALOG_VERSION = "2"
 BUBBLE_RADIUS = 5.0
 FAMILY_LAYER = {
@@ -111,9 +112,14 @@ def register(
     variants: dict[str, list[str]] | None = None,
     params_schema: dict | None = None,
 ) -> None:
+    """Add ``symbol`` to the catalogue. A name already registered is refused:
+    a second registration used to replace the first without a word."""
     if family not in FAMILY_LAYER:
         raise ValueError(f"unknown family {family!r}")
-    _REGISTRY[symbol] = (family, builder, dict(variants or {}), params_schema)
+    if symbol in _REGISTRY:
+        raise ValueError(f"symbol {symbol!r} is already registered ({_REGISTRY[symbol][0]})")
+    frozen = {key: list(values) for key, values in (variants or {}).items()}
+    _REGISTRY[symbol] = (family, builder, frozen, params_schema)
 
 
 def resolve(symbol: str, **options) -> SymbolSpec:
@@ -149,7 +155,9 @@ def list_symbols(family: str | None = None) -> list[dict]:
             {
                 "symbol": symbol,
                 "family": fam,
-                "variants": variants,
+                # Copies: a caller appending to a listed variant list used to
+                # change what `resolve` accepts.
+                "variants": {key: list(values) for key, values in variants.items()},
                 "ports": [p.to_dict() for p in base.ports],
                 "parametric": base.parametric,
                 "params_schema": schema or {},
@@ -161,7 +169,12 @@ def list_symbols(family: str | None = None) -> list[dict]:
 
 
 def all_specs() -> list[SymbolSpec]:
-    """Every base symbol plus every enumerable variant (for tests and the contact sheet)."""
+    """Every base symbol plus every enumerable variant (for tests and the contact sheet).
+
+    Every advertised combination must build: a builder's ``ValueError`` used to
+    be swallowed, so a broken symbol silently left the catalogue. A symbol that
+    refuses an option does not advertise it (check / relief list only ``none``).
+    """
     specs: list[SymbolSpec] = []
     for _symbol, (_fam, builder, variants, _schema) in sorted(_REGISTRY.items()):
         if not variants:
@@ -171,11 +184,7 @@ def all_specs() -> list[SymbolSpec]:
         combos: list[dict] = [{}]
         for key in keys:
             combos = [{**c, key: v} for c in combos for v in variants[key]]
-        for combo in combos:
-            try:
-                specs.append(builder(**combo))
-            except ValueError:
-                continue  # a combination the builder refuses (e.g. an actuator on a check valve)
+        specs.extend(builder(**combo) for combo in combos)
     return specs
 
 

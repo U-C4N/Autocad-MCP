@@ -7,13 +7,14 @@ minimum of its inputs — never raised by agreement between heuristics.
 
 from __future__ import annotations
 
+import functools
 import math
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from .lines import LAYER_TO_CLASS, LINE_CLASSES, PID_LINE_LAYERS
-from .symbols import Port, transform_port
+from .symbols import Port, all_specs, transform_port
 from .tags import parse_tag
 from .xdata import read_payload
 
@@ -52,6 +53,8 @@ _TOKEN_RE = re.compile(r"[A-Z]+")
 FAMILY_KIND = {"instrument": "instrument", "valve": "valve", "connector": "connector"}
 LINE_NUMBER_RE = re.compile(r'^\d+(?:"|MM)?-[A-Z]{1,4}-\d+', re.IGNORECASE)
 CONFIDENCE = {"catalog": 1.0, "xdata": 0.95, "heuristic": 0.6, "inferred": 0.3}
+#: The note on an instrument whose FUNC attribute has no LOOP beside it.
+NO_LOOP_NOTE = "LOOP attribute empty: the tag has no loop number"
 _PAGE = 1000
 
 
@@ -134,6 +137,9 @@ class _Edge:
     number_source: str | None = None
     from_ref: dict | None = None
     to_ref: dict | None = None
+    #: A closed polyline also runs from its last vertex back to its first;
+    #: ``length`` (the engine's) always included that edge, ``segments`` did not.
+    closed: bool = False
 
     def to_dict(self, include_geometry: bool) -> dict:
         p = self.payload or {}
@@ -167,14 +173,15 @@ class _Edge:
         return out
 
     def chord_length(self) -> float:
-        return round(
-            sum(math.dist(a, b) for a, b in zip(self.vertices, self.vertices[1:], strict=False)),
-            6,
-        )
+        return round(sum(math.dist(a, b) for a, b, _bulge in self.segments()), 6)
 
     def segments(self):
-        """``(a, b, bulge)`` per segment, the bulge belonging to the segment's start."""
-        for i, (a, b) in enumerate(zip(self.vertices, self.vertices[1:], strict=False)):
+        """``(a, b, bulge)`` per segment, the bulge belonging to the segment's start;
+        a closed edge ends with its closing segment (last vertex → first)."""
+        points = list(self.vertices)
+        if self.closed and len(points) > 2:
+            points.append(points[0])
+        for i, (a, b) in enumerate(zip(points, points[1:], strict=False)):
             yield a, b, self.bulges[i] if i < len(self.bulges) else 0.0
 
 
@@ -365,6 +372,18 @@ async def _collect(backend: AutoCADBackend, scope: str) -> list[tuple[EntityInfo
     return await page_all(current)
 
 
+@functools.lru_cache(maxsize=1)
+def _catalogue_by_name() -> dict:
+    """Block name → ``SymbolSpec`` for every catalogue symbol and variant. A
+    parametric vessel's name carries its parameter hash, so only the default
+    one is here; any other falls to the heuristic, as it must."""
+    return {spec.name: spec for spec in all_specs()}
+
+
+def _catalogue_spec(name: str):
+    return _catalogue_by_name().get(name) if name.startswith("PID_") else None
+
+
 async def build_graph(
     backend: AutoCADBackend,
     tolerance: float = 0.5,
@@ -412,6 +431,19 @@ async def build_graph(
             bbox=_bbox(info),
             attributes=attributes,
         )
+        catalogued = None if payload else _catalogue_spec(name)
+        if catalogued is not None:
+            # Our block name with its XDATA stripped (an EXPLODE/re-insert, a
+            # foreign tool): the name is a catalogue name, and the catalogue's
+            # ports are the truth - not the 0.6 heuristic (backlog W3-T14-11).
+            payload = {
+                "kind": "symbol",
+                "family": catalogued.family,
+                "symbol": catalogued.symbol,
+                "ports": {
+                    p.name: (p.x, p.y, p.direction_deg, p.kind, p.radius) for p in catalogued.ports
+                },
+            }
         if payload and payload.get("kind") == "symbol":
             source = "catalog" if name.startswith("PID_") else "xdata"
             family = payload.get("family")
@@ -423,6 +455,8 @@ async def build_graph(
                 confidence=CONFIDENCE[source],
                 **base,
             )
+            if catalogued is not None:
+                node.notes.append("no XDATA: ports from the catalogue by block name")
             stretched = abs(abs(scale) - abs(y_scale)) > 1e-9
             for pname, (lx, ly, ldir, kind, radius) in payload.get("ports", {}).items():
                 # Measured from the INSERT as it is (spec §9.4): a mirror is
@@ -489,6 +523,7 @@ async def build_graph(
             space=space,
             payload=payload if payload and payload.get("kind") == "line" else None,
             source="touch",
+            closed=bool(info.properties.get("closed", False)),
         )
         if edge.payload:
             edge.source = "xdata"
@@ -609,6 +644,14 @@ async def build_graph(
         for d, item in grid.near(edge.space, x, y, 10.0 * tolerance):
             if item[0] == "port" and (nearest is None or d < nearest[0]):
                 nearest = (d, item)
+        # A bubble's port is its circle, kept out of the point grid; the hint
+        # measures to the circle, the distance a line end would have to move.
+        for node_id, pname, cx, cy, r in radial_ports:
+            if nodes[node_id].space != edge.space:
+                continue
+            d = abs(math.hypot(x - cx, y - cy) - r)
+            if d <= 10.0 * tolerance and (nearest is None or d < nearest[0]):
+                nearest = (d, ("port", node_id, pname))
         dangling.append(
             {
                 "edge": edge.id,
@@ -682,8 +725,13 @@ async def build_graph(
     for node in nodes.values():
         attrs = node.attributes
         if node.kind == "instrument" and attrs.get("FUNC"):
-            node.tag = f"{attrs['FUNC']}-{attrs.get('LOOP', '')}".rstrip("-")
+            loop = str(attrs.get("LOOP") or "").strip()
+            node.tag = f"{attrs['FUNC']}-{loop}".rstrip("-")
             node.tag_source = "attribute"
+            if not loop:
+                # FUNC without a loop number is an unfinished tag, not an
+                # illegal one: the critique files it as untagged (W3-T16-05).
+                node.notes.append(NO_LOOP_NOTE)
         else:
             key = next((k for k in ATTRIBUTE_TAGS if attrs.get(k)), None)
             if key:

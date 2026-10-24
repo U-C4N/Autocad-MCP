@@ -592,3 +592,105 @@ def test_vessel_shapes_that_cannot_be_drawn_and_nozzle_typos_are_refused(symbol,
     # Flat-roof and hopper proportions are free; the capsule limit is strict.
     assert validate_vessel_params("tank", {"width": 24, "height": 4})["height"] == 4.0
     assert validate_vessel_params("hopper", {"width": 40, "height": 4})["height"] == 4.0
+
+
+# ── backlog W2-T7-05 / -06, W2-T8-02 / -03, W2-T9-02 / -06 (1.7.0, Task 8) ──
+
+
+def test_the_catalogue_size_is_pinned():
+    """W2-T7-05: the only pin was '>= 100'; a symbol lost from the catalogue
+    (or a variant combination silently skipped) now changes a number here."""
+    assert len(list_symbols()) == 43
+    assert len(all_specs()) == 109
+
+
+def test_all_specs_surfaces_a_builder_error(monkeypatch):
+    """W2-T7-05 — RED: all_specs() swallowed every builder ValueError, so a
+    broken symbol vanished from the catalogue instead of failing."""
+    from engineering.pid import symbols
+
+    def broken(option: str = "a"):
+        raise ValueError(f"broken builder for option {option}")
+
+    monkeypatch.setitem(symbols._REGISTRY, "zz_broken", ("misc", broken, {"option": ["a"]}, None))
+    with pytest.raises(ValueError, match="broken builder for option a"):
+        all_specs()
+
+
+def test_register_refuses_a_symbol_already_registered():
+    """W2-T7-06 — RED: register() overwrote an existing symbol without a word."""
+    from engineering.pid.symbols import register
+
+    with pytest.raises(ValueError, match=r"^symbol 'gate' is already registered"):
+        register("gate", "valve", lambda: build_valve("gate"))
+    assert resolve("gate").name == "PID_VALVE_GATE"
+
+
+def test_list_symbols_hands_out_copies_of_the_variants():
+    """W2-T7-06 — RED: appending to a listed variant list mutated the registry."""
+    row = next(r for r in list_symbols() if r["symbol"] == "gate")
+    row["variants"]["actuator"].append("rocket")
+    row["variants"]["extra"] = ["x"]
+    again = next(r for r in list_symbols() if r["symbol"] == "gate")
+    assert again["variants"] == {"actuator": list(ACTUATORS)}
+    with pytest.raises(ValueError, match="must be one of"):
+        resolve("gate", actuator="rocket")
+
+
+@pytest.mark.parametrize("body", sorted(NO_ACTUATOR))
+def test_self_acting_valves_advertise_only_the_actuators_they_accept(body):
+    """W2-T8-02 — RED: check and relief listed all six actuators and refused five."""
+    row = next(r for r in list_symbols() if r["symbol"] == body)
+    assert row["variants"] == {"actuator": ["none"]}
+    for actuator in row["variants"]["actuator"]:
+        resolve(body, actuator=actuator)
+    with pytest.raises(ValueError, match=r"actuator must be one of none, got 'motor'"):
+        resolve(body, actuator="motor")
+
+
+def _on_segment(point, a, b) -> bool:
+    (px, py), (ax, ay), (bx, by) = point, a, b
+    cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+    inside = min(ax, bx) - EPS <= px <= max(ax, bx) + EPS
+    return abs(cross) < EPS and inside and min(ay, by) - EPS <= py <= max(ay, by) + EPS
+
+
+def test_the_diaphragm_dome_sits_on_the_bow_tie():
+    """W2-T8-03 — RED: the dome arc(0, 2, r=2) ended at (+-2, 2) while the
+    bow-tie edge at x = +-2 is at y = 1: the dome floated 1 mm above it."""
+    spec = build_valve("diaphragm")
+    dome = next(p for p in spec.primitives if p["type"] == "arc")
+    ends = [
+        (
+            dome["cx"] + dome["r"] * math.cos(math.radians(angle)),
+            dome["cy"] + dome["r"] * math.sin(math.radians(angle)),
+        )
+        for angle in (dome["start_deg"], dome["end_deg"])
+    ]
+    edges = []
+    for p in spec.primitives:
+        if p["type"] == "polyline":
+            pts = [tuple(q) for q in p["points"]] + ([tuple(p["points"][0])] if p["closed"] else [])
+            edges += list(zip(pts, pts[1:], strict=False))
+    for end in ends:
+        assert any(_on_segment(end, a, b) for a, b in edges), f"{end} floats off the bow-tie"
+    assert spec.bbox[3] == pytest.approx(dome["cy"] + dome["r"])
+
+
+def test_the_spectacle_blind_cites_pip_pic001():
+    """W2-T9-02 — RED: it cited ISO 10628-2, which has no spectacle blind (the
+    v1.6 P&ID spec section 4.1 says the PIP PIC001 shape is used and named)."""
+    assert resolve("spectacle_blind").source.startswith("PIP PIC001")
+    assert resolve("flange_pair").source.startswith("ISO 10628-2")
+
+
+def test_the_air_cooler_fan_cross_stays_inside_its_circle():
+    """W2-T9-06 — RED: the cross arms ended at hypot(1.8, 1.8) = 2.5456 against
+    the 2.5 circle, 0.046 mm outside."""
+    spec = resolve("air_cooler")
+    (fan,) = [p for p in spec.primitives if p["type"] == "circle"]
+    for p in spec.primitives:
+        if p["type"] != "line":
+            continue
+        for x, y in ((p["x1"], p["y1"]), (p["x2"], p["y2"])):
+            assert math.hypot(x - fan["cx"], y - fan["cy"]) <= fan["r"] + 1e-9

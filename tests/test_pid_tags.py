@@ -101,3 +101,70 @@ def test_describe_tables_is_json_serialisable_and_names_every_first_letter():
     tables = describe_tables()
     json.dumps(tables)
     assert set(tables["first_letters"]) == set("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+
+# ── backlog W1-T6-04 / -05 / -06 (1.7.0 triage, Task 8) ─────────────────────
+
+
+def test_an_unknown_letter_after_a_valid_trailing_is_the_one_named():
+    """W1-T6-04 — RED: LAHX reported H (a valid trailing high), not the X after it."""
+    out = parse_tag("LAHX-1", kind="instrument")
+    assert out["errors"] == ["LAHX: unexpected letter X at position 4"]
+    out = parse_tag("PSHHX-1", kind="instrument")
+    assert out["errors"] == ["PSHHX: unexpected letter X at position 5"]
+
+
+def test_without_a_valid_trailing_prefix_the_first_trailing_letter_is_named():
+    assert parse_tag("FQQ-1", kind="instrument")["errors"] == [
+        "FQQ: unexpected letter Q at position 3"
+    ]
+
+
+@pytest.mark.parametrize(
+    "tag, role, letter",
+    [
+        ("TKC-1", "modifier", "K"),  # rate of change: K before an output
+        ("FK-1", "output", "K"),  # control station: K as the output
+        ("KIC-1", "first", "K"),  # time: K as the first letter
+    ],
+)
+def test_the_three_roles_of_k(tag, role, letter):
+    """W1-T6-06: K is a first letter, a modifier and an output; each is pinned."""
+    out = parse_tag(tag)
+    assert out["valid"] is True, out["errors"]
+    value = out[role]
+    letters = [v["letter"] for v in value] if isinstance(value, list) else [value["letter"]]
+    assert letter in letters
+
+
+@pytest.mark.parametrize("tag, letter", [("LB-1", "B"), ("LN-1", "N"), ("LX-1", "X")])
+def test_user_choice_readouts_are_recorded_as_readouts(tag, letter):
+    out = parse_tag(tag)
+    assert out["valid"] is True and out["user_defined"] is True
+    assert out["readout"] == [{"letter": letter, "meaning": None}]
+    assert out["output"] == []
+
+
+def test_an_empty_equipment_prefix_map_replaces_the_default():
+    """W1-T6-05 / W4-T19-05 — RED: {} fell back to the default map (`or`)."""
+    out = parse_tag("P-101", kind="equipment", equipment_prefixes={})
+    assert out["valid"] is False
+    assert out["errors"] == ["'P-101': prefix P is not in the equipment prefix map"]
+    assert parse_tag("P-101", kind="equipment")["equipment_kind"] == "pump"
+
+
+@pytest.mark.parametrize(
+    "prefixes, fragment",
+    [
+        ({"P": 5}, "equipment_prefixes['P']: expected text naming the equipment kind, got int"),
+        ({"P": ""}, "equipment_prefixes['P']: expected text naming the equipment kind, got ''"),
+        ({5: "pump"}, "equipment_prefixes: a prefix must be text, got 5"),
+        ({"": "pump"}, "equipment_prefixes: a prefix must be text, got ''"),
+        (["P"], "equipment_prefixes: expected a mapping of prefix to kind, got list"),
+    ],
+)
+def test_a_malformed_equipment_prefix_map_is_refused_by_path(prefixes, fragment):
+    """W1-T6-05 — RED: {'P': 5} answered equipment_kind 5."""
+    with pytest.raises(ValueError) as excinfo:
+        parse_tag("P-101", kind="equipment", equipment_prefixes=prefixes)
+    assert str(excinfo.value) == fragment

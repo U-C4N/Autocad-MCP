@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import math
+import re
 
 import pytest
 
 from engineering.pid.drawlines import draw_line
 from engineering.pid.graph import build_graph
 from engineering.pid.insert import place_symbol
-
-pytestmark = pytest.mark.asyncio
 
 
 async def _small_pid(backend):
@@ -40,6 +39,7 @@ async def _small_pid(backend):
     return {"pump": pump, "hv": hv, "vessel": vessel, "fic": fic, "l1": l1, "l2": l2, "sig": sig}
 
 
+@pytest.mark.asyncio
 async def test_tool_drawn_pid_is_read_back_exactly(backend):
     ids = await _small_pid(backend)
     graph = await build_graph(backend)
@@ -74,6 +74,7 @@ async def test_tool_drawn_pid_is_read_back_exactly(backend):
     assert graph["junctions"] == [] and graph["unclassified"] == []
 
 
+@pytest.mark.asyncio
 async def test_a_nudged_symbol_makes_its_line_dangle_with_a_hint(backend):
     ids = await _small_pid(backend)
     await backend.entity_move(ids["hv"]["handle"], 0.0, 1.0)
@@ -91,6 +92,7 @@ async def _no_dangling_after(backend, tolerance):
     return graph["stats"]["dangling"] == 1  # only the deliberately open signal line
 
 
+@pytest.mark.asyncio
 async def test_branch_onto_a_line_becomes_a_junction(backend):
     ids = await _small_pid(backend)
     # l1 runs (100,106)->(100,111)->(151,111)->(151,104)->(156,104); (130,111) is on its
@@ -106,6 +108,7 @@ async def test_branch_onto_a_line_becomes_a_junction(backend):
     assert set(junction["edges"]) == {branch["handle"], ids["l1"]["handle"]}
 
 
+@pytest.mark.asyncio
 async def test_rotated_and_scaled_symbols_are_measured_not_assumed(backend):
     await place_symbol(backend, "centrifugal_pump", 0, 0, rotation=90.0, scale=2.0, tag="P-1")
     graph = await build_graph(backend)
@@ -115,6 +118,7 @@ async def test_rotated_and_scaled_symbols_are_measured_not_assumed(backend):
     assert node["rotation_deg"] == pytest.approx(90.0) and node["scale"] == pytest.approx(2.0)
 
 
+@pytest.mark.asyncio
 async def test_foreign_blocks_classify_with_reduced_confidence_and_inferred_ports(backend):
     blk = backend._doc.blocks.new(name="GATE_VALVE")
     blk.add_lwpolyline([(-4, -2), (-4, 2), (0, 0)], close=True)
@@ -138,6 +142,7 @@ async def test_foreign_blocks_classify_with_reduced_confidence_and_inferred_port
     assert graph["stats"]["entities_scanned"] >= 3
 
 
+@pytest.mark.asyncio
 async def test_a_foreign_line_ending_on_the_body_behind_the_tag_text_attaches(backend):
     """The INSERT's ``bounding_box`` takes the ATTRIB with it, so the TAG
     lettered above the valve pushed the box to x~60 and a line ending on the
@@ -161,6 +166,7 @@ async def test_a_foreign_line_ending_on_the_body_behind_the_tag_text_attaches(ba
     assert (line, "from") not in {(d["edge"], d["end"]) for d in graph["dangling"]}
 
 
+@pytest.mark.asyncio
 async def test_a_foreign_vessel_takes_lines_on_every_edge_regardless_of_where_its_tag_sits(
     backend,
 ):
@@ -185,6 +191,7 @@ async def test_a_foreign_vessel_takes_lines_on_every_edge_regardless_of_where_it
     assert {(d["edge"], d["end"]) for d in graph["dangling"]} == {(top, "from"), (side, "from")}
 
 
+@pytest.mark.asyncio
 async def test_a_line_drawn_into_a_foreign_body_is_dangling_unless_tolerance_reaches_the_edge(
     backend,
 ):
@@ -207,6 +214,7 @@ async def test_a_line_drawn_into_a_foreign_body_is_dangling_unless_tolerance_rea
     assert {(d["edge"], d["end"]) for d in graph["dangling"]} == {(line, "from")}
 
 
+@pytest.mark.asyncio
 async def test_two_foreign_boundaries_sharing_an_end_go_to_the_nearest_insertion(backend):
     big = backend._doc.blocks.new(name="VESSEL_BIG")
     big.add_lwpolyline([(-30, -30), (30, -30), (30, 30), (-30, 30)], close=True)
@@ -222,6 +230,7 @@ async def test_two_foreign_boundaries_sharing_an_end_go_to_the_nearest_insertion
     assert next(n for n in graph["nodes"] if n["id"] == vessel)["ports"] == {}
 
 
+@pytest.mark.asyncio
 async def test_a_sheet_border_insert_never_swallows_junctions_or_dangling_ends(backend):
     """The border is an INSERT whose box encloses the whole sheet. Accepting
     ends strictly inside a foreign box made every end that missed a port a
@@ -247,6 +256,7 @@ async def test_a_sheet_border_insert_never_swallows_junctions_or_dangling_ends(b
     assert edges[branch["handle"]]["from"] == {"junction": "J1"}
 
 
+@pytest.mark.asyncio
 async def test_a_foreign_title_block_does_not_connect_the_valve_or_adopt_loose_lines(backend):
     title = backend._doc.blocks.new(name="TITLEBLOCK_A3")
     title.add_lwpolyline([(0, 0), (420, 0), (420, 297), (0, 297)], close=True)
@@ -273,6 +283,7 @@ async def test_a_foreign_title_block_does_not_connect_the_valve_or_adopt_loose_l
     assert {n["id"] for n in graph["nodes"]} == {valve}
 
 
+@pytest.mark.asyncio
 async def test_include_foreign_false_ignores_untagged_blocks(backend):
     blk = backend._doc.blocks.new(name="GATE_VALVE")
     blk.add_line((0, 0), (1, 0))
@@ -281,6 +292,7 @@ async def test_include_foreign_false_ignores_untagged_blocks(backend):
     assert graph["nodes"] == [] and graph["edges"] == []
 
 
+@pytest.mark.asyncio
 async def test_line_number_and_tags_from_nearby_text(backend):
     await backend.entity_create_line(0, 0, 100, 0, layer="PROCESS-PIPING-MAIN")
     await backend.entity_create_text('6"-P-1234-CS1', 40, 2, 2.5, layer="PROCESS-LINE-TEXT")
@@ -289,6 +301,7 @@ async def test_line_number_and_tags_from_nearby_text(backend):
     assert edge["line_number"] == '6"-P-1234-CS1' and edge["number_source"] == "label"
 
 
+@pytest.mark.asyncio
 async def test_a_signal_line_next_to_a_pipe_label_never_adopts_the_pipes_number(backend):
     """The label search is a fallback for a line with no record of its own.
 
@@ -318,6 +331,7 @@ async def test_a_signal_line_next_to_a_pipe_label_never_adopts_the_pipes_number(
     assert signal["from"]["node"] == ft["handle"] and signal["to"]["node"] == fic["handle"]
 
 
+@pytest.mark.asyncio
 async def test_a_verbatim_number_on_a_signal_line_is_still_read_back(backend):
     ft = await place_symbol(
         backend, "instrument", 40, 112, tag="FT-1", type="dcs", location="primary"
@@ -337,6 +351,7 @@ async def test_a_verbatim_number_on_a_signal_line_is_still_read_back(backend):
     assert (edge["line_number"], edge["number_source"]) == ("SIG-7", "xdata")
 
 
+@pytest.mark.asyncio
 async def test_a_foreign_signal_line_next_to_a_pipe_label_stays_unnumbered(backend):
     """A layer-classified signal line (no payload) is a signal all the same:
     LINE_NUMBER_RE is the pipe grammar, so a match near it is a neighbour's.
@@ -354,6 +369,7 @@ async def test_a_foreign_signal_line_next_to_a_pipe_label_stays_unnumbered(backe
         assert (by_class[cls]["line_number"], by_class[cls]["number_source"]) == (None, None), cls
 
 
+@pytest.mark.asyncio
 async def test_scope_all_walks_every_layout_and_restores_the_current_one(backend):
     await place_symbol(backend, "gate", 0, 0, tag="HV-1")
     await backend.layout_create("SHEET-2")
@@ -366,6 +382,7 @@ async def test_scope_all_walks_every_layout_and_restores_the_current_one(backend
     assert (await backend.layout_list())["current"] == "Model"
 
 
+@pytest.mark.asyncio
 async def test_offpage_links_pair_by_link_id(backend):
     out = await place_symbol(backend, "offpage", 0, 0, tag="TO 002", link="L-17", direction="out")
     inn = await place_symbol(
@@ -377,6 +394,7 @@ async def test_offpage_links_pair_by_link_id(backend):
     ]
 
 
+@pytest.mark.asyncio
 async def test_geometry_is_optional(backend):
     await _small_pid(backend)
     lean = await build_graph(backend)
@@ -385,6 +403,7 @@ async def test_geometry_is_optional(backend):
     assert len(full["edges"][0]["vertices"]) >= 2
 
 
+@pytest.mark.asyncio
 async def test_a_line_ending_on_a_discarded_foreign_line_dangles(backend):
     """A foreign line is an edge only when an end touches a node (spec §9.2 4c).
 
@@ -402,6 +421,7 @@ async def test_a_line_ending_on_a_discarded_foreign_line_dangles(backend):
     assert graph["stats"]["dangling"] == 2
 
 
+@pytest.mark.asyncio
 async def test_a_foreign_line_ending_on_another_discarded_foreign_line_dangles(backend):
     blk = backend._doc.blocks.new(name="GATE_VALVE")
     blk.add_lwpolyline([(-4, -2), (-4, 2), (0, 0)], close=True)
@@ -418,6 +438,7 @@ async def test_a_foreign_line_ending_on_another_discarded_foreign_line_dangles(b
     assert graph["stats"]["dangling"] == 1
 
 
+@pytest.mark.asyncio
 async def test_edge_length_is_the_engines_measurement_not_a_chord_walk(backend):
     """A curved crossing "jump" is an arc in the drawing; the chord walk over
     its vertices was 5.7 units short and said nothing about it. The engine
@@ -502,6 +523,7 @@ def test_point_to_arc_distance_past_a_semicircle_keeps_the_centre_on_the_arcs_si
     assert _point_segment_distance((5, -10), a, b, -2.0) == pytest.approx(math.hypot(5, 10))
 
 
+@pytest.mark.asyncio
 async def test_a_line_ending_on_the_apex_of_an_arc_past_a_semicircle_is_a_junction(backend):
     msp = backend._doc.modelspace()
     pipe = msp.add_lwpolyline(
@@ -527,6 +549,7 @@ async def test_a_line_ending_on_the_apex_of_an_arc_past_a_semicircle_is_a_juncti
     assert (on_paper, "from") in dangling and (on_arc, "from") not in dangling
 
 
+@pytest.mark.asyncio
 async def test_a_mirrored_arc_is_tested_on_the_side_the_drawing_holds(backend):
     """The bulge is signed in the polyline's own frame, and ``entity_mirror``
     leaves that frame a reflection (extrusion -Z). Handing the stored sign
@@ -676,6 +699,7 @@ def test_an_approximate_geometry_bbox_is_tightened_by_the_attribute_inclusive_bo
 # ── per-space resolution, mirrored inserts, tags above the box, per-axis scale ──
 
 
+@pytest.mark.asyncio
 async def test_scope_all_resolves_each_line_in_its_own_space(backend):
     """The grids, box candidates and texts were pooled across layouts, so a
     line in SHEET-2 attached to the Model gate that shares its coordinates,
@@ -707,6 +731,7 @@ async def test_scope_all_resolves_each_line_in_its_own_space(backend):
     assert dangling[(under_pump, "to")]["nearest"] is None  # the pump is on another sheet
 
 
+@pytest.mark.asyncio
 async def test_scope_all_keeps_junctions_and_tags_within_a_space(backend):
     """A Model line's vertex must not make a junction for a SHEET-2 line
     ending on the same coordinates, and a Model tag must not label a
@@ -727,6 +752,7 @@ async def test_scope_all_keeps_junctions_and_tags_within_a_space(backend):
     assert node["tag"] is None and node["space"] == "SHEET-2"
 
 
+@pytest.mark.asyncio
 async def test_a_mirrored_insert_has_its_ports_on_the_mirror_image(backend):
     """MIRROR3D and foreign DXFs store a mirror as extrusion -Z with the
     stored insertion x unnegated. The reader took the catalogue ports on
@@ -767,6 +793,7 @@ async def test_a_mirrored_insert_has_its_ports_on_the_mirror_image(backend):
     assert edge["to"] == {"node": pump, "port": "discharge"}
 
 
+@pytest.mark.asyncio
 async def test_an_unmirrored_insert_reports_mirrored_false(backend):
     pump = (await place_symbol(backend, "centrifugal_pump", 50, 20, tag="P-1"))["handle"]
     assert (await backend.entity_get(pump)).properties["mirrored"] is False
@@ -774,6 +801,7 @@ async def test_an_unmirrored_insert_reports_mirrored_false(backend):
     assert graph["nodes"][0]["mirrored"] is False and graph["nodes"][0]["notes"] == []
 
 
+@pytest.mark.asyncio
 async def test_equipment_tag_is_the_text_above_the_box_not_the_line_label_below(backend):
     """Spec §9.2 step 6: the tag is the nearest text *above* the box. A full
     circle around the top-centre let a line number lettered under the pump
@@ -788,6 +816,7 @@ async def test_equipment_tag_is_the_text_above_the_box_not_the_line_label_below(
     assert node["tag"] == "P-101" and node["tag_source"] == "text"
 
 
+@pytest.mark.asyncio
 async def test_valve_tag_is_the_text_above_the_box_not_the_note_below(backend):
     blk = backend._doc.blocks.new(name="GATE_VALVE")
     blk.add_lwpolyline([(-4, -2), (4, -2), (4, 2), (-4, 2)], close=True)
@@ -799,6 +828,7 @@ async def test_valve_tag_is_the_text_above_the_box_not_the_note_below(backend):
     assert node["tag"] == "HV-9" and node["tag_source"] == "text"
 
 
+@pytest.mark.asyncio
 async def test_a_line_number_above_the_box_is_never_an_equipment_tag(backend):
     blk = backend._doc.blocks.new(name="GATE_VALVE")
     blk.add_lwpolyline([(-4, -2), (4, -2), (4, 2), (-4, 2)], close=True)
@@ -810,6 +840,7 @@ async def test_a_line_number_above_the_box_is_never_an_equipment_tag(backend):
     assert node["tag"] == "HV-9"
 
 
+@pytest.mark.asyncio
 async def test_a_text_flush_on_the_box_top_still_counts_as_above_it(backend):
     """Insertion y >= top - 0.5 * height: a label whose baseline sits a hair
     under the box top (lettered flush on the body) is still above it, while
@@ -826,6 +857,7 @@ async def test_a_text_flush_on_the_box_top_still_counts_as_above_it(backend):
     assert node["tag"] == "HV-9"
 
 
+@pytest.mark.asyncio
 async def test_a_non_uniformly_scaled_symbol_is_measured_per_axis_not_inferred(backend):
     """The reader re-ran the transform with the X factor for both axes and
     marked the port `inferred` — a flag spec §9.1 reserves for foreign-block
@@ -847,6 +879,7 @@ async def test_a_non_uniformly_scaled_symbol_is_measured_per_axis_not_inferred(b
     assert discharge["edges"] == [line]
 
 
+@pytest.mark.asyncio
 async def test_a_stretched_bubble_keeps_the_smaller_radius_and_says_so(backend):
     """A stretched instrument bubble is an ellipse; no circle is exact, so the
     radial port keeps min(sx, sy)·r and the node's confidence drops to 0.6
@@ -907,3 +940,115 @@ def test_a_line_the_engine_could_not_read_is_not_an_edge():
 
     blind = EntityInfo("1F", "LINE", "GEOMETRY", 256, "ByLayer", True, properties={})
     assert _vertices(blind) == []
+
+
+# ── backlog W3-T14-06 / -07 / -11 (1.7.0 triage, Task 8) ─────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_line_ending_on_a_closed_polylines_closing_edge_is_a_junction(backend):
+    """W3-T14-06 — RED: `_Edge.segments` stopped at the last vertex, so the
+    closing edge of a closed polyline (which `length` includes) was not there
+    for a branch to end on: the branch dangled."""
+    loop = await backend.entity_create_polyline(
+        [[0, 0], [40, 0], [40, 40]], closed=True, layer="PROCESS-PIPING-MAIN"
+    )
+    # (20, 20) lies on the closing edge (40, 40) -> (0, 0) and on no other.
+    branch = (await backend.entity_create_line(20, 20, 20, 80, layer="PROCESS-PIPING-MAIN")).handle
+    graph = await build_graph(backend)
+    edge = next(e for e in graph["edges"] if e["id"] == branch)
+    assert edge["from"] and "junction" in edge["from"], graph["dangling"]
+    junction = next(j for j in graph["junctions"] if j["id"] == edge["from"]["junction"])
+    assert set(junction["edges"]) == {branch, loop.handle}
+
+
+def test_a_closed_edge_yields_its_closing_segment():
+    from engineering.pid.graph import _Edge
+
+    edge = _Edge(
+        id="1",
+        vertices=[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)],
+        bulges=[0.0, 0.0, 0.5],
+        length=None,
+        layer="L",
+        linetype="",
+        space="Model",
+        payload=None,
+        source="layer",
+        closed=True,
+    )
+    assert list(edge.segments())[-1] == ((10.0, 10.0), (0.0, 0.0), 0.5)
+    assert len(list(edge.segments())) == 3
+    assert edge.chord_length() == pytest.approx(20.0 + math.hypot(10.0, 10.0))
+
+
+@pytest.mark.asyncio
+async def test_a_dangling_end_near_a_bubble_names_its_radial_port(backend):
+    """W3-T14-07 — RED: radial (bubble) ports never entered the port grid, so a
+    signal line ending 2 mm off an instrument's circle got `nearest: None`."""
+    fic = await place_symbol(
+        backend, "instrument", 100, 100, tag="FIC-1", type="dcs", location="primary"
+    )
+    line = (
+        await backend.entity_create_line(100, 107, 100, 150, layer="INSTRUMENT-LINE-SIGNAL")
+    ).handle
+    graph = await build_graph(backend, tolerance=0.5)
+    ends = {(d["edge"], d["end"]): d for d in graph["dangling"]}
+    hint = ends[(line, "from")]["nearest"]
+    assert hint is not None, "the bubble's own port is the nearest one"
+    assert (hint["node"], hint["port"]) == (fic["handle"], "signal")
+    assert hint["distance"] == pytest.approx(2.0)
+
+
+@pytest.mark.asyncio
+async def test_a_catalogue_insert_without_its_xdata_keeps_the_catalogue_ports(backend):
+    """W3-T14-11 — RED: with its XDATA stripped a PID_* INSERT fell to the 0.6
+    heuristic with one inferred port; its block name is a catalogue name, so
+    the catalogue's ports (confidence 1.0) are the truth."""
+    from engineering.pid.xdata import APP_NAME
+
+    pump = await place_symbol(backend, "centrifugal_pump", 100, 100, tag="P-1", rotation=90)
+    before = next(n for n in (await build_graph(backend))["nodes"] if n["id"] == pump["handle"])
+    backend._doc.entitydb[pump["handle"]].discard_xdata(APP_NAME)
+    graph = await build_graph(backend)
+    node = next(n for n in graph["nodes"] if n["id"] == pump["handle"])
+    assert (node["source"], node["confidence"]) == ("catalog", 1.0)
+    assert (node["family"], node["symbol"]) == (before["family"], before["symbol"])
+    assert {
+        name: (pytest.approx(p["x"]), pytest.approx(p["y"])) for name, p in node["ports"].items()
+    } == {name: (p["x"], p["y"]) for name, p in before["ports"].items()}
+    assert any("XDATA" in note for note in node["notes"])
+
+
+def _keys_of(graph: dict) -> dict[str, set[str]]:
+    return {
+        "node": {k for n in graph["nodes"] for k in n},
+        "port": {k for n in graph["nodes"] for p in n["ports"].values() for k in p},
+        "edge": {k for e in graph["edges"] for k in e},
+        "junction": {k for j in graph["junctions"] for k in j},
+        "dangling": {k for d in graph["dangling"] for k in d},
+    }
+
+
+@pytest.mark.asyncio
+async def test_every_key_the_graph_returns_is_documented(backend):
+    """W3-T14-17 — RED: y_scale, mirrored, notes, description (and space) were
+    returned on every node, but neither the v1.6 P&ID spec section 9.1 nor the
+    pid_graph docstring named them."""
+    from pathlib import Path
+
+    import server
+
+    ids = await _small_pid(backend)
+    await backend.entity_create_line(130, 111, 130, 60, layer="PROCESS-PIPING-SECONDARY")
+    graph = await build_graph(backend, include_geometry=True)
+    assert graph["junctions"] and graph["dangling"] and ids
+    keys = _keys_of(graph)
+    doc = (await server.mcp.get_tool("pid_graph")).description
+    spec = Path(__file__).parents[1] / "docs/superpowers/specs/2026-09-15-v1.6-pid-design.md"
+    model = spec.read_text(encoding="utf-8").split("### 9.1 Model", 1)[1].split("### 9.2", 1)[0]
+    for record, names in keys.items():
+        for name in sorted(names):
+            word = re.compile(rf"(?<![\w-]){re.escape(name)}(?![\w-])")
+            assert word.search(doc), f"pid_graph docstring does not name the {record} key {name!r}"
+            assert word.search(model), f"spec section 9.1 does not name the {record} key {name!r}"

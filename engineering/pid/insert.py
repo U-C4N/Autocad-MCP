@@ -104,10 +104,15 @@ async def place_symbol(
             parsed = parse_tag(tag_text, kind="instrument")
             func, loop = split_instrument_tag(tag_text)
             attributes.update(FUNC=func, LOOP=loop)
+        elif spec.family == "connector":
+            # A connector carries free text ("TO P&ID-002"), never an ISA-5.1
+            # or equipment tag: parsing it warned on the prompt's own example.
+            parsed = None
+            attributes["TAG"] = tag_text
         else:
             parsed = parse_tag(tag_text, kind="auto")
             attributes["TAG"] = tag_text
-        if not parsed["valid"]:
+        if parsed is not None and not parsed["valid"]:
             warnings.extend(parsed["errors"])
     if desc is not None:
         if "DESC" not in tags_present:

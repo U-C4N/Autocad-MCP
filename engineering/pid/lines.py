@@ -78,7 +78,25 @@ def _unit(direction_deg: float) -> Point:
 
 
 def _finite_point(name: str, p) -> Point:
-    q = (float(p[0]), float(p[1]))
+    """``p`` as an ``(x, y)`` of finite floats, or a ``ValueError`` naming ``name``.
+
+    A waypoint written as ``{"x": ...}`` or a flat ``[x, y, ...]`` list escaped
+    as ``KeyError`` / ``TypeError`` (an "Internal error" to the client); every
+    malformed shape is a refusal by path instead.
+    """
+    if isinstance(p, (str, bytes)) or not isinstance(p, (list, tuple)):
+        raise ValueError(f"{name}: expected an [x, y] pair, got {type(p).__name__}")
+    if len(p) != 2:
+        raise ValueError(f"{name}: expected an [x, y] pair, got a sequence of {len(p)}")
+    coords = []
+    for axis, value in zip("xy", p, strict=True):
+        if isinstance(value, bool):
+            raise ValueError(f"{name}.{axis}: expected a number, got {value!r}")
+        try:
+            coords.append(float(value))
+        except (TypeError, ValueError):
+            raise ValueError(f"{name}.{axis}: expected a number, got {value!r}") from None
+    q = (coords[0], coords[1])
     for axis, value in zip("xy", q, strict=True):
         if not math.isfinite(value):
             raise ValueError(f"{name}.{axis} is {value}; coordinates must be finite")
@@ -150,6 +168,14 @@ def route(start, start_dir, end, end_dir, stub: float = 5.0, mode="auto") -> lis
     towards the other end. Raises ``ValueError`` when no candidate honours the stub."""
     s = _finite_point("start", start)
     e = _finite_point("end", end)
+    # Every mode refuses a bad stub, not only ``auto`` (the one that uses it):
+    # a ``direct`` or waypoint call with stub=-1 / NaN is a caller's mistake.
+    try:
+        stub = float(stub)
+    except (TypeError, ValueError):
+        raise ValueError(f"stub must be a finite length >= 0, not {stub!r}") from None
+    if not math.isfinite(stub) or stub < 0:
+        raise ValueError(f"stub must be a finite length >= 0, not {stub}")
     if isinstance(mode, (list, tuple)):
         path = [s] + [_finite_point(f"waypoints[{i}]", p) for i, p in enumerate(mode)] + [e]
         for a, b in zip(path, path[1:], strict=False):
@@ -162,9 +188,6 @@ def route(start, start_dir, end, end_dir, stub: float = 5.0, mode="auto") -> lis
         return [s, e]
     if mode != "auto":
         raise ValueError("route must be 'auto', 'direct' or a list of waypoints")
-    stub = float(stub)
-    if not math.isfinite(stub) or stub < 0:
-        raise ValueError(f"stub must be a finite length >= 0, not {stub}")
     ds = (
         snap_axis(e[0] - s[0], e[1] - s[1])
         if start_dir is None
@@ -360,22 +383,84 @@ def segment_arc_crossings(p1, p2, a, b, bulge: float) -> int:
     return count
 
 
+def _inside_segment(v: Point, a: Point, b: Point) -> bool:
+    """``v`` lies on the segment a→b, more than ``_EPS`` from either end."""
+    length = _dist(a, b)
+    if length <= _EPS:
+        return False
+    if abs(_orient(a, b, v)) / length > _EPS:
+        return False
+    t = ((v[0] - a[0]) * (b[0] - a[0]) + (v[1] - a[1]) * (b[1] - a[1])) / (length * length)
+    return t * length > _EPS and (1.0 - t) * length > _EPS
+
+
+def _side(a: Point, b: Point, p: Point) -> int:
+    """-1 / 0 / +1: which side of the line a→b ``p`` is on (0 within ``_EPS``)."""
+    distance = _orient(a, b, p) / _dist(a, b)
+    return 0 if abs(distance) <= _EPS else (1 if distance > 0 else -1)
+
+
+def _toward(points: list[Point], bulges: list, k: int, step: int) -> Point:
+    """A point just along the edge that leaves vertex ``k`` towards ``k + step``:
+    the neighbour itself on a straight edge, a point a hundredth of the way
+    along the exact arc on a bulged one (its chord may lie on the other side)."""
+    j = k if step > 0 else k - 1  # the edge index; its bulge leaves points[j]
+    bulge = float(bulges[j]) if j < len(bulges) and bulges[j] else 0.0
+    if abs(bulge) < 1e-12 or _dist(points[j], points[j + 1]) < 1e-12:
+        return points[k + step]
+    cx, cy, radius, start, theta = _arc_of_bulge(points[j], points[j + 1], bulge)
+    angle = start + theta * (0.01 if step > 0 else 0.99)
+    return (cx + radius * math.cos(angle), cy + radius * math.sin(angle))
+
+
+def _vertex_crossings(chain: list[Point], chain_bulges: list, segments) -> int:
+    """Crossings that pass exactly through an interior vertex of ``chain``.
+
+    ``segments_cross`` / ``segment_arc_crossings`` read a hit on an end of
+    either segment as a junction, so a line crossing another polyline exactly
+    at one of its vertices was counted by neither of the two edges meeting
+    there. Such a vertex is a crossing when the edges on either side of it
+    leave to opposite sides of the segment; a touch that turns back, or a
+    vertex on the segment's own end, stays a junction.
+    """
+    count = 0
+    for k in range(1, len(chain) - 1):
+        v = chain[k]
+        before = _toward(chain, chain_bulges, k, -1)
+        after = _toward(chain, chain_bulges, k, +1)
+        for a, b in segments:
+            if _inside_segment(v, a, b) and _side(a, b, before) * _side(a, b, after) < 0:
+                count += 1
+    return count
+
+
 def count_crossings(vertices, others, bulges=None) -> int:
     """Proper crossings of the straight chain ``vertices`` with every chain in
     ``others``. ``bulges[i]`` is the per-vertex DXF bulge list of ``others[i]``
     (the arc leaving each vertex; short lists are zero-padded, ``None`` means
     every chain is straight): a bulged edge is tested as its exact arc, never
     as its chord or as flattened chords.
+
+    A crossing through an interior vertex of either chain counts once
+    (``_vertex_crossings``); one through a vertex of both is a shared vertex,
+    a junction. The chain's own vertices are tested against the other chain's
+    straight edges.
     """
     pts = [(float(x), float(y)) for x, y in vertices]
+    own_segments = list(zip(pts, pts[1:], strict=False))
     count = 0
     for index, other in enumerate(others):
         opts = [(float(x), float(y)) for x, y in other]
         obulges = list(bulges[index]) if bulges is not None and index < len(bulges) else []
-        for a, b in zip(pts, pts[1:], strict=False):
-            for j, (c, d) in enumerate(zip(opts, opts[1:], strict=False)):
-                bulge = float(obulges[j]) if j < len(obulges) and obulges[j] else 0.0
+        straight = []
+        for j, (c, d) in enumerate(zip(opts, opts[1:], strict=False)):
+            bulge = float(obulges[j]) if j < len(obulges) and obulges[j] else 0.0
+            for a, b in own_segments:
                 count += segment_arc_crossings(a, b, c, d, bulge)
+            if abs(bulge) < 1e-12:
+                straight.append((c, d))
+        count += _vertex_crossings(opts, obulges, own_segments)
+        count += _vertex_crossings(pts, [], straight)
     return count
 
 

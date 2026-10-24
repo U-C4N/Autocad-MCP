@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 from engineering.plan_spec import Issue
 from engineering.qa_scan import qa_snapshot, shared_index
 
-from .graph import build_graph
+from .graph import NO_LOOP_NOTE, build_graph
 from .lines import LINE_CLASSES
 from .tags import parse_tag
 
@@ -190,25 +190,40 @@ def _dangling(graph: dict) -> list[Issue]:
 
 
 def _duplicate_tags(graph: dict) -> list[Issue]:
-    seen: dict[str, list[str]] = {}
+    """One issue per tag carried by more than one symbol.
+
+    An error only when at least two of the carriers state the tag themselves
+    (an attribute or the payload); a tag the reader guessed from nearby text
+    (``tag_source == "text"``) cannot fail the gate on its own, so a duplicate
+    that rests on a guess is a warning (backlog W3-T16-07).
+    """
+    seen: dict[str, list[dict]] = {}
     for node in _scored_nodes(graph):
         # connectors carry free text ("TO P&ID-002"), never a unique tag
         if node.get("tag") and node["kind"] != "connector":
-            seen.setdefault(node["tag"].upper(), []).append(node["id"])
-    return [
-        Issue(
-            "error",
-            "pid_duplicate_tag",
-            f"Tag {tag} is carried by {len(handles)} symbols.",
-            handles,
-            {
-                "tag": tag,
-                "hint": "block_set_attributes(handle, {'TAG'|'FUNC'/'LOOP': ...}) on all but one",
-            },
+            seen.setdefault(node["tag"].upper(), []).append(node)
+    out = []
+    for tag, carriers in seen.items():
+        if len(carriers) < 2:
+            continue
+        sources = {n["id"]: n.get("tag_source") for n in carriers}
+        stated = sum(1 for source in sources.values() if source != "text")
+        out.append(
+            Issue(
+                "error" if stated >= 2 else "warning",
+                "pid_duplicate_tag",
+                f"Tag {tag} is carried by {len(carriers)} symbols"
+                + ("." if stated >= 2 else " (read from nearby text, not stated by the symbol)."),
+                [n["id"] for n in carriers],
+                {
+                    "tag": tag,
+                    "tag_sources": sources,
+                    "hint": "block_set_attributes(handle, {'TAG'|'FUNC'/'LOOP': ...}) "
+                    "on all but one",
+                },
+            )
         )
-        for tag, handles in seen.items()
-        if len(handles) > 1
-    ]
+    return out
 
 
 def _edge_kind(line_class: str | None) -> str | None:
@@ -264,24 +279,33 @@ def _incompatible(graph: dict) -> list[Issue]:
     return out
 
 
+def _no_loop(node: dict) -> bool:
+    """An instrument whose FUNC has no LOOP: the graph says so in its notes."""
+    return node["kind"] == "instrument" and NO_LOOP_NOTE in (node.get("notes") or ())
+
+
 def _untagged(graph: dict) -> list[Issue]:
+    """An instrument with no tag, or with FUNC but no LOOP (the composed tag is
+    then the bare letters, which used to file as an illegal tag)."""
     return [
         Issue(
             "warning",
             "pid_untagged_instrument",
-            f"Instrument {n['id']} has no tag.",
+            f"Instrument {n['id']} has no loop number (FUNC {n['tag']}, LOOP empty)."
+            if n.get("tag")
+            else f"Instrument {n['id']} has no tag.",
             [n["id"]],
             {"hint": "block_set_attributes(handle, {'FUNC': 'FIC', 'LOOP': '101'})"},
         )
         for n in graph["nodes"]
-        if n["kind"] == "instrument" and not n.get("tag")
+        if n["kind"] == "instrument" and (not n.get("tag") or _no_loop(n))
     ]
 
 
 def _illegal(graph: dict) -> list[Issue]:
     out = []
     for n in _scored_nodes(graph):
-        if not n.get("tag") or n["kind"] == "connector":
+        if not n.get("tag") or n["kind"] == "connector" or _no_loop(n):
             continue
         parsed = parse_tag(n["tag"], kind="instrument" if n["kind"] == "instrument" else "auto")
         if not parsed["valid"]:

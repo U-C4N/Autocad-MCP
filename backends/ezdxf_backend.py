@@ -6843,12 +6843,16 @@ class EzdxfBackend(AutoCADBackend):
                 attribs["layer"] = layer
             self._require_block(name)
             ref = msp.add_blockref(name, (float(x), float(y)), dxfattribs=attribs)
-            if values:
+            # Every ATTDEF gets its ATTRIB, with the default where no value is
+            # given - what the live `InsertBlock` does (measured on AutoCAD
+            # 2026); without values the headless INSERT had none (W1-T1-08).
+            attdefs = list(self._doc.blocks.get(name).query("ATTDEF"))
+            if attdefs:
                 # `add_auto_attribs` matches tags exactly; `values` is keyed
                 # upper-case (tags are not case-sensitive, backlog W1-T1-05),
                 # so a foreign definition's lower-case ATTDEF is keyed by its
                 # own spelling here.
-                for attdef in self._doc.blocks.get(name).query("ATTDEF"):
+                for attdef in attdefs:
                     own = attdef.dxf.get("tag", "")
                     if own and own not in values and own.upper() in values:
                         values[own] = values[own.upper()]
@@ -7448,7 +7452,12 @@ class EzdxfBackend(AutoCADBackend):
                 blk.delete_all_entities()
                 blk.block.dxf.base_point = base
             for spec in ents:
-                attribs = {"layer": spec["layer"], "color": 0, "linetype": "ByBlock"}
+                attribs = {
+                    "layer": spec["layer"],
+                    "color": 0,
+                    "linetype": "ByBlock",
+                    "lineweight": -2,  # ByBlock, as the live engine styles it
+                }
                 kind = spec["type"]
                 if kind == "line":
                     blk.add_line(
@@ -7492,6 +7501,8 @@ class EzdxfBackend(AutoCADBackend):
                     dxfattribs={
                         "layer": "0",
                         "color": 0,
+                        "linetype": "ByBlock",
+                        "lineweight": -2,
                         "height": att["height"],
                         "rotation": att["rotation_deg"],
                         "prompt": att["prompt"],

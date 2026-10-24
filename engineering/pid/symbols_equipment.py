@@ -22,6 +22,8 @@ the port's outward direction without crossing the glyph.
 
 from __future__ import annotations
 
+import math
+
 from .geometry import circle, line, polyline, solid, text
 from .symbols import Port, SymbolSpec, make_spec, register, tag_attdefs
 
@@ -38,6 +40,12 @@ MISC = (
 )
 REDUCER_SHAPES = ("concentric", "eccentric")
 SOURCE = "ISO 10628-2:2012"
+#: ISO 10628-2 has no spectacle blind; the v1.6 P&ID design (section 4.1) uses
+#: the PIP PIC001 shape and says so in the record (backlog W2-T9-02).
+SOURCES = {"spectacle_blind": "PIP PIC001 spectacle blind"}
+#: Half the fan cross of the air cooler: its arms end on the r = 2.5 circle.
+#: At 1.8 they ended at hypot(1.8, 1.8) = 2.5456, outside it (W2-T9-06).
+_FAN_ARM = 2.5 / math.sqrt(2.0)
 
 _IN = Port("in", -4.0, 0.0, 180.0)
 _OUT = Port("out", 4.0, 0.0, 0.0)
@@ -127,8 +135,8 @@ def _heat(symbol: str) -> Body:
             [
                 polyline([(-10, -3), (10, -3), (10, 3), (-10, 3)]),
                 circle(0, -6, 2.5),
-                line(-1.8, -7.8, 1.8, -4.2),
-                line(-1.8, -4.2, 1.8, -7.8),
+                line(-_FAN_ARM, -6 - _FAN_ARM, _FAN_ARM, -6 + _FAN_ARM),
+                line(-_FAN_ARM, -6 + _FAN_ARM, _FAN_ARM, -6 - _FAN_ARM),
             ],
             (Port("in", -10.0, 0.0, 180.0), Port("out", 10.0, 0.0, 0.0)),
             (-10, -8.5, 10, 3),
@@ -232,8 +240,9 @@ def build_equipment(symbol: str, shape: str = "concentric") -> SymbolSpec:
         )
     variant = shape if symbol == "reducer" else None
     name = f"PID_{family.upper()}_{symbol.upper()}" + (f"_{variant.upper()}" if variant else "")
+    source = SOURCES.get(symbol, SOURCE)
     return make_spec(
-        name, family, symbol, variant, prims, tag_attdefs(box[3]), ports, SOURCE, bbox=box
+        name, family, symbol, variant, prims, tag_attdefs(box[3]), ports, source, bbox=box
     )
 
 

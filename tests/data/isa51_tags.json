@@ -50,12 +50,20 @@
     ["BE-807", "Burner Element", "807"],
     ["RE-808", "Radiation Element", "808"],
     ["UY-809", "Multivariable Relay", "809"],
-    ["PL-810", "Pressure Light", "810"]
+    ["PL-810", "Pressure Light", "810"],
+    ["TKC-811", "Temperature Rate of change Controller", "811"],
+    ["FK-812", "Flow Control station", "812"],
+    ["KIC-813", "Time Indicating Controller", "813"],
+    ["LAM-814", "Level Alarm Middle", "814"],
+    ["FO-815", "Flow Orifice", "815"]
   ],
   "user_defined": [
     ["XV-901", "Unclassified Valve", "901"],
     ["NV-902", "Valve", "902"],
-    ["CIC-903", "Indicating Controller", "903"]
+    ["CIC-903", "Indicating Controller", "903"],
+    ["LB-904", "Level", "904"],
+    ["LN-905", "Level", "905"],
+    ["LX-906", "Level", "906"]
   ],
   "invalid": [
     ["FCI-101", "unexpected letter I at position 3"],
@@ -69,7 +77,8 @@
     ["1FC", "not in [area-]LETTERS[-]loop[suffix] format"],
     ["FIC", "not in [area-]LETTERS[-]loop[suffix] format"],
     ["fic-101-", "not in [area-]LETTERS[-]loop[suffix] format"],
-    ["LSO-108", "trailing O (open/closed) is only valid after a switch on a position (Z) tag"]
+    ["LSO-108", "trailing O (open/closed) is only valid after a switch on a position (Z) tag"],
+    ["LAHX-109", "unexpected letter X at position 4"]
   ],
   "formats": [
     ["10-FIC-101A", "10", "FIC", "101", "A"],

@@ -11,8 +11,6 @@ from engineering.pid.insert import place_symbol
 from engineering.plan_spec import ALL_CRITIQUE_FOCUSES
 from engineering.preflight import pid_plan_warnings, preflight_drawing
 
-pytestmark = pytest.mark.asyncio
-
 PID_FOCUSES = (
     "pid_dangling_line",
     "pid_duplicate_tag",
@@ -49,6 +47,7 @@ async def _clean(backend):
     return pump, cv, fic
 
 
+@pytest.mark.asyncio
 async def test_clean_pid_has_no_pid_issues_except_the_free_end(backend):
     await _clean(backend)
     issues = await backend.drawing_critique(list(PID_FOCUSES))
@@ -57,6 +56,7 @@ async def test_clean_pid_has_no_pid_issues_except_the_free_end(backend):
     assert issues[0].severity == "error" and "hint" in issues[0].detail
 
 
+@pytest.mark.asyncio
 async def test_dangling_carries_the_nearest_port_hint(backend):
     pump, cv, _ = await _clean(backend)
     await backend.entity_move(cv["handle"], 0.0, 1.0)
@@ -66,6 +66,7 @@ async def test_dangling_carries_the_nearest_port_hint(backend):
     assert "pid_line_draw" in hinted[0].detail["hint"]
 
 
+@pytest.mark.asyncio
 async def test_duplicate_and_illegal_and_untagged(backend):
     await place_symbol(backend, "instrument", 0, 0, tag="FIC-101")
     await place_symbol(backend, "instrument", 30, 0, tag="FIC-101")
@@ -86,6 +87,7 @@ async def test_duplicate_and_illegal_and_untagged(backend):
     assert len(by_focus["pid_untagged_instrument"]) == 1
 
 
+@pytest.mark.asyncio
 async def test_incompatible_connection(backend):
     pump = await place_symbol(backend, "centrifugal_pump", 100, 100, tag="P-101")
     fic = await place_symbol(backend, "instrument", 100, 160, tag="FIC-1")
@@ -106,12 +108,14 @@ async def test_incompatible_connection(backend):
     }
 
 
+@pytest.mark.asyncio
 async def test_unconnected_equipment_is_informational(backend):
     await place_symbol(backend, "vertical_vessel", 0, 0, tag="V-1")
     issues = await backend.drawing_critique(["pid_unconnected_equipment"])
     assert len(issues) == 1 and issues[0].severity == "info"
 
 
+@pytest.mark.asyncio
 async def test_incompatible_is_silent_on_a_foreign_blocks_inferred_port(backend):
     """A CTO-library control valve has no declared ports: the graph infers one
     where the line lands and gives it a placeholder ``kind: "process"``. A signal
@@ -141,6 +145,7 @@ async def test_incompatible_is_silent_on_a_foreign_blocks_inferred_port(backend)
     assert [i.focus for i in issues if i.focus.startswith("pid_")] == []
 
 
+@pytest.mark.asyncio
 async def test_a_dangling_line_off_a_foreign_valve_is_still_reported(backend):
     """The evidence rule must not silence the foreign path spec §9.3 pins: a
     heuristic node (keyword name + TAG attribute) is recognised, so a plain
@@ -159,6 +164,7 @@ async def test_a_dangling_line_off_a_foreign_valve_is_still_reported(backend):
     assert [(i.severity, i.handles) for i in issues] == [("error", [line.handle])]
 
 
+@pytest.mark.asyncio
 async def test_mechanical_drawing_is_untouched_by_pid_focuses(backend):
     from engineering.layers import ensure_engineering_layers
 
@@ -185,6 +191,7 @@ async def _bolt_with_note_leader(backend):
     return bolt.handle, leader.handle
 
 
+@pytest.mark.asyncio
 async def test_a_mechanical_insert_with_a_note_leader_is_not_pid_content(backend):
     """Spec §11.1: a drawing without P&ID content is never scored. The graph
     still files the bolt as an ``unknown_block`` (that is the reader's job);
@@ -204,6 +211,7 @@ async def test_a_mechanical_insert_with_a_note_leader_is_not_pid_content(backend
     assert [i.focus for i in issues if i.focus.startswith("pid_")] == []
 
 
+@pytest.mark.asyncio
 async def test_finalize_gate_passes_a_mechanical_sheet_with_a_note_leader(backend, tmp_path):
     """The gate runs ``focus=None``, so the six focuses sit inside every
     ``drawing_finalize`` — the mechanical sheet must pass it as it did before
@@ -223,6 +231,7 @@ async def test_finalize_gate_passes_a_mechanical_sheet_with_a_note_leader(backen
     assert payload["critique"] == []
 
 
+@pytest.mark.asyncio
 async def test_a_note_leader_off_an_unknown_block_on_a_pid_is_not_dangling(backend):
     """On a real P&ID the same leader is in the graph only because it touched
     a 0.3 box; the one genuine finding (the free process line) stays."""
@@ -246,6 +255,7 @@ async def _frame_and_pump(backend):
     return frame.handle, pump
 
 
+@pytest.mark.asyncio
 async def test_a_pid_line_ending_on_a_sheet_frame_insert_is_dangling(backend):
     """Spec §11.1: an edge end that resolves to nothing is dangling. The graph
     attaches the process line to the frame's box and invents port ``p1`` at
@@ -273,6 +283,7 @@ async def test_a_pid_line_ending_on_a_sheet_frame_insert_is_dangling(backend):
     assert issues[0].detail["nearest"] is None and "hint" in issues[0].detail
 
 
+@pytest.mark.asyncio
 async def test_stopping_short_of_the_frame_is_the_same_finding(backend):
     _frame, pump = await _frame_and_pump(backend)
     line = await draw_line(
@@ -284,6 +295,7 @@ async def test_stopping_short_of_the_frame_is_the_same_finding(backend):
     ]
 
 
+@pytest.mark.asyncio
 async def test_finalize_gate_fails_a_pid_line_that_ends_on_the_frame(backend, tmp_path):
     """The gate runs ``focus=None``; a process line "connected" to the title
     block must not pass it."""
@@ -304,6 +316,7 @@ async def test_finalize_gate_fails_a_pid_line_that_ends_on_the_frame(backend, tm
         await server.drawing_finalize(save_path=str(tmp_path / "pid.dxf"), ctx=_Ctx(backend))
 
 
+@pytest.mark.asyncio
 async def test_unknown_block_end_hint_names_the_nearest_recognised_port(backend):
     """The hint a free end gets from the graph (nearest port within
     10·tolerance) is computed the same way for an end the graph hung on an
@@ -328,6 +341,7 @@ async def test_unknown_block_end_hint_names_the_nearest_recognised_port(backend)
     assert f"'{cv['handle']}'" in issues[0].detail["hint"]
 
 
+@pytest.mark.asyncio
 async def test_readme_gear_sheet_is_untouched_by_pid_focuses(backend):
     """The spec's own negative: all six return [] on the README gear sheet."""
     import importlib.util
@@ -341,6 +355,7 @@ async def test_readme_gear_sheet_is_untouched_by_pid_focuses(backend):
     assert await backend.drawing_critique(list(PID_FOCUSES)) == []
 
 
+@pytest.mark.asyncio
 async def test_refine_reports_pid_issues_as_manual_and_moves_nothing(backend):
     # The refine loop is `engineering.refiner.refine_drawing` (what the
     # `drawing_refine` tool calls) — the backend has no `drawing_refine` method.
@@ -377,6 +392,7 @@ def test_preflight_flags_a_pid_intent_on_the_wrong_layer_set():
     assert pid_plan_warnings("piping and instrumentation diagram", "mech")
 
 
+@pytest.mark.asyncio
 async def test_a_free_end_near_an_invented_frame_port_gets_no_executable_hint(backend):
     """The graph's own ``nearest`` is computed over every port in its grid,
     including the ``p1`` it invents on a promoted frame. A hint that names
@@ -403,6 +419,7 @@ async def test_a_free_end_near_an_invented_frame_port_gets_no_executable_hint(ba
             assert node["ports"][nearest["port"]]["inferred"] is False
 
 
+@pytest.mark.asyncio
 async def test_a_signal_layer_line_of_unknown_class_into_a_process_port_is_incompatible(backend):
     """A line on INSTRUMENT-LINE-SIGNAL with a continuous linetype reads as
     ``signal_unknown``: the reader cannot tell pneumatic from data, but it is
@@ -429,3 +446,50 @@ async def test_a_signal_layer_line_of_unknown_class_into_a_process_port_is_incom
     assert len(issues) == 1 and issues[0].severity == "error"
     assert issues[0].detail["expected"] == "signal" and issues[0].detail["actual"] == "process"
     assert issues[0].detail["line_class"] == "signal_unknown"
+
+
+# ── backlog W3-T16-05 / -07 (1.7.0 triage, Task 8) ───────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_an_instrument_with_an_empty_loop_is_untagged_not_illegal(backend):
+    """W3-T16-05 — RED: FUNC 'FIC' with an empty LOOP composed the tag 'FIC',
+    which filed as pid_illegal_tag ('not in format') instead of an instrument
+    that has no loop number yet."""
+    fic = await place_symbol(backend, "instrument", 0, 0, tag="FIC-101")
+    await backend.block_set_attributes(fic["handle"], {"LOOP": ""})
+    issues = await backend.drawing_critique(["pid_untagged_instrument", "pid_illegal_tag"])
+    assert [(i.focus, i.handles) for i in issues] == [("pid_untagged_instrument", [fic["handle"]])]
+    assert "loop" in issues[0].message.lower()
+
+
+@pytest.mark.asyncio
+async def test_an_instrument_with_an_empty_func_is_untagged(backend):
+    fic = await place_symbol(backend, "instrument", 0, 0, tag="FIC-101")
+    await backend.block_set_attributes(fic["handle"], {"FUNC": ""})
+    issues = await backend.drawing_critique(["pid_untagged_instrument", "pid_illegal_tag"])
+    assert [(i.focus, i.handles) for i in issues] == [("pid_untagged_instrument", [fic["handle"]])]
+
+
+@pytest.mark.asyncio
+async def test_a_duplicate_read_from_nearby_text_is_a_warning(backend):
+    """W3-T16-07 — RED: two untagged valves under the same nearby text were a
+    gate-failing error, although both tags were guessed from text."""
+    first = await place_symbol(backend, "gate", 0, 0)
+    second = await place_symbol(backend, "gate", 60, 0)
+    await backend.entity_create_text("XV-5", -3, 4, 2.5)
+    await backend.entity_create_text("XV-5", 57, 4, 2.5)
+    (issue,) = await backend.drawing_critique(["pid_duplicate_tag"])
+    assert issue.severity == "warning"
+    assert sorted(issue.handles) == sorted([first["handle"], second["handle"]])
+    assert issue.detail["tag_sources"] == {first["handle"]: "text", second["handle"]: "text"}
+
+
+@pytest.mark.asyncio
+async def test_a_duplicate_with_one_attribute_tag_and_one_guess_is_a_warning(backend):
+    tagged = await place_symbol(backend, "gate", 0, 0, tag="XV-5")
+    guessed = await place_symbol(backend, "gate", 60, 0)
+    await backend.entity_create_text("XV-5", 57, 4, 2.5)
+    (issue,) = await backend.drawing_critique(["pid_duplicate_tag"])
+    assert issue.severity == "warning"
+    assert issue.detail["tag_sources"] == {tagged["handle"]: "attribute", guessed["handle"]: "text"}

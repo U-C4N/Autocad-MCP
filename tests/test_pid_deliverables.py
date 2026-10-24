@@ -18,8 +18,6 @@ from engineering.pid.drawlines import draw_line
 from engineering.pid.graph import build_graph
 from engineering.pid.insert import place_symbol
 
-pytestmark = pytest.mark.asyncio
-
 INDEX_KEYS = [
     "tag",
     "func",
@@ -102,6 +100,7 @@ async def _pid(backend):
     return await build_graph(backend)
 
 
+@pytest.mark.asyncio
 async def test_instrument_index_rows(backend):
     graph = await _pid(backend)
     rows = instrument_index(graph)
@@ -114,6 +113,7 @@ async def test_instrument_index_rows(backend):
     assert rows[1]["signal_lines"] == 0 and rows[1]["connected_to"] == ""
 
 
+@pytest.mark.asyncio
 async def test_line_list_rows(backend):
     graph = await _pid(backend)
     rows = line_list(graph)
@@ -137,6 +137,7 @@ async def test_line_list_rows(backend):
     assert hand_drawn["to_tag"] is None and hand_drawn["number_source"] is None
 
 
+@pytest.mark.asyncio
 async def test_line_list_keeps_a_signal_line_unnumbered_beside_a_labelled_pipe(backend):
     """The line list prints what the reader publishes, and the reader must not
     hand a 12 mm-parallel signal run the header's label (its own XDATA says
@@ -161,6 +162,7 @@ async def test_line_list_keeps_a_signal_line_unnumbered_beside_a_labelled_pipe(b
     assert (signal["from_tag"], signal["to_tag"]) == ("FT-1", "FIC-1")
 
 
+@pytest.mark.asyncio
 async def test_equipment_list_rows(backend):
     graph = await _pid(backend)
     rows = equipment_list(graph)
@@ -177,6 +179,7 @@ def test_natural_sort():
     assert natural_key(None) > natural_key("Z-999"), "untagged rows sort last"
 
 
+@pytest.mark.asyncio
 async def test_csv_is_written_inside_allowed_paths(backend, tmp_path, monkeypatch):
     import config
 
@@ -194,6 +197,7 @@ async def test_csv_is_written_inside_allowed_paths(backend, tmp_path, monkeypatc
     assert not outside.exists(), "a refused path is never written"
 
 
+@pytest.mark.asyncio
 async def test_instrument_tapping_a_pipe_reports_the_pipe_line_number(backend):
     # A transmitter whose signal line lands on the middle of a process line
     # (not on a port) — the far end is a junction, and spec 9.5 says the row
@@ -221,6 +225,7 @@ async def test_instrument_tapping_a_pipe_reports_the_pipe_line_number(backend):
     assert row["signal_lines"] == 1
 
 
+@pytest.mark.asyncio
 async def test_instrument_on_untagged_equipment_reports_its_handle(backend):
     # The vessel has no tag, so the only honest identity is its handle — never
     # the signal line's own number (which Task 13 always stamps, so a fallback
@@ -243,6 +248,7 @@ async def test_instrument_on_untagged_equipment_reports_its_handle(backend):
 # ── 1.7.0 Task 3: the deliverables pass (triage rows W3-T15-04 .. -10) ─────────
 
 
+@pytest.mark.asyncio
 async def test_natural_key_survives_a_digit_that_is_not_decimal():
     """W3-T15-04: ``'²'.isdigit()`` is True and ``int('²')`` raises."""
     assert sorted(["FT-10", "FT-1²", "FT-2"], key=natural_key) == ["FT-1²", "FT-2", "FT-10"]
@@ -276,6 +282,7 @@ async def _tapped_signal_line(backend):
     return graph, pipe, sig, tee
 
 
+@pytest.mark.asyncio
 async def test_a_junction_on_the_instruments_line_is_reported(backend):
     """W3-T15-05: a line teed into the middle of the signal line reaches the
     instrument too, not only what the line's own two ends touch."""
@@ -285,6 +292,7 @@ async def test_a_junction_on_the_instruments_line_is_reported(backend):
     assert row["signal_lines"] == 1
 
 
+@pytest.mark.asyncio
 async def test_a_line_list_end_names_lines_and_handles_never_a_junction_id(backend):
     """W3-T15-06: ``J1`` is the reader's internal id; the tag column names what
     a reader can find in the drawing, the same way the instrument index does."""
@@ -299,6 +307,7 @@ async def test_a_line_list_end_names_lines_and_handles_never_a_junction_id(backe
     assert not ends & {j["id"] for j in graph["junctions"]}
 
 
+@pytest.mark.asyncio
 async def test_an_untagged_node_end_is_its_handle_in_the_line_list(backend):
     """W3-T15-06: the index names an untagged node by its handle; so does the line list."""
     vessel = await place_symbol(backend, "vertical_vessel", 300, 120)
@@ -316,6 +325,7 @@ async def test_an_untagged_node_end_is_its_handle_in_the_line_list(backend):
     assert index["connected_to"] == row["to_tag"]
 
 
+@pytest.mark.asyncio
 async def test_signal_lines_counts_only_signal_classes(backend):
     """W3-T15-10: a process line drawn onto a bubble is a connection, not a signal line."""
     pt = await place_symbol(backend, "instrument", 193.5, 168, tag="PT-101", location="field")
@@ -341,6 +351,7 @@ def read_rows(path):
         return list(csv.reader(fh))
 
 
+@pytest.mark.asyncio
 async def test_zero_rows_still_write_the_header(backend, tmp_path):
     """W3-T15-07: a drawing with no instruments gives a header-only CSV, not 0 bytes."""
     target = tmp_path / "index.csv"
@@ -349,6 +360,7 @@ async def test_zero_rows_still_write_the_header(backend, tmp_path):
     assert read_rows(target) == [INDEX_KEYS]
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("make_path", "message"),
     [
@@ -375,6 +387,7 @@ async def test_a_bad_csv_path_is_refused_before_the_graph_is_read(
     assert not (tmp_path / "missing").exists()
 
 
+@pytest.mark.asyncio
 async def test_write_csv_without_columns_or_rows_is_refused(tmp_path):
     from engineering.pid.deliverables import write_csv
 
@@ -383,6 +396,7 @@ async def test_write_csv_without_columns_or_rows_is_refused(tmp_path):
     assert not (tmp_path / "x.csv").exists()
 
 
+@pytest.mark.asyncio
 async def test_write_csv_prefixes_formula_text(tmp_path):
     """W3-T15-08: ``=1+1`` and ``@x`` never reach a spreadsheet as formulas."""
     from engineering.pid.deliverables import write_csv
@@ -406,6 +420,7 @@ async def _tools():
         return {t.name: t for t in await client.list_tools()}
 
 
+@pytest.mark.asyncio
 async def test_the_list_tools_expose_the_graph_reading_knobs():
     """W3-T15-09: label_search and include_foreign reach the graph the lists read."""
     tools = await _tools()
@@ -414,6 +429,7 @@ async def test_the_list_tools_expose_the_graph_reading_knobs():
         assert {"label_search", "include_foreign"} <= set(properties), name
 
 
+@pytest.mark.asyncio
 async def test_the_knobs_are_passed_through_to_the_graph(monkeypatch):
     from fastmcp import Client
 
@@ -439,6 +455,7 @@ async def test_the_knobs_are_passed_through_to_the_graph(monkeypatch):
     assert seen == [expected] * 3
 
 
+@pytest.mark.asyncio
 async def test_the_list_tools_are_not_read_only_because_they_write_a_csv():
     """Spec §7: given `csv_path` they write a file, so `readOnlyHint` is false and
     the cost is `safe`; `cad_batch` and the search risk filter follow the annotation."""

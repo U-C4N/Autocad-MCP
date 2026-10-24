@@ -167,7 +167,11 @@ def _parse_letters(letters: str) -> dict:
     trailing = letters[i:]
     if trailing:
         if trailing not in TRAILING:
-            errors.append(f"{letters}: unexpected letter {trailing[0]} at position {i + 1}")
+            # A valid trailing (LAH) followed by an unknown letter (LAHX): the
+            # offender is the letter after the longest valid trailing, not its H.
+            valid = max((t for t in TRAILING if trailing.startswith(t)), key=len, default="")
+            at = i + len(valid)
+            errors.append(f"{letters}: unexpected letter {letters[at]} at position {at + 1}")
             return {"errors": errors}
         after_alarm = bool(readout) and readout[-1] == "A" and not output
         after_switch = bool(output) and output[-1] == "S"
@@ -311,13 +315,40 @@ def _parse_equipment(raw: str, prefixes: dict[str, str]) -> dict:
     return out
 
 
+def _equipment_prefixes(given) -> dict[str, str]:
+    """The prefix map a call uses: the default only when none is given.
+
+    An empty map is a map (every equipment tag is then unknown), never a request
+    for the default; a key or kind that is not text is refused by path.
+    """
+    if given is None:
+        return dict(DEFAULT_EQUIPMENT_PREFIXES)
+    if not isinstance(given, dict):
+        raise ValueError(
+            f"equipment_prefixes: expected a mapping of prefix to kind, got {type(given).__name__}"
+        )
+    prefixes: dict[str, str] = {}
+    for key, value in given.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError(f"equipment_prefixes: a prefix must be text, got {key!r}")
+        if not isinstance(value, str) or not value.strip():
+            shown = repr(value) if isinstance(value, str) else type(value).__name__
+            raise ValueError(
+                f"equipment_prefixes[{key!r}]: expected text naming the equipment kind, got {shown}"
+            )
+        prefixes[key.strip().upper()] = value
+    return prefixes
+
+
 def parse_tag(tag: str, kind: str = "auto", equipment_prefixes: dict | None = None) -> dict:
     """Parse an ISA-5.1 instrument tag or an equipment tag.
 
     ``kind``: ``"instrument"``, ``"equipment"`` or ``"auto"`` (instrument first,
     then equipment, else the instrument parse with its errors).
+    ``equipment_prefixes`` replaces the default map; ``{}`` is an empty map, not
+    the default, and a prefix or kind that is not text is refused by path.
     """
-    prefixes = {k.upper(): v for k, v in (equipment_prefixes or DEFAULT_EQUIPMENT_PREFIXES).items()}
+    prefixes = _equipment_prefixes(equipment_prefixes)
     if kind == "instrument":
         return _parse_instrument(tag)
     if kind == "equipment":

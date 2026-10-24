@@ -911,7 +911,7 @@ def cad_tool(*, summary: str, cost: str):
 # Some MCP clients degrade (or hard-cap) when a server exposes 100+ tools.
 # TOOL_PROFILE selects how much of the surface is advertised:
 #   full — everything (default, backwards compatible)
-#   lean — a curated 47-tool drafting/inspection core
+#   lean — a curated 65-tool drafting/inspection core (LEAN_TOOL_NAMES)
 # Disabled tools stay registered (system_about still reports the full
 # inventory) but are hidden from MCP list_tools and rejected if called.
 
@@ -1153,25 +1153,34 @@ def _enabled_packs() -> tuple[set[str], list[str]]:
     """
     raw = (config.settings.tool_packs or "all").lower()
     requested = [p.strip() for p in raw.split(",") if p.strip()]
-    if not requested or "all" in requested:
-        return set(TOOL_PACK_NAMES), []
     enabled = {"core"}
     ignored: list[str] = []
-    for pack in requested:
-        if pack in TOOL_PACK_NAMES:
+    for pack in dict.fromkeys(requested):  # each entry once, in the order given
+        if pack == "all":
+            enabled.update(TOOL_PACK_NAMES)
+        elif pack in TOOL_PACK_NAMES:
             enabled.add(pack)
         else:
+            # Reported beside "all" too: `all,mech3000` used to drop the typo
+            # without a word (backlog W4-T18-03).
             ignored.append(pack)
             log.warning(
                 "Unknown TOOL_PACKS entry %r ignored. Valid packs: %s.",
                 pack,
                 ", ".join(TOOL_PACK_NAMES),
             )
+    if not requested:
+        enabled.update(TOOL_PACK_NAMES)
     return enabled, ignored
 
 
-def _profile_enabled_names(profile: str, registered: set[str]) -> set[str]:
-    packs, _ignored = _enabled_packs()
+def _profile_enabled_names(
+    profile: str, registered: set[str], packs: set[str] | None = None
+) -> set[str]:
+    """The tool names a profile advertises. ``packs`` is the caller's already
+    resolved TOOL_PACKS, so one apply resolves (and warns) once."""
+    if packs is None:
+        packs, _ignored = _enabled_packs()
     hidden_by_pack: set[str] = set().union(
         *(names for pack, names in PACK_TOOL_NAMES.items() if pack not in packs)
     )
@@ -1211,7 +1220,9 @@ async def _apply_tool_profile(profile: str | None = None) -> dict:
             )
         selected = "full"
     registered = {tool.name for tool in await _registered_tools() if getattr(tool, "name", None)}
-    enabled = _profile_enabled_names(selected, registered)
+    # Resolved once per apply: twice warned twice per unknown entry (W4-T18-04).
+    packs, ignored = _enabled_packs()
+    enabled = _profile_enabled_names(selected, registered, packs)
     disabled = sorted(registered - enabled)
     # Replace the previous profile's visibility, never stack on it. fastmcp 3's
     # enable()/disable() append a Visibility transform per call and a tool lookup
@@ -1237,7 +1248,6 @@ async def _apply_tool_profile(profile: str | None = None) -> dict:
         "disabled_count": len(disabled),
         "disabled_tools": disabled,
     }
-    packs, ignored = _enabled_packs()
     _active_tool_profile["tool_packs"] = {
         "enabled": sorted(packs),
         "available": list(TOOL_PACK_NAMES),
@@ -7103,6 +7113,18 @@ async def pid_graph(
     `dangling` with the nearest port as a hint — always within its own
     space, so `scope="all"` never joins two sheets. `stats.confidence_min`
     is the number to read before trusting a foreign drawing.
+
+    Returns nodes, edges, junctions, dangling, unclassified, offpage_links,
+    stats, tolerance, scope and backend:
+    - node: id, kind, block_name, family, symbol, tag, tag_parsed, tag_source,
+      x, y, rotation_deg, scale, y_scale, mirrored, layer, space, description
+      (its DESC attribute), source, confidence, notes, and ports
+      {name, x, y, direction_deg, kind, radius, inferred, edges};
+    - edge: id, line_class, class_source, line_number, number_source, size,
+      service, spec, insulation, from, to, length (plus length_approximate
+      when the engine measured none), layer, space, source; vertices and
+      bulges with include_geometry;
+    - junction: id, x, y, edges, space; dangling: edge, end, x, y, nearest.
     """
     from engineering.pid.graph import build_graph
 

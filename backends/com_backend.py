@@ -6420,6 +6420,9 @@ class ComBackend(AutoCADBackend):
             obj.Layer = layer
             obj.color = 0  # acByBlock
             obj.Linetype = "ByBlock"
+            # acLnWtByBlock; measured accepted on AcDbLine and an
+            # AcDbAttributeDefinition on AutoCAD 2026 (reads back -2).
+            obj.Lineweight = -2
 
         def _sync():
             doc = _acad_doc()

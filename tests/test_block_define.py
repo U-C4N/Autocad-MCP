@@ -57,6 +57,11 @@ async def test_defines_geometry_and_attdefs(backend):
     for e in blk:
         assert e.dxf.layer == "0"
         assert e.dxf.color == 0, "ByBlock colour so the INSERT's layer drives it"
+        # W2-T3-06 — RED: the ATTDEFs kept BYLAYER, and no member had a ByBlock
+        # lineweight; the live engine styles every member ByBlock (measured:
+        # Linetype 'ByBlock', Lineweight -2 on AcDbLine and the ATTDEF).
+        assert e.dxf.linetype.upper() == "BYBLOCK", e.dxftype()
+        assert e.dxf.lineweight == -2, e.dxftype()
 
 
 async def test_insert_after_define_carries_the_attributes(backend):
@@ -118,6 +123,7 @@ class _Recorder:
     def __init__(self, name):
         self.Name = name
         self.calls: list[tuple[str, tuple]] = []
+        self.children: list[types.SimpleNamespace] = []
         self.Count = 0
 
     def __getattr__(self, attr):
@@ -125,7 +131,9 @@ class _Recorder:
 
             def _call(*args):
                 self.calls.append((attr, args))
-                return types.SimpleNamespace()
+                child = types.SimpleNamespace()
+                self.children.append(child)
+                return child
 
             return _call
         raise AttributeError(attr)
@@ -186,6 +194,10 @@ async def test_com_issues_one_activex_call_per_primitive_and_attdef(com_backend)
     assert tag_call[0] == 2.5 and tag_call[1] == 0 and tag_call[4] == "TAG"
     assert link_call[1] == 1, "invisible ATTDEF uses acAttributeModeInvisible"
     assert link_call[5] == "L-1"
+    # W2-T3-06: every member and ATTDEF ByBlock, lineweight included
+    # (acLnWtByBlock = -2, measured accepted on AutoCAD 2026).
+    for child in block.children:
+        assert (child.color, child.Linetype, child.Lineweight) == (0, "ByBlock", -2)
 
 
 async def test_com_refuses_a_clash_without_overwrite(com_backend):

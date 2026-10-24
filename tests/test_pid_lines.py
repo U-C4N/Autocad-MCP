@@ -208,15 +208,18 @@ def test_flatten_bulges_matches_ezdxf_flattening(bulge):
 
 def test_crossings_test_the_exact_arc_so_a_flattened_vertex_hides_nothing():
     """(45,0)→(55,0) bulge -1 is the r=5 jump; its apex (50,5) is a vertex of
-    the flattened chain (12 chords, even), so the chord chain drops a line at
-    x=50 from both neighbours. The exact arc counts it once — as it does at
-    x=50.3 — and keeps the junction rule everywhere it belongs."""
+    the flattened chain (12 chords, even), so the chord chain used to drop a
+    line at x=50 from both neighbours. The exact arc counts it once — as it
+    does at x=50.3 — and keeps the junction rule everywhere it belongs; since
+    W1-T12-05 a crossing through any interior vertex counts once as well."""
     from engineering.pid.lines import count_crossings, flatten_bulges, segment_arc_crossings
 
     jump, bulges = [(45.0, 0.0), (55.0, 0.0)], [-1.0, 0.0]
     flat = flatten_bulges(jump, bulges)
     assert (50.0, 5.0) in flat, "the apex is a flattened vertex — the case that was missed"
-    assert count_crossings([(50, -20), (50, 20)], [flat]) == 0, "chords: the hit is a vertex"
+    assert count_crossings([(50, -20), (50, 20)], [flat]) == 1, (
+        "chords: the hit is a vertex, which counts once since W1-T12-05 (it read 0)"
+    )
     assert count_crossings([(50, -20), (50, 20)], [jump], bulges=[bulges]) == 1
     assert count_crossings([(50.3, -20), (50.3, 20)], [jump], bulges=[bulges]) == 1
     assert count_crossings([(50, 20), (50, 60)], [[(0, 0), (100, 0)]], bulges=[[-1.0, 0.0]]) == 1
@@ -282,3 +285,55 @@ def test_flatten_bulges_passes_straight_edges_through_and_pads_short_bulge_lists
     assert flat[0] == (0.0, 0.0) and flat[1] == (10.0, 0.0) and flat[-1] == (10.0, 10.0)
     assert len(flat) > 3, "the second edge became a semicircle of chords"
     assert flatten_bulges([(1.0, 1.0)], [1.0]) == [(1.0, 1.0)]
+
+
+# ── backlog W1-T12-03 / -04 / -05 (1.7.0 triage, Task 8) ────────────────────
+
+
+@pytest.mark.parametrize("mode", ["direct", "auto", [(0, 10)]])
+@pytest.mark.parametrize("stub", [-1, float("nan"), float("inf")])
+def test_every_route_mode_refuses_a_bad_stub(mode, stub):
+    """W1-T12-03 — RED: `direct` and waypoint routes accepted stub=-1 and NaN."""
+    with pytest.raises(ValueError, match=r"^stub must be a finite length >= 0"):
+        route((0, 0), None, (10, 10), None, stub=stub, mode=mode)
+
+
+@pytest.mark.parametrize(
+    "waypoints, message",
+    [
+        ([{"x": 0}], "waypoints[0]: expected an [x, y] pair, got dict"),
+        ([0, 10], "waypoints[0]: expected an [x, y] pair, got int"),
+        ([(0, 10), (5,)], "waypoints[1]: expected an [x, y] pair, got a sequence of 1"),
+        ([(0, "a")], "waypoints[0].y: expected a number, got 'a'"),
+    ],
+)
+def test_a_malformed_waypoint_is_refused_by_path(waypoints, message):
+    """W1-T12-04 — RED: a dict waypoint escaped as KeyError, a flat list as TypeError."""
+    with pytest.raises(ValueError) as excinfo:
+        route((0, 0), None, (10, 10), None, mode=waypoints)
+    assert str(excinfo.value) == message
+
+
+def test_a_crossing_through_the_other_lines_vertex_counts_once():
+    """W1-T12-05 — RED: the crossing landed on (5, 0), a vertex of the other
+    polyline, so both of its segments read it as a T-touch: 0 crossings."""
+    assert count_crossings([(0, 0), (10, 0)], [[(5, -5), (5, 0), (5, 5)]]) == 1
+    assert count_crossings([(0, 0), (10, 0)], [[(5, -5), (5, 5)]]) == 1
+
+
+def test_a_crossing_through_the_lines_own_vertex_counts_once():
+    assert count_crossings([(5, -5), (5, 0), (5, 5)], [[(0, 0), (10, 0)]]) == 1
+
+
+def test_a_vertex_touch_that_turns_back_is_not_a_crossing():
+    # The other line comes down to (5, 0) and goes back up: it touches, never crosses.
+    assert count_crossings([(0, 0), (10, 0)], [[(2, 5), (5, 0), (8, 5)]]) == 0
+    # ...and a line that ends on the segment stays a T-junction.
+    assert count_crossings([(0, 0), (10, 0)], [[(5, 5), (5, 0)]]) == 0
+
+
+def test_a_vertex_crossing_through_an_arc_neighbour_counts_once():
+    # The other polyline reaches (5, 0) along a straight edge from below and
+    # leaves upwards along a quarter arc: it crosses, at its own vertex.
+    other = [(5, -5), (5, 0), (10, 5)]
+    assert count_crossings([(0, 0), (10, 0)], [other], bulges=[[0.0, -math.tan(math.pi / 8)]]) == 1

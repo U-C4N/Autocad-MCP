@@ -35,12 +35,30 @@ async def test_insert_ignores_values_for_tags_the_block_does_not_define(backend)
     assert await backend.block_get_attributes(ref.handle) == {"TAG": "V-1"}
 
 
-async def test_insert_without_attributes_is_unchanged(backend):
+async def test_insert_without_attributes_carries_the_attdef_defaults(backend):
+    """W1-T1-08 / W2-T3-08 — RED: no ATTRIBs at all headlessly ({}), while the
+    live ``InsertBlock`` instantiates every ATTDEF with its default (measured on
+    AutoCAD 2026: a block with ATTDEF TAG default 'DEF' inserts [('TAG', 'DEF')])."""
     _define_tagged_block(backend)
     ref = await backend.block_insert("TB", 0, 0)
     info = await backend.entity_get(ref.handle)
     assert info.properties["block_name"] == "TB"
+    assert await backend.block_get_attributes(ref.handle) == {"TAG": ""}
+    await backend.block_define(
+        "TD",
+        [{"type": "line", "x1": 0, "y1": 0, "x2": 1, "y2": 0}],
+        attdefs=[{"tag": "TAG", "x": 0, "y": 0, "height": 2.5, "default": "DEF"}],
+    )
+    ref = await backend.block_insert("TD", 5, 0)
+    assert await backend.block_get_attributes(ref.handle) == {"TAG": "DEF"}
+
+
+async def test_a_block_without_attdefs_inserts_without_attribs(backend):
+    blk = backend._doc.blocks.new(name="PLAIN")
+    blk.add_line((0, 0), (10, 0))
+    ref = await backend.block_insert("PLAIN", 0, 0)
     assert await backend.block_get_attributes(ref.handle) == {}
+    assert len(backend._doc.entitydb[ref.handle].attribs) == 0
 
 
 @pytest.mark.parametrize("attributes", [{"TAG": "P-101"}, None], ids=["with-attrs", "no-attrs"])

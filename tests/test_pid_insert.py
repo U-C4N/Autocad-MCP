@@ -102,3 +102,14 @@ async def test_layer_override_and_ensure_layer(backend):
     assert result["layer"] == "MY-VALVES" and result["layers_created"] == ["MY-VALVES"]
     spec = resolve("gate")
     assert spec.name in {b.name for b in await backend.block_list()}
+
+
+async def test_a_connectors_free_text_is_not_parsed_as_an_isa_tag(backend):
+    """W4-T19-04 — RED: the P&ID prompt's own OFF-PAGE example
+    (tag='TO P&ID-002') answered a tag warning every time it was followed;
+    a connector carries free text, as the duplicate-tag check already says."""
+    out = await place_symbol(backend, "offpage", 0, 0, tag="TO P&ID-002", direction="out")
+    assert out["tag_warnings"] == [] and out["tag"] == "TO P&ID-002"
+    assert (await backend.block_get_attributes(out["handle"]))["TAG"] == "TO P&ID-002"
+    valve = await place_symbol(backend, "gate", 30, 0, tag="TO P&ID-002")
+    assert valve["tag_warnings"], "a valve's tag is still an ISA / equipment tag"

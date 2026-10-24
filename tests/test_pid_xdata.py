@@ -15,8 +15,6 @@ from engineering.pid.xdata import (
     write_payload,
 )
 
-pytestmark = pytest.mark.asyncio
-
 
 def test_short_payload_is_marker_plus_one_chunk():
     values = encode_payload({"v": 1, "kind": "marker", "line": "3A"})
@@ -55,6 +53,7 @@ def test_builders_carry_the_documented_keys():
     assert marker_payload("3A") == {"v": 1, "kind": "marker", "line": "3A"}
 
 
+@pytest.mark.asyncio
 async def test_roundtrip_through_a_backend(backend):
     line = await backend.entity_create_line(0, 0, 10, 0)
     payload = {"v": 1, "kind": "line", "class": "electric", "number": None}
@@ -64,6 +63,7 @@ async def test_roundtrip_through_a_backend(backend):
     assert got["xdata"][APP_NAME][0] == MARKER
 
 
+@pytest.mark.asyncio
 async def test_read_payload_is_none_without_xdata(backend):
     line = await backend.entity_create_line(0, 0, 10, 0)
     assert await read_payload(backend, line.handle) is None

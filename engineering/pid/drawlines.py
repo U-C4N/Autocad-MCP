@@ -37,14 +37,22 @@ _LINE_TYPES = {"LINE"}
 _PAGE = 1000
 
 
-async def resolve_endpoint(backend: AutoCADBackend, ref: dict) -> dict:
+async def resolve_endpoint(backend: AutoCADBackend, ref: dict, name: str = "endpoint") -> dict:
     """``{handle, port}`` → the port in WCS (payload ports + INSERT transform);
-    ``{x, y}`` → a free point."""
+    ``{x, y}`` → a free point. ``name`` (``from_`` / ``to``) prefixes a refusal."""
     if not isinstance(ref, dict):
         raise ValueError("endpoint must be {handle, port} or {x, y}")
     if "handle" in ref:
         handle = str(ref["handle"])
-        info = await backend.entity_get(handle)
+        try:
+            info = await backend.entity_get(handle)
+        except RuntimeError as exc:
+            # Both engines say "Entity with handle 'X' not found." as a
+            # RuntimeError, which reached the client as an "Internal error"
+            # (backlog W3-T13-11). Any other failure is not a caller's mistake.
+            if "not found" not in str(exc):
+                raise
+            raise ValueError(f"{name}.handle: no entity has handle {handle!r}") from None
         block_name = str(info.properties.get("block_name", ""))
         if block_name.startswith("PID_MARKER_"):
             raise ValueError(f"{handle} is a marker/arrow — decoration on a line, not an endpoint")
@@ -148,6 +156,29 @@ def payload_seq(payload) -> int | None:
     return seq if type(seq) is int else None
 
 
+async def max_seq_elsewhere(backend: AutoCADBackend) -> int:
+    """The highest line sequence on a P&ID line in any space but the current one.
+
+    ``existing_pid_lines`` reads the current space (crossings and port reuse
+    belong to the sheet being drawn on); the sequence belongs to the document.
+    One read of every layout through ``entity_infos_all_spaces``, which never
+    switches the current layout.
+    """
+    from engineering.qa_scan import entity_infos_all_spaces
+
+    current = (await backend.layout_list()).get("current") or "Model"
+    highest = 0
+    for info, space in await entity_infos_all_spaces(backend):
+        if space == current or info.type not in _POLY_TYPES:
+            continue
+        if info.layer.upper() not in PID_LINE_LAYERS:
+            continue
+        seq = payload_seq(await read_payload(backend, info.handle))
+        if seq is not None:
+            highest = max(highest, seq)
+    return highest
+
+
 async def existing_pid_lines(backend: AutoCADBackend) -> list[dict]:
     """Every LINE/polyline on a P&ID line layer, with its payload when it has one.
 
@@ -226,8 +257,8 @@ async def draw_line(
     if line_class not in LINE_CLASSES:
         raise ValueError(f"line_class must be one of {', '.join(LINE_CLASSES)}, got {line_class!r}")
     cls = LINE_CLASSES[line_class]
-    start = await resolve_endpoint(backend, from_)
-    end = await resolve_endpoint(backend, to)
+    start = await resolve_endpoint(backend, from_, "from_")
+    end = await resolve_endpoint(backend, to, "to")
     if start["handle"] and start["handle"] == end["handle"] and start["port"] == end["port"]:
         raise ValueError("from and to are the same port")
     s_aim, e_aim = aim_points((start["x"], start["y"]), (end["x"], end["y"]), route_mode)
@@ -242,7 +273,9 @@ async def draw_line(
         bulges=[ln["bulges"] for ln in existing],
     )
     used: set[tuple[str, str]] = set()
-    max_seq = 0
+    # The sequence is the document's (spec §6.3), not the current space's: a
+    # line on Layout1 after one in Model was number 1 again (W3-T13-05).
+    max_seq = await max_seq_elsewhere(backend)
     for ln in existing:
         used.update(payload_port_refs(ln["payload"]))
         seq = payload_seq(ln["payload"])

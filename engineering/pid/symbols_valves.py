@@ -70,7 +70,10 @@ def _body(body: str) -> Body:
     if body == "plug":
         return std + [polyline([(-1, -1), (1, -1), (1, 1), (-1, 1)])], (_IN, _OUT), _BOX, 1.0
     if body == "diaphragm":
-        return std + [arc(0, 2, 2, 0, 180)], (_IN, _OUT), (-4.0, -2.0, 4.0, 4.0), 4.0
+        # The dome stands on the bow-tie: its ends (+-2, 1) lie on the triangle
+        # edges (-4, 2)-(0, 0) and (4, 2)-(0, 0). Centred at y = 2 it ended at
+        # (+-2, 2) and floated 1 mm above them (backlog W2-T8-03).
+        return std + [arc(0, 1, 2, 0, 180)], (_IN, _OUT), (-4.0, -2.0, 4.0, 3.0), 3.0
     if body == "three_way":
         ports = (_IN, _OUT, Port("branch", 0.0, -4.0, 270.0))
         return std + [_BOTTOM], ports, (-4.0, -4.0, 4.0, 2.0), 0.0
@@ -162,6 +165,7 @@ def _valve_builder(body: str):
 
 
 for _body_name in VALVE_BODIES:
-    register(
-        _body_name, "valve", _valve_builder(_body_name), variants={"actuator": list(ACTUATORS)}
-    )
+    # A self-acting body advertises only the actuator it accepts; listing all
+    # six and refusing five sent a client to a refusal (backlog W2-T8-02).
+    _actuators = ["none"] if _body_name in NO_ACTUATOR else list(ACTUATORS)
+    register(_body_name, "valve", _valve_builder(_body_name), variants={"actuator": _actuators})

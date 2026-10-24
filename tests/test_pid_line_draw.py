@@ -17,8 +17,6 @@ from engineering.pid.xdata import (
     write_payload,
 )
 
-pytestmark = pytest.mark.asyncio
-
 
 async def _pump_and_vessel(backend):
     pump = await place_symbol(backend, "centrifugal_pump", 100, 100, tag="P-101")
@@ -26,6 +24,7 @@ async def _pump_and_vessel(backend):
     return pump, vessel
 
 
+@pytest.mark.asyncio
 async def test_process_line_between_ports(backend):
     pump, vessel = await _pump_and_vessel(backend)
     result = await draw_line(
@@ -57,6 +56,7 @@ async def test_process_line_between_ports(backend):
     assert arrow.layer == "PROCESS-PIPING-MAIN"
 
 
+@pytest.mark.asyncio
 async def test_sequence_increments_and_number_can_be_given(backend):
     pump, vessel = await _pump_and_vessel(backend)
     first = await draw_line(
@@ -83,6 +83,7 @@ async def test_sequence_increments_and_number_can_be_given(backend):
     assert third["line_number"] == "VENT-01"
 
 
+@pytest.mark.asyncio
 async def test_signal_line_from_a_bubble_gets_markers_and_no_arrow(backend):
     cv = await place_symbol(backend, "globe", 100, 100, tag="FCV-1", actuator="diaphragm")
     fic = await place_symbol(
@@ -108,6 +109,7 @@ async def test_signal_line_from_a_bubble_gets_markers_and_no_arrow(backend):
     assert (await backend.entity_get(electric["handle"])).linetype == "ByLayer"
 
 
+@pytest.mark.asyncio
 async def test_port_reuse_and_crossings_are_reported_not_refused(backend):
     pump, vessel = await _pump_and_vessel(backend)
     await draw_line(
@@ -125,6 +127,7 @@ async def test_port_reuse_and_crossings_are_reported_not_refused(backend):
     assert crossing["crossings"] == 1
 
 
+@pytest.mark.asyncio
 async def test_refusals(backend):
     pump, vessel = await _pump_and_vessel(backend)
     with pytest.raises(ValueError, match="same"):
@@ -149,6 +152,7 @@ async def test_refusals(backend):
         await draw_line(backend, {"handle": line.handle, "port": "in"}, {"x": 0, "y": 0})
 
 
+@pytest.mark.asyncio
 async def test_mirrored_symbol_ports_follow_the_mirrored_geometry(backend):
     """``entity_mirror`` on an INSERT writes ``y_scale = -1``; the port has to be
     on the mirrored pump (discharge stub at (200, 104)->(200, 106)), not at the
@@ -171,6 +175,7 @@ async def test_mirrored_symbol_ports_follow_the_mirrored_geometry(backend):
     assert (ep["x"], ep["y"], ep["direction_deg"]) == (100.0, 194.0, 270.0)
 
 
+@pytest.mark.asyncio
 async def test_an_extrusion_mirrored_symbol_resolves_its_port_on_the_mirror_image(backend):
     """MIRROR3D (and foreign DXFs) store a mirror as extrusion -Z rather than
     a negative scale; the port is where the mirrored geometry is."""
@@ -198,6 +203,7 @@ async def test_an_extrusion_mirrored_symbol_resolves_its_port_on_the_mirror_imag
     assert result["vertices"][0] == pytest.approx([154.0, 20.0])
 
 
+@pytest.mark.asyncio
 async def test_stretched_symbol_is_refused_not_resolved_off_the_geometry(backend):
     pump = await place_symbol(backend, "centrifugal_pump", 100, 100, tag="P-1")
     payload = await read_payload(backend, pump["handle"])
@@ -262,6 +268,7 @@ def _fake_com(monkeypatch, entities):
     return backend
 
 
+@pytest.mark.asyncio
 async def test_existing_lines_are_seen_on_the_com_engine(monkeypatch):
     """A live LWPOLYLINE's ObjectName is ``AcDbPolyline`` (measured on AutoCAD
     2026), which the COM engine reports as type POLYLINE. A reader that filters
@@ -303,6 +310,7 @@ async def _bubble_and_valve(backend):
     return cv, fic
 
 
+@pytest.mark.asyncio
 async def test_signal_lines_carry_no_fabricated_number_and_do_not_consume_the_sequence(backend):
     """A signal line has no pipe line number: no auto number, no label, and the
     process sequence is left alone."""
@@ -352,6 +360,7 @@ async def test_signal_lines_carry_no_fabricated_number_and_do_not_consume_the_se
     assert second["line_number"] == "80-P-2"
 
 
+@pytest.mark.asyncio
 async def test_a_bubble_exit_aims_at_the_first_waypoint(backend):
     """With waypoints the radial port must leave towards the first waypoint;
     aiming at the far end put the exit on the wrong side and the first segment
@@ -372,6 +381,7 @@ async def test_a_bubble_exit_aims_at_the_first_waypoint(backend):
         assert ((x - 100) ** 2 + (y - 160) ** 2) ** 0.5 >= 5.0 - 1e-9
 
 
+@pytest.mark.asyncio
 async def test_a_bubble_entry_aims_at_the_last_waypoint(backend):
     fic = await place_symbol(
         backend, "instrument", 100, 160, tag="FIC-1", type="dcs", location="primary"
@@ -386,6 +396,7 @@ async def test_a_bubble_entry_aims_at_the_last_waypoint(backend):
     assert result["vertices"] == [[100.0, 100.0], [130.0, 100.0], [130.0, 160.0], [105.0, 160.0]]
 
 
+@pytest.mark.asyncio
 async def test_dry_run_plans_the_same_bubble_exit_as_the_real_run(backend):
     from engineering.pid.spec import run_spec
 
@@ -429,6 +440,7 @@ async def test_dry_run_plans_the_same_bubble_exit_as_the_real_run(backend):
 # ── Track A hardening (track E wave 0, Task 7) ───────────────────────────────
 
 
+@pytest.mark.asyncio
 async def test_foreign_line_payloads_are_tolerated_not_raised(backend):
     """A hand-edited payload with a non-dict ``from``, a ``None`` ``to`` and a
     bool ``seq`` used to escape as ``TypeError: string indices must be
@@ -464,6 +476,7 @@ def test_payload_helpers_accept_only_well_formed_values():
     assert payload_seq({"seq": 7.0}) is None and payload_seq(None) is None
 
 
+@pytest.mark.asyncio
 async def test_crossings_follow_a_bulged_line_not_its_chord(backend):
     """A foreign P&ID line with a semicircular jump (bulge -1 from (0,0) to
     (100,0) bows to +Y, apex (50,50)): a vertical utility line at x=30 from
@@ -490,6 +503,7 @@ async def test_crossings_follow_a_bulged_line_not_its_chord(backend):
     assert below["crossings"] == 0, "the chord side of the arc is empty"
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("extrusion", [(0, 0, 1), (0, 0, -1)])
 async def test_crossings_count_a_line_through_a_jump_apex(backend, extrusion):
     """The jump a P&ID draws where two lines cross: (45,0)→(55,0) bulge -1, a
@@ -517,6 +531,7 @@ async def test_crossings_count_a_line_through_a_jump_apex(backend, extrusion):
     assert beside["crossings"] == 0, "clear of the jump and above the straight run"
 
 
+@pytest.mark.asyncio
 async def test_com_existing_lines_carry_bulges(monkeypatch):
     payload = line_payload("process_major", "100-P-7", "100", "P", None, None, 7, None, None)
     poly = _com_pid_polyline("3E", (0.0, 0.0, 100.0, 0.0), payload)
@@ -526,3 +541,63 @@ async def test_com_existing_lines_carry_bulges(monkeypatch):
     lines = await existing_pid_lines(backend)
     assert lines[0]["vertices"] == [(0.0, 0.0), (100.0, 0.0)]
     assert lines[0]["bulges"] == [-1.0, 0.0]
+
+
+# ── backlog W3-T13-05 / -11 (1.7.0 triage, Task 8) ───────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_the_line_sequence_is_per_document_not_per_space(backend):
+    """W3-T13-05 — RED: a line drawn on Layout1 after one in Model was number 1
+    again, because the sequence was read from the current space only."""
+    first = await draw_line(backend, {"x": 0, "y": 0}, {"x": 100, "y": 0}, size="50", service="P")
+    assert first["line_number"] == "50-P-1"
+    await backend.layout_set_current("Layout1")
+    second = await draw_line(
+        backend, {"x": 0, "y": 50}, {"x": 100, "y": 50}, size="50", service="P"
+    )
+    assert second["line_number"] == "50-P-2"
+    assert (await read_payload(backend, second["handle"]))["seq"] == 2
+    # Crossings stay within one space: Model's line at y=0 is not on this sheet.
+    third = await draw_line(
+        backend, {"x": 50, "y": -20}, {"x": 50, "y": 20}, size="50", service="P"
+    )
+    assert third["crossings"] == 0 and third["line_number"] == "50-P-3"
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_endpoint_handle_is_a_named_refusal(backend):
+    """W3-T13-11 — RED: RuntimeError 'Entity with handle FFFF not found' (an
+    "Internal error" to the client) instead of a refusal naming the endpoint."""
+    with pytest.raises(ValueError, match=r"^from_\.handle: no entity has handle 'FFFF'$"):
+        await draw_line(backend, {"handle": "FFFF", "port": "x"}, {"x": 50, "y": 0})
+    with pytest.raises(ValueError, match=r"^to\.handle: no entity has handle 'FFFE'$"):
+        await draw_line(backend, {"x": 0, "y": 0}, {"handle": "FFFE"})
+
+
+@pytest.mark.asyncio
+async def test_the_tool_answers_an_unknown_handle_and_a_flat_route_as_invalid_params():
+    """W3-T13-11 through the server: both refusals are named, not internal errors."""
+    from fastmcp import Client
+
+    import server
+
+    async with Client(server.mcp) as client:
+        await client.call_tool("drawing_new", {})
+        unknown = await client.call_tool(
+            "pid_line_draw",
+            {"from_": {"handle": "FFFF", "port": "x"}, "to": {"x": 50, "y": 0}},
+            raise_on_error=False,
+        )
+        flat = await client.call_tool(
+            "pid_line_draw",
+            {"from_": {"x": 0, "y": 0}, "to": {"x": 50, "y": 20}, "route": [10, 20]},
+            raise_on_error=False,
+        )
+    for result, words in (
+        (unknown, "from_.handle: no entity has handle 'FFFF'"),
+        (flat, "waypoints[0]: expected an [x, y] pair, got int"),
+    ):
+        text = result.content[0].text
+        assert result.is_error and words in text, text
+        assert "Internal error" not in text, text
