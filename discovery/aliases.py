@@ -2191,6 +2191,9 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "find a washer",
             "civata listesi",
             "rulman listesi",
+            "standards coverage",
+            "which sizes are transcribed",
+            "standart kapsami",
         ),
     ),
     "std_part_insert": ToolAliases(

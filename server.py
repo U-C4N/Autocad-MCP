@@ -8737,13 +8737,21 @@ async def std_part_list(
     its `source`. Coverage is deliberately narrow: ISO 261 first-choice sizes
     only (M5-M36, M3-M24 for ISO 4762) and ISO 15 bore numbers 00-10 in the
     600x / 620x / 630x series. A size outside a table is refused by name by
-    `std_part_insert` with the nearest entries, never interpolated. An unknown
-    `standard` is refused with the list of catalogue standards.
-    """
-    from engineering.mech.stdparts import FAMILY_STANDARDS, catalogue
+    `std_part_insert` with the nearest entries, never interpolated and never
+    substituted. An unknown `standard` is refused with the list of catalogue
+    standards.
 
-    rows = catalogue(query, standard)
-    return {"count": len(rows), "standards": list(FAMILY_STANDARDS), "parts": list(rows)}
+    `coverage` is the standards coverage manifest (also the resource
+    `autocad://standards/coverage`): one record per registered table - the
+    fastener and bearing tables above, ISO 261 and the feature tables
+    `std_feature_draw` reads - with edition, table locator, implemented sizes,
+    range and source. DIN 509, DIN 471/472, DIN 332-1 and ISO 3601-2 report
+    "no rows transcribed"; transcriber and reviewer are null because the
+    repository records none.
+    """
+    from engineering.mech.stdparts import catalogue_listing
+
+    return catalogue_listing(query, standard)
 
 
 @cad_tool(
@@ -11519,6 +11527,23 @@ async def resource_isa51() -> str:
     from engineering.pid.tags import describe_tables
 
     return json.dumps(describe_tables(), indent=2)
+
+
+@mcp.resource(
+    "autocad://standards/coverage",
+    name="Standards Coverage Manifest",
+    description=(
+        "Every authored standards table: edition, table locator, implemented sizes, "
+        "coverage range and source; the empty feature tables say no rows transcribed"
+    ),
+    mime_type="application/json",
+    annotations={"readOnlyHint": True},
+    tags={"mech", "standards"},
+)
+async def resource_standards_coverage() -> str:
+    from engineering.mech.standards.coverage import coverage_manifest
+
+    return json.dumps(coverage_manifest(), indent=2)
 
 
 # ---------------------------------------------------------------------------

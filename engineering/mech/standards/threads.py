@@ -138,12 +138,14 @@ def pitch_for(d: float, pitch: float | None = None) -> float:
     """The coarse pitch for ``d``, or validate an explicit fine pitch against the series."""
     diameter = float(d)
     if diameter not in COARSE:
+        nearest = sorted(DIAMETERS, key=lambda known: (abs(known - diameter), known))[:3]
         raise ValueError(
             f"ISO 261: M{diameter:g} is not in the transcribed table. "
             f"Coverage is M{DIAMETERS[0]:g}-M{DIAMETERS[-1]:g}, the first-choice diameters plus "
             "the second-choice M14, M18, M22, M27, M33, M39, M45, M52 and M60; the remaining "
             "second-choice diameters and every third-choice diameter are not transcribed and "
-            "are not interpolated."
+            "are not interpolated. Nearest transcribed diameters: "
+            f"{', '.join(f'M{known:g}' for known in nearest)} - none is substituted."
         )
     if pitch is None:
         return COARSE[diameter]
