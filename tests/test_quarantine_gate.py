@@ -104,9 +104,11 @@ async def test_construction_clear_does_not_report_nothing_to_clear(backend, monk
 
 
 async def test_an_ordinary_failure_is_still_degraded_not_raised(backend):
-    """The bare excepts exist so one broken check cannot fail the whole pass.
+    """One broken check cannot fail the whole pass - and cannot read as clean.
 
-    Only the quarantine escapes them; everything else keeps degrading.
+    Only the quarantine escapes as an exception; any other failure becomes one
+    ``error`` issue of that focus with ``detail.code == "check_failed"`` (1.7.0
+    Task 2). It used to be ``[]``: a check that crashed reported a clean drawing.
     """
     from engineering.critique import run_critique
 
@@ -115,6 +117,10 @@ async def test_an_ordinary_failure_is_still_degraded_not_raised(backend):
 
     backend.layer_list = _boom
 
-    issues = await run_critique(backend, focus=["layer_color"])
+    (issue,) = await run_critique(backend, focus=["layer_color"])
 
-    assert issues == []
+    assert issue.focus == "layer_color" and issue.severity == "error"
+    assert issue.detail == {
+        "code": "check_failed",
+        "error": "RuntimeError: layer_list is having a bad day",
+    }

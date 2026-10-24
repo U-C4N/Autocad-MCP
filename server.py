@@ -5783,9 +5783,17 @@ async def drawing_finalize(
     layers no P&ID or architectural focus reads, silent on every sheet this server draws),
     then saves to disk, exports a screenshot, and returns the DWG path.
 
+    The validator and the critique share one read of the drawing - every entity of
+    every space, model and paper, with no cap (one DXF export on the live engine). A
+    drawing over MAX_QA_ENTITIES (default 2,000,000; 0 disables) is not read in part:
+    the validator reports `scan_incomplete` and each entity check reports an issue with
+    detail.code `scan_incomplete`, so the gate fails. A check that raises is an `error`
+    issue with detail.code `check_failed`, never a clean result.
+
     Raises ToolError if any validator 'error' finding is present, or if critique reports an
     'error' (or, with strict_critique=True, any critique issue). Critique warnings are surfaced
-    under payload['critique'] without failing the gate by default.
+    under payload['critique'] without failing the gate by default. A quarantined document
+    is refused.
     """
     from engineering import DrawingValidator
 
@@ -5810,11 +5818,14 @@ async def drawing_finalize(
             if ctx is not None:
                 await ctx.warning(f"Screenshot export failed: {exc}")
 
-    result = await DrawingValidator().run(backend, expected=expected or {})
+    # One run context for the validator and the critique: the drawing is read
+    # once (one Document.Export on the live engine), every space, no cap.
+    qa_shared: dict = {}
+    result = await DrawingValidator().run(backend, expected=expected or {}, shared=qa_shared)
     payload = result.to_dict()
 
     # I15 — the premium critique focuses are part of the finalize gate, not merely advisory.
-    critique_issues = await backend.drawing_critique(focus=None)
+    critique_issues = await backend.drawing_critique(focus=None, shared=qa_shared)
     crit_summary = {"error": 0, "warning": 0, "info": 0}
     for issue in critique_issues:
         crit_summary[issue.severity] = crit_summary.get(issue.severity, 0) + 1
@@ -6054,6 +6065,15 @@ async def drawing_critique(
     """Run premium-quality checks. Returns zero issues for a clean drawing.
 
     Standard production gate: must return [] before `drawing_finalize`.
+
+    The entity checks (construction_left, untrimmed_corner, duplicate_entities,
+    dim_overlap) read every entity of every space - model and every paper layout -
+    and compare pairs only within one space. Refusals and failures are issues, never
+    silence: a check that raises returns an `error` issue of its focus with
+    detail.code `check_failed`; a read that could not cover the drawing (more than
+    MAX_QA_ENTITIES entities, default 2,000,000; or a live export whose per-layout
+    counts differ from AutoCAD's) returns detail.code `scan_incomplete`. Neither code
+    is a focus name. A quarantined document is refused.
     """
     issues = await _backend(ctx).drawing_critique(focus)
     return [_dc(i) for i in issues]

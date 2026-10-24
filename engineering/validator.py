@@ -7,6 +7,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from backends.quarantine import DocumentQuarantineError
+
+from .qa_scan import qa_snapshot
+
 if TYPE_CHECKING:
     from backends.base import AutoCADBackend
 
@@ -94,60 +98,72 @@ class DrawingValidator:
         backend: AutoCADBackend,
         *,
         expected: dict | None = None,
+        shared: dict | None = None,
     ) -> ValidationResult:
-        """Run all 8 checks; return aggregate ValidationResult."""
+        """Run all 8 checks; return aggregate ValidationResult.
+
+        Steps 1, 2, 4 and 5 read the run's all-spaces QA snapshot
+        (``engineering/qa_scan.py``): every entity of every space, by its DXF
+        type name on both engines. ``shared`` is that run's context - pass the
+        dict ``run_critique`` will receive so a finalize reads the drawing
+        once. A read that did not cover the drawing is an ``error`` finding
+        ``scan_incomplete``; a step that raises is a finding naming the step;
+        a quarantine refusal propagates. Nothing is swallowed.
+        """
 
         findings: list[ValidationFinding] = []
         expected = expected or {}
-        ents: list = []
+        if shared is None:
+            shared = {}
+        records: tuple = ()
+
+        snap, coverage = await qa_snapshot(backend, shared)
+        if snap is not None:
+            records = snap.records
+        if not coverage.complete:
+            findings.append(
+                ValidationFinding(
+                    "error",
+                    "scan_incomplete",
+                    f"The drawing was not read in full: {coverage.reason}",
+                    coverage.to_dict(),
+                )
+            )
 
         # 1 — fake dimensions
-        try:
-            ents = await backend.entity_list(limit=10000)
-            text_likes = [
-                e
-                for e in ents
-                if e.type in ("TEXT", "MTEXT")
-                and looks_like_dimension(getattr(e, "properties", {}).get("text", "") or "")
-            ]
-            real_dims = [e for e in ents if e.type in REAL_DIMENSION_TYPES]
-            if text_likes:
-                findings.append(
-                    ValidationFinding(
-                        "warning",
-                        "fake_dimension_text",
-                        f"{len(text_likes)} TEXT/MTEXT entities look like dimensions "
-                        "(Ø, ±, R, etc.) — use dimension_* tools instead",
-                        {
-                            "sample_handles": [t.handle for t in text_likes[:5]],
-                            "real_dim_count": len(real_dims),
-                        },
-                    )
-                )
-        except Exception as exc:
+        text_likes = [
+            r for r in records if r.type in ("TEXT", "MTEXT") and looks_like_dimension(r.text or "")
+        ]
+        real_dims = [r for r in records if r.type in REAL_DIMENSION_TYPES]
+        if text_likes:
             findings.append(
                 ValidationFinding(
                     "warning",
-                    "dim_check_failed",
-                    str(exc),
+                    "fake_dimension_text",
+                    f"{len(text_likes)} TEXT/MTEXT entities look like dimensions "
+                    "(Ø, ±, R, etc.) — use dimension_* tools instead",
+                    {
+                        "sample_handles": [t.handle for t in text_likes[:5]],
+                        "real_dim_count": len(real_dims),
+                    },
                 )
             )
 
         # 2 — hidden orphans
-        try:
-            hidden = [e for e in ents if not e.visible]
-            if hidden:
-                findings.append(
-                    ValidationFinding(
-                        "error",
-                        "hidden_orphans",
-                        f"{len(hidden)} entities have visible=False — hide-fallback "
-                        "is forbidden, use entity_delete",
-                        {"sample_handles": [h.handle for h in hidden[:5]]},
-                    )
+        hidden = [r for r in records if not r.visible]
+        if hidden:
+            findings.append(
+                ValidationFinding(
+                    "error",
+                    "hidden_orphans",
+                    f"{len(hidden)} entities have visible=False — hide-fallback "
+                    "is forbidden, use entity_delete",
+                    {
+                        "sample_handles": [h.handle for h in hidden[:5]],
+                        "spaces": sorted({h.space for h in hidden}),
+                    },
                 )
-        except Exception:
-            pass
+            )
 
         # 3 — linetypes
         try:
@@ -162,6 +178,8 @@ class DrawingValidator:
                         {"missing": missing},
                     )
                 )
+        except DocumentQuarantineError:
+            raise
         except Exception as exc:
             findings.append(
                 ValidationFinding(
@@ -173,7 +191,7 @@ class DrawingValidator:
 
         # 4 — gear views (heuristic, only if expected demands)
         if expected.get("must_have_bore") or expected.get("must_have_keyway"):
-            bore_circles = [e for e in ents if e.type == "CIRCLE" and e.layer == "GEOMETRY"]
+            bore_circles = [r for r in records if r.type == "CIRCLE" and r.layer == "GEOMETRY"]
             if expected.get("must_have_bore") and len(bore_circles) < 1:
                 findings.append(
                     ValidationFinding(
@@ -186,11 +204,11 @@ class DrawingValidator:
             # on GEOMETRY — requiring `closed` here made this a permanent
             # false-negative. Match a small (3-6 point) polyline, open or closed.
             keyway_polys = [
-                e
-                for e in ents
-                if e.type in ("LWPOLYLINE", "POLYLINE")
-                and e.layer == "GEOMETRY"
-                and 3 <= len(e.properties.get("points", [])) <= 6
+                r
+                for r in records
+                if r.type in ("LWPOLYLINE", "POLYLINE")
+                and r.layer == "GEOMETRY"
+                and 3 <= len(r.points) <= 6
             ]
             if expected.get("must_have_keyway") and len(keyway_polys) < 1:
                 findings.append(
@@ -209,17 +227,17 @@ class DrawingValidator:
             # TITLEBLOCK layer); fall back to all TEXT-layer text if no title
             # layer carries any text.
             title_block_texts = [
-                e.properties.get("text", "") or ""
-                for e in ents
-                if e.type in ("TEXT", "MTEXT") and e.layer in _TITLE_LAYERS
+                r.text or ""
+                for r in records
+                if r.type in ("TEXT", "MTEXT") and r.layer in _TITLE_LAYERS
             ]
             if title_block_texts:
                 title_texts = title_block_texts
             else:
                 title_texts = [
-                    e.properties.get("text", "") or ""
-                    for e in ents
-                    if e.type in ("TEXT", "MTEXT") and e.layer == "TEXT"
+                    r.text or ""
+                    for r in records
+                    if r.type in ("TEXT", "MTEXT") and r.layer == "TEXT"
                 ]
             joined = " | ".join(title_texts)
             # R27 — whole-word matching so "SPURIOUS" no longer trips SPUR.
@@ -266,6 +284,8 @@ class DrawingValidator:
                         f"Drawing reports saved=True but file not on disk: {full_path}",
                     )
                 )
+        except DocumentQuarantineError:
+            raise
         except Exception as exc:
             findings.append(
                 ValidationFinding(
@@ -286,6 +306,8 @@ class DrawingValidator:
                         "Screenshot returned no bytes (ezdxf needs matplotlib install)",
                     )
                 )
+        except DocumentQuarantineError:
+            raise
         except Exception as exc:
             findings.append(
                 ValidationFinding(
@@ -306,8 +328,16 @@ class DrawingValidator:
                         "drawing_info.full_path is empty",
                     )
                 )
-        except Exception:
-            pass
+        except DocumentQuarantineError:
+            raise
+        except Exception as exc:
+            findings.append(
+                ValidationFinding(
+                    "warning",
+                    "path_check_failed",
+                    str(exc),
+                )
+            )
 
         summary = {
             sev: sum(1 for f in findings if f.severity == sev)

@@ -102,6 +102,8 @@ class EntityRecord:
     bbox: tuple[float, float, float, float] | None = None
     rotation: float = 0.0
     scale: tuple[float, float] = (1.0, 1.0)
+    #: DXF group 60 (0 = visible). The validator's hidden-entity step reads it.
+    visible: bool = True
 
 
 @dataclass(frozen=True)
@@ -189,6 +191,7 @@ def _record(entity, space: str) -> EntityRecord | None:
         "layer": str(dxf.get("layer", "0")),
         "space": space,
         "bbox": _box(entity),
+        "visible": not bool(dxf.get("invisible", 0)),
     }
     extrusion = _extrusion(entity)
     if kind == "LINE":

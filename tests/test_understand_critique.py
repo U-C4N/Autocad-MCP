@@ -162,26 +162,31 @@ async def test_an_arch_plan_from_spec_gets_no_topo_issue(backend):
 
 
 async def test_a_drawing_without_a_network_layer_is_never_snapshotted(backend, monkeypatch):
-    import engineering.understand.snapshot as snapshot
+    import engineering.qa_scan as qa_scan
 
     async def refuse(*_args, **_kwargs):
         raise AssertionError("the snapshot was taken")
 
-    monkeypatch.setattr(snapshot, "take_snapshot", refuse)
+    # The index reads the run's QA snapshot (1.7.0 Task 2), not take_snapshot.
+    monkeypatch.setattr(qa_scan, "_read_all_spaces", refuse)
     await backend.entity_create_line(0, 0, 100, 0, layer="GEOMETRY")
     assert await build_index(backend) == {"layers": [], "findings": None, "error": None}
 
 
 async def test_a_snapshot_that_fails_is_reported_not_passed(backend, pipe_layer, monkeypatch):
-    import engineering.understand.snapshot as snapshot
+    """The run's QA snapshot (engineering/qa_scan.py) could not be taken: an
+    ``error`` with ``detail.code == "scan_incomplete"`` - it was an ``info``
+    until 1.7.0, which let finalize pass a network it never read."""
+    import engineering.qa_scan as qa_scan
 
     async def broken(*_args, **_kwargs):
         raise RuntimeError("export failed")
 
-    monkeypatch.setattr(snapshot, "take_snapshot", broken)
+    monkeypatch.setattr(qa_scan, "_read_all_spaces", broken)
     await _lines(backend, pipe_layer, (0, 0, 1000, 0))
     (issue,) = await _issues(backend, "topo_near_miss")
-    assert issue.severity == "info" and "export failed" in issue.message
+    assert issue.severity == "error" and "export failed" in issue.message
+    assert issue.detail["code"] == "scan_incomplete"
 
 
 # -- the dispatch ----------------------------------------------------------------------
@@ -192,7 +197,9 @@ async def test_the_three_focuses_share_one_index_per_run(backend, pipe_layer):
     shared: dict = {}
     for focus in TOPO_FOCUSES:
         await TOPO_DISPATCH[focus](backend, shared)
-    assert list(shared) == ["topo_index"]
+    # One QA snapshot and one index for the three focuses (the snapshot is
+    # the run's, shared with the base checks and the validator).
+    assert list(shared) == ["qa_snapshot", "topo_index"]
 
 
 async def test_run_critique_reaches_the_topo_focuses(backend, pipe_layer):
