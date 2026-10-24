@@ -6232,11 +6232,31 @@ class EzdxfBackend(AutoCADBackend):
     async def entity_delete(self, handle) -> dict:
         def _sync():
             ent = self._get_entity(handle)
-            self._msp().delete_entity(ent)
+            self._owner_layout(ent).delete_entity(ent)
             self._mark_dirty()
             return {"ok": True, "deleted_handle": handle}
 
         return await self._async(_sync)
+
+    @staticmethod
+    def _owner_layout(ent):
+        """The layout that holds ``ent`` - model space, a paper layout or a block
+        definition - which is the one it must be deleted from.
+
+        ``entity_delete`` deleted from ``_msp()``, the *current* space, so a
+        handle on another layout died in ezdxf with ``ValueError:
+        list.remove(x): x not in list`` (W1 review: the paper-space
+        construction line ``construction_left`` names). ActiveX
+        ``HandleToObject(h).Delete()`` deletes wherever the entity lives; this
+        is the same rule.
+        """
+        layout = ent.get_layout()
+        if layout is None:
+            raise RuntimeError(
+                f"Entity {ent.dxf.handle} ({ent.dxftype()}) belongs to no layout or block "
+                "definition, so there is nothing to delete it from."
+            )
+        return layout
 
     async def entity_array_rectangular(
         self,
@@ -9073,6 +9093,28 @@ class EzdxfBackend(AutoCADBackend):
 
     # ── premium meta-tools live on AutoCADBackend (base.py) and are shared by
     # both backends. Only the XLINE primitive is backend-specific. ────────────
+    async def _delete_layer_entities(self, layer: str) -> dict:
+        def _sync():
+            doc = self._require_doc()
+            wanted = str(layer).casefold()
+            deleted: list[str] = []
+            for name in doc.layouts.names_in_taborder():
+                space = doc.layouts.get(name)
+                victims = [
+                    entity
+                    for entity in space
+                    if str(entity.dxf.get("layer", "0")).casefold() == wanted
+                ]
+                for entity in victims:
+                    handle = str(entity.dxf.handle)  # read before the entity is destroyed
+                    space.delete_entity(entity)
+                    deleted.append(handle)
+            if deleted:
+                self._mark_dirty()
+            return {"deleted": deleted, "failed": []}
+
+        return await self._async(_sync)
+
     async def _create_xline(self, x, y, dx, dy, layer) -> EntityInfo:
         def _sync():
             self._require_doc()

@@ -332,6 +332,40 @@ def _msp():
         return doc.ModelSpace
 
 
+def _delete_on_layer_all_layouts(doc, layer: str) -> dict:
+    """Delete every entity on ``layer`` in every layout's block of ``doc``.
+
+    Measured on AutoCAD 2026 on 2026-10-24 in a scratch ``Documents.Add()``
+    document closed with ``Close(False)``: ``Layouts.Item(i).Block.Item(j)``
+    answers ``ObjectName`` / ``Handle`` / ``Layer`` for a LINE in model space
+    and on an unactivated Layout1 alike, and ``HandleToObject(h).Delete()``
+    removed both (Block.Count Model 2 -> 1, Layout1 2 -> 1, the other-layer
+    line kept). The handles are collected first and deleted afterwards, so the
+    indices being walked never shift. A delete that fails (a locked layer) is
+    reported with its reason, never skipped. ``doc`` is taken once by the
+    caller: the active document can change between two calls.
+    """
+    wanted = str(layer).casefold()
+    layouts = doc.Layouts
+    victims: list[str] = []
+    for i in range(int(layouts.Count)):
+        block = layouts.Item(i).Block
+        for j in range(int(block.Count)):
+            entity = block.Item(j)
+            if str(entity.Layer).casefold() == wanted:
+                victims.append(str(entity.Handle))
+    deleted: list[str] = []
+    failed: list[dict] = []
+    for handle in victims:
+        try:
+            doc.HandleToObject(handle).Delete()
+        except Exception as exc:  # noqa: BLE001 - reported per entity below
+            failed.append({"handle": handle, "error": str(exc)})
+        else:
+            deleted.append(handle)
+    return {"deleted": deleted, "failed": failed}
+
+
 def _int_member(obj, name: str) -> int | None:
     """``int(obj.<name>)`` or ``None`` when the member is absent or not a number."""
     try:
@@ -7573,6 +7607,12 @@ class ComBackend(AutoCADBackend):
 
     # ── premium meta-tools live on AutoCADBackend (base.py) and are shared by
     # both backends. Only the XLINE primitive is backend-specific. ────────────
+    async def _delete_layer_entities(self, layer: str) -> dict:
+        def _sync():
+            return _delete_on_layer_all_layouts(_acad_doc(), layer)
+
+        return await self._run(_sync)
+
     async def _create_xline(self, x, y, dx, dy, layer) -> EntityInfo:
         def _sync():
             mspace = _msp()

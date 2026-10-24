@@ -11,8 +11,6 @@ import math
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
-from backends.quarantine import DocumentQuarantineError
-
 if TYPE_CHECKING:
     from backends.base import EntityInfo
     from engineering.plan_spec import (
@@ -589,26 +587,38 @@ class PremiumContract(ABC):
         self,
         layer: str | None = None,
     ) -> dict:
-        """Delete every entity on the active layer set's construction layer.
-        Must be called before `drawing_finalize`."""
+        """Delete every entity on the active layer set's construction layer, in
+        model space and every paper layout, however many there are. Must be
+        called before `drawing_finalize`.
+
+        It read `entity_list(limit=5000)` of the current space, while
+        `construction_left` reads every space: a construction line on a paper
+        layout, or the 5,001st one, was flagged with "call construction_clear()"
+        and survived the call (W1 review). `deleted_handles` names what went;
+        `failed` names an entity that could not be deleted (a locked layer on
+        the live engine) with the reason, rather than skipping it silently.
+        A quarantine refusal propagates: "deleted: 0" would read as "nothing
+        to clear" on a document the backend has declared untrusted.
+        """
         layer = layer or self._role_layer("construction")
-        try:
-            ents = await self.entity_list(layer_filter=layer, limit=5000)
-        except DocumentQuarantineError:
-            # "deleted: 0" here would read as "there was nothing to clear" on a
-            # document the backend has declared untrusted -- and this is step 9
-            # of the standard workflow, immediately before finalize.
-            raise
-        except Exception:
-            ents = []
-        deleted = 0
-        for ent in ents:
-            try:
-                await self.entity_delete(ent.handle)
-                deleted += 1
-            except Exception:
-                continue
-        return {"ok": True, "layer": layer, "deleted": deleted}
+        result = await self._delete_layer_entities(layer)
+        return {
+            "ok": True,
+            "layer": layer,
+            "deleted": len(result["deleted"]),
+            "deleted_handles": list(result["deleted"]),
+            "failed": list(result["failed"]),
+        }
+
+    @abstractmethod
+    async def _delete_layer_entities(self, layer: str) -> dict:
+        """Delete every entity on `layer` (case-insensitive, as layer names
+        are) in model space and every paper layout, in one locked call.
+
+        Returns ``{"deleted": [handle, ...], "failed": [{"handle", "error"}]}``.
+        Backend-specific: headless walks every ezdxf layout; live walks each
+        ``Layout.Block`` (members measured on AutoCAD 2026)."""
+        ...
 
     async def drawing_apply_iso_layers(
         self,
