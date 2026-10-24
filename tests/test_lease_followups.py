@@ -470,3 +470,74 @@ async def test_a_client_sees_a_busy_refusal_as_its_own_kind(monkeypatch, gates):
         assert [read["call"] for read in status["detached_reads"]] == ["body"]
         gate.release.set()
         await _wait_for(gate.finished)
+
+
+# ── finding 3: the cancelled cad_batch's rollback answer ───────────────────
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"ok": False, "error": "No active transaction to rollback"},
+        RuntimeError("rollback blew up"),
+    ],
+    ids=["declined", "raised"],
+)
+async def test_a_cancelled_batchs_rollback_answer_is_checked(monkeypatch, caplog, answer):
+    """RED: the shielded rollback in the cancellation path discarded the
+    backend's answer, so a cancelled batch whose rollback did nothing left no
+    trace. Checked like ``_batch_transaction_ok`` checks the normal path:
+    logged as a warning and recorded in call_outcomes with the request id."""
+    in_step = asyncio.Event()
+
+    async def stuck_circle(self, *args, **kwargs):
+        in_step.set()
+        await asyncio.Event().wait()
+
+    async def answering_rollback(self):
+        if isinstance(answer, BaseException):
+            raise answer
+        return dict(answer)
+
+    monkeypatch.setattr(ezdxf_backend.EzdxfBackend, "entity_create_circle", stuck_circle)
+    monkeypatch.setattr(ezdxf_backend.EzdxfBackend, "transaction_rollback", answering_rollback)
+    async with Client(server.mcp) as client:
+        await client.call_tool("drawing_new", {})
+        request_id = client.session._request_id
+        call = asyncio.ensure_future(
+            client.call_tool(
+                "cad_batch",
+                {
+                    "steps": [
+                        {"tool": "entity_create_circle", "args": {"cx": 0, "cy": 0, "radius": 5}}
+                    ],
+                    "on_error": "rollback",
+                },
+            )
+        )
+        with caplog.at_level(logging.WARNING, logger="autocad_mcp"):
+            await in_step.wait()
+            await client.cancel(request_id)
+            with pytest.raises(McpError, match="cancelled"):
+                await call
+
+            async def recorded():
+                status = (await client.call_tool("system_status", {})).structured_content
+                return [r for r in status["call_outcomes"] if r["call"] == "cad_batch"]
+
+            deadline = time.monotonic() + 10
+            rows = await recorded()
+            while not rows and time.monotonic() < deadline:
+                await asyncio.sleep(0.02)
+                rows = await recorded()
+        [row] = rows
+        expected = "rollback_declined" if isinstance(answer, dict) else "rollback_failed"
+        assert row["outcome"] == expected
+        assert row["request_id"] == str(request_id)
+        detail = "No active transaction" if isinstance(answer, dict) else "rollback blew up"
+        assert detail in row["error"]
+        assert row["started"] <= row["ended"]
+        lines = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any(
+            "cad_batch" in line and str(request_id) in line and detail in line for line in lines
+        ), lines

@@ -4326,6 +4326,52 @@ def _batch_transaction_ok(outcome) -> tuple[bool, str | None]:
     return False, str(outcome.get("error") or "backend declined")
 
 
+def _record_cancelled_batch_rollback(
+    backend, ctx, outcome: str, error: str | None, started: float
+) -> None:
+    """Leave a trace of a cancelled batch whose rollback did not happen.
+
+    The SDK has already answered the cancelled request, so nothing can be
+    returned or raised: the failure is logged naming the request id (a warning
+    when the backend declined, an error when it raised) and appended to the
+    backend's ``call_outcomes`` (``system_status`` reports the last few) -
+    ``outcome`` is ``rollback_declined`` (the backend answered ``ok: False``)
+    or ``rollback_failed`` (it raised). Never raises.
+    """
+    try:
+        request_id = ctx.request_id if ctx is not None else None
+    except Exception:  # no request context (a direct call in a test or script)
+        request_id = None
+    # A rollback that raised is an error, as before; one the backend declined
+    # is a warning, as _batch_transaction_ok reports it on the normal path.
+    log.log(
+        logging.ERROR if outcome == "rollback_failed" else logging.WARNING,
+        "cad_batch: the rollback after cancelled request %s was not performed (%s: %s); "
+        "the steps that ran may still be in the drawing - check system_status and "
+        "transaction_rollback before retrying",
+        request_id,
+        outcome,
+        error,
+    )
+    outcomes = getattr(backend, "call_outcomes", None)
+    if outcomes is None:
+        return
+    try:
+        outcomes.append(
+            {
+                "call": "cad_batch",
+                "outcome": outcome,
+                "started": started,
+                "ended": time.time(),
+                "document": None,
+                "request_id": None if request_id is None else str(request_id),
+                "error": error,
+            }
+        )
+    except Exception as exc:  # a foreign backend's container must not break the cancel
+        log.debug("cad_batch: call_outcomes not recordable: %s", exc)
+
+
 async def _batch_fingerprint(backend) -> dict | None:
     """A cheap, backend-neutral summary of document state.
 
@@ -4773,17 +4819,27 @@ async def cad_batch(
         if transaction:
             cancelled = isinstance(exc, anyio.get_cancelled_exc_class())
             with anyio.CancelScope(shield=True):
+                rollback_started = time.time()
                 try:
-                    await backend.transaction_rollback()
+                    answer = await backend.transaction_rollback()
                 except Exception as rollback_exc:
                     if not cancelled:
                         raise
-                    log.error(
-                        "cad_batch: rollback after a cancelled request failed (%s: %s); "
-                        "check system_status and transaction_rollback before retrying",
-                        type(rollback_exc).__name__,
-                        rollback_exc,
+                    _record_cancelled_batch_rollback(
+                        backend,
+                        ctx,
+                        "rollback_failed",
+                        f"{type(rollback_exc).__name__}: {rollback_exc}",
+                        rollback_started,
                     )
+                else:
+                    # The answer is checked the way the normal path checks it:
+                    # a declined rollback leaves the steps in the drawing.
+                    performed, declined = _batch_transaction_ok(answer)
+                    if not performed:
+                        _record_cancelled_batch_rollback(
+                            backend, ctx, "rollback_declined", declined, rollback_started
+                        )
         raise
 
     await ctx.report_progress(total, total)
