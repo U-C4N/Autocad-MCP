@@ -2477,7 +2477,7 @@
     {
       "name": "pid_equipment_list",
       "group": "pid",
-      "cost": "read",
+      "cost": "safe",
       "summary": "Equipment list derived from the P&ID graph (tag, kind, ports, connections); optional CSV.",
       "tags": [
         "pid",
@@ -2485,7 +2485,8 @@
       ],
       "annotations": {
         "title": "P&ID: Equipment List",
-        "readOnlyHint": true
+        "readOnlyHint": false,
+        "destructiveHint": false
       }
     },
     {
@@ -2520,7 +2521,7 @@
     {
       "name": "pid_instrument_index",
       "group": "pid",
-      "cost": "read",
+      "cost": "safe",
       "summary": "Instrument index derived from the P&ID graph (tag, function, loop, connections); optional CSV.",
       "tags": [
         "pid",
@@ -2528,7 +2529,8 @@
       ],
       "annotations": {
         "title": "P&ID: Instrument Index",
-        "readOnlyHint": true
+        "readOnlyHint": false,
+        "destructiveHint": false
       }
     },
     {
@@ -2548,7 +2550,7 @@
     {
       "name": "pid_line_list",
       "group": "pid",
-      "cost": "read",
+      "cost": "safe",
       "summary": "Line list derived from the P&ID graph (number, class, size, spec, from/to); optional CSV.",
       "tags": [
         "pid",
@@ -2556,7 +2558,8 @@
       ],
       "annotations": {
         "title": "P&ID: Line List",
-        "readOnlyHint": true
+        "readOnlyHint": false,
+        "destructiveHint": false
       }
     },
     {

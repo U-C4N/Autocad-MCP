@@ -184,6 +184,12 @@ async def test_stock_bm25_answers_a_counting_question_with_destructive_tools(sto
         ("drawing_info", "read"),
         ("analysis_entity_stats", "read"),
         ("entity_create_line", "write"),
+        # 1.7.0 B03: the P&ID lists write a CSV when given `csv_path`, so a
+        # `risk="read"` search no longer offers them.
+        ("pid_instrument_index", "write"),
+        ("pid_line_list", "write"),
+        ("pid_equipment_list", "write"),
+        ("pid_graph", "read"),
         ("entity_delete_many", "destructive"),
         ("layer_delete", "destructive"),
         ("transaction_rollback", "destructive"),

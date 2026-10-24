@@ -6987,34 +6987,63 @@ async def pid_graph(
     )
 
 
+_PID_LIST_CSV = Annotated[
+    str | None,
+    "Write the rows as CSV here (inside ALLOWED_PATHS); text that starts like a "
+    "formula (= + - @ tab CR) is prefixed with ' so a spreadsheet never runs it",
+]
+_PID_LIST_TOLERANCE = Annotated[
+    float, Field(default=0.5, gt=0, description="Endpoint-to-port snap distance (mm)")
+]
+_PID_LIST_LABEL_SEARCH = Annotated[
+    float,
+    Field(default=15.0, gt=0, description="How far to look for tag/line-number text (mm)"),
+]
+_PID_LIST_FOREIGN = Annotated[bool, "Classify INSERTs not placed by this server (confidence < 1)"]
+
+
 @cad_tool(
     summary=(
         "Instrument index derived from the P&ID graph (tag, function, loop, "
         "connections); optional CSV."
     ),
-    cost="read",
+    cost="safe",
 )
 @mcp.tool(
-    annotations={"title": "P&ID: Instrument Index", "readOnlyHint": True},
+    annotations={
+        "title": "P&ID: Instrument Index",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+    },
     tags={"pid", "query"},
 )
 async def pid_instrument_index(
-    csv_path: Annotated[str | None, "Write the rows as CSV here (inside ALLOWED_PATHS)"] = None,
-    tolerance: Annotated[
-        float, Field(default=0.5, gt=0, description="Endpoint-to-port snap distance (mm)")
-    ] = 0.5,
+    csv_path: _PID_LIST_CSV = None,
+    tolerance: _PID_LIST_TOLERANCE = 0.5,
     scope: Annotated[str, "current_space | all"] = "current_space",
+    label_search: _PID_LIST_LABEL_SEARCH = 15.0,
+    include_foreign: _PID_LIST_FOREIGN = True,
     ctx: Context = None,
 ) -> dict:
     """Every instrument bubble with its ISA-5.1 reading and what it connects to.
 
     Rows come from `pid_graph`, never from typed-in lists; the drawing is not
-    modified. `csv_path` is the only file this tool writes.
+    modified. `csv_path` is the only file this tool writes (so it is not
+    annotated read-only); it is validated before the drawing is read, and an
+    empty path, a directory or a missing parent folder is refused.
+    `signal_lines` counts ISA-5.1 signal lines only; `connected_to` names a
+    tag, a handle, or the lines a junction on the instrument's line joins.
     """
     from engineering.pid.deliverables import deliverable
 
     return await deliverable(
-        _backend(ctx), "instrument_index", csv_path, tolerance=tolerance, scope=scope
+        _backend(ctx),
+        "instrument_index",
+        csv_path,
+        tolerance=tolerance,
+        label_search=label_search,
+        scope=scope,
+        include_foreign=include_foreign,
     )
 
 
@@ -7022,57 +7051,78 @@ async def pid_instrument_index(
     summary=(
         "Line list derived from the P&ID graph (number, class, size, spec, from/to); optional CSV."
     ),
-    cost="read",
+    cost="safe",
 )
 @mcp.tool(
-    annotations={"title": "P&ID: Line List", "readOnlyHint": True},
+    annotations={"title": "P&ID: Line List", "readOnlyHint": False, "destructiveHint": False},
     tags={"pid", "query"},
 )
 async def pid_line_list(
-    csv_path: Annotated[str | None, "Write the rows as CSV here (inside ALLOWED_PATHS)"] = None,
-    tolerance: Annotated[
-        float, Field(default=0.5, gt=0, description="Endpoint-to-port snap distance (mm)")
-    ] = 0.5,
+    csv_path: _PID_LIST_CSV = None,
+    tolerance: _PID_LIST_TOLERANCE = 0.5,
     scope: Annotated[str, "current_space | all"] = "current_space",
+    label_search: _PID_LIST_LABEL_SEARCH = 15.0,
+    include_foreign: _PID_LIST_FOREIGN = True,
     ctx: Context = None,
 ) -> dict:
     """Every P&ID line with its number, class, size/service/spec/insulation and endpoints.
 
     Rows come from `pid_graph`; untagged lines sort last with `line_number: null`.
-    The drawing is not modified; `csv_path` is the only file this tool writes.
+    An end names a node's tag (its handle when untagged) and port, or — at a
+    junction — the line numbers (or handles) of the lines it joins.
+    The drawing is not modified; `csv_path` is the only file this tool writes,
+    validated before the drawing is read.
     """
     from engineering.pid.deliverables import deliverable
 
-    return await deliverable(_backend(ctx), "line_list", csv_path, tolerance=tolerance, scope=scope)
+    return await deliverable(
+        _backend(ctx),
+        "line_list",
+        csv_path,
+        tolerance=tolerance,
+        label_search=label_search,
+        scope=scope,
+        include_foreign=include_foreign,
+    )
 
 
 @cad_tool(
     summary=(
         "Equipment list derived from the P&ID graph (tag, kind, ports, connections); optional CSV."
     ),
-    cost="read",
+    cost="safe",
 )
 @mcp.tool(
-    annotations={"title": "P&ID: Equipment List", "readOnlyHint": True},
+    annotations={
+        "title": "P&ID: Equipment List",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+    },
     tags={"pid", "query"},
 )
 async def pid_equipment_list(
-    csv_path: Annotated[str | None, "Write the rows as CSV here (inside ALLOWED_PATHS)"] = None,
-    tolerance: Annotated[
-        float, Field(default=0.5, gt=0, description="Endpoint-to-port snap distance (mm)")
-    ] = 0.5,
+    csv_path: _PID_LIST_CSV = None,
+    tolerance: _PID_LIST_TOLERANCE = 0.5,
     scope: Annotated[str, "current_space | all"] = "current_space",
+    label_search: _PID_LIST_LABEL_SEARCH = 15.0,
+    include_foreign: _PID_LIST_FOREIGN = True,
     ctx: Context = None,
 ) -> dict:
     """Every equipment, valve and connector node with its ports and how many lines reach them.
 
     Rows come from `pid_graph`; the drawing is not modified and `csv_path` is
-    the only file this tool writes.
+    the only file this tool writes, validated before the drawing is read.
     """
     from engineering.pid.deliverables import deliverable
 
     return await deliverable(
-        _backend(ctx), "equipment_list", csv_path, tolerance=tolerance, scope=scope
+        _backend(ctx),
+        "equipment_list",
+        csv_path,
+        tolerance=tolerance,
+        label_search=label_search,
+        scope=scope,
+        include_foreign=include_foreign,
     )
 
 

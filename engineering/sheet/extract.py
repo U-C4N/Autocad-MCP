@@ -4,20 +4,27 @@ CSV needs nothing but the standard library, so the deliverable is never blocked
 -- which is exactly why `xlsx_write` can be a capability rather than a hard
 dependency. The refusal names both the missing package and the format that
 always works.
+
+Cells go through `engineering.export.cells` (1.7.0, B03): a designation that
+reads ``=1+1`` is a prefixed CSV cell and a string XLSX cell, never a formula;
+the item number, the quantity and the mass are numbers in both formats.
 """
 
 from __future__ import annotations
 
-import csv
 from importlib.util import find_spec
 from pathlib import Path
 
 from backends.capability import UnsupportedCapabilityError
+from engineering.export.cells import append_xlsx_row, parse_decimal, write_csv
 from engineering.sheet.bom import BOM_COLUMNS, COLUMN_LABELS, DEFAULT_COLUMNS
 
 __all__ = ["EXTRACT_FORMATS", "write_rows", "xlsx_available"]
 
 EXTRACT_FORMATS = ("csv", "xlsx")
+
+#: Parts-list columns written as numbers; the rest are text.
+NUMBER_COLUMNS = frozenset({"item", "qty", "mass"})
 
 
 def xlsx_available() -> bool:
@@ -34,17 +41,26 @@ def _prepare(rows, columns):
             f"unknown parts-list column(s) {', '.join(unknown)}; "
             f"available: {', '.join(BOM_COLUMNS)}"
         )
-    body = [[str(row.get(column, "")) for column in chosen] for row in rows]
+    # `extract_records` hands the mass over as text ("1.25"): a number column
+    # gets the number back, so the XLSX cell is numeric, not the text '1.25'.
+    body = [
+        [
+            parse_decimal(row.get(column)) if column in NUMBER_COLUMNS else row.get(column)
+            for column in chosen
+        ]
+        for row in rows
+    ]
     if not body:
         raise ValueError("data_extract: there are no parts-list rows to write")
-    return chosen, [COLUMN_LABELS[c] for c in chosen], body
+    kinds = ["number" if c in NUMBER_COLUMNS else "text" for c in chosen]
+    return chosen, [COLUMN_LABELS[c] for c in chosen], body, kinds
 
 
 def write_rows(rows, path: str, *, columns=None, fmt: str = "csv") -> dict:
     """Write the rows to `path`. Refuses before the file is created."""
     if fmt not in EXTRACT_FORMATS:
         raise ValueError(f"format must be one of {', '.join(EXTRACT_FORMATS)}; got {fmt!r}")
-    chosen, heading, body = _prepare(rows, columns)
+    chosen, heading, body, kinds = _prepare(rows, columns)
     if fmt == "xlsx" and not xlsx_available():
         raise UnsupportedCapabilityError(
             "xlsx_write",
@@ -56,19 +72,16 @@ def write_rows(rows, path: str, *, columns=None, fmt: str = "csv") -> dict:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     if fmt == "csv":
-        with open(target, "w", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(heading)
-            writer.writerows(body)
+        write_csv(target, heading, body, kinds)
     else:
         from openpyxl import Workbook
 
         book = Workbook()
         sheet = book.active
         sheet.title = "Parts list"
-        sheet.append(heading)
+        append_xlsx_row(sheet, heading, ["text"] * len(heading))
         for row in body:
-            sheet.append(row)
+            append_xlsx_row(sheet, row, kinds)
         book.save(target)
 
     return {
