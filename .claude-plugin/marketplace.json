@@ -1,0 +1,27 @@
+{
+  "name": "autocad-mcp",
+  "owner": {
+    "name": "U-C4N",
+    "url": "https://github.com/U-C4N"
+  },
+  "metadata": {
+    "description": "AutoCAD MCP Pro for Claude Code: the server and its premium drafting skill."
+  },
+  "plugins": [
+    {
+      "name": "autocad-mcp-pro",
+      "source": "./plugin",
+      "description": "AutoCAD for AI agents, live or headless: the AutoCAD MCP Pro server plus the premium drafting skill (plan, draw, critique, finalize).",
+      "version": "1.6.0",
+      "author": {
+        "name": "U-C4N",
+        "url": "https://github.com/U-C4N"
+      },
+      "homepage": "https://github.com/U-C4N/Autocad-MCP",
+      "repository": "https://github.com/U-C4N/Autocad-MCP",
+      "license": "MIT",
+      "keywords": ["autocad", "cad", "dxf", "drafting", "mcp"],
+      "category": "development"
+    }
+  ]
+}

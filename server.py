@@ -5914,7 +5914,10 @@ async def drawing_deliver(
 # ---------------------------------------------------------------------------
 # These tools wrap the entity primitives in a quality-first workflow:
 #   plan → snap-aware geometry → critique → finalize.
-# See `.claude/skills/autocad-mcp-premium/` for the full discipline.
+# See `.claude/skills/autocad-mcp-premium/` for the full discipline — the
+# canonical skill; the Claude Code plugin ships a generated copy as
+# `plugin/skills/premium/` (`/autocad-mcp-pro:premium`), rebuilt by
+# `scripts/build_plugin.py` and held to it by `--check`.
 
 
 @cad_tool(
