@@ -1950,10 +1950,15 @@ class ComBackend(AutoCADBackend):
     # ── the bound document (v1.7.0, B11) ─────────────────────────────────────
     #
     # One document per session: (Name, FullName) plus a uuid4 id, bound by
-    # ``_rebind`` after drawing_new / drawing_open / document_activate /
-    # document_close / system_launch, and by ``_guard`` at the first call that
-    # touches a document. backends/document_guard.py says why the operator's
-    # own edits are not counted.
+    # ``_rebind`` after a call that chose a document - drawing_new /
+    # drawing_open / document_activate, system_launch(open_path=...), and a
+    # document_close of the bound document itself - and by ``_guard`` at the
+    # first call that touches a document. Closing some other document, or a
+    # system_launch that only attaches, keeps the binding: whatever AutoCAD
+    # has active then is the operator's choice, not the call's, so the guard
+    # still refuses it (and an open UNDO mark stays rollback-able).
+    # backends/document_guard.py says why the operator's own edits are not
+    # counted.
 
     async def _ensure_document_state(self) -> None:
         """The guard as a call of its own: bind on first contact, else refuse a switch.
@@ -2023,7 +2028,13 @@ class ComBackend(AutoCADBackend):
         return self._bind_key(key)
 
     async def _rebind(self) -> None:
-        """After our own document operation: bind the active one, reset state on a change."""
+        """After a call that chose a document: bind the active one, reset state on a change.
+
+        Only for a call that chose the document it leaves active (see the
+        section comment above): binding whatever AutoCAD has active after any
+        other call would follow the operator's tab switch silently - and drop
+        the open transaction of the document the session was bound to.
+        """
         changed = await self._run(self._bind_active_sync)
         if changed:
             self._transaction_active = False
@@ -2941,6 +2952,11 @@ class ComBackend(AutoCADBackend):
             )
             name = str(doc.Name)
             path = str(doc.FullName) or None
+            bound = self._bound
+            closes_bound = bound is not None and (name, str(doc.FullName)) == (
+                bound["name"],
+                bound["full_name"],
+            )
             dirty = not bool(doc.Saved)
             if dirty:
                 if save:
@@ -2967,7 +2983,7 @@ class ComBackend(AutoCADBackend):
                 return count, (str(app.ActiveDocument.Name) if count else None)
 
             count, active = self._wait_out_rejected_call(_read_after_close)
-            return {
+            return closes_bound, {
                 "ok": True,
                 "closed": name,
                 "path": path,
@@ -2978,8 +2994,12 @@ class ComBackend(AutoCADBackend):
                 "backend": "com",
             }
 
-        result = await self._run(_sync)
-        await self._rebind()
+        closes_bound, result = await self._run(_sync)
+        # B11: only closing the bound document moves the session. Closing some
+        # other one keeps the binding, so a tab the operator switched to is
+        # still refused by the guard rather than adopted here.
+        if closes_bound:
+            await self._rebind()
         return result
 
     # ── layer states ──────────────────────────────────────────────────────────
@@ -3518,7 +3538,10 @@ class ComBackend(AutoCADBackend):
             }
 
         result = await self._run(_sync)
-        await self._rebind()
+        # B11: only a file this call opened is a document the call chose; an
+        # attach keeps the binding (and an open transaction) as it was.
+        if path:
+            await self._rebind()
         return result
 
     async def preferences_get(self, keys: list[str] | None = None) -> dict:

@@ -3,8 +3,9 @@
 ``_acad_doc()`` re-read ``ActiveDocument`` on every call, so an operator who
 switched AutoCAD's active document between two calls had the second call
 write into the document they had just switched to. ``ComBackend`` now binds
-``(Name, FullName)`` and an id on new / open / activate / close (and at the
-first call that touches a document), and the first ``_acad_doc()`` of every
+``(Name, FullName)`` and an id on new / open / activate, a close of the bound
+document and system_launch(open_path=...) - the calls that chose a document -
+(and at the first call that touches a document), and the first ``_acad_doc()`` of every
 executor job compares AutoCAD's active document with the bound one before any
 work: a mismatch is refused with ``ActiveDocumentChangedError`` and nothing is
 written - reads used as evidence included.
@@ -212,6 +213,68 @@ async def test_document_activate_binds_the_document_the_operator_chose(com, seat
     assert seat.second.writes == [("LTSCALE", 4.0)]
     await com.document_activate("First.dwg")
     assert com.document_identity()["document_id"] == first["document_id"], "a known id is kept"
+
+
+@pytest.mark.asyncio
+async def test_closing_another_document_keeps_the_binding_and_the_refusal(com, seat):
+    """A close the call aimed elsewhere must not adopt the tab the operator switched to."""
+    third = _Doc(seat, "Third.dwg", r"C:\work\Third.dwg")
+    seat.Documents._docs.append(third)
+    await com.system_set_variable("LTSCALE", 2.0)
+    bound = com.document_identity()
+    seat.ActiveDocument = seat.second  # the operator clicks another tab
+    with pytest.raises(ActiveDocumentChangedError):
+        await com.system_set_variable("LTSCALE", 3.0)
+    result = await com.document_close("Third.dwg", discard=True)
+    assert result["closed"] == "Third.dwg"
+    assert com.document_identity() == bound, "closing another document keeps the binding"
+    with pytest.raises(ActiveDocumentChangedError):
+        await com.system_set_variable("LTSCALE", 9.0)
+    assert seat.second.writes == [] and seat.first.writes == [("LTSCALE", 2.0)]
+
+
+@pytest.mark.asyncio
+async def test_closing_the_bound_document_binds_the_one_left_active(com, seat):
+    await com.system_get_variable("LTSCALE")
+    first = com.document_identity()
+    await com.document_close("First.dwg")
+    after = com.document_identity()
+    assert after["name"] == "Second.dwg" and after["document_id"] != first["document_id"]
+    await com.system_set_variable("LTSCALE", 5.0)
+    assert seat.second.writes == [("LTSCALE", 5.0)]
+
+
+@pytest.mark.asyncio
+async def test_system_launch_attach_keeps_the_binding_and_the_open_transaction(
+    com, seat, monkeypatch
+):
+    monkeypatch.setitem(cb._COM_STATE, "app", seat)
+    assert (await com.transaction_begin())["ok"] is True
+    bound = com.document_identity()
+    seat.ActiveDocument = seat.second  # the operator clicks another tab
+    result = await com.system_launch()
+    assert result["attached"] is True
+    assert com.document_identity() == bound, "an attach chose no document"
+    assert com._transaction_active is True, "the mark is still open in First.dwg"
+    with pytest.raises(ActiveDocumentChangedError):
+        await com.system_set_variable("LTSCALE", 9.0)
+    assert seat.second.writes == [] and seat.second.commands == []
+    seat.ActiveDocument = seat.first
+    assert (await com.transaction_rollback())["ok"] is True
+    assert seat.first.commands[-1] == "_.UNDO _B\n"
+
+
+@pytest.mark.asyncio
+async def test_system_launch_with_a_file_binds_the_file_it_opened(com, seat, monkeypatch, tmp_path):
+    monkeypatch.setitem(cb._COM_STATE, "app", seat)
+    await com.system_get_variable("LTSCALE")
+    first = com.document_identity()
+    part = tmp_path / "Opened.dwg"
+    part.write_bytes(b"stand-in")
+    result = await com.system_launch(open_path=str(part))
+    assert result["document"] == "Opened.dwg"
+    after = com.document_identity()
+    assert after["name"] == "Opened.dwg" and after["document_id"] != first["document_id"]
 
 
 @pytest.mark.asyncio
