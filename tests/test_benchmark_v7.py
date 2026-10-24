@@ -64,7 +64,7 @@ def test_the_suite_carries_the_five_understanding_checks():
 
     for name in UNDERSTANDING_CHECKS:
         assert CHECKS[name][1] == "Understanding"
-    assert len(CHECKS) == 48
+    assert len(CHECKS) == 52
 
 
 async def _run(task_id, tmp_path):
@@ -150,3 +150,31 @@ async def test_each_understanding_check_passes(name):
 
     check, _category = CHECKS[name]
     assert await check() is True
+
+
+#: v1.7.0 W1 (Task 8): the three review reproducers and B07's refusal.
+RELIABILITY_CHECKS = (
+    "cancel_never_overlaps",
+    "qa_scan_finds_entity_5001",
+    "export_text_never_formula",
+    "spec_refuses_non_finite",
+)
+
+
+def test_the_suite_carries_the_four_reliability_checks():
+    from benchmarks.correctness_suite import CHECKS
+
+    for name in RELIABILITY_CHECKS:
+        assert CHECKS[name][1] == "Reliability"
+    assert len(CHECKS) == 52
+
+
+def test_the_published_report_shows_the_four_fixed_and_nothing_regressed():
+    from scripts.check_doc_numbers import AB_REPORT
+
+    report = json.loads((Path(__file__).parents[1] / AB_REPORT).read_text(encoding="utf-8"))
+    rows = {row["check"]: row for row in report["rows"]}
+    assert report["summary"]["baseline_ref"] == "v1.6.0"
+    assert report["summary"]["regressed"] == 0
+    for name in RELIABILITY_CHECKS:
+        assert (rows[name]["old"], rows[name]["new"]) == ("fail", "pass"), name

@@ -1028,6 +1028,134 @@ async def topology_known_defects():
     )
 
 
+# ── Reliability (v1.7.0 W1: the three review reproducers + B07) ─────────────
+
+
+async def cancel_never_overlaps():
+    """A cancelled call's worker still owns the document until it ends (B01).
+
+    The first call's worker blocks on an event; its awaiting task is cancelled
+    (what an MCP client's Esc does) and a second call is started at once. The
+    second must not run while the first worker is still inside the drawing:
+    the trace is A then B, never B first. Version-agnostic: ``_async`` is the
+    backend's own lifecycle on every release that has an ezdxf engine.
+    """
+    import threading
+
+    b = await _b()
+    entered, release = threading.Event(), threading.Event()
+    trace: list[str] = []
+
+    def slow():
+        entered.set()
+        release.wait(10)
+        trace.append("A:end")
+
+    first = asyncio.ensure_future(b._async(slow))
+    if not await asyncio.to_thread(entered.wait, 10):
+        return False
+    first.cancel()
+    try:
+        await first
+    except asyncio.CancelledError:
+        pass
+    second = asyncio.ensure_future(b._async(lambda: trace.append("B:run")))
+    await asyncio.sleep(0.3)
+    overlapped = "B:run" in trace  # B ran while A's worker was still blocked
+    release.set()
+    await asyncio.wait_for(second, 10)
+    return not overlapped and trace == ["A:end", "B:run"]
+
+
+async def qa_scan_finds_entity_5001():
+    """The 5,001st entity is read (B02): the base checks read the first 5,000
+    entities of the current space, so an offender beyond them was "clean"."""
+    b = await _b()
+    msp = b._doc.modelspace()
+    for index in range(1, 5_001):
+        y = 10.0 * index
+        msp.add_line((0.0, y), (100.0, y), dxfattribs={"layer": "GEOMETRY"})
+    offender = msp.add_line((-300.0, 0.0), (-200.0, 0.0), dxfattribs={"layer": "CONSTRUCTION"})
+    issues = await b.drawing_critique(focus=["construction_left"])
+    found = [i for i in issues if i.focus == "construction_left"]
+    return len(found) == 1 and found[0].handles == [offender.dxf.handle]
+
+
+async def export_text_never_formula():
+    """Exported text never becomes a spreadsheet formula (B03).
+
+    The parts list goes out as CSV and XLSX with designations that start like
+    formulas (``=1+1``, ``@x``, a leading tab) beside a genuine ``-12.5`` mass.
+    Read back the way a reader of the file would: ``csv`` gets a leading ``'``
+    on each text cell, never on the number; openpyxl finds string cells (data
+    type ``s``) for the text and a numeric cell for the mass.
+    """
+    import csv
+
+    from engineering.sheet.extract import write_rows
+
+    texts = ("=1+1", "@x", "\tD")
+    rows = [
+        {"item": i, "qty": 1, "designation": t, "material": "S235", "mass": "-12.5"}
+        for i, t in enumerate(texts, start=1)
+    ]
+    columns = ("item", "qty", "designation", "mass")
+    with tempfile.TemporaryDirectory() as tmp:
+        target = os.path.join(tmp, "bom.csv")
+        write_rows(rows, target, columns=columns, fmt="csv")
+        with open(target, newline="", encoding="utf-8") as handle:
+            body = list(csv.reader(handle))[1:]
+        csv_ok = [r[2] for r in body] == ["'" + t for t in texts] and all(
+            r[3] == "-12.5" for r in body
+        )
+        from openpyxl import load_workbook
+
+        target = os.path.join(tmp, "bom.xlsx")
+        write_rows(rows, target, columns=columns, fmt="xlsx")
+        sheet = load_workbook(target).active
+        cells = [(sheet.cell(r, 3), sheet.cell(r, 4)) for r in range(2, 2 + len(texts))]
+        xlsx_ok = all(
+            text_cell.data_type == "s"
+            and text_cell.value == t
+            and mass_cell.data_type == "n"
+            and mass_cell.value == -12.5
+            for (text_cell, mass_cell), t in zip(cells, texts, strict=True)
+        )
+    return csv_ok and xlsx_ok
+
+
+async def spec_refuses_non_finite():
+    """A non-finite spec value is refused by its path, dry run included (B07).
+
+    A NaN vessel width was accepted (and an inf height died later as a
+    RuntimeError), and ``pid_from_spec``'s dry run approved a NaN symbol scale.
+    """
+    import copy
+
+    from engineering.pid.spec import EXAMPLE_SPEC, run_spec
+    from engineering.pid.symbols_vessels import build_vessel
+
+    refused: list[bool] = []
+    for params, path in (
+        ({"width": float("nan")}, "vertical_vessel: params.width"),
+        ({"height": float("inf")}, "vertical_vessel: params.height"),
+    ):
+        try:
+            build_vessel("vertical_vessel", params)
+            refused.append(False)
+        except Exception as exc:  # noqa: BLE001 - a RuntimeError later on is the old failure
+            refused.append(isinstance(exc, ValueError) and str(exc).startswith(path))
+    b = await _b()
+    spec = copy.deepcopy(EXAMPLE_SPEC)
+    spec["equipment"][0]["scale"] = float("nan")
+    try:
+        await run_spec(b, spec, dry_run=True)
+        refused.append(False)
+    except Exception as exc:  # noqa: BLE001 - only a refusal by path counts
+        refused.append(isinstance(exc, ValueError) and str(exc).startswith("equipment[0].scale"))
+    return all(refused)
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -1077,6 +1205,10 @@ CHECKS = {
     "cable_takeoff_roundup": (cable_takeoff_roundup, "Understanding"),
     "diff_detects_known_edits": (diff_detects_known_edits, "Understanding"),
     "topology_known_defects": (topology_known_defects, "Understanding"),
+    "cancel_never_overlaps": (cancel_never_overlaps, "Reliability"),
+    "qa_scan_finds_entity_5001": (qa_scan_finds_entity_5001, "Reliability"),
+    "export_text_never_formula": (export_text_never_formula, "Reliability"),
+    "spec_refuses_non_finite": (spec_refuses_non_finite, "Reliability"),
 }
 
 

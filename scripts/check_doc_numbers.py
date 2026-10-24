@@ -29,9 +29,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 #: The published A/B report the README and benchmarks/README quote. Bump this,
 #: the two row labels below and the prose together, or the gate reports drift.
-AB_REPORT = "benchmarks/results/published/ab-v1.5.1-vs-v1.6.0.json"
-AB_BASELINE_LABEL = r"v1\.5\.1"
-AB_CURRENT_LABEL = r"v1\.6\.0"
+AB_REPORT = "benchmarks/results/published/ab-v1.6.0-vs-v1.7.0.json"
+AB_BASELINE_LABEL = r"v1\.6\.0"
+AB_CURRENT_LABEL = r"v1\.7\.0"
 
 
 def _read(relative: str) -> str:

@@ -19,7 +19,7 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 
 </div>
 
-> **v1.6 release snapshot:** 247 tools · 9 resources · 5 prompt templates · 4992 collected tests.
+> **v1.6 release snapshot:** 247 tools · 9 resources · 5 prompt templates · 5400 collected tests.
 > 247 is the **registered** count; a default install advertises 242 over `tools/list`,
 > because `ENABLE_3D` is unset. `system_about` is the runtime authority.
 
@@ -224,14 +224,23 @@ A second lane runs tasks instead of reading source. Every task in the fixed-task
 
 ### Correctness — every release re-proves itself
 
-48 deterministic headless checks against the previous tag and the current tree. Each runs in its own subprocess, so a hard crash counts as a miss rather than killing the run.
+52 deterministic headless checks against the previous tag and the current tree. Each runs in its own subprocess, so a hard crash counts as a miss rather than killing the run.
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---|---:|---:|---:|---:|
-| v1.5.1 *(baseline)* | 26 / 48 | 54.2 % | — | — |
-| **v1.6.0** *(this release)* | **48 / 48** | **100 %** | 22 | **0** |
+| v1.6.0 *(baseline)* | 48 / 52 | 92.3 % | — | — |
+| **v1.7.0** *(this release)* | **52 / 52** | **100 %** | 4 | **0** |
 
-The 26 checks v1.5.1 was released on all still pass. The twenty-two fixed rows are new capability (`miss → pass`), and each one pins a number computed by hand, not read back from the code that drew it:
+The 48 checks v1.6.0 was released on all still pass. The four fixed rows are reliability defects 1.6.0 shipped with, each reproduced on v1.6.0 (`fail → pass`) and fixed in 1.7.0:
+
+| Check | Verified against |
+|---|---|
+| `cancel_never_overlaps` | a call cancelled while its worker runs keeps the document until that worker ends: the next call runs after it, never beside it |
+| `qa_scan_finds_entity_5001` | a construction line placed as the 5,001st entity is found by `drawing_critique`; the scan used to stop at 5,000 |
+| `export_text_never_formula` | `=1+1`, `@x` and a leading tab come back from the parts-list CSV with a leading `'` and from the XLSX as string cells; a `-12.5` mass stays a number |
+| `spec_refuses_non_finite` | a NaN vessel width, an infinite height and a NaN symbol scale in a `pid_from_spec` dry run are each refused by their path |
+
+The twenty-two checks 1.6 added against v1.5.1 (`miss → pass`) each pin a number computed by hand, not read back from the code that drew it:
 
 <details>
 <summary><b>The twenty-two checks 1.6 added</b></summary>

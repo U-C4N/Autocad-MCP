@@ -295,15 +295,41 @@ python benchmarks/compare_versions.py v1.0.0     # vs a tag/ref
 python benchmarks/compare_versions.py --json results.json
 ```
 
-### Result — v1.6.0 vs v1.5.1 (release gate)
+### Result — v1.7.0 vs v1.6.0 (release gate)
 
-48 checks, ezdxf backend, one subprocess per check. Machine-readable report:
+52 checks, ezdxf backend, one subprocess per check. Machine-readable report:
+[`results/published/ab-v1.6.0-vs-v1.7.0.json`](results/published/ab-v1.6.0-vs-v1.7.0.json).
+
+| Version | Checks passing | Pass rate | Fixed | Regressed |
+|---------|----------------|-----------|-------|-----------|
+| **v1.6.0** (baseline)     | 48 / 52 | 92.3 % | — | — |
+| **v1.7.0** (this release) | 52 / 52 | 100 % | 4 | **0** |
+
+The four are `fail → pass`: v1.6.0 has every method they call and gets the
+answer wrong. They are the three reproducers of the 1.7.0 W1 review focus and
+the shared spec validation. `cancel_never_overlaps` cancels a call whose worker
+is blocked and starts a second one: on v1.6.0 the second ran while the first
+worker was still inside the drawing; now it waits for that worker (B01).
+`qa_scan_finds_entity_5001` puts a construction line at position 5,001: the
+1.6.0 critique read the first 5,000 entities and reported nothing (B02).
+`export_text_never_formula` writes a parts list whose designations are `=1+1`,
+`@x` and a tab-led text beside a `-12.5` mass: 1.6.0 wrote the text verbatim
+to CSV and as formula cells to XLSX; now CSV carries a leading `'` on text
+only and XLSX holds string cells and a numeric mass (B03).
+`spec_refuses_non_finite` hands a vessel a NaN width and an infinite height
+and `pid_from_spec`'s dry run a NaN scale: 1.6.0 accepted the first, died in
+a `RuntimeError` on the second and approved the third; each is now refused by
+its path (B07). The 48 checks v1.6.0 was released on all still pass.
+
+### Result — v1.6.0 vs v1.5.1
+
+48 checks at the time, ezdxf backend, one subprocess per check. Machine-readable report:
 [`results/published/ab-v1.5.1-vs-v1.6.0.json`](results/published/ab-v1.5.1-vs-v1.6.0.json).
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---------|----------------|-----------|-------|-----------|
 | **v1.5.1** (baseline)     | 26 / 48 | 54.2 % | — | — |
-| **v1.6.0** (this release) | 48 / 48 | 100 % | 22 | **0** |
+| **v1.6.0** (that release) | 48 / 48 | 100 % | 22 | **0** |
 
 The twenty-two are all `miss → pass` — v1.5.1 has none of the methods. Five are track H: `scale_check_detects_schematic` (the synthetic P&ID is schematic against its layout; a uniform 2× copy is to scale with factor 2), `pipe_takeoff_rmst_exact` (eight routable runs, each exactly the rectilinear MST of its tags), `cable_takeoff_roundup` (9 / 17 / 19 / 10 m, the unstated power left empty), `diff_detects_known_edits` (five known edits and nothing else) and `topology_known_defects` (one near miss, one crossing, a clean T). Four are track F: `arch_junction_l_t_x` (L, T and X junction outlines against hand-computed corners and wall areas), `arch_room_area_net` (a 4 × 5 m room between 200 mm walls is labelled 20.00 m², not its 21.84 m² axis area), `arch_opening_cuts_wall` (both faces interrupted across a door, two jambs) and `arch_rooms_detect_foreign` (plain lines on a WALLS layer read as 20 and 15 m² at confidence 0.6, nothing written). Seven
 are tracks B and G: `mech_part_roundtrip` (a part read back from its own
