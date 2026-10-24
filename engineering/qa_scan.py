@@ -30,6 +30,13 @@ module is the one reader they share now:
   layout (0 and 0) and an activated layout holding its two VIEWPORTs and a
   LINE (3 and 3).
 
+The QA read computes no INSERT box (``records_from_doc(...,
+insert_boxes=False)``): a box walks the block's geometry, about 1.8 ms an
+INSERT, so 5,000 INSERTs of a 20-line block took 4.7-9.3 s under the lock (W1
+review, measured) for checks that never read them. The one QA consumer that
+does - the topology lane, whose dangling-end test asks whether an end touches
+equipment - fills the boxes it needs with :func:`with_insert_boxes`.
+
 A read that fails for any reason other than a quarantine is cached as an
 incomplete coverage carrying the reason, so every check of the run reports
 ``scan_incomplete`` once instead of retrying the read. A quarantine refusal
@@ -42,11 +49,17 @@ import asyncio
 import inspect
 import shutil
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import config
 from backends.quarantine import DocumentQuarantineError
-from engineering.understand.snapshot import Snapshot, _com_export, _read, records_from_doc
+from engineering.understand.snapshot import (
+    Snapshot,
+    _box,
+    _com_export,
+    _read,
+    records_from_doc,
+)
 
 __all__ = [
     "QA_SNAPSHOT_KEY",
@@ -54,6 +67,7 @@ __all__ = [
     "entity_infos_all_spaces",
     "qa_snapshot",
     "shared_index",
+    "with_insert_boxes",
 ]
 
 #: The key :func:`qa_snapshot` caches its result under in a run's shared dict.
@@ -128,7 +142,7 @@ async def _read_ezdxf(backend) -> tuple[Snapshot | None, ScanCoverage]:
         if refusal is not None:
             return None, counts, refusal
         source = backend._doc_path or "memory:untitled"
-        return records_from_doc(doc, source=source), counts, None
+        return records_from_doc(doc, source=source, insert_boxes=False), counts, None
 
     snap, counts, refusal = await _async_readonly(backend, _sync)
     if snap is None:
@@ -164,7 +178,7 @@ async def _read_com(backend) -> tuple[Snapshot | None, ScanCoverage]:
     if refusal is not None:
         return None, ScanCoverage(False, 0, tuple(live), refusal)
     try:
-        snap = await asyncio.to_thread(_read, written, source=source)
+        snap = await asyncio.to_thread(_read, written, source=source, insert_boxes=False)
     finally:
         shutil.rmtree(folder, ignore_errors=True)
     read = Counter(record.space for record in snap.records)
@@ -206,6 +220,57 @@ async def qa_snapshot(backend, shared: dict) -> tuple[Snapshot | None, ScanCover
         result = (None, ScanCoverage(False, 0, (), reason))
     shared[QA_SNAPSHOT_KEY] = result
     return result
+
+
+async def with_insert_boxes(backend, snap: Snapshot, spaces=None) -> Snapshot:
+    """``snap`` with the box of every INSERT in ``spaces`` (every space when
+    None) filled in - for a QA consumer that reads INSERT boxes.
+
+    Headless, the boxes are read by handle from the document in one read-only
+    call; live, the drawing is exported again and read with its boxes (the QA
+    export is deleted once read). A handle the drawing no longer holds raises:
+    the drawing changed during the run, and a box missing from the lane's
+    picture would turn into a false finding. A snapshot that already carries
+    its boxes is returned as it is.
+    """
+    if snap.insert_boxes:
+        return snap
+    wanted = {
+        r.handle
+        for r in snap.records
+        if r.type == "INSERT" and (spaces is None or r.space in spaces)
+    }
+    if not wanted:
+        return snap
+    if backend.name == "com":
+        written, folder, source = await backend._run(_com_export, backend, None)
+        try:
+            full = await asyncio.to_thread(_read, written, source=source)
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+        boxes = {r.handle: r.bbox for r in full.records if r.handle in wanted}
+    else:
+
+        def _sync():
+            doc = backend._require_doc()
+            found = {}
+            for handle in wanted:
+                entity = doc.entitydb.get(handle)
+                if entity is not None and entity.is_alive:
+                    found[handle] = _box(entity)
+            return found
+
+        boxes = await _async_readonly(backend, _sync)
+    missing = sorted(wanted - set(boxes))
+    if missing:
+        raise RuntimeError(
+            f"{len(missing)} INSERT(s) of this run's QA read are no longer in the drawing "
+            f"({', '.join(missing[:5])}); the drawing changed during the run"
+        )
+    records = tuple(
+        replace(r, bbox=boxes[r.handle]) if r.handle in wanted else r for r in snap.records
+    )
+    return replace(snap, records=records, insert_boxes=spaces is None)
 
 
 def _ezdxf_infos(doc):

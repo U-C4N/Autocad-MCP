@@ -31,9 +31,13 @@ import time
 import pytest
 
 import config
-from engineering import critique
+from engineering import critique, qa_scan
 from engineering.critique import CHECK_FAILED, SCAN_INCOMPLETE, run_critique
+from engineering.qa_scan import qa_snapshot
 from engineering.refiner import refine_drawing
+from engineering.understand.critique import build_index, issues_for
+from engineering.understand.snapshot import records_from_doc, take_snapshot
+from tests.fixtures.plant_pair import build_plant_pair
 
 pytestmark = pytest.mark.asyncio
 
@@ -247,3 +251,119 @@ async def test_the_live_walk_covers_every_layout_block_and_reports_a_locked_one(
     assert result["failed"] == [{"handle": "L1", "error": "On locked layer"}]
     left = [e.Handle for block in doc._blocks for e in block._items]
     assert left == ["A2"] + [f"M{i}" for i in range(5_000)] + ["L1"]
+
+
+# -- finding 3: the QA read and INSERT boxes --------------------------------------------
+
+#: 5,000 INSERTs of a 20-line block. The QA read took 4.7 s on this machine
+#: before (9.25 s under load; 9.1 s in the review, about 1.8 ms an INSERT for
+#: the box); without the boxes it measured 0.03-0.05 s here. The bound is a
+#: 40x margin over that, and under half the fastest old read on this machine.
+QA_READ_BOUND_S = 2.0
+
+
+def _block_heavy(doc, count: int = 5_000) -> None:
+    block = doc.blocks.new("B20")
+    for k in range(20):
+        block.add_line((0.0, float(k)), (10.0, float(k)))
+    msp = doc.modelspace()
+    for i in range(count):
+        msp.add_blockref("B20", (20.0 * i, 0.0))
+
+
+async def test_the_qa_read_of_5000_inserts_is_bounded_and_computes_no_insert_box(backend):
+    _block_heavy(backend._doc)
+
+    started = time.perf_counter()
+    snap, coverage = await qa_snapshot(backend, {})
+    elapsed = time.perf_counter() - started
+
+    assert coverage.complete and coverage.records == 5_000
+    assert elapsed < QA_READ_BOUND_S, f"{elapsed:.2f} s"
+    assert snap.insert_boxes is False
+    assert all(r.bbox is None for r in snap.records if r.type == "INSERT")
+
+
+async def test_drawing_understand_still_reads_insert_boxes(backend):
+    """The understanding readers keep their boxes: the same builder, by parameter."""
+    _block_heavy(backend._doc, count=3)
+
+    snap = await take_snapshot(backend)
+
+    assert snap.insert_boxes is True
+    assert [r.bbox for r in snap.records] == [
+        (0.0, 0.0, 10.0, 19.0),
+        (20.0, 0.0, 30.0, 19.0),
+        (40.0, 0.0, 50.0, 19.0),
+    ]
+    assert records_from_doc(backend._doc, source="x").records == snap.records
+
+
+async def test_a_block_heavy_qa_read_that_overruns_never_quarantines(backend, monkeypatch):
+    """The read is gated past a 0.3 s deadline: an incomplete scan, the
+    document detached and never quarantined, and usable once the read ends."""
+    _block_heavy(backend._doc)
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    real = qa_scan.records_from_doc
+
+    def gated(*args, **kwargs):
+        entered.set()
+        try:
+            assert release.wait(30), "the test never released the read"
+            return real(*args, **kwargs)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(qa_scan, "records_from_doc", gated)
+    monkeypatch.setattr(config.settings, "ezdxf_call_timeout", 0.3)
+    try:
+        snap, coverage = await qa_snapshot(backend, {})
+        assert entered.is_set()
+        assert snap is None and coverage.complete is False
+        assert "NOT quarantined" in coverage.reason
+        assert backend._quarantine is None
+        row = backend.call_outcomes[-1]
+        assert row["outcome"] == "readonly_overrun"
+    finally:
+        release.set()
+    await _wait_for(finished)
+    await _until(lambda: row["ended"] is not None)
+    monkeypatch.setattr(config.settings, "ezdxf_call_timeout", 30)
+
+    assert backend._quarantine is None
+    assert (await backend.drawing_info()).entity_count == 5_000
+    snap, coverage = await qa_snapshot(backend, {})
+    assert coverage.complete and len(snap.records) == 5_000
+
+
+@pytest.fixture(scope="module")
+def pipe_layer(tmp_path_factory) -> str:
+    truth = build_plant_pair(tmp_path_factory.mktemp("plant"))
+    return next(
+        name for name, service in sorted(truth["layer_services"].items()) if service == "product"
+    )
+
+
+async def test_the_topology_lane_still_sees_equipment_boxes(backend, pipe_layer):
+    """The one QA consumer of INSERT boxes: a pipe whose ends touch two
+    equipment boxes has no dangling end. Without the boxes both ends would
+    be reported - the QA read skips them, so the lane fills them itself."""
+    doc = backend._doc
+    await backend.layer_create(pipe_layer, color=3)
+    tank = doc.blocks.new("TANK")
+    tank.add_lwpolyline([(0, 0), (200, 0), (200, 400), (0, 400)], close=True)
+    msp = doc.modelspace()
+    msp.add_blockref("TANK", (0.0, 0.0))
+    msp.add_blockref("TANK", (1200.0, 0.0))
+    pipe = msp.add_line((200.0, 200.0), (1200.0, 200.0), dxfattribs={"layer": pipe_layer})
+
+    shared: dict = {}
+    snap, _coverage = await qa_snapshot(backend, shared)
+    assert snap.insert_boxes is False
+    assert issues_for("topo_dangling_endpoint", await build_index(backend, shared)) == []
+    issues = await run_critique(backend, ["topo_dangling_endpoint"])
+    assert issues == [], [(i.handles, i.detail) for i in issues]
+
+    pipe.dxf.end = (1500.0, 600.0)  # off the second tank now: one dangling end
+    (issue,) = await run_critique(backend, ["topo_dangling_endpoint"])
+    assert issue.handles == [pipe.dxf.handle] and issue.detail["end"] == "end"

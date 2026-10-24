@@ -59,9 +59,9 @@ async def test_one_read_covers_model_and_paper_and_is_cached(backend, monkeypatc
     calls = []
     real = qa_scan.records_from_doc
 
-    def counting(doc, *, source):
+    def counting(doc, *, source, **options):  # options: insert_boxes (W1 review follow-up)
         calls.append(source)
-        return real(doc, source=source)
+        return real(doc, source=source, **options)
 
     monkeypatch.setattr(qa_scan, "records_from_doc", counting)
     shared: dict = {}

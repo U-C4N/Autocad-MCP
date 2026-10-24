@@ -82,7 +82,7 @@ async def build_index(backend: AutoCADBackend, shared: dict | None = None) -> di
     ``check_failed``); a snapshot that did not cover the drawing sets
     ``error`` and each focus reports ``scan_incomplete``.
     """
-    from engineering.qa_scan import qa_snapshot
+    from engineering.qa_scan import qa_snapshot, with_insert_boxes
 
     names = [layer.name for layer in await backend.layer_list()]
     if not any(_is_candidate(name) for name in names):
@@ -97,6 +97,11 @@ async def build_index(backend: AutoCADBackend, shared: dict | None = None) -> di
     layers = focus_layers(snap)
     if not layers:
         return {"layers": [], "findings": None, "error": None}
+    # The QA read computes no INSERT box; this lane reads them (an end touching
+    # equipment is not dangling), so it fills those of the spaces it checks.
+    wanted = set(layers)
+    spaces = {r.space for r in snap.records if r.layer in wanted}
+    snap = await with_insert_boxes(backend, snap, spaces)
     return {"layers": layers, "findings": topology_findings(snap, layers=layers), "error": None}
 
 

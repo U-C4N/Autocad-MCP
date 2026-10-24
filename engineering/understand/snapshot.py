@@ -117,6 +117,10 @@ class Snapshot:
     layers: dict[str, dict]
     layouts: tuple[str, ...]
     records: tuple[EntityRecord, ...]
+    #: False when the read skipped INSERT boxes (``records_from_doc(...,
+    #: insert_boxes=False)``, the QA read): an INSERT's ``bbox`` None then
+    #: means "not computed", not "no geometry".
+    insert_boxes: bool = True
 
 
 def _xy(point) -> Pt:
@@ -182,7 +186,7 @@ def _polyline(entity) -> tuple[tuple[Pt, ...], tuple[float, ...], bool]:
     return points, bulges, bool(entity.is_closed)
 
 
-def _record(entity, space: str) -> EntityRecord | None:
+def _record(entity, space: str, *, insert_boxes: bool = True) -> EntityRecord | None:
     kind = entity.dxftype()
     dxf = entity.dxf
     base = {
@@ -190,7 +194,7 @@ def _record(entity, space: str) -> EntityRecord | None:
         "type": kind,
         "layer": str(dxf.get("layer", "0")),
         "space": space,
-        "bbox": _box(entity),
+        "bbox": None if kind == "INSERT" and not insert_boxes else _box(entity),
         "visible": not bool(dxf.get("invisible", 0)),
     }
     extrusion = _extrusion(entity)
@@ -268,19 +272,27 @@ def _record(entity, space: str) -> EntityRecord | None:
     return EntityRecord(**base)
 
 
-def records_from_doc(doc, *, source: str) -> Snapshot:
+def records_from_doc(doc, *, source: str, insert_boxes: bool = True) -> Snapshot:
     """Every entity of every layout of an ``ezdxf`` document, as records.
 
     Model space first, then each paper layout in tab order. ``insunits`` is
     ``$INSUNITS`` (0 when absent); ``extmin`` / ``extmax`` are the declared
     ``$EXTMIN`` / ``$EXTMAX``, None when the header holds ezdxf's "never
     computed" placeholder. Nothing in ``doc`` is modified.
+
+    ``insert_boxes=False`` leaves every INSERT's ``bbox`` None and says so in
+    ``Snapshot.insert_boxes``. An INSERT's box walks its block's geometry
+    (``virtual_entities``): 5,000 INSERTs of a 20-line block took 4.7-9.3 s
+    against 1.4 s for 50,000 LINEs (W1 review, measured). The QA read skips
+    them - its one consumer, the topology lane, fills them itself
+    (``engineering/qa_scan.py::with_insert_boxes``); the understanding readers
+    keep the default.
     """
     records: list[EntityRecord] = []
     layouts = tuple(doc.layouts.names_in_taborder())
     for name in layouts:
         for entity in doc.layouts.get(name):
-            record = _record(entity, name)
+            record = _record(entity, name, insert_boxes=insert_boxes)
             if record is not None:
                 records.append(record)
     layers = {
@@ -298,15 +310,16 @@ def records_from_doc(doc, *, source: str) -> Snapshot:
         layers=layers,
         layouts=layouts,
         records=tuple(records),
+        insert_boxes=insert_boxes,
     )
 
 
-def _read(path: str, *, source: str) -> Snapshot:
+def _read(path: str, *, source: str, insert_boxes: bool = True) -> Snapshot:
     # Every parse or walk failure is one refusal. A truncated file makes ezdxf's
     # tag reader raise StopIteration, which asyncio.to_thread cannot hand back to
     # an awaiting tool - uncaught, the tool would never answer.
     try:
-        return records_from_doc(ezdxf.readfile(path), source=source)
+        return records_from_doc(ezdxf.readfile(path), source=source, insert_boxes=insert_boxes)
     except MemoryError:
         raise
     except Exception as exc:  # noqa: BLE001 - see above
