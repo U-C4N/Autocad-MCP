@@ -6844,6 +6844,14 @@ class EzdxfBackend(AutoCADBackend):
             self._require_block(name)
             ref = msp.add_blockref(name, (float(x), float(y)), dxfattribs=attribs)
             if values:
+                # `add_auto_attribs` matches tags exactly; `values` is keyed
+                # upper-case (tags are not case-sensitive, backlog W1-T1-05),
+                # so a foreign definition's lower-case ATTDEF is keyed by its
+                # own spelling here.
+                for attdef in self._doc.blocks.get(name).query("ATTDEF"):
+                    own = attdef.dxf.get("tag", "")
+                    if own and own not in values and own.upper() in values:
+                        values[own] = values[own.upper()]
                 # `add_auto_blockref` wraps the INSERT in an anonymous *U block,
                 # so the returned handle names `*U1` and carries no ATTRIBs.
                 # `add_auto_attribs` attaches ATTRIBs to this INSERT for every
@@ -7235,8 +7243,9 @@ class EzdxfBackend(AutoCADBackend):
             updated = []
             for attrib in ent.attribs:
                 tag = attrib.dxf.tag
-                if tag in values:
-                    self._write_attrib_value(attrib, values[tag])
+                # `values` is keyed upper-case: tags are not case-sensitive.
+                if tag.upper() in values:
+                    self._write_attrib_value(attrib, values[tag.upper()])
                     updated.append(tag)
             self._mark_dirty()
             return {"ok": True, "updated_tags": updated}
@@ -7389,6 +7398,7 @@ class EzdxfBackend(AutoCADBackend):
             solid_vertices,
             validate_attdef_specs,
             validate_base_point,
+            validate_block_name,
             validate_entity_specs,
         )
         from security import sanitize_symbol_name
@@ -7396,11 +7406,12 @@ class EzdxfBackend(AutoCADBackend):
         # The anonymous-name rule comes first: ``*`` is also a forbidden DXF
         # symbol character, so ``sanitize_symbol_name`` would refuse ``*U9``
         # with the generic message before this one could name the real reason.
-        if (name or "").strip().startswith("*"):
+        validate_block_name(name)
+        if name.strip().startswith("*"):
             raise ValueError("block_define: anonymous block names (*...) are refused")
         clean_name = sanitize_symbol_name(name, kind="block")
         ents = validate_entity_specs(entities)
-        atts = validate_attdef_specs(attdefs or [])
+        atts = validate_attdef_specs(attdefs)
         base = (*validate_base_point(base_x, base_y), 0.0)
         wanted_layers = referenced_layers(ents)
         align_map = {

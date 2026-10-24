@@ -5834,8 +5834,9 @@ class ComBackend(AutoCADBackend):
                     attrs = ref.GetAttributes()
                     for attr in attrs:
                         tag = attr.TagString
-                        if tag in values:
-                            attr.TextString = values[tag]
+                        # `values` is keyed upper-case: tags are not case-sensitive.
+                        if tag.upper() in values:
+                            attr.TextString = values[tag.upper()]
                 except Exception as exc:
                     log.debug("Block insert: GetAttributes or attribute setting failed: %s", exc)
             return _entity_info(ref)
@@ -6242,8 +6243,9 @@ class ComBackend(AutoCADBackend):
             updated = []
             for attr in attrs:
                 tag = attr.TagString
-                if tag in values:
-                    attr.TextString = values[tag]
+                # `values` is keyed upper-case: tags are not case-sensitive.
+                if tag.upper() in values:
+                    attr.TextString = values[tag.upper()]
                     updated.append(tag)
             return {"ok": True, "updated_tags": updated}
 
@@ -6396,17 +6398,19 @@ class ComBackend(AutoCADBackend):
             solid_vertices,
             validate_attdef_specs,
             validate_base_point,
+            validate_block_name,
             validate_entity_specs,
         )
 
         # The anonymous-name rule comes first: ``*`` is also a forbidden DXF
         # symbol character, so ``sanitize_symbol_name`` would refuse ``*U9``
         # with the generic message before this one could name the real reason.
-        if (name or "").strip().startswith("*"):
+        validate_block_name(name)
+        if name.strip().startswith("*"):
             raise ValueError("block_define: anonymous block names (*...) are refused")
         clean_name = sanitize_symbol_name(name, kind="block")
         ents = validate_entity_specs(entities)
-        atts = validate_attdef_specs(attdefs or [])
+        atts = validate_attdef_specs(attdefs)
         base_xy = validate_base_point(base_x, base_y)
         wanted_layers = referenced_layers(ents)
         # acAlignmentLeft / Center / Right / MiddleCenter

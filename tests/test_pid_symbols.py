@@ -89,7 +89,7 @@ def test_naming_source_and_layer(spec):
 def test_catalogue_names_are_unique_and_versioned():
     names = [s.name for s in all_specs()]
     assert len(names) == len(set(names))
-    assert CATALOG_VERSION == "1"
+    assert CATALOG_VERSION == "2"
 
 
 def test_instrument_generator_covers_four_types_by_five_locations():
@@ -492,13 +492,28 @@ def _vessel_fuzz():
         for w in (4.0, 10.0, 20.0, 40.0):
             for h in (2.0, 10.0, 25.0, 40.0):
                 for extra in ({}, {"roof": "cone"}, {"jacketed": True}, {"trays": 3}):
-                    params = {"width": w, "height": h, "nozzles": nozzles, **extra}
+                    shape = {"width": w, "height": h, **extra}
                     try:
-                        validate_vessel_params(symbol, params)
+                        validate_vessel_params(symbol, {**shape, "nozzles": []})
                     except ValueError:
                         continue
+                    # 1.7.0 (W2-T10-06): a nozzle whose shell point is half way or
+                    # more to the centre is refused, so each shape gets every
+                    # nozzle its own shell accepts; every shape stays covered.
+                    kept = [n for n in nozzles if _shell_accepts(symbol, shape, n)]
+                    params = {**shape, "nozzles": kept}
+                    validate_vessel_params(symbol, params)
                     cases.append(pytest.param(symbol, params, id=f"{symbol}-{w:g}x{h:g}-{extra}"))
     return cases
+
+
+def _shell_accepts(symbol, shape, nozzle) -> bool:
+    try:
+        validate_vessel_params(symbol, {**shape, "nozzles": [nozzle]})
+    except ValueError as exc:
+        assert "half way or more to the centre" in str(exc), exc
+        return False
+    return True
 
 
 @pytest.mark.parametrize("symbol, params", _vessel_fuzz())

@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
+from engineering.validation import SpecError
+
 if TYPE_CHECKING:
     from backends.base import AutoCADBackend
 
@@ -21,7 +23,23 @@ PAYLOAD_VERSION = 1
 
 
 def encode_payload(payload: dict) -> list[str]:
-    text = json.dumps(payload, separators=(",", ":"), sort_keys=True, ensure_ascii=True)
+    """The XDATA string list for ``payload``; refused before anything is written.
+
+    ``decode_payload`` returns ``None`` for anything but an object, so a list
+    payload was written and could never be read back; NaN and infinity are not
+    JSON (``allow_nan=True`` wrote the non-RFC literal ``NaN``).
+    """
+    if not isinstance(payload, dict):
+        raise SpecError(
+            f"{APP_NAME} payload: must be an object, got {type(payload).__name__}; "
+            "anything else is written and never read back"
+        )
+    try:
+        text = json.dumps(
+            payload, separators=(",", ":"), sort_keys=True, ensure_ascii=True, allow_nan=False
+        )
+    except ValueError as exc:
+        raise SpecError(f"{APP_NAME} payload: {exc}") from exc
     return [MARKER] + [text[i : i + CHUNK] for i in range(0, len(text), CHUNK)]
 
 
@@ -58,7 +76,8 @@ def symbol_payload(spec: Any, params: dict | None = None) -> dict:
         "family": spec.family,
         "symbol": spec.symbol,
         "variant": spec.variant,
-        "params": dict(params or spec.params),
+        # `params or spec.params` replaced an explicit {} with the spec's own.
+        "params": dict(spec.params if params is None else params),
         "ports": {p.name: [p.x, p.y, p.direction_deg, p.kind, p.radius] for p in spec.ports},
     }
 

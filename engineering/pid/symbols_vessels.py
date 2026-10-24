@@ -11,9 +11,21 @@ A nozzle's port sits ``STUB`` outside the vessel's bounding box on the side it
 was asked for; its stub is drawn from the port inward to the point where that
 axis-aligned line meets the *drawn* outline (a dished head, a hopper's sloped
 wall, a cone roof), so no stub ever floats off the vessel or pierces it.
+
+1.7.0 (B07): every number goes through ``engineering/validation.py`` (NaN and
+infinity are refused by path), a column's trays are bounded by
+``MAX_VESSEL_TRAYS`` and by a 1 mm spacing and are clipped to the dished heads,
+two nozzles may not share one place, and a nozzle whose shell point is half way
+or more to the centre is refused. All of it runs in ``validate_vessel_params``,
+so a ``pid_from_spec`` dry run refuses exactly what the real run refuses.
 """
 
 from __future__ import annotations
+
+import sys
+
+import config
+from engineering.validation import SpecError, finite, int_in_range, positive, within_budget
 
 from .geometry import arc, line, polyline, scan_hits
 from .symbols import Port, SymbolSpec, make_spec, params_hash, register, tag_attdefs
@@ -41,7 +53,7 @@ PARAMS_SCHEMA = {
     "height": "float > 0 (mm); horizontal_vessel needs height < width; cone tank height > width/6",
     "nozzles": "[{name, side: top|bottom|left|right, fraction: 0..1}]",
     "roof": "tank only: flat | cone",
-    "trays": "column only: int >= 0",
+    "trays": "column only: int >= 0, at most MAX_VESSEL_TRAYS, at least 1 mm apart",
     "jacketed": "reactor only: bool",
 }
 #: Distance of a nozzle port beyond the vessel's bounding box (symbol-local mm);
@@ -49,18 +61,20 @@ PARAMS_SCHEMA = {
 STUB = 3.0
 #: Gap between a jacketed reactor's wall and its jacket line.
 JACKET = 2.0
-
-
-def _is_number(value) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+#: A tray line stops this far inside the drawn shell at both ends.
+TRAY_INSET = 1.0
+#: Closest two trays may sit (symbol-local mm).
+MIN_TRAY_SPACING = 1.0
 
 
 def validate_vessel_params(symbol: str, params: dict | None) -> dict:
     """Merge ``params`` over the vessel's defaults and validate every key.
 
-    Raises ``ValueError`` naming the offending key (and nozzle index) before
-    anything is built; the returned dict is the canonical parameter set the
-    block name is hashed from.
+    Raises ``ValueError`` (``SpecError``) naming the offending key (and nozzle
+    index) before anything is built; the returned dict is the canonical
+    parameter set the block name is hashed from. The shell is built here once
+    so the tray and nozzle placements a drawing would need are refused here,
+    not half way through ``build_vessel``.
     """
     if symbol not in VESSELS:
         raise ValueError(f"unknown vessel {symbol!r}; valid: {', '.join(VESSELS)}")
@@ -77,10 +91,7 @@ def validate_vessel_params(symbol: str, params: dict | None) -> dict:
             )
         merged[key] = value
     for key in ("width", "height"):
-        v = merged[key]
-        if not _is_number(v) or v <= 0:
-            raise ValueError(f"{symbol}: {key} must be a number > 0")
-        merged[key] = float(v)
+        merged[key] = positive(merged[key], f"{symbol}: params.{key}")
     w, h = merged["width"], merged["height"]
     if symbol in _VERTICAL_CAPSULES and h <= w:
         raise ValueError(
@@ -99,15 +110,23 @@ def validate_vessel_params(symbol: str, params: dict | None) -> dict:
             f"{symbol}: height {h} must exceed width/6 ({w / 6}) — the cone roof is that tall"
         )
     if "trays" in merged:
-        trays = merged["trays"]
-        if isinstance(trays, bool) or not isinstance(trays, int) or trays < 0:
-            raise ValueError(f"{symbol}: trays must be an int >= 0")
+        trays = int_in_range(merged["trays"], f"{symbol}: params.trays", 0, sys.maxsize)
+        within_budget(
+            trays, config.settings.max_vessel_trays, f"{symbol}: params.trays", "MAX_VESSEL_TRAYS"
+        )
+        spacing = h / (trays + 1)
+        if trays and spacing < MIN_TRAY_SPACING:
+            raise SpecError(
+                f"{symbol}: params.trays: {trays} trays in a {h:g} mm shell sit {spacing:.3g} mm "
+                f"apart; they must be at least {MIN_TRAY_SPACING:g} mm apart"
+            )
     if "jacketed" in merged and not isinstance(merged["jacketed"], bool):
         raise ValueError(f"{symbol}: jacketed must be a bool")
     nozzles = merged["nozzles"]
     if not isinstance(nozzles, list):
         raise ValueError(f"{symbol}: nozzles must be a list")
     names: set[str] = set()
+    places: dict[tuple[str, float], int] = {}
     clean = []
     for i, n in enumerate(nozzles):
         if not isinstance(n, dict) or not isinstance(n.get("name"), str) or not n["name"]:
@@ -122,16 +141,91 @@ def validate_vessel_params(symbol: str, params: dict | None) -> dict:
                 )
         if n.get("side") not in SIDES:
             raise ValueError(f"{symbol}: nozzles[{i}].side must be one of {', '.join(SIDES)}")
-        f = n.get("fraction", 0.5)
-        if not _is_number(f) or not 0.0 <= f <= 1.0:
-            raise ValueError(f"{symbol}: nozzles[{i}].fraction must be within 0..1")
-        clean.append({"name": n["name"], "side": n["side"], "fraction": float(f)})
+        where = f"{symbol}: nozzles[{i}].fraction"
+        # `+ 0.0` folds -0.0 into 0.0: the two hashed to different block names.
+        f = finite(n.get("fraction", 0.5), where) + 0.0
+        if not 0.0 <= f <= 1.0:
+            raise SpecError(f"{where}: must be within 0..1, got {f}")
+        place = (n["side"], f)
+        if place in places:
+            raise SpecError(
+                f"{symbol}: nozzles[{i}] sits at {n['side']} fraction {f:g}, where "
+                f"nozzles[{places[place]}] already is; two nozzles cannot share one stub"
+            )
+        places[place] = i
+        clean.append({"name": n["name"], "side": n["side"], "fraction": f})
     merged["nozzles"] = clean
+    shell = _shell(symbol, merged)
+    if symbol == "column":
+        _trays(shell, merged)
+    _nozzles(symbol, clean, shell, w / 2, h / 2, _jacket(symbol, merged))
     return merged
 
 
+def _shell(symbol: str, p: dict) -> list[dict]:
+    """The drawn outline of a validated vessel, centred on the origin."""
+    w, h = p["width"], p["height"]
+    half_w, half_h = w / 2, h / 2
+    if symbol in _VERTICAL_CAPSULES:
+        return _capsule_vertical(w, h)
+    if symbol == "horizontal_vessel":
+        return _capsule_horizontal(w, h)
+    if symbol == "tank":
+        roof = w / 6 if p["roof"] == "cone" else 0.0
+        shell = [
+            polyline(
+                [
+                    (-half_w, -half_h),
+                    (half_w, -half_h),
+                    (half_w, half_h - roof),
+                    (-half_w, half_h - roof),
+                ]
+            )
+        ]
+        if roof:
+            shell.append(
+                polyline(
+                    [(-half_w, half_h - roof), (0, half_h), (half_w, half_h - roof)],
+                    closed=False,
+                )
+            )
+        return shell
+    # hopper: flat top, walls converging to a narrow outlet
+    return [polyline([(-half_w, half_h), (half_w, half_h), (w / 6, -half_h), (-w / 6, -half_h)])]
+
+
+def _jacket(symbol: str, p: dict) -> float:
+    return JACKET if symbol == "reactor" and p["jacketed"] else 0.0
+
+
+def _trays(shell: list[dict], p: dict) -> list[dict]:
+    """A column's tray lines, evenly spaced and clipped to the drawn shell.
+
+    The full width used to be drawn at every height, so a tray inside a dished
+    head poked through the outline (backlog W2-T10-05).
+    """
+    h, trays = p["height"], p["trays"]
+    out = []
+    for i in range(trays):
+        y = -h / 2 + (i + 1) * h / (trays + 1)
+        hits = scan_hits(shell, "y", y)
+        x0, x1 = min(hits) + TRAY_INSET, max(hits) - TRAY_INSET
+        if x1 - x0 <= 0.0:
+            raise SpecError(
+                f"column: params.trays: tray {i + 1} at y={y:g} falls where the head is "
+                f"narrower than {2 * TRAY_INSET:g} mm; use fewer trays"
+            )
+        out.append(line(x0, y, x1, y))
+    return out
+
+
 def _nozzles(
-    nozzles: list[dict], shell: list[dict], half_w: float, half_h: float, extra: float = 0.0
+    symbol: str,
+    nozzles: list[dict],
+    shell: list[dict],
+    half_w: float,
+    half_h: float,
+    extra: float = 0.0,
 ) -> tuple[list[dict], list[Port]]:
     """Nozzle stub primitives and ports for a vessel whose outline is ``shell``.
 
@@ -143,7 +237,7 @@ def _nozzles(
     prims: list[dict] = []
     ports: list[Port] = []
     stub = STUB + extra
-    for n in nozzles:
+    for i, n in enumerate(nozzles):
         side, f = n["side"], n["fraction"]
         if side in ("top", "bottom"):
             x = -half_w + f * 2 * half_w
@@ -152,8 +246,11 @@ def _nozzles(
                 raise RuntimeError(f"nozzle {n['name']!r}: x={x} meets no outline")
             if side == "top":
                 y0, y1, d = max(hits), half_h + stub, 90.0
+                gap = half_h - y0
             else:
                 y0, y1, d = min(hits), -half_h - stub, 270.0
+                gap = y0 + half_h
+            _refuse_deep_nozzle(symbol, i, n, gap, half_h)
             prims.append(line(x, y0, x, y1))
             ports.append(Port(n["name"], x, y1, d))
         else:
@@ -163,11 +260,33 @@ def _nozzles(
                 raise RuntimeError(f"nozzle {n['name']!r}: y={y} meets no outline")
             if side == "left":
                 x0, x1, d = min(hits), -half_w - stub, 180.0
+                gap = x0 + half_w
             else:
                 x0, x1, d = max(hits), half_w + stub, 0.0
+                gap = half_w - x0
+            _refuse_deep_nozzle(symbol, i, n, gap, half_w)
             prims.append(line(x0, y, x1, y))
             ports.append(Port(n["name"], x1, y, d))
     return prims, ports
+
+
+def _refuse_deep_nozzle(symbol: str, index: int, nozzle: dict, gap: float, half: float) -> None:
+    """Refuse a nozzle whose shell point is half way (or more) to the centre.
+
+    ``gap`` is how far inside its side's bounding-box edge the axis-aligned
+    nozzle line meets the drawn shell; ``half`` is the half extent across that
+    side. Near a dished head's pole or a hopper's outlet corner the stub would
+    start deep inside the box and run along the shell — measured: a ``left``
+    nozzle at fraction 0 on a 20 x 40 vertical vessel drew a 13 mm stub from the
+    bottom pole (backlog W2-T10-06).
+    """
+    if gap >= half / 2.0:
+        raise SpecError(
+            f"{symbol}: nozzles[{index}] ({nozzle['name']!r}) at {nozzle['side']} fraction "
+            f"{nozzle['fraction']:g} meets the shell {gap:.3g} mm inside the {nozzle['side']} "
+            f"edge, half way or more to the centre ({half:g} mm), so its stub would run along "
+            "the shell; move it along that side"
+        )
 
 
 def _capsule_vertical(w: float, h: float) -> list[dict]:
@@ -197,48 +316,18 @@ def build_vessel(symbol: str = "vertical_vessel", params: dict | None = None) ->
     p = validate_vessel_params(symbol, params)
     w, h = p["width"], p["height"]
     half_w, half_h = w / 2, h / 2
-    extra = 0.0
-    if symbol in _VERTICAL_CAPSULES:
-        shell = _capsule_vertical(w, h)
-    elif symbol == "horizontal_vessel":
-        shell = _capsule_horizontal(w, h)
-    elif symbol == "tank":
-        roof = w / 6 if p["roof"] == "cone" else 0.0
-        shell = [
-            polyline(
-                [
-                    (-half_w, -half_h),
-                    (half_w, -half_h),
-                    (half_w, half_h - roof),
-                    (-half_w, half_h - roof),
-                ]
-            )
-        ]
-        if roof:
-            shell.append(
-                polyline(
-                    [(-half_w, half_h - roof), (0, half_h), (half_w, half_h - roof)],
-                    closed=False,
-                )
-            )
-    else:  # hopper: flat top, walls converging to a narrow outlet
-        shell = [
-            polyline([(-half_w, half_h), (half_w, half_h), (w / 6, -half_h), (-w / 6, -half_h)])
-        ]
+    extra = _jacket(symbol, p)
+    shell = _shell(symbol, p)
     prims = list(shell)
     if symbol == "column":
-        trays = p["trays"]
-        for i in range(trays):
-            y = -half_h + (i + 1) * h / (trays + 1)
-            prims.append(line(-half_w + 1, y, half_w - 1, y))
-    elif symbol == "reactor" and p["jacketed"]:
+        prims += _trays(shell, p)
+    elif extra:
         body = half_h - half_w
         prims += [
             line(-half_w - JACKET, -body, -half_w - JACKET, body),
             line(half_w + JACKET, -body, half_w + JACKET, body),
         ]
-        extra = JACKET
-    nozzle_prims, ports = _nozzles(p["nozzles"], shell, half_w, half_h, extra)
+    nozzle_prims, ports = _nozzles(symbol, p["nozzles"], shell, half_w, half_h, extra)
     prims += nozzle_prims
     xs = [-half_w - extra, half_w + extra] + [pt.x for pt in ports]
     ys = [-half_h, half_h] + [pt.y for pt in ports]

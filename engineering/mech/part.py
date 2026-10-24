@@ -29,6 +29,9 @@ from typing import Any, NamedTuple
 from engineering.measure import is_self_intersecting
 from engineering.mech.primitives import Pt
 from engineering.mech.standards.materials import hatch_for
+from engineering.validation import finite as _finite
+from engineering.validation import non_negative as _non_negative
+from engineering.validation import positive as _positive
 
 _EPS = 1e-9
 
@@ -66,31 +69,7 @@ PART_KINDS: tuple[str, ...] = ("revolved", "prismatic")
 _SEGMENT_KEYS = frozenset({"length", "d_outer", "d_inner", "taper_to"})
 
 
-# -- number guards -----------------------------------------------------------
-
-
-def _finite(value: Any, path: str) -> float:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        raise ValueError(f"{path}: expected a number, got {value!r}.") from None
-    if not math.isfinite(number):
-        raise ValueError(f"{path}: {value!r} is not a finite number.")
-    return number
-
-
-def _positive(value: Any, path: str) -> float:
-    number = _finite(value, path)
-    if number <= _EPS:
-        raise ValueError(f"{path}: must be greater than zero, got {number}.")
-    return number
-
-
-def _non_negative(value: Any, path: str) -> float:
-    number = _finite(value, path)
-    if number < -_EPS:
-        raise ValueError(f"{path}: must not be negative, got {number}.")
-    return max(number, 0.0)
+# -- number guards: engineering/validation.py (B07) ----------------------------
 
 
 # -- geometry helpers (Tasks 3-7 read the part through these) ----------------

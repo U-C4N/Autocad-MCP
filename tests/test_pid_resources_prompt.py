@@ -36,7 +36,7 @@ async def test_resources_serve_the_catalogue_and_the_letter_tables(client):
     uris = {str(r.uri) for r in await client.list_resources()}
     assert {"autocad://pid/symbols", "autocad://standards/isa51"} <= uris
     symbols = json.loads((await client.read_resource("autocad://pid/symbols"))[0].text)
-    assert symbols["catalog_version"] == "1" and any(
+    assert symbols["catalog_version"] == "2" and any(
         s["symbol"] == "gate" for s in symbols["symbols"]
     )
     isa = json.loads((await client.read_resource("autocad://standards/isa51"))[0].text)

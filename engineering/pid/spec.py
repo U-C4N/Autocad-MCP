@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import copy
 import logging
-import math
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, get_args
 
 import anyio
+
+import config
+from engineering.plan_spec import LayerSetId, SheetSize
+from engineering.validation import SpecError, finite, non_negative, positive, within_budget
 
 from .critique import PID_FOCUSES, issues_for
 from .drawlines import draw_line
 from .graph import build_graph
-from .insert import place_symbol
+from .insert import FAIL_POSITIONS, place_symbol
 from .lines import AXIS, LINE_CLASSES, aim_points, count_crossings, route, snap_axis
 from .symbols import resolve, transform_port
 
@@ -124,6 +127,13 @@ _ITEM_OPTIONS = {
         "number",
     },
 }
+_SHEET_KEYS = ("layer_set", "sheet_size", "scale", "intent")
+_LAYER_SETS = get_args(LayerSetId)
+_SHEET_SIZES = get_args(SheetSize)
+#: Optional item keys that are text when present (``None`` = absent).
+_ITEM_TEXT = ("tag", "desc", "link", "actuator", "shape", "type", "location", "number")
+#: Optional line keys that are text when present.
+_LINE_TEXT = ("number", "size", "service", "spec", "insulation")
 _LINE_KEYS = {
     "from",
     "to",
@@ -140,25 +150,61 @@ _LINE_KEYS = {
 }
 
 
-def _num(value, where: str) -> float:
-    """A finite number, or a ``ValueError`` naming the path.
+def _text(value, where: str) -> None:
+    """An optional text value: a string, or absent (``None``)."""
+    if value is not None and not isinstance(value, str):
+        raise SpecError(f"{where}: expected text, got {type(value).__name__}")
 
-    ``float("nan")`` used to pass and be placed as an INSERT at ``[nan, 0]``;
-    the transaction committed and ``build_graph`` then crashed on the drawing
-    with no path in its message. Only in-process callers can deliver a
-    non-finite (the MCP pipeline coerces them first), but ``run_spec`` is a
-    public interface and its docstring promises nothing malformed reaches
-    the drawing.
+
+def _validate_sheet(sheet: dict) -> None:
+    """The ``sheet`` block: known keys, a known layer set and sheet size, a scale.
+
+    It was not checked at all: an unknown layer set or sheet size reached
+    ``drawing_plan`` and ``scale: "abc"`` died in ``float()`` inside the real
+    run, after validation had approved it (backlog W4-T17-10).
     """
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{where} must be a number")
+    extra = sorted(set(sheet) - set(_SHEET_KEYS))
+    if extra:
+        raise SpecError(
+            f"sheet: unknown key(s) {', '.join(extra)}; keys are {', '.join(_SHEET_KEYS)}"
+        )
+    if "layer_set" in sheet and sheet["layer_set"] not in _LAYER_SETS:
+        raise SpecError(
+            f"sheet.layer_set: {sheet['layer_set']!r} is not a layer set; "
+            f"layer sets are {', '.join(_LAYER_SETS)}"
+        )
+    if "sheet_size" in sheet and sheet["sheet_size"] not in _SHEET_SIZES:
+        raise SpecError(
+            f"sheet.sheet_size: {sheet['sheet_size']!r} is not a sheet size; "
+            f"sizes are {', '.join(_SHEET_SIZES)}"
+        )
+    if "scale" in sheet:
+        sheet["scale"] = positive(sheet["scale"], "sheet.scale")
+    _text(sheet.get("intent"), "sheet.intent")
+
+
+def _validate_item_options(section: str, item: dict, where: str) -> None:
+    """What ``place_symbol`` would refuse, refused here so the dry run agrees.
+
+    The dry run never called ``place_symbol``, so ``scale: -1`` or a ``fail``
+    on a valve without an actuator were approved and then refused by the real
+    run, half way through the sheet (backlog W4-T17-07).
+    """
+    for key in _ITEM_TEXT:
+        _text(item.get(key), f"{where}.{key}")
     try:
-        number = float(value)
-    except OverflowError as exc:  # a 400-digit int is a number but not a float
-        raise ValueError(f"{where} must be a finite number") from exc
-    if not math.isfinite(number):
-        raise ValueError(f"{where} must be a finite number")
-    return number
+        symbol = _spec_for(section, item)
+    except ValueError as exc:
+        raise SpecError(f"{where}: {exc}") from exc
+    tags = {att["tag"] for att in symbol.attdefs}
+    fail = item.get("fail")
+    if fail is not None:
+        if not isinstance(fail, str) or fail.upper() not in FAIL_POSITIONS:
+            raise SpecError(f"{where}.fail: must be one of FO, FC, FL (or empty), got {fail!r}")
+        if "FAIL" not in tags:
+            raise SpecError(f"{where}.fail: {item.get('symbol')} has no actuator to fail")
+    if item.get("link") is not None and "LINK" not in tags:
+        raise SpecError(f"{where}.link: only an off-page connector carries a link")
 
 
 def _ref(value, where: str, ids: set[str]) -> tuple[str, str | None]:
@@ -190,11 +236,14 @@ def validate_spec(spec: dict) -> dict:
     out = {key: copy.deepcopy(spec.get(key) or ([] if key != "sheet" else {})) for key in _TOP_KEYS}
     if not isinstance(out["sheet"], dict):
         raise ValueError("sheet must be an object")
+    _validate_sheet(out["sheet"])
+    budget = config.settings.max_spec_items
     ids: set[str] = set()
     for section in _SECTIONS:
         items = out[section]
         if not isinstance(items, list):
             raise ValueError(f"{section} must be a list")
+        within_budget(len(items), budget, section, "MAX_SPEC_ITEMS")
         for i, item in enumerate(items):
             where = f"{section}[{i}]"
             if not isinstance(item, dict):
@@ -202,6 +251,11 @@ def validate_spec(spec: dict) -> dict:
             item_id = item.get("id")
             if not isinstance(item_id, str) or not item_id:
                 raise ValueError(f"{where}.id must be a non-empty string")
+            if "." in item_id:
+                raise SpecError(
+                    f"{where}.id: {item_id!r} contains '.', which separates an id from its "
+                    "port in line references"
+                )
             if item_id in ids:
                 raise ValueError(f"{where}.id {item_id!r} is repeated")
             ids.add(item_id)
@@ -211,10 +265,11 @@ def validate_spec(spec: dict) -> dict:
             for key in ("x", "y"):
                 if key not in item:
                     raise ValueError(f"{where}.{key} is required")
-                item[key] = _num(item[key], f"{where}.{key}")
-            for key in ("rotation", "scale"):
-                if key in item:
-                    item[key] = _num(item[key], f"{where}.{key}")
+                item[key] = finite(item[key], f"{where}.{key}")
+            if "rotation" in item:
+                item["rotation"] = finite(item["rotation"], f"{where}.rotation")
+            if "scale" in item:
+                item["scale"] = positive(item["scale"], f"{where}.scale")
             if section in ("equipment", "valves") and not isinstance(item.get("symbol"), str):
                 raise ValueError(f"{where}.symbol is required")
             if section == "connectors":
@@ -225,9 +280,11 @@ def validate_spec(spec: dict) -> dict:
                     raise ValueError(f"{where}: an 'out' connector carries exactly 'from'")
                 if item["direction"] == "in" and (not has_to or has_from):
                     raise ValueError(f"{where}: an 'in' connector carries exactly 'to'")
+            _validate_item_options(section, item, where)
     lines = out["lines"]
     if not isinstance(lines, list):
         raise ValueError("lines must be a list")
+    within_budget(len(lines), budget, "lines", "MAX_SPEC_ITEMS")
     for i, line in enumerate(lines):
         where = f"lines[{i}]"
         if not isinstance(line, dict):
@@ -241,7 +298,20 @@ def validate_spec(spec: dict) -> dict:
             _ref(line[key], f"{where}.{key}", ids)
         line["class"] = _line_class(line, where)
         if "stub" in line:
-            line["stub"] = _num(line["stub"], f"{where}.stub")
+            line["stub"] = non_negative(line["stub"], f"{where}.stub")
+        for key in _LINE_TEXT:
+            _text(line.get(key), f"{where}.{key}")
+        # `arrow: "no"` was truthy and drew an arrow (backlog W4-T17-11).
+        if line.get("arrow") is not None and not isinstance(line["arrow"], bool):
+            raise SpecError(f"{where}.arrow: expected true, false or null, got {line['arrow']!r}")
+        if "label" in line and not isinstance(line["label"], bool):
+            raise SpecError(f"{where}.label: expected true or false, got {line['label']!r}")
+        route_mode = line.get("route", "auto")
+        if not isinstance(route_mode, (list, tuple)) and route_mode not in ("auto", "direct"):
+            raise SpecError(
+                f"{where}.route: must be 'auto', 'direct' or a list of waypoints, "
+                f"got {route_mode!r}"
+            )
     for i, conn in enumerate(out["connectors"]):
         key = "from" if conn["direction"] == "out" else "to"
         _ref(conn[key], f"connectors[{i}].{key}", ids)
@@ -395,6 +465,15 @@ async def run_spec(backend: AutoCADBackend, spec: dict, dry_run: bool = False) -
             "crossings_total": sum(p["crossings"] for p in planned),
         }
     sheet = norm["sheet"]
+    # Refused before drawing_plan writes anything: ezdxf would nest the
+    # transaction and COM refuses it - after the plan was already set
+    # (backlog W4-T17-09).
+    status = await backend.system_status()
+    if status.get("transaction_depth") or status.get("transaction_active"):
+        raise SpecError(
+            "pid_from_spec: a transaction is already open; nothing was drawn. Close it with "
+            "transaction_commit or transaction_rollback and retry."
+        )
     if backend.get_plan_spec() is None:
         await backend.drawing_plan(
             sheet.get("intent", "P&ID"),

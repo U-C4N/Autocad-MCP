@@ -28,9 +28,11 @@ from typing import TYPE_CHECKING
 
 import anyio
 
+import config
 from engineering.arch import draw as _draw
 from engineering.arch import rooms as _rooms
 from engineering.arch import schedule as _schedule
+from engineering.validation import within_budget
 
 from .lang import LANGS
 from .model import (
@@ -165,6 +167,8 @@ def _list(spec: dict, key: str) -> list:
         return []
     if isinstance(value, (str, bytes, dict)) or not isinstance(value, (list, tuple)):
         raise ValueError(f"{key}: expected a list, got {type(value).__name__}")
+    # B07: every list of the document is bounded, by path, before anything is built.
+    within_budget(len(value), config.settings.max_spec_items, key, "MAX_SPEC_ITEMS")
     return list(value)
 
 
