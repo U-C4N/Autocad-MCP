@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 import re
 
+from engineering.validation import short_repr
 from security import illegal_symbol_name_chars
 
 ALLOWED_TYPES = ("line", "circle", "arc", "polyline", "text", "solid")
@@ -27,12 +28,34 @@ _REQUIRED = {
     "text": ("text", "x", "y", "height"),
     "solid": ("points",),
 }
+#: Keys a primitive may carry besides ``type``, ``layer`` and its required ones.
+_OPTIONAL = {
+    "line": (),
+    "circle": (),
+    "arc": (),
+    "polyline": ("closed", "bulges"),
+    "text": ("rotation_deg", "align"),
+    "solid": (),
+}
+_ATTDEF_KEYS = (
+    "tag",
+    "prompt",
+    "default",
+    "x",
+    "y",
+    "height",
+    "rotation_deg",
+    "align",
+    "invisible",
+)
 _POSITIVE = {"r", "height"}
+#: DXF symbol-table names (layers, blocks) are at most 255 characters.
+MAX_NAME_LENGTH = 255
 
 
 def _scalar(value, where: str, *, positive: bool = False) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise TypeError(f"{where} must be a number, got {value!r}")
+        raise TypeError(f"{where} must be a number, got {short_repr(value)}")
     try:
         number = float(value)
     except OverflowError as exc:  # a 400-digit JSON integer is an int, not a float
@@ -72,7 +95,9 @@ def _points(
 def _align(spec: dict, where: str) -> str:
     align = spec.get("align", "left")
     if align not in TEXT_ALIGNMENTS:
-        raise TypeError(f"{where}: 'align' must be one of {TEXT_ALIGNMENTS}, got {align!r}")
+        raise TypeError(
+            f"{where}: 'align' must be one of {TEXT_ALIGNMENTS}, got {short_repr(align)}"
+        )
     return align
 
 
@@ -81,6 +106,11 @@ def _layer(spec: dict, where: str) -> str:
     if not isinstance(layer, str) or not layer.strip():
         raise TypeError(f"{where}: 'layer' must be a non-empty string")
     layer = layer.strip()
+    if len(layer) > MAX_NAME_LENGTH:
+        raise TypeError(
+            f"{where}: 'layer' is {len(layer)} characters; a DXF layer name is at most "
+            f"{MAX_NAME_LENGTH}"
+        )
     # Gate the DXF name rule here rather than letting ezdxf raise DXFValueError
     # on `add_*(dxfattribs={"layer": ...})` mid-loop, after the block exists and
     # earlier primitives are already written (and, with overwrite, the old
@@ -115,9 +145,35 @@ def _one_line(value, where: str) -> str:
     return value
 
 
+def _refuse_unknown_keys(spec: dict, allowed: set[str], where: str, what: str) -> None:
+    """A key nobody reads is refused by name, never dropped (backlog W1-T2-03)."""
+    unknown = sorted(str(key) for key in spec if key not in allowed)
+    if unknown:
+        raise TypeError(
+            f"{where}: unknown key(s) {', '.join(map(repr, unknown))}; {what} takes "
+            f"{', '.join(sorted(allowed))}"
+        )
+
+
+def validate_block_name(name) -> str:
+    """``block_define``'s ``name`` must be a string before anything reads it.
+
+    A non-string reached ``(name or "").strip()`` and died with an
+    ``AttributeError`` instead of a refusal (backlog W2-T3-07).
+    """
+    if not isinstance(name, str):
+        raise TypeError(f"block_define: 'name' must be a string, got {type(name).__name__}")
+    return name
+
+
 def validate_entity_specs(entities) -> list[dict]:
     """Normalise ``block_define`` primitive specs; refuse the whole list on the first defect."""
-    if not isinstance(entities, (list, tuple)) or not entities:
+    if not isinstance(entities, (list, tuple)):
+        # A dict, a string or a generator used to be refused as "empty".
+        raise TypeError(
+            f"block_define: 'entities' must be a list of objects, got {type(entities).__name__}"
+        )
+    if not entities:
         raise ValueError(
             "block_define: 'entities' is empty — a block that draws nothing is refused"
         )
@@ -128,7 +184,12 @@ def validate_entity_specs(entities) -> list[dict]:
             raise TypeError(f"{where}: must be an object")
         kind = spec.get("type")
         if kind not in ALLOWED_TYPES:
-            raise TypeError(f"{where}: 'type' must be one of {ALLOWED_TYPES}, got {kind!r}")
+            raise TypeError(
+                f"{where}: 'type' must be one of {ALLOWED_TYPES}, got {short_repr(kind)}"
+            )
+        _refuse_unknown_keys(
+            spec, {"type", "layer", *_REQUIRED[kind], *_OPTIONAL[kind]}, where, f"a {kind}"
+        )
         for key in _REQUIRED[kind]:
             if key not in spec:
                 raise TypeError(f"{where}: {kind} requires {key!r}")
@@ -180,9 +241,12 @@ def validate_attdef_specs(attdefs) -> list[dict]:
         where = f"attdefs[{i}]"
         if not isinstance(spec, dict):
             raise TypeError(f"{where}: must be an object")
+        _refuse_unknown_keys(spec, set(_ATTDEF_KEYS), where, "an ATTDEF")
         tag = spec.get("tag")
         if not isinstance(tag, str) or not ATTDEF_TAG_RE.fullmatch(tag):
-            raise TypeError(f"{where}: 'tag' must match {ATTDEF_TAG_RE.pattern}, got {tag!r}")
+            raise TypeError(
+                f"{where}: 'tag' must match {ATTDEF_TAG_RE.pattern}, got {short_repr(tag)}"
+            )
         if tag in seen:
             raise TypeError(f"{where}: duplicate tag {tag!r}")
         seen.add(tag)
@@ -254,18 +318,29 @@ def validate_attribute_values(attributes, where: str = "attributes") -> dict[str
     if not isinstance(attributes, dict):
         raise TypeError(f"{where} must be an object of {{TAG: value}} pairs")
     out: dict[str, str] = {}
+    spelled: dict[str, str] = {}
     for tag, value in attributes.items():
         if not isinstance(tag, str) or not tag.strip():
             raise TypeError(f"{where}: every tag must be a non-empty string")
-        label = f"{where}[{tag!r}]"
+        label = f"{where}[{short_repr(tag)}]"
+        # Tags are matched upper-case: AutoCAD stores ATTDEF tags upper-case and
+        # ATTDEF_TAG_RE requires it, so `{"tag": ...}` was silently dropped
+        # against an ATTDEF `TAG` (backlog W1-T1-05).
+        key = tag.strip().upper()
+        if key in spelled:
+            raise TypeError(
+                f"{where}: {short_repr(spelled[key])} and {short_repr(tag)} name the same "
+                "attribute (tags are not case-sensitive)"
+            )
+        spelled[key] = tag
         if isinstance(value, str):
-            out[tag] = _one_line(value, label)
+            out[key] = _one_line(value, label)
         elif isinstance(value, bool) or value is None or not isinstance(value, (int, float)):
             raise TypeError(f"{label} must be a string or a number, got {type(value).__name__}")
         else:
             if isinstance(value, float) and not math.isfinite(value):
                 raise TypeError(f"{label} must be finite")
-            out[tag] = str(value)
+            out[key] = str(value)
     return out
 
 

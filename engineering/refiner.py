@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+
+import anyio
 
 from .plan_spec import Issue
 from .repairs import (
@@ -23,6 +26,8 @@ if TYPE_CHECKING:
     from backends.base import AutoCADBackend
 
 RepairHandler = Callable[["AutoCADBackend", Issue], Awaitable[dict]]
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -172,9 +177,16 @@ async def refine_drawing(
             status = "manual_required"
             break
 
-        transaction = await backend.transaction_begin()
+        # B01: the begin runs shielded, so its outcome is always known: a
+        # cancelled begin's worker would still push the checkpoint (the lease
+        # follows the worker) and nothing would close it. A cancellation that
+        # arrived meanwhile is delivered by the checkpoint at the top of the
+        # try below, whose handler rolls the round back.
+        with anyio.CancelScope(shield=True):
+            transaction = await backend.transaction_begin()
         actions: list[RepairAction] = []
         if not isinstance(transaction, dict) or not transaction.get("ok"):
+            await anyio.lowlevel.checkpoint_if_cancelled()
             detail = transaction if isinstance(transaction, dict) else {"result": transaction}
             actions.append(RepairAction("internal", "", [], "failed", detail))
             rounds.append(
@@ -191,6 +203,7 @@ async def refine_drawing(
             status = "transaction_unavailable"
             break
         try:
+            await anyio.lowlevel.checkpoint_if_cancelled()
             for issue, handler in candidates:
                 detail = await handler(backend, issue)
                 actions.append(
@@ -204,8 +217,28 @@ async def refine_drawing(
                 )
             after = await backend.drawing_critique(focus)
             score_after, errors_after = _metrics(after)
-        except Exception as exc:
-            await backend.transaction_rollback()
+        except BaseException as exc:
+            # B01: a cancellation is a BaseException; `except Exception` let it
+            # leave the round's repairs inside an open transaction. The
+            # rollback is shielded (engineering/pid/spec.py explains why) and,
+            # after anything but an ordinary error, a failed rollback is
+            # logged rather than raised over the cancellation.
+            with anyio.CancelScope(shield=True):
+                try:
+                    await backend.transaction_rollback()
+                except Exception as rollback_exc:
+                    if isinstance(exc, Exception):
+                        raise
+                    log.error(
+                        "drawing_refine: rollback after %s failed (%s: %s); the round's "
+                        "repairs may still be in the drawing - check system_status and "
+                        "transaction_rollback before retrying",
+                        type(exc).__name__,
+                        type(rollback_exc).__name__,
+                        rollback_exc,
+                    )
+            if not isinstance(exc, Exception):
+                raise
             actions.append(RepairAction("internal", "", [], "failed", {"error": str(exc)}))
             rounds.append(
                 RefineRound(

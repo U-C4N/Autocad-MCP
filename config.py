@@ -87,6 +87,14 @@ class Settings:
         # slow. Set to 0 to disable the check.
         self.ezdxf_call_timeout: float = float(os.environ.get("EZDXF_CALL_TIMEOUT", "120"))
 
+        # How long disconnect() (server shutdown) waits for a worker thread that
+        # is still inside a call, in seconds. Nothing can stop a worker thread:
+        # with EZDXF_CALL_TIMEOUT=0 a cancelled call keeps the document lock
+        # until its worker ends and nothing is ever quarantined, and at shutdown
+        # a worker still running after this grace is logged and left behind on a
+        # daemon thread, so the process still exits. 0 = do not wait.
+        self.shutdown_grace: float = max(0.0, float(os.environ.get("SHUTDOWN_GRACE", "5")))
+
         # How many undo steps the headless backend keeps. 0 = off, which is the
         # default because it is not free: ezdxf has no journal, so a step is a
         # full DXF snapshot. Measured — 10 entities 3.1 ms / 19 KB, 1000
@@ -94,6 +102,16 @@ class Settings:
         # is paid on every mutating call, so switching it on for a large drawing
         # is a real trade the user should make deliberately rather than inherit.
         self.ezdxf_undo_depth: int = max(0, int(os.environ.get("EZDXF_UNDO_DEPTH", "0")))
+
+        # Spec budgets (B07): a count above one of these is refused by path,
+        # naming the variable, before anything is drawn; 0 disables a budget.
+        # MAX_SPEC_ITEMS bounds each list of a pid_from_spec / arch_plan_from_spec
+        # document (measured 2026-10-24: 200 P&ID items place in 451 ms headless,
+        # so 2,000 is about 4.5 s there and far longer on a live seat).
+        # MAX_VESSEL_TRAYS bounds a column's trays (10,000 trays build in 3.2 ms;
+        # the budget bounds the block definition, not the time).
+        self.max_spec_items: int = int(os.environ.get("MAX_SPEC_ITEMS", "2000"))
+        self.max_vessel_trays: int = int(os.environ.get("MAX_VESSEL_TRAYS", "500"))
 
         # HTTP transport: refuse non-loopback bind unless explicitly opted in.
         self.allow_remote_http: bool = (

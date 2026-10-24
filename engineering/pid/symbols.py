@@ -17,6 +17,8 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from engineering.validation import SpecError
+
 from .geometry import (
     attdef,
     bbox_of,
@@ -29,7 +31,8 @@ from .geometry import (
 )
 
 #: Written into every INSERT's XDATA; bump on any change to shipped geometry or ports.
-CATALOG_VERSION = "1"
+#: "2" (1.7.0): column trays are clipped to the dished heads.
+CATALOG_VERSION = "2"
 BUBBLE_RADIUS = 5.0
 FAMILY_LAYER = {
     "valve": "PROCESS-VALVES",
@@ -277,6 +280,16 @@ def make_spec(
     params: dict | None = None,
 ) -> SymbolSpec:
     prims = tuple(primitives)
+    ports = tuple(ports)
+    seen: set[str] = set()
+    for port in ports:
+        if port.name in seen:
+            # symbol_payload keys ports by name, so the second silently replaced
+            # the first in the drawing's XDATA (backlog W2-T5-06).
+            raise SpecError(
+                f"{name}: port {port.name!r} is defined twice; port names must be unique"
+            )
+        seen.add(port.name)
     return SymbolSpec(
         name=name,
         family=family,

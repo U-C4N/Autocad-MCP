@@ -75,7 +75,7 @@ async def test_xdata_payload_carries_ports_and_params(backend):
         backend, "vertical_vessel", 0, 0, tag="V-201", params={"width": 20, "height": 40}
     )
     payload = await read_payload(backend, result["handle"])
-    assert payload["kind"] == "symbol" and payload["catalog"] == "1"
+    assert payload["kind"] == "symbol" and payload["catalog"] == "2"
     assert payload["params"]["width"] == 20.0
     assert set(payload["ports"]) == {"N1", "N2", "N3", "N4"}
 

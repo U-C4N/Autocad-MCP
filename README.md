@@ -380,8 +380,11 @@ Nothing loads a `.env` file — export these, or set them in your MCP client's `
 | `EZDXF_UNDO_DEPTH` | `0` | Headless undo history depth; `0` disables it |
 | `MAX_DXF_BYTES` | `536870912` | Reject larger DXF input (512 MB); `0` disables |
 | `MAX_LIST_LIMIT` | `5000` | Bound list/selection response sizes |
+| `MAX_SPEC_ITEMS` | `2000` | Items per list of a `pid_from_spec` / `arch_plan_from_spec` document; `0` disables |
+| `MAX_VESSEL_TRAYS` | `500` | Trays a parametric column may carry; `0` disables |
 | `COM_CALL_TIMEOUT` | `60` | Per-call live AutoCAD timeout (s); `0` disables |
-| `EZDXF_CALL_TIMEOUT` | `120` | Per-call headless timeout (s); `0` disables |
+| `EZDXF_CALL_TIMEOUT` | `120` | Per-call headless timeout (s); `0` disables it — a cancelled call then keeps the document until its worker ends, and nothing is ever quarantined |
+| `SHUTDOWN_GRACE` | `5` | Seconds shutdown waits for a worker still inside a call before exiting without it; `0` does not wait |
 | `DANGEROUS_COMMANDS_ENABLED` | `false` | Allow blocked commands/LISP; reported as unsafe mode |
 | `ALLOW_REMOTE_HTTP` | `false` | Permit a non-loopback HTTP bind |
 | `MCP_AUTH_TOKEN` | *(empty)* | Bearer token required for remote HTTP |
