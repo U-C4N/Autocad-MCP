@@ -12,14 +12,19 @@ opens the Cyrillic and Turkish letters, a point as the decimal separator. XLSX
 needs openpyxl (the `office` extra); without it the CSV files are still
 written and the result carries the `xlsx_write` refusal instead of a path.
 Numbers are written rounded to 1 mm (three decimals of a metre).
+
+Every cell goes through `engineering.export.cells` (1.7.0, B03): each sheet
+declares which columns are numbers (:data:`NUMBER_KEYS`); a text cell that
+starts like a formula is prefixed with ``'`` in CSV and is a string cell in
+XLSX, and the method sheet says so in the workbook's language.
 """
 
 from __future__ import annotations
 
-import csv
 from pathlib import Path
 
 from backends.capability import UnsupportedCapabilityError
+from engineering.export.cells import append_xlsx_row, write_csv
 from engineering.sheet.extract import xlsx_available
 
 __all__ = ["CSV_SLUGS", "LABELS", "LANGS", "SHEETS", "check_lang", "write_workbook"]
@@ -201,6 +206,7 @@ LABELS: dict[str, tuple[str, str, str]] = {
     "panel_inferred": ("Pano tahmini (en yakın)", "Panel inferred (nearest)", "Шкаф по близости"),
     "rule_package": ("Kural: pano paketleri", "Rule: panel packages", "Правило: комплектные шкафы"),
     "rule_section": ("Kural: kesit", "Rule: section", "Правило: сечение"),
+    "rule_csv": ("Kural: CSV hücreleri", "Rule: CSV cells", "Правило: ячейки CSV"),
     "section_rules": (
         "Kesit kuralları (çağıranın)",
         "Section rules (the caller's)",
@@ -352,6 +358,20 @@ TEXTS: dict[str, tuple[str, str, str]] = {
         "Сечения кабелей — только из таблицы section_rules вызывающего; без неё столбец пуст. "
         "Никакая стандартная таблица не применяется.",
     ),
+    "rule_csv": (
+        "CSV dosyalarında =, +, -, @, sekme ya da satır başı ile başlayan bir metin hücresinin "
+        "önüne kesme işareti (') eklenir; hesap tablosu onu formül olarak çalıştırmaz. Sayılar "
+        "sayı olarak yazılır, negatif bir sayıya işaret eklenmez. XLSX'te her metin hücresi "
+        "metin hücresidir, asla formül değildir.",
+        "In the CSV files a text cell that begins with =, +, -, @, a tab or a carriage return is "
+        "written with a leading apostrophe ('), so a spreadsheet never runs it as a formula. "
+        "Numbers are written as numbers; a negative number gets no apostrophe. In the XLSX "
+        "every text cell is a string cell, never a formula.",
+        "В файлах CSV текстовая ячейка, начинающаяся с =, +, -, @, табуляции или возврата "
+        "каретки, записывается с апострофом (') в начале, поэтому электронная таблица никогда "
+        "не выполнит её как формулу. Числа записываются как числа; отрицательное число "
+        "апострофа не получает. В XLSX каждая текстовая ячейка — строковая, никогда не формула.",
+    ),
 }
 
 
@@ -371,6 +391,36 @@ def _t(key: str, lang: str) -> str:
 def _say(key: str, lang: str) -> str:
     """One of the method sheet's sentences in `lang`."""
     return TEXTS[key][_INDEX[lang]]
+
+
+#: Columns written as numbers (`engineering.export.cells`); every other column
+#: is text. The method sheet's `value` column mixes the two: a number there is
+#: a number, a sentence or a dash is text.
+NUMBER_KEYS = frozenset(
+    {
+        "direct_m",
+        "continuity_m",
+        "unassigned_m",
+        "net_m",
+        "allowance",
+        "allowance_m",
+        "total_m",
+        "schematic_m",
+        "kw",
+        "phases",
+        "voltage",
+        "length_m",
+        "cable_m",
+        "loads",
+        "value",
+    }
+)
+
+
+def _sheet(keys, rows: list, lang: str) -> tuple[list, list, list]:
+    """``(header, rows, kinds)`` for one sheet whose columns are `keys`."""
+    kinds = ["number" if key in NUMBER_KEYS else "text" for key in keys]
+    return [_t(key, lang) for key in keys], rows, kinds
 
 
 def _num(value):
@@ -492,13 +542,12 @@ def _pipe_sheets(result: dict, lang: str) -> dict[str, tuple[list, list]]:
         for c in result["control"]
     ]
     return {
-        "Metraj": ([_t(c, lang) for c in columns], rows),
-        "Özet": ([_t(c, lang) for c in ("group", "key", "net_m", "total_m")], summary),
-        "Kontrol": (
-            [_t(c, lang) for c in ("run", "kind", "service", "tags", "schematic_m", "reason")],
-            control,
+        "Metraj": _sheet(columns, rows, lang),
+        "Özet": _sheet(("group", "key", "net_m", "total_m"), summary, lang),
+        "Kontrol": _sheet(
+            ("run", "kind", "service", "tags", "schematic_m", "reason"), control, lang
         ),
-        "Metodoloji": ([_t("topic", lang), _t("value", lang)], _pipe_method(result, lang)),
+        "Metodoloji": _sheet(("topic", "value"), _pipe_method(result, lang), lang),
     }
 
 
@@ -541,6 +590,7 @@ def _pipe_method(result: dict, lang: str) -> list[list]:
         ["rule_status", _say("rule_status", lang)],
         ["rule_rooms", _say("rule_rooms", lang)],
         ["rule_multi", _say("rule_multi", lang)],
+        ["rule_csv", _say("rule_csv", lang)],
         ["tol", method["tol"]],
         ["label_search", round(float(method["label_search"]), 6)],
         ["overlap", _num(method["overlap_length_m"])],
@@ -623,10 +673,10 @@ def _cable_sheets(result: dict, lang: str) -> dict[str, tuple[list, list]]:
         [item["tag"], _t(item["item"], lang), item["detail"]] for item in result["open_items"]
     ]
     return {
-        "Metraj": ([_t(c, lang) for c in columns], rows),
-        "Özet": ([_t(c, lang) for c in ("group", "key", "loads", "kw", "cable_m")], summary),
-        "Kontrol": ([_t(c, lang) for c in ("tag", "item", "detail")], control),
-        "Metodoloji": ([_t("topic", lang), _t("value", lang)], _cable_method(result, lang)),
+        "Metraj": _sheet(columns, rows, lang),
+        "Özet": _sheet(("group", "key", "loads", "kw", "cable_m"), summary, lang),
+        "Kontrol": _sheet(("tag", "item", "detail"), control, lang),
+        "Metodoloji": _sheet(("topic", "value"), _cable_method(result, lang), lang),
     }
 
 
@@ -651,6 +701,7 @@ def _cable_method(result: dict, lang: str) -> list[list]:
         ],
         ["rule_package", _say("rule_package", lang)],
         ["rule_section", _say("rule_section", lang)],
+        ["rule_csv", _say("rule_csv", lang)],
         ["section_rules", "; ".join(_rule_text(rule) for rule in rules) or "—"],
         ["label_search", round(float(method["search"]["pid"]), 6)],
     ]
@@ -687,12 +738,9 @@ def write_workbook(result: dict, *, kind: str, lang: str, path: str) -> dict:
     xlsx = target.with_suffix(".xlsx")
     xlsx.parent.mkdir(parents=True, exist_ok=True)
     written = []
-    for name, (header, rows) in sheets.items():
+    for name, (header, rows, kinds) in sheets.items():
         csv_path = xlsx.with_name(f"{xlsx.stem}_{CSV_SLUGS[name]}.csv")
-        with open(csv_path, "w", newline="", encoding="utf-8-sig") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(header)
-            writer.writerows([["" if cell is None else cell for cell in row] for row in rows])
+        write_csv(csv_path, header, rows, kinds, bom=True)
         written.append(str(csv_path))
     if not xlsx_available():
         refusal = UnsupportedCapabilityError(
@@ -705,11 +753,11 @@ def write_workbook(result: dict, *, kind: str, lang: str, path: str) -> dict:
     from openpyxl import Workbook
 
     book = Workbook()
-    for i, (name, (header, rows)) in enumerate(sheets.items()):
+    for i, (name, (header, rows, kinds)) in enumerate(sheets.items()):
         sheet = book.active if i == 0 else book.create_sheet()
         sheet.title = name
-        sheet.append(header)
+        append_xlsx_row(sheet, header, ["text"] * len(header))
         for row in rows:
-            sheet.append(row)
+            append_xlsx_row(sheet, row, kinds)
     book.save(xlsx)
     return {"xlsx": str(xlsx), "csv": written, "refused": None}
