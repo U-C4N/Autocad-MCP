@@ -379,6 +379,7 @@ Nothing loads a `.env` file — export these, or set them in your MCP client's `
 | `MAX_UNDO_STACK` | `5` | Maximum retained undo snapshots |
 | `EZDXF_UNDO_DEPTH` | `0` | Headless undo history depth; `0` disables it |
 | `MAX_DXF_BYTES` | `536870912` | Reject larger DXF input (512 MB); `0` disables |
+| `MAX_QA_ENTITIES` | `2000000` | Refuse a QA read (critique, validator, finalize, deliver) of a larger drawing with `scan_incomplete`; `0` disables |
 | `MAX_LIST_LIMIT` | `5000` | Bound list/selection response sizes |
 | `MAX_SPEC_ITEMS` | `2000` | Items per list of a `pid_from_spec` / `arch_plan_from_spec` document; `0` disables |
 | `MAX_VESSEL_TRAYS` | `500` | Trays a parametric column may carry; `0` disables |

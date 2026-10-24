@@ -353,18 +353,16 @@ async def _collect(backend: AutoCADBackend, scope: str) -> list[tuple[EntityInfo
                 return out
             offset += _PAGE
 
+    if scope == "all":
+        # One read of every layout without switching to it: walking the tabs
+        # with layout_set_current rebound the active paper layout and marked
+        # the document dirty - a read that changed the drawing (W3-T14-09).
+        from engineering.qa_scan import entity_infos_all_spaces
+
+        return await entity_infos_all_spaces(backend)
     layouts = await backend.layout_list()
     current = layouts.get("current") or "Model"
-    if scope != "all":
-        return await page_all(current)
-    entities = []
-    try:
-        for name in layouts.get("layouts", [current]):
-            await backend.layout_set_current(name)
-            entities.extend(await page_all(name))
-    finally:
-        await backend.layout_set_current(current)
-    return entities
+    return await page_all(current)
 
 
 async def build_graph(
@@ -392,10 +390,9 @@ async def build_graph(
         if name.startswith("PID_MARKER_"):
             continue
         payload = await read_payload(backend, info.handle)
-        try:
-            attributes = await backend.block_get_attributes(info.handle)
-        except Exception:
-            attributes = {}
+        # A failed attribute read is a failed read, not "no TAG": turning it
+        # into {} reported a tagged instrument as untagged.
+        attributes = await backend.block_get_attributes(info.handle)
         ins = info.properties.get("insertion", [0.0, 0.0])
         rotation = float(info.properties.get("rotation_deg", 0.0))
         scale = float(info.properties.get("x_scale", 1.0))

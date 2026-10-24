@@ -217,8 +217,10 @@ async def deliver_drawing(
             timings[f"export_{fmt}_ms"] = round((time.perf_counter() - export_started) * 1000, 2)
 
     validation_started = time.perf_counter()
-    validation = await DrawingValidator().run(backend, expected=expected or {})
-    critique_issues = await backend.drawing_critique(focus=None)
+    # One run context: the validator and the critique share one all-spaces read.
+    qa_shared: dict = {}
+    validation = await DrawingValidator().run(backend, expected=expected or {}, shared=qa_shared)
+    critique_issues = await backend.drawing_critique(focus=None, shared=qa_shared)
     critique_summary = {severity: 0 for severity in ("error", "warning", "info")}
     for issue in critique_issues:
         critique_summary[issue.severity] += 1

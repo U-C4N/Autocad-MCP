@@ -160,14 +160,20 @@ class PremiumContract(ABC):
     async def drawing_critique(
         self,
         focus: list[CritiqueFocus] | None = None,
+        *,
+        shared: dict | None = None,
     ) -> list[Issue]:
         """Run premium-quality geometric checks; return zero issues before
         `drawing_finalize`. `focus=None` runs all checks. (N8: this does NOT
-        replay the committed PlanSpec — it inspects the live drawing geometry.)"""
+        replay the committed PlanSpec — it inspects the live drawing geometry.)
+
+        `shared` is the run context `run_critique` reads its all-spaces
+        snapshot and domain indexes from; pass the dict the validator used so
+        a finalize reads the drawing once."""
         from engineering.critique import run_critique
 
         await self._ensure_document_state()
-        return await run_critique(self, focus)
+        return await run_critique(self, focus, shared=shared)
 
     def get_plan_spec(self) -> dict | None:
         """Return the PlanSpec committed by `drawing_plan` as a dict, or None

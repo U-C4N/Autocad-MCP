@@ -24,6 +24,7 @@ import math
 from typing import TYPE_CHECKING
 
 from engineering.plan_spec import Issue
+from engineering.qa_scan import qa_snapshot, shared_index
 
 from .graph import build_graph
 from .lines import LINE_CLASSES
@@ -328,11 +329,28 @@ def issues_for(focus: str, graph: dict) -> list[Issue]:
     return _CHECKS[focus](graph)
 
 
+#: The graph a run stands in when no space holds an INSERT: nodes come only
+#: from INSERTs, so such a drawing has no P&ID content to score.
+_NO_SYMBOLS = {"nodes": [], "edges": [], "junctions": [], "dangling": [], "skipped": "no INSERT"}
+
+
+async def _critique_graph(backend: AutoCADBackend, shared: dict) -> dict:
+    """The run's graph. The QA snapshot (``engineering/qa_scan.py``) is read
+    first: a complete read with no INSERT in any space cannot hold a recognised
+    symbol, and the graph - whose classification loop runs on the event loop -
+    is not built for it. An incomplete read builds the graph as before."""
+    snap, coverage = await qa_snapshot(backend, shared)
+    if coverage.complete and snap is not None and not any(r.type == "INSERT" for r in snap.records):
+        return dict(_NO_SYMBOLS)
+    return await build_graph(backend, include_foreign=True)
+
+
 def _make(focus: str):
     async def check(backend: AutoCADBackend, shared: dict) -> list[Issue]:
-        graph = shared.get(_KEY)
-        if graph is None:
-            graph = shared[_KEY] = await build_graph(backend, include_foreign=True)
+        async def build(b):
+            return await _critique_graph(b, shared)
+
+        graph = await shared_index(shared, _KEY, build, backend)
         return issues_for(focus, graph)
 
     check.needs_shared = True  # type: ignore[attr-defined]

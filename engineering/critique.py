@@ -7,6 +7,7 @@ keeps drawing_critique scope from drifting.
 
 from __future__ import annotations
 
+import asyncio
 import math
 from typing import TYPE_CHECKING
 
@@ -19,6 +20,13 @@ from .plan_spec import (
     CritiqueFocus,
     Issue,
 )
+from .qa_scan import ScanCoverage, qa_snapshot
+
+#: ``Issue.detail["code"]`` of a check that raised. A value, not a CritiqueFocus.
+CHECK_FAILED = "check_failed"
+#: ``Issue.detail["code"]`` of a check whose read did not cover the drawing.
+#: The same word Task 10 uses as an error kind. Not a CritiqueFocus either.
+SCAN_INCOMPLETE = "scan_incomplete"
 
 if TYPE_CHECKING:
     from backends.base import AutoCADBackend
@@ -29,28 +37,12 @@ _EXPECTED_LAYER_COLOR: dict[str, int] = {
     name: color for name, color, _lt, _lw, _desc in ENGINEERING_LAYERS
 }
 
-# Dimension entity types that should sit on the DIM layer.
-_DIM_TYPES = {
-    "DIMENSION",
-    "DIMLINEAR",
-    "DIMALIGNED",
-    "DIMANGULAR",
-    "DIMRADIUS",
-    "DIMDIAMETER",
-    "DIMORDINATE",
-}
-
 
 async def _check_iso128(backend: AutoCADBackend) -> list[Issue]:
     """Layer lineweights must be in ISO_128_LINEWEIGHTS_MM (or -3=ByLayer
     sentinel meaning 'inherit')."""
     issues: list[Issue] = []
-    try:
-        layers = await backend.layer_list()
-    except DocumentQuarantineError:
-        raise
-    except Exception as exc:
-        return [Issue("warning", "iso128", f"layer_list failed: {exc}")]
+    layers = await backend.layer_list()
     allowed = set(ISO_128_LINEWEIGHTS_MM)
     for lyr in layers:
         # CONSTRUCTION-class layers are intentionally sub-ISO (0.05mm scratch
@@ -125,13 +117,8 @@ def _check_dimension_legibility(backend: AutoCADBackend) -> list[Issue]:
 
     from backends.ezdxf_backend import effective_dimvar
 
-    try:
-        height = float(effective_dimvar(doc, "dimtxt"))
-        separator = int(effective_dimvar(doc, "dimdsep"))
-    except DocumentQuarantineError:
-        raise
-    except Exception:
-        return []
+    height = float(effective_dimvar(doc, "dimtxt"))
+    separator = int(effective_dimvar(doc, "dimdsep"))
 
     issues: list[Issue] = []
     if height < ISO_3098_MIN_TEXT_MM:
@@ -164,12 +151,7 @@ def _check_dimension_legibility(backend: AutoCADBackend) -> list[Issue]:
 async def _check_layer_color(backend: AutoCADBackend) -> list[Issue]:
     """Engineering-standard layers must keep their canonical ACI color."""
     issues: list[Issue] = []
-    try:
-        layers = await backend.layer_list()
-    except DocumentQuarantineError:
-        raise
-    except Exception:
-        return []
+    layers = await backend.layer_list()
     for lyr in layers:
         expected = _EXPECTED_LAYER_COLOR.get(lyr.name)
         if expected is None:
@@ -189,181 +171,229 @@ async def _check_layer_color(backend: AutoCADBackend) -> list[Issue]:
     return issues
 
 
-async def _check_construction_left(backend: AutoCADBackend) -> list[Issue]:
+async def _records(backend: AutoCADBackend, shared: dict, focus: str):
+    """The run's snapshot records (every space), plus a ``scan_incomplete``
+    issue for ``focus`` when the read did not cover the whole drawing."""
+    snap, coverage = await qa_snapshot(backend, shared)
+    issues = [] if coverage.complete else [scan_incomplete_issue(focus, coverage)]
+    return (snap.records if snap is not None else ()), issues
+
+
+def scan_incomplete_issue(focus: str, coverage: ScanCoverage) -> Issue:
+    """The finding a check reports when its read did not cover the drawing."""
+    return Issue(
+        severity="error",
+        focus=focus,  # type: ignore[arg-type]
+        message=f"{focus} could not check the whole drawing: {coverage.reason}",
+        detail={"code": SCAN_INCOMPLETE, **coverage.to_dict()},
+    )
+
+
+def _close_pairs(
+    points: list[tuple[str, float, float]], tol: float
+) -> list[tuple[int, int, float]]:
+    """Every pair ``(i, j, d)``, ``i < j``, of points in the same space with
+    ``d = hypot(p_i - p_j) <= tol``, sorted by ``(i, j)``.
+
+    A grid hash replaces the all-pairs loop (8.9 s at 5,000 lines on the event
+    loop, measured): the cell is the tolerance, so a partner lies in one of
+    the nine cells around a point. The cell is widened by one part in a
+    million so a float quotient at a cell boundary cannot hide a pair that is
+    exactly ``tol`` apart. Sorting by ``(i, j)`` reproduces the order the
+    all-pairs loop reported in.
+    """
+    cell = tol * (1.0 + 1e-6)
+    grid: dict[tuple[str, int, int], list[int]] = {}
+    keys = []
+    for index, (space, x, y) in enumerate(points):
+        key = (space, math.floor(x / cell), math.floor(y / cell))
+        keys.append(key)
+        grid.setdefault(key, []).append(index)
+    pairs: list[tuple[int, int, float]] = []
+    for index, (space, x, y) in enumerate(points):
+        _space, cx, cy = keys[index]
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for other in grid.get((space, cx + dx, cy + dy), ()):
+                    if other <= index:
+                        continue
+                    d = math.hypot(x - points[other][1], y - points[other][2])
+                    if d <= tol:
+                        pairs.append((index, other, d))
+    pairs.sort()
+    return pairs
+
+
+async def _check_construction_left(backend: AutoCADBackend, shared: dict) -> list[Issue]:
     """No construction/scratch geometry may remain before drawing_finalize.
 
     Matches any layer whose name contains 'CONST' (CONSTRUCTION, M-CONST-E-N, …)
     so the check is independent of the active layer set — a leftover iso13567
     scaffold on M-CONST-E-N is caught just like a mech one on CONSTRUCTION.
+    Every entity of every space is read (``engineering/qa_scan.py``).
     """
-    try:
-        ents = await backend.entity_list(limit=5000)
-    except DocumentQuarantineError:
-        raise
-    except Exception:
-        return []
-    leftover = [e for e in ents if "CONST" in (e.layer or "").upper()]
-    if not leftover:
-        return []
-    return [
-        Issue(
-            severity="error",
-            focus="construction_left",
-            message=(
-                f"{len(leftover)} entity/entities still on a construction layer. "
-                "Call construction_clear() before drawing_finalize."
-            ),
-            handles=[e.handle for e in leftover[:50]],
-            detail={
-                "count": len(leftover),
-                "layers": sorted({e.layer for e in leftover if e.layer}),
-            },
+    records, issues = await _records(backend, shared, "construction_left")
+    leftover = [r for r in records if "CONST" in (r.layer or "").upper()]
+    if leftover:
+        issues.append(
+            Issue(
+                severity="error",
+                focus="construction_left",
+                message=(
+                    f"{len(leftover)} entity/entities still on a construction layer. "
+                    "Call construction_clear() before drawing_finalize."
+                ),
+                handles=[r.handle for r in leftover[:50]],
+                detail={
+                    "count": len(leftover),
+                    "layers": sorted({r.layer for r in leftover if r.layer}),
+                    "spaces": sorted({r.space for r in leftover}),
+                },
+            )
         )
-    ]
-
-
-async def _check_untrimmed_corner(backend: AutoCADBackend) -> list[Issue]:
-    """Two LINE endpoints within `tol` but not exactly equal usually means a
-    corner where one line overshoots — TRIM/EXTEND/FILLET was forgotten."""
-    tol = 0.5  # mm — generous; tighten via PlanSpec.notes later
-    try:
-        lines = await backend.entity_list(type_filter="LINE", limit=5000)
-    except DocumentQuarantineError:
-        raise
-    except Exception:
-        return []
-    endpoints: list[tuple[str, tuple[float, float]]] = []
-    for ln in lines:
-        s = ln.properties.get("start")
-        e = ln.properties.get("end")
-        if s and e:
-            endpoints.append((ln.handle, (float(s[0]), float(s[1]))))
-            endpoints.append((ln.handle, (float(e[0]), float(e[1]))))
-    issues: list[Issue] = []
-    n = len(endpoints)
-    seen: set[frozenset[str]] = set()
-    for i in range(n):
-        h1, p1 = endpoints[i]
-        for j in range(i + 1, n):
-            h2, p2 = endpoints[j]
-            if h1 == h2:
-                continue
-            d = math.hypot(p1[0] - p2[0], p1[1] - p2[1])
-            if 1e-9 < d <= tol:
-                key = frozenset((h1, h2))
-                if key in seen:
-                    continue
-                seen.add(key)
-                issues.append(
-                    Issue(
-                        severity="warning",
-                        focus="untrimmed_corner",
-                        message=(
-                            f"Lines {h1} and {h2} have endpoints {d:.3f} mm apart — "
-                            "likely an untrimmed corner (use entity_trim or entity_fillet)."
-                        ),
-                        handles=[h1, h2],
-                        detail={"gap_mm": d, "p1": list(p1), "p2": list(p2)},
-                    )
-                )
     return issues
 
 
-async def _check_duplicate_entities(backend: AutoCADBackend) -> list[Issue]:
-    """Two LINEs with identical endpoints (in either direction) are duplicates."""
-    try:
-        lines = await backend.entity_list(type_filter="LINE", limit=5000)
-    except DocumentQuarantineError:
-        raise
-    except Exception:
-        return []
-    seen: dict[tuple, str] = {}
+#: Two LINE ends this close but not equal are an untrimmed corner (mm).
+UNTRIMMED_TOL_MM = 0.5
+
+
+def _untrimmed_issues(records) -> list[Issue]:
+    endpoints = [
+        (r.handle, r.space, point)
+        for r in records
+        if r.type == "LINE" and len(r.points) == 2
+        for point in r.points
+    ]
+    pairs = _close_pairs([(space, p[0], p[1]) for _h, space, p in endpoints], UNTRIMMED_TOL_MM)
     issues: list[Issue] = []
-    for ln in lines:
-        s = ln.properties.get("start")
-        e = ln.properties.get("end")
-        if not (s and e):
+    seen: set[frozenset[str]] = set()
+    for i, j, d in pairs:
+        h1, space, p1 = endpoints[i]
+        h2, _space, p2 = endpoints[j]
+        if h1 == h2 or d <= 1e-9:
             continue
-        k1 = (round(s[0], 4), round(s[1], 4), round(e[0], 4), round(e[1], 4))
-        k2 = (k1[2], k1[3], k1[0], k1[1])
+        key = frozenset((h1, h2))
+        if key in seen:
+            continue
+        seen.add(key)
+        issues.append(
+            Issue(
+                severity="warning",
+                focus="untrimmed_corner",
+                message=(
+                    f"Lines {h1} and {h2} have endpoints {d:.3f} mm apart — "
+                    "likely an untrimmed corner (use entity_trim or entity_fillet)."
+                ),
+                handles=[h1, h2],
+                detail={"gap_mm": d, "p1": list(p1), "p2": list(p2), "space": space},
+            )
+        )
+    return issues
+
+
+async def _check_untrimmed_corner(backend: AutoCADBackend, shared: dict) -> list[Issue]:
+    """Two LINE endpoints within ``UNTRIMMED_TOL_MM`` but not exactly equal usually
+    means a corner where one line overshoots — TRIM/EXTEND/FILLET was forgotten.
+    Ends are compared only within one space; the arithmetic runs off the event loop."""
+    records, issues = await _records(backend, shared, "untrimmed_corner")
+    return issues + await asyncio.to_thread(_untrimmed_issues, records)
+
+
+async def _check_duplicate_entities(backend: AutoCADBackend, shared: dict) -> list[Issue]:
+    """Two LINEs of one space with identical endpoints (in either direction)."""
+    records, issues = await _records(backend, shared, "duplicate_entities")
+    seen: dict[tuple, str] = {}
+    for r in records:
+        if r.type != "LINE" or len(r.points) != 2:
+            continue
+        (sx, sy), (ex, ey) = r.points
+        k1 = (r.space, round(sx, 4), round(sy, 4), round(ex, 4), round(ey, 4))
+        k2 = (r.space, k1[3], k1[4], k1[1], k1[2])
         for key in (k1, k2):
             if key in seen:
                 issues.append(
                     Issue(
                         severity="warning",
                         focus="duplicate_entities",
-                        message=f"Lines {seen[key]} and {ln.handle} are duplicates.",
-                        handles=[seen[key], ln.handle],
+                        message=f"Lines {seen[key]} and {r.handle} are duplicates.",
+                        handles=[seen[key], r.handle],
+                        detail={"space": r.space},
                     )
                 )
                 break
         else:
-            seen[k1] = ln.handle
+            seen[k1] = r.handle
     return issues
 
 
-def _dim_ref_point(e) -> tuple[float, float] | None:
-    """Best-effort reference point for a dimension entity, tolerant of the
-    per-backend property shape: explicit text/def points first, then the
-    bounding-box centre (COM seeds `bounding_box` for every entity)."""
-    for key in ("text_position", "defpoint", "insertion_point", "insertion"):
-        ip = e.properties.get(key)
-        if ip and len(ip) >= 2:
-            return (float(ip[0]), float(ip[1]))
-    bb = e.properties.get("bounding_box")
-    try:
-        if isinstance(bb, dict):
-            mn, mx = bb.get("min"), bb.get("max")
-            return ((mn[0] + mx[0]) / 2.0, (mn[1] + mx[1]) / 2.0)
-        if bb and len(bb) == 2 and hasattr(bb[0], "__len__"):
-            return ((bb[0][0] + bb[1][0]) / 2.0, (bb[0][1] + bb[1][1]) / 2.0)
-        if bb and len(bb) >= 4:
-            return ((bb[0] + bb[2]) / 2.0, (bb[1] + bb[3]) / 2.0)
-    except (TypeError, IndexError, KeyError):
-        return None
+def _dim_ref_point(record) -> tuple[float, float] | None:
+    """A dimension record's reference point: its text midpoint (the snapshot
+    stores ``(defpoint, text midpoint)``, the midpoint falling back to the
+    defpoint when the DXF has none), else its box centre."""
+    if len(record.points) >= 2:
+        return record.points[1]
+    if record.points:
+        return record.points[0]
+    if record.bbox is not None:
+        x0, y0, x1, y1 = record.bbox
+        return ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
     return None
 
 
-async def _check_dim_overlap(backend: AutoCADBackend) -> list[Issue]:
-    """Two dimensions whose reference points are within `tol` likely overlap.
+#: Two dimension reference points this close are an overlap (mm).
+DIM_OVERLAP_TOL_MM = 5.0
 
-    Filters by entity TYPE (not layer) so dims land-anywhere — including the
-    iso13567 M-DIMEN-T-N layer — are still considered.
-    """
-    tol = 5.0  # mm
-    try:
-        ents = await backend.entity_list(limit=5000)
-    except DocumentQuarantineError:
-        raise
-    except Exception:
-        return []
-    dim_points: list[tuple[str, tuple[float, float]]] = []
-    for e in ents:
-        if e.type not in _DIM_TYPES and "DIM" not in e.type:
+
+def _dim_overlap_issues(records) -> list[Issue]:
+    dims = []
+    for r in records:
+        if "DIMENSION" not in r.type:
             continue
-        ip = _dim_ref_point(e)
-        if ip is not None:
-            dim_points.append((e.handle, ip))
+        point = _dim_ref_point(r)
+        if point is not None:
+            dims.append((r.handle, r.space, point))
+    pairs = _close_pairs([(space, p[0], p[1]) for _h, space, p in dims], DIM_OVERLAP_TOL_MM)
     issues: list[Issue] = []
     seen: set[frozenset[str]] = set()
-    for i, (h1, p1) in enumerate(dim_points):
-        for j in range(i + 1, len(dim_points)):
-            h2, p2 = dim_points[j]
-            d = math.hypot(p1[0] - p2[0], p1[1] - p2[1])
-            if d <= tol:
-                key = frozenset((h1, h2))
-                if key in seen:
-                    continue
-                seen.add(key)
-                issues.append(
-                    Issue(
-                        severity="warning",
-                        focus="dim_overlap",
-                        message=f"Dimensions {h1} and {h2} are {d:.2f} mm apart — likely overlapping.",
-                        handles=[h1, h2],
-                    )
-                )
+    for i, j, d in pairs:
+        h1, space, _p1 = dims[i]
+        h2, _space, _p2 = dims[j]
+        key = frozenset((h1, h2))
+        if key in seen:
+            continue
+        seen.add(key)
+        issues.append(
+            Issue(
+                severity="warning",
+                focus="dim_overlap",
+                message=f"Dimensions {h1} and {h2} are {d:.2f} mm apart — likely overlapping.",
+                handles=[h1, h2],
+                detail={"space": space},
+            )
+        )
     return issues
+
+
+async def _check_dim_overlap(backend: AutoCADBackend, shared: dict) -> list[Issue]:
+    """Two dimensions of one space whose reference points are within
+    ``DIM_OVERLAP_TOL_MM`` likely overlap.
+
+    Filters by DXF entity TYPE (not layer) so dims land-anywhere — including the
+    iso13567 M-DIMEN-T-N layer — are still considered; the snapshot carries DXF
+    names on both engines, so ActiveX's ROTATEDDIMENSION spelling no longer matters.
+    """
+    records, issues = await _records(backend, shared, "dim_overlap")
+    return issues + await asyncio.to_thread(_dim_overlap_issues, records)
+
+
+for _check in (
+    _check_construction_left,
+    _check_untrimmed_corner,
+    _check_duplicate_entities,
+    _check_dim_overlap,
+):
+    _check.needs_shared = True  # type: ignore[attr-defined]
 
 
 async def _check_gdt(backend: AutoCADBackend) -> list[Issue]:
@@ -425,16 +455,54 @@ from .understand.critique import TOPO_DISPATCH  # noqa: E402  (same reason: afte
 _FOCUS_DISPATCH.update(TOPO_DISPATCH)
 
 
+async def _run_check(check, focus: str, backend: AutoCADBackend, shared: dict) -> list[Issue]:
+    """One check; a failure becomes an ``error`` issue of that focus, never silence.
+
+    A ``DocumentQuarantineError`` propagates: the document is untrusted and the
+    caller must be told so, not handed a finding about it.
+    """
+    try:
+        if getattr(check, "needs_shared", False):
+            return await check(backend, shared)
+        return await check(backend)
+    except DocumentQuarantineError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - reported as check_failed below
+        error = f"{type(exc).__name__}: {exc}"
+        return [
+            Issue(
+                severity="error",
+                focus=focus,  # type: ignore[arg-type]
+                message=f"The {focus} check failed and checked nothing: {error}",
+                detail={"code": CHECK_FAILED, "error": error},
+            )
+        ]
+
+
 async def run_critique(
     backend: AutoCADBackend,
     focus: list[CritiqueFocus] | None = None,
+    *,
+    shared: dict | None = None,
 ) -> list[Issue]:
-    """Dispatch each requested focus check and return aggregated issues."""
+    """Dispatch each requested focus check and return aggregated issues.
+
+    ``shared`` is the run's context: the all-spaces QA snapshot
+    (``engineering/qa_scan.py``) and the domain indexes (P&ID graph,
+    mechanical and architectural indexes, topology) are built once into it.
+    Pass the dict the validator used to reuse its read (``drawing_finalize``
+    does); a dict is only valid while the drawing does not change. None starts
+    a fresh one.
+
+    A check that raises yields one ``error`` issue with
+    ``detail["code"] == "check_failed"``; a read that did not cover the whole
+    drawing yields ``detail["code"] == "scan_incomplete"``. Neither code is a
+    focus. A quarantine refusal propagates.
+    """
     foci = list(focus) if focus is not None else list(ALL_CRITIQUE_FOCUSES)
     issues: list[Issue] = []
-    # Per-run context: the P&ID focuses build the connectivity graph once
-    # here and share it, so six focuses cost one read of the drawing.
-    shared: dict = {}
+    if shared is None:
+        shared = {}
     for f in foci:
         check = _FOCUS_DISPATCH.get(f)
         if check is None:
@@ -446,8 +514,5 @@ async def run_critique(
                 )
             )
             continue
-        if getattr(check, "needs_shared", False):
-            issues.extend(await check(backend, shared))
-        else:
-            issues.extend(await check(backend))
+        issues.extend(await _run_check(check, f, backend, shared))
     return issues

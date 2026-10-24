@@ -47,6 +47,7 @@ import re
 from typing import TYPE_CHECKING
 
 from engineering.plan_spec import Issue
+from engineering.qa_scan import shared_index
 
 from .primitives import ROLE_LAYER
 from .standards.threads import MINOR_RATIO
@@ -210,18 +211,12 @@ def _views_of(record: dict) -> list[dict]:
 
 async def build_index(backend: AutoCADBackend) -> dict:
     """One read of the drawing: every entity, plus every ACADMCP_MECH payload."""
-    try:
-        entities = await _all_entities(backend)
-    except Exception:
-        entities = []
+    entities = await _all_entities(backend)
     records: list[dict] = []
     for ent in entities:
         if str(ent.type).upper() not in _XDATA_TYPES:
             continue
-        try:
-            raw = await backend.entity_get_xdata(ent.handle, APP_ID)
-        except Exception:
-            continue
+        raw = await backend.entity_get_xdata(ent.handle, APP_ID)
         values = (raw.get("xdata") or {}).get(APP_ID) or []
         if not values:
             continue
@@ -653,9 +648,7 @@ def issues_for(focus: str, index: dict) -> list[Issue]:
 
 def _make(focus: str):
     async def check(backend: AutoCADBackend, shared: dict) -> list[Issue]:
-        index = shared.get(_KEY)
-        if index is None:
-            index = shared[_KEY] = await build_index(backend)
+        index = await shared_index(shared, _KEY, build_index, backend)
         return issues_for(focus, index)
 
     check.needs_shared = True  # type: ignore[attr-defined]

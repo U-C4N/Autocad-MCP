@@ -37,6 +37,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from engineering.plan_spec import Issue
+from engineering.qa_scan import shared_index
 
 from .layers import ARCH_ROLE_LAYER
 from .model import APP_ID, Opening, Room, Stair, Wall, axis_segments, decode, from_payload
@@ -72,15 +73,9 @@ async def build_index(backend: AutoCADBackend) -> dict:
 
     index: dict = {"walls": {}, "openings": {}, "stairs": {}, "rooms": {}, "faces": []}
     for layer in sorted(set(ARCH_ROLE_LAYER.values())):
-        try:
-            entities = await all_entities(backend, layer=layer)
-        except Exception:
-            continue
+        entities = await all_entities(backend, layer=layer)
         for entity in entities:
-            try:
-                raw = await backend.entity_get_xdata(entity.handle, APP_ID)
-            except Exception:
-                continue
+            raw = await backend.entity_get_xdata(entity.handle, APP_ID)
             values = (raw.get("xdata") or {}).get(APP_ID) or []
             if not values:
                 continue
@@ -359,9 +354,7 @@ def issues_for(focus: str, index: dict) -> list[Issue]:
 
 def _make(focus: str):
     async def check(backend: AutoCADBackend, shared: dict) -> list[Issue]:
-        index = shared.get(_KEY)
-        if index is None:
-            index = shared[_KEY] = await build_index(backend)
+        index = await shared_index(shared, _KEY, build_index, backend)
         return issues_for(focus, index)
 
     check.needs_shared = True  # type: ignore[attr-defined]

@@ -72,6 +72,12 @@ class Settings:
         # names the file's size and this variable.
         self.max_dxf_bytes: int = int(os.environ.get("MAX_DXF_BYTES", str(DEFAULT_MAX_DXF_BYTES)))
 
+        # Ceiling on one QA read (drawing_critique, the validator, drawing_finalize,
+        # drawing_deliver): the entities of every space are counted first and a
+        # drawing holding more is refused with `scan_incomplete` rather than
+        # read in part. 0 disables the check.
+        self.max_qa_entities: int = int(os.environ.get("MAX_QA_ENTITIES", "2000000"))
+
         # Hard cap on list/select limit params to keep tool responses bounded.
         self.max_list_limit: int = int(os.environ.get("MAX_LIST_LIMIT", "5000"))
 

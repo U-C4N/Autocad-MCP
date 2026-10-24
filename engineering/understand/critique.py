@@ -15,8 +15,8 @@ drawing made entirely by this server - a ``pid_from_spec`` sheet, an
 
 Cost: the layer table is read first; a drawing with no candidate layer (every
 drawing this server makes) is never snapshotted, so ``focus=None`` stays cheap.
-A snapshot that cannot be taken is reported as one ``info`` issue per focus,
-never as a clean result.
+A snapshot that did not cover the drawing is reported as one ``error`` issue
+per focus with ``detail.code`` ``scan_incomplete``, never as a clean result.
 
 Severities are this module's decision: a near miss is an ``error`` (a network
 that looks connected and is not - a takeoff counts two runs), a dangling end a
@@ -28,11 +28,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from backends.quarantine import DocumentQuarantineError
 from engineering.arch.layers import ARCH_LAYER_ROLES, ARCH_LAYERS
 from engineering.layers import PID_LAYERS
 from engineering.pid.lines import PID_LINE_LAYERS
 from engineering.plan_spec import Issue
+from engineering.qa_scan import shared_index
 from engineering.understand.topology import (
     network_layers,
     topology_findings,
@@ -72,28 +72,27 @@ def focus_layers(snap) -> list[str]:
     return [row["layer"] for row in network_layers(snap) if row["layer"] not in SEMANTIC_LAYERS]
 
 
-async def build_index(backend: AutoCADBackend) -> dict:
+async def build_index(backend: AutoCADBackend, shared: dict | None = None) -> dict:
     """One read of the drawing for the three focuses:
-    ``{"layers": [...], "findings": dict | None, "error": str | None}``."""
-    try:
-        names = [layer.name for layer in await backend.layer_list()]
-    except DocumentQuarantineError:
-        raise
-    except Exception:
-        names = []
+    ``{"layers": [...], "findings": dict | None, "error": str | None}``.
+
+    The drawing is the run's QA snapshot (``engineering/qa_scan.py``), so a
+    finalize that already read it for the validator does not read it again.
+    A layer table that cannot be read raises (``run_critique`` reports
+    ``check_failed``); a snapshot that did not cover the drawing sets
+    ``error`` and each focus reports ``scan_incomplete``.
+    """
+    from engineering.qa_scan import qa_snapshot
+
+    names = [layer.name for layer in await backend.layer_list()]
     if not any(_is_candidate(name) for name in names):
         return {"layers": [], "findings": None, "error": None}
-    from engineering.understand.snapshot import take_snapshot
-
-    try:
-        snap = await take_snapshot(backend, None)
-    except DocumentQuarantineError:
-        raise
-    except Exception as exc:
+    snap, coverage = await qa_snapshot(backend, {} if shared is None else shared)
+    if not coverage.complete:
         return {
             "layers": sorted(n for n in names if _is_candidate(n)),
             "findings": None,
-            "error": str(exc) or type(exc).__name__,
+            "error": coverage.reason,
         }
     layers = focus_layers(snap)
     if not layers:
@@ -168,12 +167,16 @@ def issues_for(focus: str, index: dict) -> list[Issue]:
     if index.get("error"):
         return [
             Issue(
-                "info",
+                "error",
                 focus,
                 f"Topology not checked on {', '.join(index['layers'])}: the drawing could not be "
-                f"read ({index['error']}).",
+                f"read in full ({index['error']}).",
                 [],
-                {"layers": list(index["layers"])},
+                {
+                    "code": "scan_incomplete",
+                    "reason": index["error"],
+                    "layers": list(index["layers"]),
+                },
             )
         ]
     findings = index.get("findings")
@@ -184,9 +187,10 @@ def issues_for(focus: str, index: dict) -> list[Issue]:
 
 def _make(focus: str):
     async def check(backend: AutoCADBackend, shared: dict) -> list[Issue]:
-        index = shared.get(_KEY)
-        if index is None:
-            index = shared[_KEY] = await build_index(backend)
+        async def build(b):
+            return await build_index(b, shared)
+
+        index = await shared_index(shared, _KEY, build, backend)
         return issues_for(focus, index)
 
     check.needs_shared = True  # type: ignore[attr-defined]
