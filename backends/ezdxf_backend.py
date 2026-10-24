@@ -2976,7 +2976,7 @@ class EzdxfBackend(AutoCADBackend):
                 current = doc.active_layout().name
             return {"ok": True, "layouts": names, "current": current}
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def layout_create(self, name: str) -> dict:
         def _sync():
@@ -3250,7 +3250,7 @@ class EzdxfBackend(AutoCADBackend):
         def _sync():
             return [self._document_row(key, state) for key, state in self._docs.items()]
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def document_activate(self, name_or_path: str) -> dict:
         if not isinstance(name_or_path, str):
@@ -3459,7 +3459,7 @@ class EzdxfBackend(AutoCADBackend):
                 )
             return rows
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def layer_state_delete(self, name) -> dict:
         from engineering.environment.layer_states import validate_state_name
@@ -3629,7 +3629,7 @@ class EzdxfBackend(AutoCADBackend):
                 for view in doc.views
             ]
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     # ── UCS ───────────────────────────────────────────────────────────────────
 
@@ -3695,7 +3695,7 @@ class EzdxfBackend(AutoCADBackend):
                 rows.append(self._ucs_row(None, origin, x_axis, y_axis, True))
             return rows
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def ucs_set(self, name, origin, x_axis, y_axis) -> dict:
         from engineering.environment.names import validate_name
@@ -3860,7 +3860,7 @@ class EzdxfBackend(AutoCADBackend):
                 result["note"] = self._R12_NOTE
             return result
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def viewport_set_scale(self, handle: str, scale: float) -> dict:
         def _sync():
@@ -4440,7 +4440,7 @@ class EzdxfBackend(AutoCADBackend):
                 if name != "Model"
             ]
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def page_setup_apply(self, layout: str, setup: dict) -> dict:
         from engineering.standards.papers import (
@@ -6457,7 +6457,7 @@ class EzdxfBackend(AutoCADBackend):
                 select.Window((lo_x, lo_y), (hi_x, hi_y)), resolved, entity_type, layer
             )
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def selection_polygon(
         self, points, mode: str = "window", entity_type: str = "", layer: str = ""
@@ -6478,7 +6478,7 @@ class EzdxfBackend(AutoCADBackend):
                 }
             return self._select_shape(select.Polygon(vertices), resolved, entity_type, layer)
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def selection_filter(
         self,
@@ -6553,7 +6553,7 @@ class EzdxfBackend(AutoCADBackend):
                 "filtered_by": filtered_by,
             }
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def entity_list(
         self,
@@ -6610,7 +6610,7 @@ class EzdxfBackend(AutoCADBackend):
             doc = self._require_doc()
             return [_layer_info_dxf(lyr, self._current_layer) for lyr in doc.layers]
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def layer_create(
         self,
@@ -6755,7 +6755,7 @@ class EzdxfBackend(AutoCADBackend):
             doc = self._require_doc()
             return [lt.dxf.name for lt in doc.linetypes]
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def linetype_load(self, name, file=None) -> dict:
         # Loads a single linetype. Lookup order:
@@ -6815,7 +6815,7 @@ class EzdxfBackend(AutoCADBackend):
                 )
             return blocks
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def block_insert(
         self,
@@ -7233,7 +7233,7 @@ class EzdxfBackend(AutoCADBackend):
                 result[attrib.dxf.tag] = self._attrib_value(attrib)
             return result
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def block_set_attributes(self, handle, attributes) -> dict:
         from backends.block_specs import validate_attribute_values
@@ -7275,7 +7275,7 @@ class EzdxfBackend(AutoCADBackend):
                     out[app] = decode_values((tag.code, tag.value) for tag in tags)
             return {"handle": handle, "xdata": out, "backend": "ezdxf"}
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def entity_set_xdata(self, handle, app_name, values) -> dict:
         from backends.xdata_specs import (
@@ -7543,7 +7543,7 @@ class EzdxfBackend(AutoCADBackend):
                 "by_layer": dict(sorted(layer_counts.items(), key=lambda x: -x[1])),
             }
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def analysis_entities_in_region(
         self,
@@ -7589,7 +7589,7 @@ class EzdxfBackend(AutoCADBackend):
                         continue
             return results
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def analysis_measure_distance(self, x1, y1, x2, y2) -> float:
         return math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
@@ -7601,7 +7601,7 @@ class EzdxfBackend(AutoCADBackend):
         def _sync():
             return _measure_dxf_entity(self._get_entity(handle), float(flatten_tolerance))
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     # ── boundary tracing (M8 / F3) ───────────────────────────────────────────
 
@@ -7990,7 +7990,7 @@ class EzdxfBackend(AutoCADBackend):
                 "dxf_attributes": dump,
             }
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def analysis_bounding_box(self) -> dict:
         def _sync():
@@ -8009,7 +8009,7 @@ class EzdxfBackend(AutoCADBackend):
                     return {"error": str(e)}
             return {"error": "ezdxf bbox not available"}
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def analysis_select_by_layer(self, layer_name) -> list[EntityInfo]:
         def _sync():
@@ -8020,7 +8020,7 @@ class EzdxfBackend(AutoCADBackend):
                 if e.dxf.get("layer", "0").lower() == layer_name.lower()
             ]
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def analysis_select_by_type(self, entity_type) -> list[EntityInfo]:
         def _sync():
@@ -8028,7 +8028,7 @@ class EzdxfBackend(AutoCADBackend):
             et = entity_type.upper()
             return [_entity_info_dxf(e) for e in msp if et == e.dxftype().upper()]
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def selection_get(self) -> dict:
         # COM-only: headless ezdxf has no viewport / pickfirst grip selection.
@@ -8158,7 +8158,7 @@ class EzdxfBackend(AutoCADBackend):
                     "truncated": False,
                 }
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     # ── transactions ──────────────────────────────────────────────────────────
 
@@ -8264,7 +8264,15 @@ class EzdxfBackend(AutoCADBackend):
             key = str(name).upper()
             if key in _VPORT_SYSVARS:
                 attr, shape = _VPORT_SYSVARS[key]
-                raw = getattr(self._active_vport(doc).dxf, attr)
+                # A read never creates the *Active entry (``_active_vport``
+                # does, for the writers): a file without one reads the VPORT
+                # defaults from an unbound entity, so readonly=True stays true.
+                from ezdxf.entities import VPort
+
+                active = doc.viewports.has_entry("*Active")
+                entries = doc.viewports.get("*Active") if active else []
+                vport = entries[0] if entries else VPort.new(dxfattribs={"name": "*Active"})
+                raw = getattr(vport.dxf, attr)
                 if shape == "point":
                     return (float(raw[0]), float(raw[1]))
                 return int(raw)
@@ -8279,7 +8287,7 @@ class EzdxfBackend(AutoCADBackend):
                 return math.radians(float(raw))
             return raw
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def system_set_variable(self, name, value) -> dict:
         from ezdxf.lldxf.const import DXFKeyError
@@ -8367,7 +8375,7 @@ class EzdxfBackend(AutoCADBackend):
             rows.sort(key=lambda row: row["name"].lower())
             return rows
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def dimstyle_create(self, name: str, values: dict, set_current: bool = False) -> dict:
         from engineering.standards.dimstyles import validate_overrides
@@ -8492,7 +8500,7 @@ class EzdxfBackend(AutoCADBackend):
             rows.sort(key=lambda row: row["name"].lower())
             return rows
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def textstyle_create(
         self,
@@ -8574,7 +8582,7 @@ class EzdxfBackend(AutoCADBackend):
             rows.sort(key=lambda row: row["name"].lower())
             return rows
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def mleaderstyle_create(self, name: str, values: dict) -> dict:
         from engineering.standards.mleaderstyles import validate_mleaderstyle
@@ -9039,7 +9047,7 @@ class EzdxfBackend(AutoCADBackend):
                 "backend": "ezdxf",
             }
 
-        return await self._async(_sync)
+        return await self._async(_sync, readonly=True)
 
     async def drawing_properties_set(
         self, summary: dict | None = None, custom: dict | None = None

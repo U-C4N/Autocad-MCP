@@ -430,7 +430,11 @@ async def take_snapshot(backend, path: str | None = None) -> Snapshot:
         finally:
             shutil.rmtree(folder, ignore_errors=True)
     source = backend._doc_path or "memory:untitled"
-    return await backend._async(lambda: records_from_doc(backend._doc, source=source))
+    # A pure read of the drawing: an overrun detaches it instead of
+    # quarantining a document it cannot have changed (W1 review follow-up).
+    return await backend._async(
+        lambda: records_from_doc(backend._doc, source=source), readonly=True
+    )
 
 
 def length_of(rec: EntityRecord) -> float:
