@@ -467,3 +467,17 @@ async def test_untrimmed_corners_beside_a_coincident_cluster_are_unchanged(backe
         tuple(sorted((z, c))) for z in zero
     }
     assert set(pairs) == expected and len(pairs) == len(expected)
+
+
+# -- finding 5: a negative ceiling ------------------------------------------------------
+
+
+async def test_a_negative_max_qa_entities_is_refused_when_the_settings_load(monkeypatch):
+    monkeypatch.setenv("MAX_QA_ENTITIES", "-1")
+    with pytest.raises(ValueError, match="MAX_QA_ENTITIES"):
+        config.Settings()
+
+
+async def test_zero_max_qa_entities_still_disables_the_ceiling(monkeypatch):
+    monkeypatch.setenv("MAX_QA_ENTITIES", "0")
+    assert config.Settings().max_qa_entities == 0

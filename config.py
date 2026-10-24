@@ -75,8 +75,15 @@ class Settings:
         # Ceiling on one QA read (drawing_critique, the validator, drawing_finalize,
         # drawing_deliver): the entities of every space are counted first and a
         # drawing holding more is refused with `scan_incomplete` rather than
-        # read in part. 0 disables the check.
+        # read in part. 0 disables the check; a negative value is refused here
+        # (it used to disable the check silently, because the ceiling is only
+        # applied when positive).
         self.max_qa_entities: int = int(os.environ.get("MAX_QA_ENTITIES", "2000000"))
+        if self.max_qa_entities < 0:
+            raise ValueError(
+                f"MAX_QA_ENTITIES={self.max_qa_entities} is negative. Set the most entities "
+                "one QA read may scan (default 2000000), or 0 to disable the check."
+            )
 
         # Hard cap on list/select limit params to keep tool responses bounded.
         self.max_list_limit: int = int(os.environ.get("MAX_LIST_LIMIT", "5000"))
