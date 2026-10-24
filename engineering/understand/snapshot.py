@@ -399,6 +399,12 @@ def _com_export(backend, path: str | None) -> tuple[str, str, str]:
     finally:
         if opened is not None:
             opened.Close(False)
+            # B11: AutoCAD activates whichever document it likes after the
+            # Close; the session's bound document is made active again in this
+            # same job, so the next call is not refused for a switch it made.
+            reactivate = getattr(backend, "_reactivate_bound_sync", None)
+            if reactivate is not None:
+                reactivate(app)
     written = sorted(Path(folder).glob(f"{_SNAP_BASE}.*"))
     if not written:
         shutil.rmtree(folder, ignore_errors=True)

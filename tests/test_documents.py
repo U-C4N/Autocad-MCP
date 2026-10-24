@@ -38,16 +38,19 @@ pytestmark = pytest.mark.asyncio
 
 async def test_fixture_document_is_registered_and_active(backend):
     rows = await backend.document_list()
-    assert rows == [
-        {
-            "name": "untitled-1",
-            "path": None,
-            "key": "untitled-1",
-            "active": True,
-            "saved": True,
-            "entity_count": 0,
-        }
-    ]
+    assert len(rows) == 1
+    row = dict(rows[0])
+    document_id = row.pop("document_id")
+    assert len(document_id) == 32 and set(document_id) <= set("0123456789abcdef")
+    assert row == {
+        "name": "untitled-1",
+        "path": None,
+        "key": "untitled-1",
+        "active": True,
+        "saved": True,
+        "entity_count": 0,
+        "revision": 0,
+    }
 
 
 async def test_two_documents_hold_separate_entities(backend):
@@ -754,6 +757,8 @@ async def test_com_document_list_reads_the_documents_collection(com_backend):
             "active": True,
             "saved": True,
             "entity_count": 3,
+            "document_id": None,
+            "revision": None,
         },
         {
             "name": "Second.dwg",
@@ -761,8 +766,18 @@ async def test_com_document_list_reads_the_documents_collection(com_backend):
             "active": False,
             "saved": False,
             "entity_count": 1,
+            "document_id": None,
+            "revision": None,
         },
-        {"name": "Drawing1.dwg", "path": None, "active": False, "saved": False, "entity_count": 0},
+        {
+            "name": "Drawing1.dwg",
+            "path": None,
+            "active": False,
+            "saved": False,
+            "entity_count": 0,
+            "document_id": None,
+            "revision": None,
+        },
     ]
 
 

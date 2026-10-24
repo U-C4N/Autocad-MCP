@@ -31,7 +31,12 @@ needs_pywin32 = pytest.mark.skipif(
 
 
 @pytest.mark.asyncio
-async def test_active_document_switch_clears_com_document_state(monkeypatch):
+async def test_active_document_switch_is_refused_and_keeps_the_bound_state(monkeypatch):
+    """v1.7.0 (B11): a switch used to reset drawing-scoped state and follow the
+    operator to the other document. It is now refused, and the state stays with
+    the document it was made for; document_activate is how a session moves."""
+    from backends.document_guard import ActiveDocumentChangedError
+
     backend = ComBackend()
     documents = SimpleNamespace(Count=1)
     app = SimpleNamespace(
@@ -46,16 +51,15 @@ async def test_active_document_switch_clears_com_document_state(monkeypatch):
     monkeypatch.setattr("backends.com_backend._acad_app", lambda: app)
 
     await backend._ensure_document_state()
-    backend._plan_spec = object()
-    backend._preflight_result = object()
+    plan = object()
+    backend._plan_spec = plan
     backend._gdt_datums_defined = {"A"}
     app.ActiveDocument = SimpleNamespace(Name="Second.dwg", FullName="C:/Second.dwg")
 
-    await backend._ensure_document_state()
-
-    assert backend._plan_spec is None
-    assert backend._preflight_result is None
-    assert backend._gdt_datums_defined == set()
+    with pytest.raises(ActiveDocumentChangedError):
+        await backend._ensure_document_state()
+    assert backend._plan_spec is plan
+    assert backend._gdt_datums_defined == {"A"}
 
 
 # ---------------------------------------------------------------------------

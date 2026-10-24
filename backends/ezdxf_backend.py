@@ -1479,6 +1479,10 @@ class _DocState:
     gdt_datums_defined: set = field(default_factory=set)
     gdt_datums_referenced: set = field(default_factory=set)
     activated_seq: int = 0
+    # v1.7.0 (B11): minted by _register_document; "" only on the empty `_void`.
+    document_id: str = ""
+    # The content revision: `_DirtyField` moves it on every `_dirty = True`.
+    revision: int = 0
 
     @property
     def label(self) -> str:
@@ -1513,6 +1517,23 @@ class _ActiveField:
         setattr(instance._state, self.attr, value)
 
 
+class _DirtyField(_ActiveField):
+    """``_dirty`` that also moves the content revision (v1.7.0, B11).
+
+    Every content change in this engine ends in ``self._dirty = True`` -
+    ``_mark_dirty`` after each mutation, ``_restore_snapshot`` for undo and
+    redo, ``transaction_rollback`` - and saving writes ``False``. So the
+    assignment is the one place that sees every content change and nothing
+    else: saving, exporting, finalizing and delivering never assign ``True``.
+    """
+
+    def __set__(self, instance, value):
+        state = instance._state
+        state.dirty = value
+        if value:
+            state.revision += 1
+
+
 # ---------------------------------------------------------------------------
 # EzdxfBackend
 # ---------------------------------------------------------------------------
@@ -1524,7 +1545,7 @@ class EzdxfBackend(AutoCADBackend):
     # Old per-backend attributes, now routed to the active document (v1.6).
     # `_doc` and `_doc_path` are explicit properties below (binding and
     # re-keying rules); the rest are plain views.
-    _dirty = _ActiveField("dirty")
+    _dirty = _DirtyField("dirty")
     _current_layer = _ActiveField("current_layer")
     _current_space = _ActiveField("current_space")
     _undo_stack = _ActiveField("undo_stack")
@@ -1691,6 +1712,29 @@ class EzdxfBackend(AutoCADBackend):
     @property
     def is_connected(self) -> bool:
         return self._connected
+
+    def document_identity(self) -> dict:
+        """The active document's ``{document_id, revision, name, path, backend}`` (B11).
+
+        ``revision`` counts content changes (see ``_DirtyField``); a reopened
+        file is a new registration with a new id and revision 0.
+        """
+        if self._active_key is None or self._doc is None:
+            return {
+                "document_id": None,
+                "revision": None,
+                "name": None,
+                "path": None,
+                "backend": "ezdxf",
+            }
+        state = self._state
+        return {
+            "document_id": state.document_id,
+            "revision": state.revision,
+            "name": state.label,
+            "path": state.path,
+            "backend": "ezdxf",
+        }
 
     def capabilities(self) -> CapabilityMap:
         render_available = find_spec("matplotlib") is not None
@@ -1923,7 +1967,8 @@ class EzdxfBackend(AutoCADBackend):
                 self._docs.pop(previous_key).discard_snapshots()
                 if self._active_key == previous_key:
                     self._active_key = None
-        self._docs[key] = _DocState(key=key, doc=doc, path=path)
+        # B11: a registration is a document of its own - a reopened file too.
+        self._docs[key] = _DocState(key=key, doc=doc, path=path, document_id=uuid.uuid4().hex)
         self._activate_key(key)
         return key, reloaded
 
@@ -2024,6 +2069,8 @@ class EzdxfBackend(AutoCADBackend):
             "active": key == self._active_key,
             "saved": not state.dirty,
             "entity_count": len(state.doc.modelspace()),
+            "document_id": state.document_id,
+            "revision": state.revision,
         }
 
     def _close_document_sync(self, key: str, *, save: bool, discard: bool) -> dict:
@@ -2698,6 +2745,8 @@ class EzdxfBackend(AutoCADBackend):
                 units=unit_str,
                 version=doc.dxfversion,
                 backend="ezdxf",
+                document_id=self._state.document_id,
+                revision=self._state.revision,
             )
 
         return await self._async(_sync, readonly=True)
@@ -8458,6 +8507,7 @@ class EzdxfBackend(AutoCADBackend):
         self._reap_quarantine()
         self._reap_detached_reads()
         has_doc = self._doc is not None
+        identity = self.document_identity()
         detached_reads = [
             {**read.to_dict(), "document_active": has_doc and read.document is self._doc}
             for read in self._detached_reads
@@ -8470,6 +8520,8 @@ class EzdxfBackend(AutoCADBackend):
             "open_documents": len(self._docs),
             "active_document": self._active_key,
             "unsaved_changes": self._dirty,
+            "document_id": identity["document_id"],
+            "revision": identity["revision"],
             "transaction_depth": len(self._transaction_stack),
             "quarantine": self._quarantine.to_dict() if self._quarantine else None,
             "abandoned_calls": [record.to_dict() for record in self._abandoned_calls],

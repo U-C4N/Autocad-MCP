@@ -237,12 +237,28 @@ class CapabilityRefusalMiddleware(Middleware):
     boundary — the engine can draw a circle perfectly well, the document it would
     draw into is untrusted — so it gets ``kind: "quarantined"`` and carries the
     abandoned-call record instead of a capability key.
+
+    v1.7.0 (B11) added a third kind: ``active_document_changed``, the live
+    engine's refusal when AutoCAD's active document is not the bound one. It
+    carries ``bound`` and ``active`` instead of a capability or a quarantine.
     """
 
     async def on_call_tool(self, context: MiddlewareContext, call_next):
         try:
             return await call_next(context)
         except Exception as exc:
+            changed = _document_changed_of(exc)
+            if changed is not None:
+                # B11: not a capability boundary and not a quarantine - the
+                # operator switched AutoCAD's active document; nothing was written.
+                payload = {
+                    **changed,
+                    "tool": context.message.name,
+                    "backend": _backend_name_or_none(context),
+                }
+                return ToolResult(
+                    content=payload["error"], structured_content=payload, is_error=True
+                )
             capability = _batch_capability_of(exc)
             quarantine = None if capability else _batch_quarantine_of(exc)
             if capability is None and quarantine is None:
@@ -1284,7 +1300,12 @@ async def drawing_info(ctx: Context) -> dict:
     """Get comprehensive metadata for the current drawing.
 
     Returns: name, path, entity_count, layer_count, block_count,
-    extents (min/max), units, version, backend name.
+    extents (min/max), units, version, backend name, and the document's
+    `document_id` (a uuid4 hex minted when it was opened or created) and
+    `revision` (its content revision: moved by every content change, never by
+    a save, an export, a finalize or a delivery). On the live engine a call
+    made after the operator switched AutoCAD's active document is refused with
+    `kind: "active_document_changed"` (`bound`, `active`).
     """
     await ctx.info("Fetching drawing info")
     result = await _backend(ctx).drawing_info()
@@ -4023,6 +4044,20 @@ def _batch_quarantine_of(exc: BaseException) -> dict | None:
     return None
 
 
+def _document_changed_of(exc: BaseException) -> dict | None:
+    """The ``ActiveDocumentChangedError`` payload on ``exc``'s cause chain, or None (B11).
+
+    Recognised by type; the error lives in ``backends.document_guard``, which
+    imports nothing, so this resolves on any box.
+    """
+    from backends.document_guard import ActiveDocumentChangedError
+
+    for error in _batch_cause_chain(exc):
+        if isinstance(error, ActiveDocumentChangedError):
+            return error.to_dict()
+    return None
+
+
 def _batch_refusal_kind(exc: BaseException) -> str:
     """``"busy"`` for a detached read's ``DocumentBusyError``, else ``"quarantined"``.
 
@@ -5409,7 +5444,11 @@ async def transaction_rollback(ctx: Context = None) -> dict:
 async def system_status(ctx: Context = None) -> dict:
     """Get full status of the AutoCAD MCP Pro server and backend connection.
 
-    Returns backend name, connection status, capabilities, document info.
+    Returns backend name, connection status, capabilities, document info, and
+    the document's `document_id` and content `revision` (headless: the active
+    registry entry; live: the bound document, plus `bound_document` and
+    `active_document_changed`). Live, the revision counts this server's own
+    writes; edits the operator makes in AutoCAD are not counted.
     """
     b = ctx.lifespan_context.get("backend")
     # R20: tool_count may be None when the registry is unavailable; omit the
@@ -7960,7 +7999,8 @@ async def drawing_template_save(
 )
 async def document_list(ctx: Context = None) -> dict:
     """Every open document with `name`, `path`, `active`, `saved` and
-    `entity_count`.
+    `entity_count`. Each row also carries the document's `document_id` and
+    content `revision` (None, live, for a document this session never bound).
 
     Headless, the server keeps its own registry: `drawing_new` / `drawing_open`
     add an entry (`untitled-N` or the file path) instead of replacing the only

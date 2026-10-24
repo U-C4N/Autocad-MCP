@@ -103,6 +103,9 @@ class DrawingInfo:
     units: str
     version: str = ""
     backend: str = ""
+    # v1.7.0 (B11): the document's id and content revision.
+    document_id: str | None = None
+    revision: int | None = None
 
 
 @dataclass(frozen=True)

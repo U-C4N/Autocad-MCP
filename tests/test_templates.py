@@ -300,6 +300,7 @@ def com_new(monkeypatch, tmp_path):
 
     monkeypatch.setattr(backend, "_run", _run_inline)
     monkeypatch.setattr(backend, "_ensure_document_state", _no_state)
+    monkeypatch.setattr(backend, "_rebind", _no_state)
     return backend, documents
 
 

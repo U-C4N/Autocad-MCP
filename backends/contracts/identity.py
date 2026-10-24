@@ -31,3 +31,17 @@ class IdentityContract(ABC):
 
     @abstractmethod
     def capabilities(self) -> CapabilityMap: ...
+
+    @abstractmethod
+    def document_identity(self) -> dict:
+        """The active (headless) or bound (live) document's identity (v1.7.0, B11).
+
+        ``{"document_id", "revision", "name", "path", "backend"}``.
+        ``document_id`` is a uuid4 hex minted when the document is registered
+        - not ``$FINGERPRINTGUID``, which every template-born drawing shares,
+        and not ``$VERSIONGUID``, which every snapshot save rewrites.
+        ``revision`` is the document's content revision (each engine says what
+        moves it). The four document fields are None when nothing is open or
+        bound. Synchronous and free: it reads state the backend already keeps
+        and never touches the drawing.
+        """
