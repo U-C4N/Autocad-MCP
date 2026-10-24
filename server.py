@@ -4578,8 +4578,20 @@ async def cad_batch(
         if guarantee == "none":
             raise ToolError(f"cad_batch: on_error='rollback' is unavailable here. {note}")
         before = await _batch_fingerprint(backend)
-        opened = await backend.transaction_begin()
+        # B01: the begin runs shielded. Cancelled mid-await, its worker would
+        # still finish (the lease follows the worker) and push a checkpoint
+        # this call never learns about - left open, a later bare rollback
+        # restores the pre-batch snapshot, and on COM `_transaction_active`
+        # blocks every later batch. Shielded, the outcome is always known: a
+        # cancellation that arrived meanwhile is delivered by the checkpoint
+        # at the top of the try below, whose handler rolls the begin back.
+        with anyio.CancelScope(shield=True):
+            opened = await backend.transaction_begin()
         if not (isinstance(opened, dict) and opened.get("ok")):
+            # Nothing to close; a cancellation that arrived during the begin
+            # must still end the request as one (answering it normally makes
+            # the SDK answer it twice).
+            await anyio.lowlevel.checkpoint_if_cancelled()
             reason = (opened or {}).get("error", "transaction_begin declined")
             return {
                 "ok": False,
@@ -4611,9 +4623,13 @@ async def cad_batch(
     results: list[dict] = []
     succeeded = failed = executed = 0
     total = len(plans)
-    await ctx.info(f"cad_batch: {total} step(s), on_error={mode}")
 
     try:
+        # Inside the try: from here on an open checkpoint is closed by the
+        # handler below, whatever ends the call - including a cancellation
+        # that arrived while the shielded begin ran, delivered right here.
+        await anyio.lowlevel.checkpoint_if_cancelled()
+        await ctx.info(f"cad_batch: {total} step(s), on_error={mode}")
         for position, plan in enumerate(plans):
             await ctx.report_progress(position, total)
             name = plan["tool"]

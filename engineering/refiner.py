@@ -177,9 +177,16 @@ async def refine_drawing(
             status = "manual_required"
             break
 
-        transaction = await backend.transaction_begin()
+        # B01: the begin runs shielded, so its outcome is always known: a
+        # cancelled begin's worker would still push the checkpoint (the lease
+        # follows the worker) and nothing would close it. A cancellation that
+        # arrived meanwhile is delivered by the checkpoint at the top of the
+        # try below, whose handler rolls the round back.
+        with anyio.CancelScope(shield=True):
+            transaction = await backend.transaction_begin()
         actions: list[RepairAction] = []
         if not isinstance(transaction, dict) or not transaction.get("ok"):
+            await anyio.lowlevel.checkpoint_if_cancelled()
             detail = transaction if isinstance(transaction, dict) else {"result": transaction}
             actions.append(RepairAction("internal", "", [], "failed", detail))
             rounds.append(
@@ -196,6 +203,7 @@ async def refine_drawing(
             status = "transaction_unavailable"
             break
         try:
+            await anyio.lowlevel.checkpoint_if_cancelled()
             for issue, handler in candidates:
                 detail = await handler(backend, issue)
                 actions.append(

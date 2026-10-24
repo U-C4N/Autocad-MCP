@@ -301,3 +301,141 @@ async def test_the_pid_rollback_waits_for_the_cancelled_worker(backend, monkeypa
     assert rollback_body_saw_worker_done == [True], "the rollback raced the live worker"
     assert await backend.entity_count() == before
     assert (await backend.system_status())["transaction_depth"] == 0
+
+
+# ── a cancellation while the checkpoint is being opened ─────────────────────
+
+
+def _block_transaction_begin(monkeypatch):
+    """Hold ``transaction_begin``'s worker on a threading.Event.
+
+    Under the lease rule a cancelled begin's worker still runs to completion
+    and pushes its checkpoint; the caller has to close it. ``finished`` is set
+    once the worker has returned, so a depth read after it cannot pass merely
+    because the checkpoint has not been pushed yet.
+    """
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    cancelled = asyncio.Event()
+    real_async = ezdxf_backend.EzdxfBackend._async
+
+    async def blocking_async(self, func, *args, **kwargs):
+        if func.__qualname__.startswith("EzdxfBackend.transaction_begin."):
+
+            def body(*a, **k):
+                entered.set()
+                try:
+                    assert release.wait(10)
+                    return func(*a, **k)
+                finally:
+                    finished.set()
+
+            body.__qualname__ = func.__qualname__
+            try:
+                return await real_async(self, body, *args, **kwargs)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+        return await real_async(self, func, *args, **kwargs)
+
+    monkeypatch.setattr(ezdxf_backend.EzdxfBackend, "_async", blocking_async)
+    return entered, release, cancelled, finished
+
+
+async def test_a_batch_cancelled_while_opening_its_checkpoint_closes_it(client, monkeypatch):
+    """RED: ``transaction_begin`` was awaited before the shielded try, so its
+    worker pushed a checkpoint nothing ever rolled back (depth stayed 1)."""
+    entered, release, cancelled, finished = _block_transaction_begin(monkeypatch)
+    before = await _entities(client)
+    request_id = client.session._request_id
+    call = asyncio.ensure_future(
+        client.call_tool("cad_batch", {"steps": [_line()], "on_error": "rollback"})
+    )
+    assert await anyio.to_thread.run_sync(entered.wait, 10)
+    await client.cancel(request_id)
+    # The begin's await must be the one cancelled (the fix shields it, so then
+    # it never is): release the worker once that happened, or after a beat.
+    with anyio.move_on_after(1.0):
+        await cancelled.wait()
+    release.set()
+    with pytest.raises(McpError, match="cancelled"):
+        await call
+    assert await anyio.to_thread.run_sync(finished.wait, 10)
+
+    async def clean() -> bool:
+        return await _depth(client) == 0
+
+    await _until(clean)
+    assert await _entities(client) == before, "no step ran"
+    assert (await client.call_tool("system_status", {})).structured_content["backend"] == "ezdxf"
+
+
+async def test_a_batch_cancelled_right_after_opening_its_checkpoint_closes_it(client, monkeypatch):
+    """RED: the ``ctx.info`` after the begin sat outside the try, so a
+    cancellation there left the checkpoint open."""
+    from fastmcp import Context
+
+    announcing = asyncio.Event()
+    real_info = Context.info
+
+    async def stuck_info(self, message, *args, **kwargs):
+        if str(message).startswith("cad_batch:"):
+            announcing.set()
+            await asyncio.Event().wait()
+        return await real_info(self, message, *args, **kwargs)
+
+    monkeypatch.setattr(Context, "info", stuck_info)
+    before = await _entities(client)
+    request_id = client.session._request_id
+    call = asyncio.ensure_future(
+        client.call_tool("cad_batch", {"steps": [_line()], "on_error": "rollback"})
+    )
+    await announcing.wait()
+    await client.cancel(request_id)
+    with pytest.raises(McpError, match="cancelled"):
+        await call
+
+    async def clean() -> bool:
+        return await _depth(client) == 0
+
+    await _until(clean)
+    assert await _entities(client) == before
+
+
+async def test_a_refine_round_cancelled_while_opening_its_checkpoint_closes_it(
+    backend, monkeypatch
+):
+    """RED: the round's ``transaction_begin`` sat outside the shielded block."""
+    issue = Issue("error", "construction_left", "left over", ["1"])
+
+    async def critique(focus=None):
+        return [issue]
+
+    async def repair(_backend, _issue):
+        return {}
+
+    registry = RepairRegistry()
+    registry.register("construction_left", repair)
+    monkeypatch.setattr(backend, "drawing_critique", critique)
+    entered, release, cancelled, finished = _block_transaction_begin(monkeypatch)
+
+    async def release_after_the_cancel():
+        with anyio.move_on_after(1.0):
+            await cancelled.wait()
+        release.set()
+
+    releaser = asyncio.ensure_future(release_after_the_cancel())
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(lambda: refine_drawing(backend, min_score=100.0, registry=registry))
+        assert await anyio.to_thread.run_sync(entered.wait, 10)
+        tg.cancel_scope.cancel()
+    await releaser
+    # The begin's worker has pushed its checkpoint by now; only a caller that
+    # closes it brings the depth back to zero.
+    assert await anyio.to_thread.run_sync(finished.wait, 10)
+
+    async def clean() -> bool:
+        return (await backend.system_status())["transaction_depth"] == 0
+
+    await _until(clean)
