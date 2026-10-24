@@ -332,6 +332,56 @@ async def test_a_readonly_overrun_is_recorded_and_detached(backend, monkeypatch,
     assert (await backend.system_status())["detached_reads"] == []
 
 
+async def test_a_read_queued_behind_a_switch_is_filed_on_the_document_it_reads(
+    backend, monkeypatch, gates
+):
+    """RED: ``_async`` took the document at entry. A read queued behind a
+    document_activate ran on the new document but was detached against the
+    old one, so the gate refused the free document and admitted writes on the
+    one still being read."""
+    key_a = (await backend.drawing_new())["document"]
+    doc_a = backend._doc
+    key_b = (await backend.drawing_new())["document"]
+    doc_b = backend._doc
+    await backend.document_activate(key_a)
+    monkeypatch.setattr(config.settings, "ezdxf_call_timeout", RACED_DEADLINE)
+    writer, reader = gates(), gates()
+    seen = {}
+    read_gate = reader.body()
+
+    def read_body():
+        seen["doc"] = backend._doc
+        return read_gate()
+
+    held = backend._lock
+    first = asyncio.ensure_future(backend._async(writer.body()))
+    await _wait_for(writer.entered)
+    switch = asyncio.ensure_future(backend.document_activate(key_b))
+    read = asyncio.ensure_future(backend._async(read_body, readonly=True))
+    await _until(lambda: _queued_on(held) == 2)  # the switch first, then the read
+    writer.release.set()
+    assert await first == "late"
+    await switch
+    await _wait_for(reader.entered)
+    assert seen["doc"] is doc_b
+    with pytest.raises(RuntimeError, match="read-only"):
+        await read
+
+    [detached] = backend._detached_reads
+    assert detached.document is doc_b, "filed against the document it reads"
+    assert (await backend.system_status())["detached_reads"][0]["document_active"] is True
+    monkeypatch.setattr(config.settings, "ezdxf_call_timeout", 30)
+    with pytest.raises(DocumentBusyError):
+        await backend.entity_create_line(0, 0, 1, 1)
+    # The document the read does NOT hold is free.
+    await asyncio.wait_for(backend.document_activate(key_a), timeout=AT_ONCE)
+    assert backend._doc is doc_a
+    assert await backend._async(lambda: "write on A") == "write on A"
+    assert not reader.finished.is_set(), "the read of B is still running"
+    reader.release.set()
+    await _wait_for(reader.finished)
+
+
 async def test_a_cancelled_read_keeps_its_original_deadline(backend, monkeypatch, gates, tmp_path):
     """RED: a cancelled read-only call got no deadline timer, so it held the
     lock with nothing ever recorded or detached."""

@@ -2320,6 +2320,13 @@ class EzdxfBackend(AutoCADBackend):
                 return read
         return None
 
+    def _call_target(self):
+        """The document a call submitted now runs on: ``(Drawing, path, id, label)``."""
+        doc = self._doc
+        document_path = self._doc_path
+        document_id = id(doc) if doc is not None else None
+        return doc, document_path, document_id, document_path or self._active_key
+
     def _held_by_detached_read(self, lock) -> bool:
         return any(read.lock is lock and read.thread_alive() for read in self._detached_reads)
 
@@ -2498,9 +2505,15 @@ class EzdxfBackend(AutoCADBackend):
           quarantined or detached; a cancelled call's lease is still held
           until its worker ends.
 
-        The document a call runs against (path and identity) is captured when
-        it starts. Workers run on ``_WORKERS``, a ``DaemonExecutor``: a runaway
-        can never hold the interpreter open at exit.
+        The document a call runs against (``Drawing``, path and identity) is
+        captured once it holds the lock, right before its worker is submitted -
+        never at entry: an exit queued ahead of it (document_activate,
+        drawing_open, drawing_new) switches ``self._doc`` while it waits, and a
+        read filed against the document it does NOT read would let the gate
+        admit writes on the one it does. It is not read again when recorded.
+
+        Workers run on ``_WORKERS``, a ``DaemonExecutor``: a runaway can never
+        hold the interpreter open at exit.
 
         R32 — every later call is refused **before** ``lock.acquire()`` while
         the document is quarantined (after the acquire the refusal would queue
@@ -2517,10 +2530,11 @@ class EzdxfBackend(AutoCADBackend):
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout if timeout > 0 else None
         lock = self._lock
-        doc = self._doc
-        document_path = self._doc_path
-        document_id = id(doc) if doc is not None else None
-        document = document_path or self._active_key
+        # Provisional: only a call that never gets the lock is filed under it.
+        # The document a call RUNS on is the one active once it holds the
+        # lock - an exit queued ahead of it may switch documents meanwhile -
+        # so the target is taken again after every acquire, below.
+        doc, document_path, document_id, document = self._call_target()
         started = time.time()
         watched = AbandonedCall(func)
         acquired = False
@@ -2535,6 +2549,10 @@ class EzdxfBackend(AutoCADBackend):
                         self._orphan_lock(lock)
                         lock = self._lock
                     await lock.acquire()
+                    # Whatever ran before this acquire (an exit, or a call an
+                    # orphan wake let through) may have switched the active
+                    # document; the worker reads self._doc, so this is it.
+                    doc, document_path, document_id, document = self._call_target()
                     if not lock.orphaned:
                         break
                     # Swapped out while this call queued on it: the state that
