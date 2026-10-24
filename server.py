@@ -257,6 +257,10 @@ class CapabilityRefusalMiddleware(Middleware):
             if capability is not None:
                 payload["kind"] = "unsupported"
                 payload["capability"] = capability
+            elif _batch_refusal_kind(exc) == "busy":
+                # A detached read holds the document: not untrusted, busy.
+                payload["kind"] = "busy"
+                payload["detached_read"] = quarantine
             else:
                 payload["kind"] = "quarantined"
                 payload["quarantine"] = quarantine
@@ -4019,6 +4023,23 @@ def _batch_quarantine_of(exc: BaseException) -> dict | None:
     return None
 
 
+def _batch_refusal_kind(exc: BaseException) -> str:
+    """``"busy"`` for a detached read's ``DocumentBusyError``, else ``"quarantined"``.
+
+    ``DocumentBusyError`` subclasses ``DocumentQuarantineError`` so every QA
+    reader lets it propagate; its ``kind`` keeps a busy document from being
+    reported to the client as an untrusted one.
+    """
+    try:
+        quarantine_type = _quarantine_refusal_type()
+    except Exception:  # pragma: no cover - core module
+        return "quarantined"
+    for error in _batch_cause_chain(exc):
+        if isinstance(error, quarantine_type):
+            return str(getattr(error, "kind", "quarantined"))
+    return "quarantined"
+
+
 def _refusal_message(exc: BaseException) -> str:
     """The most specific message on the cause chain, in full.
 
@@ -4070,6 +4091,12 @@ def _classify_batch_error(exc: BaseException) -> dict:
         # R32: its own kind. Filing it under "unsupported" would tell the batch
         # reader the engine lacks a feature; filing it under "failed" would hide
         # that every remaining step will refuse for the same reason.
+        if _batch_refusal_kind(exc) == "busy":
+            return {
+                "kind": "busy",
+                "detached_read": quarantine,
+                "message": _batch_message(exc),
+            }
         return {
             "kind": "quarantined",
             "quarantine": quarantine,

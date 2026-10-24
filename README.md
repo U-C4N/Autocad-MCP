@@ -393,7 +393,7 @@ Nothing loads a `.env` file — export these, or set them in your MCP client's `
 | `MAX_SPEC_ITEMS` | `2000` | Items per list of a `pid_from_spec` / `arch_plan_from_spec` document; `0` disables |
 | `MAX_VESSEL_TRAYS` | `500` | Trays a parametric column may carry; `0` disables |
 | `COM_CALL_TIMEOUT` | `60` | Per-call live AutoCAD timeout (s); `0` disables |
-| `EZDXF_CALL_TIMEOUT` | `120` | Per-call headless timeout (s); `0` disables it — a cancelled call then keeps the document until its worker ends, and nothing is ever quarantined |
+| `EZDXF_CALL_TIMEOUT` | `120` | Per-call headless timeout (s); `0` disables it — a cancelled call then keeps the document until its worker ends, and nothing is ever quarantined. A read that overruns is never quarantined: until it ends, other calls on its document are refused by name (`kind: "busy"`) while `drawing_open` / `drawing_new` / `drawing_close` / `document_activate` / `document_close` work at once — no restart is ever needed |
 | `SHUTDOWN_GRACE` | `5` | Seconds shutdown waits for a worker still inside a call before exiting without it; `0` does not wait |
 | `DANGEROUS_COMMANDS_ENABLED` | `false` | Allow blocked commands/LISP; reported as unsafe mode |
 | `ALLOW_REMOTE_HTTP` | `false` | Permit a non-loopback HTTP bind |

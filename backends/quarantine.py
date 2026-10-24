@@ -36,8 +36,11 @@ from typing import Any
 __all__ = [
     "AbandonedCall",
     "DaemonExecutor",
+    "DetachedRead",
+    "DocumentBusyError",
     "DocumentQuarantineError",
     "QuarantineRecord",
+    "detached_read_refusal",
     "quarantine_refusal",
     "real_call_name",
 ]
@@ -334,6 +337,10 @@ class DocumentQuarantineError(RuntimeError):
     document is not. This needs its own kind, not a borrowed one.
     """
 
+    #: The refusal ``kind`` a client sees (``server.CapabilityRefusalMiddleware``
+    #: and ``cad_batch``'s step rows read it).
+    kind = "quarantined"
+
     def __init__(self, record: QuarantineRecord, message: str):
         super().__init__(message)
         self.quarantine = record.to_dict()
@@ -341,7 +348,121 @@ class DocumentQuarantineError(RuntimeError):
     def to_dict(self) -> dict:
         return {
             "ok": False,
-            "kind": "quarantined",
+            "kind": self.kind,
             "error": str(self),
             "quarantine": self.quarantine,
         }
+
+
+class DetachedRead:
+    """A read-only call that overran its deadline and is still running.
+
+    W1 review follow-up to B01. A read cannot change the drawing, so its
+    overrun never quarantines the document; but its worker thread still holds
+    the ``Drawing`` it started on, and a write racing it is what the lock
+    exists to prevent. From the call's ORIGINAL deadline on, the read is
+    *detached*: every other call on that document is refused by name (a
+    ``DocumentBusyError``) until the read ends, and the exits that replace the
+    document object - ``drawing_open`` / ``drawing_new`` / ``drawing_close`` /
+    ``document_activate`` / ``document_close`` - work at once, so nothing ever
+    needs a restart.
+
+    ``document`` is the ``Drawing`` object itself, not its ``id()``: the record
+    keeps it alive until the read ends anyway, and an id could be reused by a
+    fresh document after the old one is closed. ``lock`` is the document lock
+    the read holds.
+    """
+
+    __slots__ = ("call", "timeout", "watcher", "document", "document_path", "started", "lock")
+
+    def __init__(
+        self,
+        call: str,
+        timeout: float,
+        watcher: Any,
+        *,
+        document: Any,
+        document_path: str | None,
+        started: float,
+        lock: Any,
+    ):
+        self.call = call
+        self.timeout = float(timeout)
+        self.watcher = watcher
+        self.document = document
+        self.document_path = document_path
+        self.started = started
+        self.lock = lock
+
+    @property
+    def deadline(self) -> float:
+        """The original deadline, wall-clock seconds."""
+        return self.started + self.timeout
+
+    def age(self) -> float:
+        return time.time() - self.started
+
+    def thread_alive(self) -> bool:
+        return not self.watcher.finished
+
+    def to_dict(self) -> dict:
+        return {
+            "call": self.call,
+            "timeout": self.timeout,
+            "started": self.started,
+            "deadline": self.deadline,
+            "age_seconds": round(self.age(), 3),
+            "thread_alive": self.thread_alive(),
+            "document_path": self.document_path,
+        }
+
+
+#: The calls that end a detached read's hold on the session. Named in the
+#: refusal so a client never has to guess that a restart is not needed.
+DETACHED_READ_EXITS = (
+    "drawing_open(path)",
+    "drawing_new()",
+    "drawing_close()",
+    "document_activate(<another document>)",
+    "document_close()",
+)
+
+
+class DocumentBusyError(DocumentQuarantineError):
+    """The open document is held by a detached read-only call.
+
+    A subclass of ``DocumentQuarantineError`` on purpose: every QA reader that
+    lets a quarantine refusal propagate (instead of turning it into a
+    ``check_failed`` finding) must let this one through too - neither document
+    can be read right now. ``kind`` differs, because the document is NOT
+    untrusted: nothing wrote to it.
+    """
+
+    kind = "busy"
+
+    def __init__(self, record: DetachedRead, message: str):
+        RuntimeError.__init__(self, message)
+        self.quarantine = record.to_dict()
+
+    def to_dict(self) -> dict:
+        return {
+            "ok": False,
+            "kind": self.kind,
+            "error": str(self),
+            "detached_read": self.quarantine,
+        }
+
+
+def detached_read_refusal(record: DetachedRead) -> DocumentBusyError:
+    """The refusal every other call on a detached read's document gets."""
+    return DocumentBusyError(
+        record,
+        f"ezdxf document busy: the read-only call '{record.call}' overran "
+        f"EZDXF_CALL_TIMEOUT={record.timeout:g}s and has been running {record.age():.1f}s; "
+        "its worker thread cannot be cancelled and still reads this drawing. A read "
+        "cannot change it, so the document is NOT quarantined, but every other call on "
+        "it is refused until the read ends - the refusal then lifts by itself. To go on "
+        f"now, use {', '.join(DETACHED_READ_EXITS)}: they replace the document object "
+        "the read holds, so nothing races it. No restart is needed; system_status() "
+        "reports the read.",
+    )

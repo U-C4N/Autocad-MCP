@@ -54,8 +54,10 @@ from .contracts.settings import (
 from .quarantine import (
     AbandonedCall,
     DaemonExecutor,
+    DetachedRead,
     DocumentQuarantineError,
     QuarantineRecord,
+    detached_read_refusal,
     quarantine_refusal,
     real_call_name,
 )
@@ -81,6 +83,37 @@ _STATUS_CALL_OUTCOMES = 10
 _WORKERS = DaemonExecutor(name="ezdxf-worker")
 
 
+class _DocLock(asyncio.Lock):
+    """The document lock, able to wake its queue when it is swapped out.
+
+    W1 review follow-up to B01: when a deadline swaps the lock (a quarantine,
+    or a detached read whose lock a later call needs), the calls already
+    queued on the old one were let through the gate under the old state.
+    Before, they sat out their own full ``EZDXF_CALL_TIMEOUT`` - forever at
+    ``0`` - and then said "busy"; a cancelled ``cad_batch``'s shielded
+    rollback was one of them, holding the cancellation and the lifespan's
+    shutdown behind it. ``orphan()`` wakes every one of them at once, and
+    ``acquire()`` on an orphan returns at once; ``EzdxfBackend._async`` sees
+    ``orphaned`` and answers the woken call from the new state.
+
+    An orphan stays ``locked()`` and is never released: the woken calls never
+    held it, and its holder is the abandoned worker.
+    """
+
+    orphaned = False
+
+    async def acquire(self):
+        if self.orphaned:
+            return True
+        return await super().acquire()
+
+    def orphan(self) -> None:
+        self.orphaned = True
+        for waiter in list(self._waiters or ()):
+            if not waiter.done():
+                waiter.set_result(True)
+
+
 class _Lease:
     """A document lock that outlived the coroutine that took it (B01).
 
@@ -88,7 +121,9 @@ class _Lease:
     call overruns): the lock now belongs to the worker thread until it ends.
     ``timer`` is the pending ORIGINAL-deadline handle, ``abandoned`` is set
     when that deadline found the worker still alive (the lock was swapped out
-    and must never be released), ``done`` when the worker ended.
+    and must never be released), ``done`` when the worker ended. ``readonly``
+    leases are detached at that deadline instead of quarantined; ``document``
+    is the ``Drawing`` the call started on.
     """
 
     __slots__ = (
@@ -97,17 +132,23 @@ class _Lease:
         "row",
         "document_path",
         "document_id",
+        "document",
+        "readonly",
         "timer",
         "done",
         "abandoned",
     )
 
-    def __init__(self, loop, lock, row, document_path, document_id):
+    def __init__(
+        self, loop, lock, row, document_path, document_id, *, document=None, readonly=False
+    ):
         self.loop = loop
         self.lock = lock
         self.row = row
         self.document_path = document_path
         self.document_id = document_id
+        self.document = document
+        self.readonly = readonly
         self.timer: asyncio.TimerHandle | None = None
         self.done = False
         self.abandoned = False
@@ -1508,11 +1549,13 @@ class EzdxfBackend(AutoCADBackend):
         self._untitled_counter = 0
         self._activation_counter = 0
         self._connected = False
-        self._lock = asyncio.Lock()
+        self._lock = _DocLock()
         # R32: the document a timed-out call was abandoned on is untrusted until
         # it is replaced. See backends/quarantine.py for what that buys.
         self._quarantine: QuarantineRecord | None = None
         self._abandoned_calls: list[QuarantineRecord] = []
+        # W1 review follow-up: read-only calls past their deadline, still running.
+        self._detached_reads: list[DetachedRead] = []
         # B01: cancellations and abandonments, newest last; Task 10 reads it.
         self.call_outcomes: collections.deque = collections.deque(maxlen=_MAX_CALL_OUTCOMES)
         self._leases: set[_Lease] = set()
@@ -1809,6 +1852,12 @@ class EzdxfBackend(AutoCADBackend):
                 lease.timer.cancel()
                 lease.timer = None
         self._leases.clear()
+        # A detached read's document goes away with the backend below; the
+        # lock it still holds must not stall a reconnected backend.
+        for read in self._detached_reads:
+            if read.thread_alive():
+                self._orphan_lock(read.lock)
+        self._detached_reads.clear()
         await self._wait_for_workers(config.settings.shutdown_grace)
         for state in self._docs.values():
             state.discard_snapshots()
@@ -2215,6 +2264,94 @@ class EzdxfBackend(AutoCADBackend):
         del self._abandoned_calls[:-_MAX_ABANDONED_RECORDS]
         return call
 
+    def _orphan_lock(self, lock) -> None:
+        """Swap ``lock`` out (if it is current) and wake everything queued on it.
+
+        The fresh lock is installed BEFORE the waiters are woken, so a woken
+        call that retries finds it. ``self._lock`` is therefore never an orphan.
+        """
+        if self._lock is lock:
+            self._lock = _DocLock()
+        orphan = getattr(lock, "orphan", None)
+        if orphan is not None:
+            orphan()
+
+    def _gate(self, quarantine_exit: bool, detached_read_exit: bool) -> None:
+        """Refuse a call the current state does not admit (before any await).
+
+        A quarantine refuses everything but its three exits. A detached read
+        refuses every call on the document it holds, except the exits that
+        replace that document object (``quarantine_exit`` or
+        ``detached_read_exit``); a call on another document goes through.
+        """
+        if self._quarantine is not None:
+            self._reap_quarantine()
+            if self._quarantine is not None and not quarantine_exit:
+                raise quarantine_refusal(self._quarantine)
+        if self._detached_reads:
+            self._reap_detached_reads()
+            if not (quarantine_exit or detached_read_exit):
+                holder = self._detached_read_on(self._doc)
+                if holder is not None:
+                    raise detached_read_refusal(holder)
+
+    def _reap_detached_reads(self) -> None:
+        """Forget the detached reads whose worker has ended (the free exit)."""
+        live = []
+        for read in self._detached_reads:
+            if read.thread_alive():
+                live.append(read)
+                continue
+            error = read.watcher.error
+            log.warning(
+                "detached read-only ezdxf call %r ended %.1fs after it started%s; "
+                "its document is available again",
+                read.call,
+                read.age(),
+                f" with {type(error).__name__}: {error}" if error is not None else "",
+            )
+        self._detached_reads = live
+
+    def _detached_read_on(self, document) -> DetachedRead | None:
+        if document is None:
+            return None
+        for read in self._detached_reads:
+            if read.document is document and read.thread_alive():
+                return read
+        return None
+
+    def _held_by_detached_read(self, lock) -> bool:
+        return any(read.lock is lock and read.thread_alive() for read in self._detached_reads)
+
+    def _detach_read(self, func, watched: AbandonedCall, timeout: float, lease: _Lease) -> None:
+        """A read-only call is past its ORIGINAL deadline and still running.
+
+        It is never quarantined: a read cannot change the drawing. It is
+        recorded (``readonly_overrun``, with the deadline), and from now on
+        ``_gate`` refuses every other call on its document by name while the
+        exits work. The lock stays with the read; whoever passes the gate and
+        needs it swaps it out (``_async``), and the calls already queued on it
+        are woken now and answered by the new state.
+        """
+        row = lease.row
+        started = row["started"] if row is not None else time.time() - timeout
+        if row is not None:
+            row["outcome"] = "readonly_overrun"
+            row["deadline"] = started + timeout
+        self._detached_reads.append(
+            DetachedRead(
+                real_call_name(func),
+                timeout,
+                watched,
+                document=lease.document,
+                document_path=lease.document_path,
+                started=started,
+                lock=lease.lock,
+            )
+        )
+        if any(not waiter.done() for waiter in (getattr(lease.lock, "_waiters", None) or ())):
+            self._orphan_lock(lease.lock)
+
     def _record_outcome(
         self, func, outcome: str, started: float, document: str | None, *, ended: float | None
     ) -> dict:
@@ -2267,10 +2404,10 @@ class EzdxfBackend(AutoCADBackend):
                 lease.row["outcome"] = (
                     "failed_after_cancel" if watched.error is not None else "completed_after_cancel"
                 )
-        if lease.abandoned:
+        if lease.abandoned or getattr(lease.lock, "orphaned", False):
             # The original deadline already swapped this lock out. Waiters
-            # still queued on it were past the quarantine gate; releasing it
-            # now would hand them the document behind the quarantine's back.
+            # queued on it were woken and answered by the new state; nobody
+            # may inherit it now.
             return
         lease.lock.release()
 
@@ -2280,9 +2417,18 @@ class EzdxfBackend(AutoCADBackend):
         self._leases.discard(lease)
         if lease.done or watched.finished:
             return  # finished in time; _lease_finished releases (or already did)
+        if lease.readonly:
+            self._detach_read(func, watched, timeout, lease)
+            log.warning(
+                "cancelled read-only ezdxf call %r is still running at its "
+                "EZDXF_CALL_TIMEOUT=%gs deadline; detaching it - its document is refused "
+                "to other calls until it ends, the exits work, nothing is quarantined",
+                real_call_name(func),
+                timeout,
+            )
+            return
         lease.abandoned = True
-        if self._lock is lease.lock:
-            self._lock = asyncio.Lock()
+        self._orphan_lock(lease.lock)
         name = self._quarantine_document(
             func,
             watched,
@@ -2301,7 +2447,13 @@ class EzdxfBackend(AutoCADBackend):
         )
 
     async def _async(
-        self, func, *args, quarantine_exit: bool = False, readonly: bool = False, **kwargs
+        self,
+        func,
+        *args,
+        quarantine_exit: bool = False,
+        readonly: bool = False,
+        detached_read_exit: bool = False,
+        **kwargs,
     ):
         """Run a blocking ezdxf call in a worker thread, serialised and timed out.
 
@@ -2330,12 +2482,21 @@ class EzdxfBackend(AutoCADBackend):
           worker is abandoned: the lock is swapped, the orphaned one is never
           released (waiters already past the gate must not inherit it), and the
           document is quarantined;
-        - ``readonly=True``: an overrun keeps the lease until the worker ends
-          and later callers get "busy" — a read cannot corrupt the document, so
-          it never quarantines it;
-        - ``EZDXF_CALL_TIMEOUT=0``: no deadline, so nothing is ever abandoned or
-          quarantined; a cancelled call's lease is still held until its worker
-          ends.
+        - ``readonly=True``: an overrun never quarantines the document — a
+          read cannot change it. From the call's ORIGINAL deadline on (a
+          cancelled read keeps its deadline too) the read is *detached*: a
+          ``readonly_overrun`` row is written, every other call on its
+          document is refused by name (``DocumentBusyError``), and the exits
+          (``quarantine_exit`` / ``detached_read_exit``: drawing_open /
+          drawing_new / drawing_close / document_activate / document_close)
+          go through at once, swapping out the lock the read holds — they
+          replace the document object the read holds, so nothing races it;
+        - a swapped lock wakes its queue at once (``_DocLock.orphan``): a call
+          queued on it is answered by the new state — a refusal, or a retry
+          on the fresh lock for an exit — never by its own timeout;
+        - ``EZDXF_CALL_TIMEOUT=0``: no deadline, so nothing is ever abandoned,
+          quarantined or detached; a cancelled call's lease is still held
+          until its worker ends.
 
         The document a call runs against (path and identity) is captured when
         it starts. Workers run on ``_WORKERS``, a ``DaemonExecutor``: a runaway
@@ -2349,17 +2510,16 @@ class EzdxfBackend(AutoCADBackend):
         ``self._doc`` to a freshly constructed object; they still take the lock.
         """
         # The gate, before any await: a refusal must not queue.
-        if self._quarantine is not None:
-            self._reap_quarantine()
-            if self._quarantine is not None and not quarantine_exit:
-                raise quarantine_refusal(self._quarantine)
+        if self._quarantine is not None or self._detached_reads:
+            self._gate(quarantine_exit, detached_read_exit)
 
         timeout = config.settings.ezdxf_call_timeout
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout if timeout > 0 else None
         lock = self._lock
+        doc = self._doc
         document_path = self._doc_path
-        document_id = id(self._doc) if self._doc is not None else None
+        document_id = id(doc) if doc is not None else None
         document = document_path or self._active_key
         started = time.time()
         watched = AbandonedCall(func)
@@ -2367,12 +2527,23 @@ class EzdxfBackend(AutoCADBackend):
         work: concurrent.futures.Future | None = None
         try:
             async with asyncio.timeout_at(deadline):
-                await lock.acquire()
+                while True:
+                    lock = self._lock
+                    if self._detached_reads and self._held_by_detached_read(lock):
+                        # Past the gate, so this call may run while the read
+                        # does: the read keeps its (now orphaned) lock.
+                        self._orphan_lock(lock)
+                        lock = self._lock
+                    await lock.acquire()
+                    if not lock.orphaned:
+                        break
+                    # Swapped out while this call queued on it: the state that
+                    # swapped it answers - a refusal, or a retry on the fresh
+                    # lock for a call it admits (an exit, another document).
+                    self._gate(quarantine_exit, detached_read_exit)
                 acquired = True
-                if self._quarantine is not None and not quarantine_exit:
-                    self._reap_quarantine()
-                    if self._quarantine is not None:
-                        raise quarantine_refusal(self._quarantine)
+                if self._quarantine is not None or self._detached_reads:
+                    self._gate(quarantine_exit, detached_read_exit)
                 work = _WORKERS.submit(contextvars.copy_context().run, watched, *args, **kwargs)
                 self._in_flight[work] = real_call_name(func)
                 work.add_done_callback(self._forget_in_flight)
@@ -2398,21 +2569,29 @@ class EzdxfBackend(AutoCADBackend):
                 return work.result()
             name = real_call_name(func)
             if readonly:
-                self._pass_lease(_Lease(loop, lock, None, document_path, document_id), watched)
+                row = self._record_outcome(func, "readonly_overrun", started, document, ended=None)
+                lease = _Lease(
+                    loop, lock, row, document_path, document_id, document=doc, readonly=True
+                )
+                self._detach_read(func, watched, timeout, lease)
+                self._pass_lease(lease, watched)
                 log.warning(
-                    "read-only ezdxf call %r exceeded EZDXF_CALL_TIMEOUT=%gs; it keeps the "
-                    "document lock until it finishes and the document is not quarantined",
+                    "read-only ezdxf call %r exceeded EZDXF_CALL_TIMEOUT=%gs; detaching it - "
+                    "its document is refused to other calls until it ends, the exits work, "
+                    "and nothing is quarantined",
                     name,
                     timeout,
                 )
                 raise RuntimeError(
                     f"ezdxf read '{name}' timed out after {timeout:g}s. It is read-only, so "
-                    "the document is NOT quarantined: its worker keeps the document lock until "
-                    "it finishes and calls meanwhile answer 'busy'. Raise EZDXF_CALL_TIMEOUT "
-                    "(seconds; 0 disables the timeout entirely) if this read is legitimately slow."
+                    "the document is NOT quarantined. Its worker cannot be cancelled and still "
+                    "reads the drawing, so until it finishes every other call on this document "
+                    "answers 'busy' by name; drawing_open(path), drawing_new(), drawing_close(), "
+                    "document_activate(<another document>) and document_close() work right "
+                    "away. Raise EZDXF_CALL_TIMEOUT (seconds; 0 disables the timeout "
+                    "entirely) if this read is legitimately slow."
                 ) from exc
-            if self._lock is lock:
-                self._lock = asyncio.Lock()
+            self._orphan_lock(lock)
             self._quarantine_document(
                 func, watched, timeout, document_path=document_path, document_id=document_id
             )
@@ -2447,8 +2626,11 @@ class EzdxfBackend(AutoCADBackend):
                 raise
             # Cancelled while the worker runs: the lease passes to the worker.
             row = self._record_outcome(func, "cancelled_running", started, document, ended=None)
-            lease = _Lease(loop, lock, row, document_path, document_id)
-            if deadline is not None and not readonly:
+            lease = _Lease(
+                loop, lock, row, document_path, document_id, document=doc, readonly=readonly
+            )
+            if deadline is not None:
+                # A read keeps its original deadline too: there it is detached.
                 lease.timer = loop.call_at(
                     deadline, self._lease_deadline, lease, watched, func, timeout
                 )
@@ -3273,7 +3455,9 @@ class EzdxfBackend(AutoCADBackend):
 
         # Not a quarantine exit: a quarantined backend refuses to switch, because
         # the runaway thread holds the one worker and the one orphaned lock.
-        return await self._async(_sync)
+        # It is a detached read's exit: switching away leaves the read its
+        # document, and switching back to it is refused again by the gate.
+        return await self._async(_sync, detached_read_exit=True)
 
     async def document_close(
         self, name_or_path: str | None = None, save: bool = False, discard: bool = False
@@ -3290,7 +3474,9 @@ class EzdxfBackend(AutoCADBackend):
             key = self._resolve_document_key(name_or_path)
             return self._close_document_sync(key, save=save, discard=discard)
 
-        return await self._async(_sync, quarantine_exit=closing_active)
+        # Closing never races a detached read: the active document is the
+        # read's (then it is replaced) or another one.
+        return await self._async(_sync, quarantine_exit=closing_active, detached_read_exit=True)
 
     # ── layer states ──────────────────────────────────────────────────────────
 
@@ -8232,7 +8418,12 @@ class EzdxfBackend(AutoCADBackend):
         # channel the first thing the quarantine closes, leaving the user with a
         # refusal and no way to ask what happened.
         self._reap_quarantine()
+        self._reap_detached_reads()
         has_doc = self._doc is not None
+        detached_reads = [
+            {**read.to_dict(), "document_active": has_doc and read.document is self._doc}
+            for read in self._detached_reads
+        ]
         return {
             "backend": "ezdxf",
             "connected": True,
@@ -8244,6 +8435,10 @@ class EzdxfBackend(AutoCADBackend):
             "transaction_depth": len(self._transaction_stack),
             "quarantine": self._quarantine.to_dict() if self._quarantine else None,
             "abandoned_calls": [record.to_dict() for record in self._abandoned_calls],
+            # W1 review follow-up: read-only calls past their deadline that
+            # still run; while one holds the active document, every call but
+            # the exits is refused by name (DocumentBusyError).
+            "detached_reads": detached_reads,
             "call_outcomes": [dict(row) for row in self.call_outcomes][-_STATUS_CALL_OUTCOMES:],
             "capabilities": [
                 "file_read_write",
