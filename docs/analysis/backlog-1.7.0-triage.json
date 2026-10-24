@@ -1,0 +1,746 @@
+{
+  "schema_version": 1,
+  "source": "docs/analysis/track-a-review-backlog.md",
+  "rows": [
+    {
+      "id": "W1-T1-05",
+      "file": "backends/ezdxf_backend.py",
+      "finding": "Tag matching is exact-case; `{\"tag\": …}` silently drops against ATTDEF `TAG`.",
+      "old_disposition": "deferred-1.7 (normalise keys to upper case; the server's own ATTDEF tags are upper-case by `ATTDEF_TAG_RE`)",
+      "disposition": "still_reproduces",
+      "evidence": "block_insert('B1', attributes={'tag': 'X1'}) over ATTDEF TAG -> block_get_attributes {'TAG': 'DEF'}: the lower-case key is dropped silently",
+      "owner": "task-4",
+      "reason": "the key normalisation belongs in validate_attribute_values (backends/block_specs.py is Task 4's (shared validation, unknown keys refused))"
+    },
+    {
+      "id": "W1-T1-08",
+      "file": "tests/test_block_insert_attributes.py",
+      "finding": "`attributes=None` yields no ATTRIBs headlessly while COM's `InsertBlock` instantiates ATTDEF defaults; refusal types diverged (ValueError vs RuntimeError).",
+      "old_disposition": "refusal type: fixed-in-task-1 (COM raises the same ValueError); default ATTRIBs: deferred-1.7 (engine divergence on ATTDEF defaults)",
+      "disposition": "still_reproduces",
+      "evidence": "refusal part settled by fixed-in-task-1; block_insert('B1') without attributes -> block_get_attributes {} on ezdxf while COM InsertBlock instantiates the ATTDEF defaults",
+      "owner": "task-8",
+      "reason": "ezdxf block_insert: file is in no 1.7.0 task's file table; small row (engine parity)"
+    },
+    {
+      "id": "W1-T2-03",
+      "file": "plan / spec",
+      "finding": "Spec §4.7 per-entity `color`/`linetype`/`lineweight` overrides were dropped by the plan; unknown keys are silently ignored.",
+      "old_disposition": "deferred-1.7 (carry the three keys through or refuse unknown keys by index)",
+      "disposition": "still_reproduces",
+      "evidence": "validate_entity_specs([{line ..., 'rotation': 45, 'color': 1}]) -> accepted, both keys dropped from the normalised spec",
+      "owner": "task-4",
+      "reason": "backends/block_specs.py is Task 4's (shared validation, unknown keys refused)"
+    },
+    {
+      "id": "W1-T2-05",
+      "file": "backends/block_specs.py",
+      "finding": "A non-list `entities` (dict, str, generator) is refused as \"empty\".",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "validate_entity_specs({'type': 'line'}) / ('abc') / (generator) -> ValueError \"'entities' is empty\" for all three",
+      "owner": "task-4",
+      "reason": "backends/block_specs.py is Task 4's (shared validation, unknown keys refused)"
+    },
+    {
+      "id": "W1-T2-06",
+      "file": "backends/block_specs.py",
+      "finding": "`_layer` gates characters but not the 255-char length rule.",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "validate_entity_specs([{line ..., 'layer': 'L' * 300}]) -> accepted with the 300-char layer",
+      "owner": "task-4",
+      "reason": "backends/block_specs.py is Task 4's (shared validation, unknown keys refused)"
+    },
+    {
+      "id": "W1-T2-07",
+      "file": "backends/block_specs.py",
+      "finding": "Refusal messages echo the caller's value unbounded (`got {value!r}`; measured 2 MB messages).",
+      "old_disposition": "deferred-1.7 (truncate with reprlib)",
+      "disposition": "still_reproduces",
+      "evidence": "validate_entity_specs([{line, 'x1': 'x' * 2_000_000, ...}]) -> TypeError message of 2,000,042 characters",
+      "owner": "task-4",
+      "reason": "backends/block_specs.py is Task 4's (shared validation, unknown keys refused)"
+    },
+    {
+      "id": "W1-T2-08",
+      "file": "backends/block_specs.py",
+      "finding": "Same as W1-T2-03 (unknown keys such as `rotation` silently dropped).",
+      "old_disposition": "deferred-1.7 (with W1-T2-03)",
+      "disposition": "still_reproduces",
+      "evidence": "same repro as W1-T2-03: 'rotation' accepted and dropped",
+      "owner": "task-4",
+      "reason": "backends/block_specs.py is Task 4's (shared validation, unknown keys refused)"
+    },
+    {
+      "id": "W1-T6-04",
+      "file": "engineering/pid/tags.py",
+      "finding": "The \"unexpected letter\" error names the first trailing letter, not the offender (`LAHX-1` → reports H).",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "parse_tag('LAHX-1') -> errors ['LAHX: unexpected letter H at position 3']; the offender is X",
+      "owner": "task-8",
+      "reason": "engineering/pid/tags.py: file is in no 1.7.0 task's file table; small row"
+    },
+    {
+      "id": "W1-T6-05",
+      "file": "engineering/pid/tags.py",
+      "finding": "`equipment_prefixes={}` falls back to the default map (`or` instead of `is None`); non-string values pass through.",
+      "old_disposition": "deferred-1.7 (also W4-T19-05)",
+      "disposition": "still_reproduces",
+      "evidence": "parse_tag('P-101', 'equipment', equipment_prefixes={}) -> valid pump (default map used); prefixes={'P': 5} -> equipment_kind 5",
+      "owner": "task-8",
+      "reason": "engineering/pid/tags.py: file is in no 1.7.0 task's file table; small row"
+    },
+    {
+      "id": "W1-T6-06",
+      "file": "tests/data/isa51_tags.json",
+      "finding": "No fixture row for K (rate of change / control station), M trailing, O readout, B/N/X user-defined readouts.",
+      "old_disposition": "deferred-1.7 (≈5 rows)",
+      "disposition": "still_reproduces",
+      "evidence": "tests/data/isa51_tags.json valid rows: none with K first, none with a trailing M, no B/N/X readout; O readout only ZSO-701",
+      "owner": "task-8",
+      "reason": "fixture rows for engineering/pid/tags.py: file is in no 1.7.0 task's file table; small row"
+    },
+    {
+      "id": "W1-T12-03",
+      "file": "engineering/pid/lines.py",
+      "finding": "`direct` and waypoint modes accept a negative / NaN `stub`.",
+      "old_disposition": "deferred-1.7 (hoist the stub check above the mode branch)",
+      "disposition": "still_reproduces",
+      "evidence": "route((0,0), None, (10,0), None, stub=-1, mode='direct') and stub=nan -> accepted; waypoint mode with stub=-1 -> accepted",
+      "owner": "task-8",
+      "reason": "engineering/pid/lines.py: file is in no 1.7.0 task's file table; small row"
+    },
+    {
+      "id": "W1-T12-04",
+      "file": "engineering/pid/lines.py",
+      "finding": "A malformed waypoint (`{\"x\":…}`, a flat list) escapes as `KeyError` / `TypeError` instead of `ValueError` naming `waypoints[i]`.",
+      "old_disposition": "deferred-1.7 (also W3-T13-11)",
+      "disposition": "still_reproduces",
+      "evidence": "route(..., mode=[{'x': 0}]) -> KeyError 0; mode=[0, 10] -> TypeError 'int' object is not subscriptable",
+      "owner": "task-8",
+      "reason": "engineering/pid/lines.py: file is in no 1.7.0 task's file table; small row (fixed with W3-T13-11)"
+    },
+    {
+      "id": "W1-T12-05",
+      "file": "engineering/pid/lines.py",
+      "finding": "`count_crossings` undercounts a crossing that lands exactly on the other polyline's vertex.",
+      "old_disposition": "deferred-1.7 (reported metric; orthogonal auto routes cannot produce it)",
+      "disposition": "still_reproduces",
+      "evidence": "count_crossings([(0,0),(10,0)], [[(5,-5),(5,0),(5,5)]]) -> 0; the same crossing without the vertex at (5,0) -> 1",
+      "owner": "task-8",
+      "reason": "engineering/pid/lines.py: file is in no 1.7.0 task's file table; small row"
+    },
+    {
+      "id": "W2-T3-06",
+      "file": "backends/ezdxf_backend.py",
+      "finding": "ATTDEF linetype stays BYLAYER on ezdxf vs ByBlock on COM; neither sets lineweight ByBlock.",
+      "old_disposition": "deferred-1.7 (cosmetic; layer-0 members resolve to the INSERT's layer)",
+      "disposition": "still_reproduces",
+      "evidence": "block_define with an ATTDEF on ezdxf -> ATTDEF linetype unset (BYLAYER), lineweight unset; com_backend block_define styles it ByBlock through _style()",
+      "owner": "task-8",
+      "reason": "ezdxf block_define: file is in no 1.7.0 task's file table; small row (engine parity)"
+    },
+    {
+      "id": "W2-T3-07",
+      "file": "backends/ezdxf_backend.py",
+      "finding": "`attdefs or []` turns `{}`/`''` into \"no ATTDEFs\"; a non-str `name` raises AttributeError.",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "block_define('B2', [...], attdefs={}) -> accepted as no ATTDEFs; block_define(123, [...]) -> AttributeError 'int' object has no attribute 'strip'",
+      "owner": "task-4",
+      "reason": "attdefs / name validation belongs in backends/block_specs.py (backends/block_specs.py is Task 4's (shared validation, unknown keys refused))"
+    },
+    {
+      "id": "W2-T3-08",
+      "file": "backends/ezdxf_backend.py",
+      "finding": "`block_insert` without `attributes` carries none of the ATTDEF defaults (COM does).",
+      "old_disposition": "deferred-1.7 (with W1-T1-08)",
+      "disposition": "still_reproduces",
+      "evidence": "same repro as W1-T1-08: no ATTRIBs without attributes on ezdxf",
+      "owner": "task-8",
+      "reason": "fixed with W1-T1-08"
+    },
+    {
+      "id": "W2-T4-03",
+      "file": "backends/ezdxf_backend.py",
+      "finding": "APPID names are case-sensitive headlessly; `APP_A` and `app_a` become two groups and double-count the budget.",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "entity_set_xdata(h, 'APP_A', ['x']) then (h, 'app_a', ['y']) -> entity_get_xdata keys ['APP_A', 'app_a']",
+      "owner": "1.7.1",
+      "reason": "XDATA encoding, case and app-name rules are reworked by 1.7.1 B08 (spec section 2: out of 1.7.0)"
+    },
+    {
+      "id": "W2-T4-04",
+      "file": "backends/com_backend.py",
+      "finding": "A no-op removal registers the APPID on COM but not on ezdxf.",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "ezdxf entity_set_xdata(h, 'NEWAPP', []) -> 'NEWAPP' not in doc.appids; com_backend.entity_set_xdata calls RegisteredApplications.Add before the empty case",
+      "owner": "1.7.1",
+      "reason": "XDATA encoding, case and app-name rules are reworked by 1.7.1 B08 (spec section 2: out of 1.7.0)"
+    },
+    {
+      "id": "W2-T4-05",
+      "file": "backends/xdata_specs.py",
+      "finding": "1004 binary chunks decode to the repr of a bytes object.",
+      "old_disposition": "deferred-1.7 (hex string)",
+      "disposition": "still_reproduces",
+      "evidence": "decode_values([(1004, b'\\x01\\x02')]) -> the string \"b'\\x01\\x02'\" (the repr of a bytes object)",
+      "owner": "1.7.1",
+      "reason": "XDATA encoding, case and app-name rules are reworked by 1.7.1 B08 (spec section 2: out of 1.7.0)"
+    },
+    {
+      "id": "W2-T4-06",
+      "file": "backends/xdata_specs.py",
+      "finding": "The reserved-app rule blocks reading `ACAD` by name while the unfiltered read returns it; other AutoCAD-owned apps are writable.",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "entity_get_xdata(h, 'ACAD') -> ValueError reserved while the unfiltered read returns ACAD; entity_set_xdata(h, 'AcDbAttr', ['z']) -> written",
+      "owner": "1.7.1",
+      "reason": "XDATA encoding, case and app-name rules are reworked by 1.7.1 B08 (spec section 2: out of 1.7.0)"
+    },
+    {
+      "id": "W2-T5-02",
+      "file": "tests/test_pid_xdata.py",
+      "finding": "Sync tests under a module-level `pytest.mark.asyncio` emit PytestWarnings.",
+      "old_disposition": "deferred-1.7 (hygiene sweep across the pid test modules)",
+      "disposition": "still_reproduces",
+      "evidence": "pytest tests/test_pid_xdata.py -> 4 PytestWarnings 'marked with @pytest.mark.asyncio but it is not an async function'",
+      "owner": "task-8",
+      "reason": "test hygiene sweep across the pid / pack test modules; no task owns them"
+    },
+    {
+      "id": "W2-T5-04",
+      "file": "engineering/pid/xdata.py",
+      "finding": "`encode_payload` uses `allow_nan=True`; a NaN would be serialised as a non-RFC literal.",
+      "old_disposition": "deferred-1.7 (`allow_nan=False`; no current caller can deliver one after Task 5)",
+      "disposition": "still_reproduces",
+      "evidence": "encode_payload({'a': float('nan')}) -> ['json', '{\"a\":NaN}']",
+      "owner": "task-4",
+      "reason": "engineering/pid/xdata.py payload validation is Task 4's"
+    },
+    {
+      "id": "W2-T5-05",
+      "file": "engineering/pid/xdata.py",
+      "finding": "`symbol_payload(params={})` is replaced by the spec's params (truthiness).",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "symbol_payload(column_spec, params={})['params'] -> the spec's full params, not {}",
+      "owner": "task-4",
+      "reason": "engineering/pid/xdata.py payload validation is Task 4's"
+    },
+    {
+      "id": "W2-T5-06",
+      "file": "engineering/pid/xdata.py",
+      "finding": "Duplicate port names collapse silently (last wins).",
+      "old_disposition": "deferred-1.7 (refuse in `make_spec`)",
+      "disposition": "still_reproduces",
+      "evidence": "make_spec(..., ports=[shaft, shaft]) -> two ports named 'shaft'; symbol_payload keeps one",
+      "owner": "task-4",
+      "reason": "spec section 4 Task 4 names this row (refuse in make_spec)"
+    },
+    {
+      "id": "W2-T5-07",
+      "file": "engineering/pid/xdata.py",
+      "finding": "A non-dict payload is written and can never be read back.",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "encode_payload([1, 2]) -> ['json', '[1,2]']; decode_payload of it -> None (written, never readable)",
+      "owner": "task-4",
+      "reason": "engineering/pid/xdata.py payload validation is Task 4's"
+    },
+    {
+      "id": "W2-T5-08",
+      "file": "tests/test_pid_xdata.py",
+      "finding": "No multi-chunk payload round trip through a backend.",
+      "old_disposition": "deferred-1.7 (test gap; the path was verified by hand)",
+      "disposition": "fixed",
+      "evidence": "tests/test_pid_insert.py::test_xdata_payload_carries_ports_and_params (4b6abf7) round-trips a vertical_vessel payload through the ezdxf backend; measured 3 chunks after the marker",
+      "owner": "none",
+      "reason": "a multi-chunk payload is read back through a backend by an existing test"
+    },
+    {
+      "id": "W2-T7-05",
+      "file": "engineering/pid/symbols.py",
+      "finding": "`all_specs()` swallows builder ValueErrors and nothing pins the catalogue size.",
+      "old_disposition": "deferred-1.7 (assert `len(all_specs())`)",
+      "disposition": "still_reproduces",
+      "evidence": "len(all_specs()) == 109 today; the only pin is tests/test_pid_resources_prompt.py '>= 100' and all_specs() still swallows builder ValueErrors",
+      "owner": "task-8",
+      "reason": "engineering/pid/symbols.py: file is in no 1.7.0 task's file table; small row"
+    },
+    {
+      "id": "W2-T7-06",
+      "file": "engineering/pid/symbols.py",
+      "finding": "`register()` overwrites silently; `list_symbols()` returns variants by reference.",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "appending to list_symbols()[i]['variants'][k] mutates _REGISTRY (True); register() overwrites an existing symbol without a word",
+      "owner": "task-8",
+      "reason": "engineering/pid/symbols.py: file is in no 1.7.0 task's file table; small row"
+    },
+    {
+      "id": "W2-T8-02",
+      "file": "engineering/pid/symbols_valves.py",
+      "finding": "`check`/`relief` advertise actuator variants they refuse.",
+      "old_disposition": "deferred-1.7 (variants `[\"none\"]` for those bodies)",
+      "disposition": "still_reproduces",
+      "evidence": "symbols_valves.py registers every body with variants {'actuator': ACTUATORS}, check and relief included, while build_valve refuses an actuator on them",
+      "owner": "task-8",
+      "reason": "engineering/pid/symbols_valves.py: file is in no 1.7.0 task's file table; small row"
+    },
+    {
+      "id": "W2-T8-03",
+      "file": "engineering/pid/symbols_valves.py",
+      "finding": "The diaphragm *body* dome floats 1 mm above the bow-tie.",
+      "old_disposition": "deferred-1.7 (cosmetic)",
+      "disposition": "still_reproduces",
+      "evidence": "diaphragm body: arc(0, 2, r=2) ends at (+-2, 2) while the bow-tie edge at x = +-2 is at y = 1: the dome floats 1 mm (file unchanged since 352ce21)",
+      "owner": "task-8",
+      "reason": "engineering/pid/symbols_valves.py: file is in no 1.7.0 task's file table; small row (cosmetic)"
+    },
+    {
+      "id": "W2-T9-02",
+      "file": "engineering/pid/symbols_equipment.py",
+      "finding": "`spectacle_blind` cites ISO 10628-2 instead of PIP PIC001; no spec names its figure/table.",
+      "old_disposition": "deferred-1.7 (provenance strings)",
+      "disposition": "still_reproduces",
+      "evidence": "symbols_equipment.py SOURCE = 'ISO 10628-2:2012' for spectacle_blind too",
+      "owner": "task-8",
+      "reason": "engineering/pid/symbols_equipment.py: file is in no 1.7.0 task's file table; small row (provenance string)"
+    },
+    {
+      "id": "W2-T9-06",
+      "file": "engineering/pid/symbols_equipment.py",
+      "finding": "`air_cooler` fan cross pokes 0.046 mm outside its circle.",
+      "old_disposition": "deferred-1.7 (cosmetic, ±1.75)",
+      "disposition": "still_reproduces",
+      "evidence": "air_cooler fan cross ends at hypot(1.8, 1.8) = 2.5456 against the 2.5 circle: 0.046 mm outside",
+      "owner": "task-8",
+      "reason": "engineering/pid/symbols_equipment.py: file is in no 1.7.0 task's file table; small row (cosmetic)"
+    },
+    {
+      "id": "W2-T10-04",
+      "file": "engineering/pid/symbols_vessels.py",
+      "finding": "Non-finite sizes/fractions pass `validate_vessel_params` (NaN spec, `RuntimeError` for inf).",
+      "old_disposition": "deferred-1.7 (`math.isfinite` next to `> 0`)",
+      "disposition": "still_reproduces",
+      "evidence": "validate_vessel_params('vertical_vessel', {'width': nan}) -> width nan accepted; build_vessel(height=inf) -> RuntimeError \"nozzle 'N1': x=0.0 meets no outline\"",
+      "owner": "task-4",
+      "reason": "spec section 4 Task 4 names NaN / inf vessel sizes (engineering/pid/symbols_vessels.py is Task 4's)"
+    },
+    {
+      "id": "W2-T10-05",
+      "file": "engineering/pid/symbols_vessels.py",
+      "finding": "Column tray lines poke through dished heads (up to 1.8 mm).",
+      "old_disposition": "deferred-1.7 (clip to the outline with `scan_hits`)",
+      "disposition": "still_reproduces",
+      "evidence": "build_vessel('column', width 16, height 20, trays 9) -> tray lines up to 3.254 mm beyond the dished head",
+      "owner": "task-4",
+      "reason": "engineering/pid/symbols_vessels.py is Task 4's"
+    },
+    {
+      "id": "W2-T10-06",
+      "file": "engineering/pid/symbols_vessels.py",
+      "finding": "Nozzle fractions near 0/1 on curved/sloped sides give degenerate long stubs from a corner.",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "vertical_vessel nozzle side=left fraction=0 -> stub from (0, -20) to (-13, -20): a 13 mm stub from the bottom pole",
+      "owner": "task-4",
+      "reason": "engineering/pid/symbols_vessels.py is Task 4's"
+    },
+    {
+      "id": "W2-T10-07",
+      "file": "engineering/pid/symbols_vessels.py",
+      "finding": "`trays` is unbounded (1 000 000 trays build in 6.3 s / 272 MB).",
+      "old_disposition": "deferred-1.7 (cap by spacing ≥ 1 mm)",
+      "disposition": "still_reproduces",
+      "evidence": "validate_vessel_params('column', {'trays': 10 ** 9}) -> accepted, no cap",
+      "owner": "task-4",
+      "reason": "spec section 4 Task 4 names the tray budget (engineering/pid/symbols_vessels.py is Task 4's)"
+    },
+    {
+      "id": "W2-T10-08",
+      "file": "engineering/pid/symbols_vessels.py",
+      "finding": "Two nozzles at the same side+fraction duplicate the stub; `-0.0` hashes to a different block name.",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "two top nozzles at fraction 0.5 -> 2 identical stubs; fraction 0.0 and -0.0 -> block names ..._72E67B86 and ..._B19D56A8",
+      "owner": "task-4",
+      "reason": "engineering/pid/symbols_vessels.py is Task 4's"
+    },
+    {
+      "id": "W3-T13-05",
+      "file": "engineering/pid/drawlines.py",
+      "finding": "Line sequence is per current space, not per document (spec §6.3).",
+      "old_disposition": "deferred-1.7 (document-wide scan of existing lines)",
+      "disposition": "still_reproduces",
+      "evidence": "pid_line_draw in Model -> number 1; layout_set_current('Layout1') and a second line -> number 1 again (existing_pid_lines reads entity_list of the current space)",
+      "owner": "task-8",
+      "reason": "engineering/pid/drawlines.py: file is in no 1.7.0 task's file table; small row"
+    },
+    {
+      "id": "W3-T13-09",
+      "file": "engineering/pid/drawlines.py",
+      "finding": "(a) crossings tested against chords, not arcs; (b) COM heavy 2DPOLYLINE `Coordinates` read with stride 2.",
+      "old_disposition": "(a) fixed-in-task-7; (b) deferred-1.7 (heavy polylines the tool never creates)",
+      "disposition": "still_reproduces",
+      "evidence": "(a) fixed-in-task-7; (b) live AutoCAD 2026 (25.1) probe: ModelSpace.AddPolyline of 3 vertices -> AcDb2dPolyline.Coordinates has 9 values (x, y, z triples) while com_backend entity_get reads stride 2",
+      "owner": "task-13",
+      "reason": "COM entity_get geometry read-back is Task 13's (observed geometry, live-probed)"
+    },
+    {
+      "id": "W3-T13-11",
+      "file": "server.py",
+      "finding": "An unknown endpoint handle and a flat waypoint list surface as \"Internal error\" rather than a named refusal.",
+      "old_disposition": "deferred-1.7 (with W1-T12-04)",
+      "disposition": "still_reproduces",
+      "evidence": "in-memory Client: pid_line_draw(from_={'handle': 'FFFF'}) -> 'Internal error: ... Entity with handle FFFF not found'; route=[10, 20] -> \"'int' object is not subscriptable\"",
+      "owner": "task-8",
+      "reason": "server.py pid_line_draw: file is in no 1.7.0 task's file table; small row (fixed with W1-T12-04)"
+    },
+    {
+      "id": "W3-T14-05",
+      "file": "tests/test_pid_graph.py",
+      "finding": "Three sync tests under the asyncio mark warn.",
+      "old_disposition": "deferred-1.7 (hygiene, with W2-T5-02)",
+      "disposition": "still_reproduces",
+      "evidence": "pytest tests/test_pid_graph.py -> 7 PytestWarnings 'marked with @pytest.mark.asyncio but it is not an async function'",
+      "owner": "task-8",
+      "reason": "test hygiene sweep across the pid / pack test modules; no task owns them"
+    },
+    {
+      "id": "W3-T14-06",
+      "file": "engineering/pid/graph.py",
+      "finding": "`_Edge.segments` omits a closed polyline's closing edge while `length` includes it.",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "_Edge has no closed flag; _Edge(vertices=[(0,0),(10,0),(10,10)]).segments() -> 2 segments, a closed polyline needs 3",
+      "owner": "task-8",
+      "reason": "engineering/pid/graph.py is Task 2's only for its read path; graph semantics rows are small and land after the merge"
+    },
+    {
+      "id": "W3-T14-07",
+      "file": "engineering/pid/graph.py",
+      "finding": "The dangling `nearest` hint never names a radial (bubble) port.",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "instrument bubble (signal port radius 5) and a signal line ending 2 mm off the circle -> dangling nearest None (radial ports never enter the port grid)",
+      "owner": "task-8",
+      "reason": "engineering/pid/graph.py is Task 2's only for its read path; graph semantics rows are small and land after the merge"
+    },
+    {
+      "id": "W3-T14-09",
+      "file": "engineering/pid/graph.py",
+      "finding": "`scope=\"all\"` restores `current` but not the paper-space layout binding.",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "active paper layout Layout1, current Model, layout SHEET2 added -> build_graph(scope='all') -> doc.layouts.active_layout() is SHEET2 afterwards",
+      "owner": "task-2",
+      "reason": "Task 2 replaces the per-layout switching with the one all-spaces read"
+    },
+    {
+      "id": "W3-T14-11",
+      "file": "engineering/pid/graph.py",
+      "finding": "A `PID_*` INSERT whose XDATA was stripped falls to the 0.6 heuristic with no ports (spec says catalogue 1.0).",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "pid_symbol_insert('centrifugal_pump'), XDATA cleared -> build_graph node source 'heuristic', confidence 0.6, ports ['p1'] (catalogue ports lost)",
+      "owner": "task-8",
+      "reason": "engineering/pid/graph.py is Task 2's only for its read path; graph semantics rows are small and land after the merge; non-parametric names map to one catalogue spec"
+    },
+    {
+      "id": "W3-T14-17",
+      "file": "spec",
+      "finding": "§9.1 model not extended for the added node/junction keys.",
+      "old_disposition": "deferred-1.7 (docs)",
+      "disposition": "still_reproduces",
+      "evidence": "spec 2026-09-15-v1.6-pid-design.md section 9.1 and the pid_graph docstring list none of y_scale, mirrored, notes, description",
+      "owner": "task-8",
+      "reason": "docs: file is in no 1.7.0 task's file table; small row"
+    },
+    {
+      "id": "W3-T14-19",
+      "file": "backends/ezdxf_backend.py",
+      "finding": "`mirrored` is `True` for a tilted INSERT with a negative-z normal (COM twin too).",
+      "old_disposition": "deferred-1.7 (`flat and z < 0`)",
+      "disposition": "still_reproduces",
+      "evidence": "ezdxf entity_get INSERT: props['mirrored'] = extrusion[2] < 0 (com_backend: Normal[2] < 0), so a tilted normal (0.5, 0, -0.866) reads as mirrored",
+      "owner": "task-13",
+      "reason": "INSERT plane handling in entity_get is Task 13's (tilted-plane flag)"
+    },
+    {
+      "id": "W3-T15-04",
+      "file": "engineering/pid/deliverables.py",
+      "finding": "`natural_key` crashes on `str.isdigit()` runs that are not `\\d` (①, ²).",
+      "old_disposition": "deferred-1.7 (`isdecimal`)",
+      "disposition": "still_reproduces",
+      "evidence": "natural_key('FT-1²') -> ValueError invalid literal for int() with base 10: '²'",
+      "owner": "task-3",
+      "reason": "engineering/pid/deliverables.py and the P&ID list tools are Task 3's"
+    },
+    {
+      "id": "W3-T15-05",
+      "file": "engineering/pid/deliverables.py",
+      "finding": "`_far_ends` resolves junctions at the ends of the instrument's line only, not on it.",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "_far_ends reads only edge['from'] / edge['to'] of the instrument's own line (unchanged since 346eac4)",
+      "owner": "task-3",
+      "reason": "engineering/pid/deliverables.py and the P&ID list tools are Task 3's"
+    },
+    {
+      "id": "W3-T15-06",
+      "file": "engineering/pid/deliverables.py",
+      "finding": "`_tag_of` writes the internal junction id into a tag column; untagged node ends are `None` vs handle in the index.",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "_tag_of returns ref.get('junction') as the tag of a junction end",
+      "owner": "task-3",
+      "reason": "engineering/pid/deliverables.py and the P&ID list tools are Task 3's"
+    },
+    {
+      "id": "W3-T15-07",
+      "file": "engineering/pid/deliverables.py",
+      "finding": "`write_csv` edge cases: 0-byte file for zero rows, `csv_path=''` treated as None, directory path escapes as PermissionError, dead `mkdir`, late validation.",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "write_csv([], p) -> 0-byte file; write_csv(rows, path of a directory) -> PermissionError; deliverable(csv_path='') -> csv_path None",
+      "owner": "task-3",
+      "reason": "the plan's Task 3 brief names this row"
+    },
+    {
+      "id": "W3-T15-08",
+      "file": "engineering/pid/deliverables.py",
+      "finding": "CSV formula injection: cells starting with `=+-@` are written verbatim.",
+      "old_disposition": "deferred-1.7 (first item of the 1.7 deliverables pass)",
+      "disposition": "still_reproduces",
+      "evidence": "write_csv([{'tag': '=1+1'}, {'tag': '@x'}]) -> lines 'tag', '=1+1', '@x'",
+      "owner": "task-3",
+      "reason": "the plan's Task 3 brief names this row (B03)"
+    },
+    {
+      "id": "W3-T15-09",
+      "file": "server.py",
+      "finding": "The three deliverable tools expose only `tolerance`/`scope`, not `label_search`/`include_foreign`.",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "in-memory Client: pid_instrument_index / pid_line_list / pid_equipment_list inputSchema -> csv_path, scope, tolerance only",
+      "owner": "task-3",
+      "reason": "engineering/pid/deliverables.py and the P&ID list tools are Task 3's"
+    },
+    {
+      "id": "W3-T15-10",
+      "file": "engineering/pid/deliverables.py",
+      "finding": "`signal_lines` counts every edge on a bubble regardless of class.",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "instrument_index counts signal_lines += 1 for every edge on a bubble port, whatever its class",
+      "owner": "task-3",
+      "reason": "engineering/pid/deliverables.py and the P&ID list tools are Task 3's"
+    },
+    {
+      "id": "W3-T16-04",
+      "file": "tests/test_pid_critique.py",
+      "finding": "Two sync tests warn under the asyncio mark.",
+      "old_disposition": "deferred-1.7 (hygiene)",
+      "disposition": "still_reproduces",
+      "evidence": "pytest tests/test_pid_critique.py -> 2 PytestWarnings 'marked with @pytest.mark.asyncio but it is not an async function'",
+      "owner": "task-8",
+      "reason": "test hygiene sweep across the pid / pack test modules; no task owns them"
+    },
+    {
+      "id": "W3-T16-05",
+      "file": "engineering/pid/critique.py",
+      "finding": "`_untagged` tests the composed tag, not FUNC/LOOP; an empty LOOP files as `pid_illegal_tag`.",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "pid/critique.py _untagged tests not n.get('tag') (the composed tag), not FUNC / LOOP",
+      "owner": "task-8",
+      "reason": "engineering/pid/critique.py: file is in no 1.7.0 task's file table; small row"
+    },
+    {
+      "id": "W3-T16-07",
+      "file": "engineering/pid/critique.py",
+      "finding": "`_duplicate_tags` scores a text-derived (guessed) tag as a gate-failing error.",
+      "old_disposition": "deferred-1.7 (warning for `tag_source: text`)",
+      "disposition": "still_reproduces",
+      "evidence": "_duplicate_tags emits severity 'error' for every node with a tag, tag_source 'text' included",
+      "owner": "task-8",
+      "reason": "engineering/pid/critique.py: file is in no 1.7.0 task's file table; small row"
+    },
+    {
+      "id": "W4-T17-07",
+      "file": "engineering/pid/spec.py",
+      "finding": "`dry_run` skips `place_symbol`'s option checks (`scale=-1` approved; wrong item blamed).",
+      "old_disposition": "deferred-1.7 (`validate_spec` owns scale/fail/actuator rules)",
+      "disposition": "still_reproduces",
+      "evidence": "run_spec(spec with equipment[0].scale = -1, dry_run=True) -> approved; the real run -> ValueError 'equipment[0]: scale must be > 0'",
+      "owner": "task-4",
+      "reason": "spec section 4 Task 4 names scale > 0 (engineering/pid/spec.py validation is Task 4's)"
+    },
+    {
+      "id": "W4-T17-08",
+      "file": "engineering/pid/spec.py",
+      "finding": "`dry_run` crossings count the spec's own lines only, unlabelled.",
+      "old_disposition": "deferred-1.7 (`crossings_scope` field)",
+      "disposition": "still_reproduces",
+      "evidence": "run_spec(dry_run=True) -> keys crossings_total, dry_run, items, lines; no crossings_scope",
+      "owner": "task-12",
+      "reason": "the pid_from_spec dry-run preview is Task 12's (change previews)"
+    },
+    {
+      "id": "W4-T17-09",
+      "file": "engineering/pid/spec.py",
+      "finding": "Nested transactions: ezdxf nests, COM refuses; `drawing_plan` is set before the refusal.",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "ezdxf: transaction_begin() then run_spec -> accepted (nests); run_spec calls drawing_plan before transaction_begin, and COM transaction_begin returns 'A transaction is already active'",
+      "owner": "task-4",
+      "reason": "refuse before any write (engineering/pid/spec.py validation is Task 4's)"
+    },
+    {
+      "id": "W4-T17-10",
+      "file": "engineering/pid/spec.py",
+      "finding": "The `sheet` block is not validated (unknown layer set / sheet size / keys accepted).",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "validate_spec(sheet={'layer_set': 'nonsense', 'sheet_size': 'Z9', 'bogus': 1, 'scale': 'abc'}) -> accepted; run_spec -> ValueError could not convert string to float: 'abc'",
+      "owner": "task-4",
+      "reason": "spec section 4 Task 4 names the sheet dict (engineering/pid/spec.py validation is Task 4's)"
+    },
+    {
+      "id": "W4-T17-11",
+      "file": "engineering/pid/spec.py",
+      "finding": "String-typed optional keys unvalidated (`arrow: \"no\"` truthy; `number: 123` bare TypeError; `id` with a dot).",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "validate_spec(lines[0] arrow='no', number=123) -> accepted; equipment id 'P.1' -> accepted",
+      "owner": "task-4",
+      "reason": "engineering/pid/spec.py validation is Task 4's"
+    },
+    {
+      "id": "W4-T19-04",
+      "file": "server.py",
+      "finding": "The prompt's OFF-PAGE example emits a tag warning every time it is followed (`TO P&ID-002` parsed as ISA-5.1).",
+      "old_disposition": "deferred-1.7 (skip `parse_tag` for connectors at insert)",
+      "disposition": "still_reproduces",
+      "evidence": "place_symbol('offpage', tag='TO P&ID-002', direction='out') -> tag_warnings [\"'TO P&ID-002': not in [area-]LETTERS[-]loop[suffix] format\"]",
+      "owner": "task-8",
+      "reason": "engineering/pid/insert.py: file is in no 1.7.0 task's file table; small row"
+    },
+    {
+      "id": "W4-T19-05",
+      "file": "engineering/pid/tags.py",
+      "finding": "`equipment_prefixes={}` discarded; non-string values pass.",
+      "old_disposition": "deferred-1.7 (with W1-T6-05)",
+      "disposition": "still_reproduces",
+      "evidence": "same repro as W1-T6-05",
+      "owner": "task-8",
+      "reason": "fixed with W1-T6-05"
+    },
+    {
+      "id": "W4-T18-01",
+      "file": "tests/test_tool_packs.py",
+      "finding": "A sync test warns under the asyncio mark.",
+      "old_disposition": "deferred-1.7 (hygiene)",
+      "disposition": "still_reproduces",
+      "evidence": "pytest tests/test_tool_packs.py -> PytestWarning on test_pack_registry_names_real_tools_and_only_them",
+      "owner": "task-8",
+      "reason": "test hygiene sweep across the pid / pack test modules; no task owns them"
+    },
+    {
+      "id": "W4-T18-02",
+      "file": "README.md / config.py / .env.example",
+      "finding": "Token table and prose said 47 while lean has 50.",
+      "old_disposition": "README: fixed-in-track-A (Task 21); `config.py:99` / `.env.example:52` \"~47\": deferred-1.7 (docs)",
+      "disposition": "still_reproduces",
+      "evidence": "README part settled by fixed-in-track-A; config.py:105, .env.example:52 and server.py:864 still say ~47 / 47 while lean is 65",
+      "owner": "task-8",
+      "reason": "the plan's Task 8 brief names the stale 'about 47' lean comments"
+    },
+    {
+      "id": "W4-T18-03",
+      "file": "server.py",
+      "finding": "`TOOL_PACKS=all,mech3000` drops the unknown entry without a warning or `ignored`.",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "TOOL_PACKS='all,mech3000' -> _enabled_packs() returns every pack and ignored [], no warning",
+      "owner": "task-8",
+      "reason": "server.py TOOL_PACKS: file is in no 1.7.0 task's file table; small row"
+    },
+    {
+      "id": "W4-T18-04",
+      "file": "server.py",
+      "finding": "`_enabled_packs()` runs twice per apply; unknown entries warn twice and duplicate in `ignored`.",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "TOOL_PACKS='core,foo,foo' -> one _apply_tool_profile('full') logs 4 warnings (_profile_enabled_names and the apply each call _enabled_packs), ignored ['foo', 'foo']",
+      "owner": "task-8",
+      "reason": "server.py TOOL_PACKS: file is in no 1.7.0 task's file table; small row"
+    },
+    {
+      "id": "W4-T18-05",
+      "file": "tests/test_tool_packs.py",
+      "finding": "The pack test compares against a hand-copied set, never the registry.",
+      "old_disposition": "deferred-1.7 (assert against `_registered_tools()` tags)",
+      "disposition": "still_reproduces",
+      "evidence": "tests/test_tool_packs.py compares PACK_TOOL_NAMES with hand-copied sets; test_every_pack_member_is_a_registered_tool (70afd57) checks one direction only, no test compares the registered tools' pack tags",
+      "owner": "task-8",
+      "reason": "tests/test_tool_packs.py: file is in no 1.7.0 task's file table; small row"
+    },
+    {
+      "id": "W4-T20-03",
+      "file": "benchmarks/README.md",
+      "finding": "\"16/16 on the v4 matrix\" has no published artifact behind it.",
+      "old_disposition": "deferred-1.7 (publish a v4 reference report at the 1.6 release)",
+      "disposition": "superseded",
+      "evidence": "benchmarks/README.md no longer claims 16/16; benchmarks/results/published/autocad-mcp-pro.json is matrix v7, 21/21 at 554daff, which contains the v4 tasks",
+      "owner": "none",
+      "reason": "the published v7 reference report replaced the v4 claim"
+    },
+    {
+      "id": "W4-T20-04",
+      "file": "tests/test_benchmark_v4.py",
+      "finding": "No test executes `_task_pid_roundtrip`.",
+      "old_disposition": "deferred-1.7 (Task 6 of the hardening plan runs it by hand)",
+      "disposition": "still_reproduces",
+      "evidence": "no test calls _task_pid_roundtrip (tests/test_benchmark_v4.py checks ids, category and adapter coverage only; test_benchmark_v7 reads the published JSON)",
+      "owner": "task-20",
+      "reason": "benchmark task methods and their tests are Task 20's"
+    },
+    {
+      "id": "W4-T21-05",
+      "file": "CHANGELOG.md",
+      "finding": "\"12.5 % short on a semicircular jump\" is the v1.5 square figure; the tested geometry is 10.25 %.",
+      "old_disposition": "deferred to the final docs task of Track E (CHANGELOG `Unreleased` edit)",
+      "disposition": "still_reproduces",
+      "evidence": "CHANGELOG.md:221 ([1.6.0]) and engineering/pid/graph.py:154 still say 12.5 %; the tested jump (tests/test_pid_graph.py:421) is 50 against 40 + 5 pi: 10.25 % short",
+      "owner": "task-23",
+      "reason": "CHANGELOG is Task 23's; the graph.py comment is corrected with it"
+    },
+    {
+      "id": "W4-T21-07",
+      "file": "scripts/smoke_pid_com.py",
+      "finding": "Exit code checks `dangling` only; critique/confidence/xdata are printed, not asserted.",
+      "old_disposition": "deferred-1.7",
+      "disposition": "still_reproduces",
+      "evidence": "scripts/smoke_pid_com.py:80 -> return 0 if stats['dangling'] == 0 else 1",
+      "owner": "task-21",
+      "reason": "the plan's Task 21 brief names this row"
+    },
+    {
+      "id": "W4-T21-08",
+      "file": "CHANGELOG.md",
+      "finding": "`LAYER_SET_INTENT_MISMATCH` is claimed for `drawing_plan`, which only appends a warning string.",
+      "old_disposition": "deferred to the final docs task of Track E",
+      "disposition": "still_reproduces",
+      "evidence": "CHANGELOG.md:515 claims drawing_plan reports LAYER_SET_INTENT_MISMATCH; drawing_plan('P&ID ...', layer_set_id='mech') returns only warnings ['intent reads as a P&ID but the layer set is ...'] (drawing_preflight does emit the code)",
+      "owner": "task-23",
+      "reason": "CHANGELOG is Task 23's"
+    }
+  ]
+}

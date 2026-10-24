@@ -290,3 +290,94 @@ Reading key: `W1-T1-03` = wave 1, Track A Task 1, finding 3. Files are repositor
 ## Totals
 
 165 rows. Fixed in this track (Tasks 1–7): 15 · fixed inside Track A: 17 · accepted with a reason: 62 · deferred (1.7 or the Track E docs task): 71.
+
+## 1.7.0 triage
+
+**Date:** 2026-10-24, on `release/1.7.0` (v1.7.0 Task 0, roadmap B06). Every row above
+whose disposition says `deferred-1.7` (72: 69 pure, 3 mixed — W1-T1-08, W3-T13-09 and
+W4-T18-02, where only the deferred half is triaged) and the two rows deferred to the
+Track E docs task (W4-T21-05, W4-T21-08) were re-run on this tree. A row is closed
+only by a test or commit that settles it, never by an old plan. Owners follow the
+file tables of the three 1.7.0 plans (`docs/superpowers/plans/2026-10-24-v1.7.0-w*`);
+`task-8` takes a small row whose file no task owns; XDATA rows go to 1.7.1 (B08).
+The machine-readable copy, with the finding, the old disposition and the reason for
+each owner, is `docs/analysis/backlog-1.7.0-triage.json`.
+
+Dispositions: still_reproduces 72 · fixed 1 · superseded 1. Owners: task-2 1 · task-3 7 · task-4 20 · task-8 33 · task-12 1 · task-13 2 · task-20 1 · task-21 1 · task-23 2 · 1.7.1 4 · none 2.
+
+| ID | Disposition | Owner | Evidence |
+|---|---|---|---|
+| W1-T1-05 | still_reproduces | task-4 | block_insert('B1', attributes={'tag': 'X1'}) over ATTDEF TAG -> block_get_attributes {'TAG': 'DEF'}: the lower-case key is dropped silently |
+| W1-T1-08 | still_reproduces | task-8 | refusal part settled by fixed-in-task-1; block_insert('B1') without attributes -> block_get_attributes {} on ezdxf while COM InsertBlock instantiates the ATTDEF defaults |
+| W1-T2-03 | still_reproduces | task-4 | validate_entity_specs([{line ..., 'rotation': 45, 'color': 1}]) -> accepted, both keys dropped from the normalised spec |
+| W1-T2-05 | still_reproduces | task-4 | validate_entity_specs({'type': 'line'}) / ('abc') / (generator) -> ValueError "'entities' is empty" for all three |
+| W1-T2-06 | still_reproduces | task-4 | validate_entity_specs([{line ..., 'layer': 'L' * 300}]) -> accepted with the 300-char layer |
+| W1-T2-07 | still_reproduces | task-4 | validate_entity_specs([{line, 'x1': 'x' * 2_000_000, ...}]) -> TypeError message of 2,000,042 characters |
+| W1-T2-08 | still_reproduces | task-4 | same repro as W1-T2-03: 'rotation' accepted and dropped |
+| W1-T6-04 | still_reproduces | task-8 | parse_tag('LAHX-1') -> errors ['LAHX: unexpected letter H at position 3']; the offender is X |
+| W1-T6-05 | still_reproduces | task-8 | parse_tag('P-101', 'equipment', equipment_prefixes={}) -> valid pump (default map used); prefixes={'P': 5} -> equipment_kind 5 |
+| W1-T6-06 | still_reproduces | task-8 | tests/data/isa51_tags.json valid rows: none with K first, none with a trailing M, no B/N/X readout; O readout only ZSO-701 |
+| W1-T12-03 | still_reproduces | task-8 | route((0,0), None, (10,0), None, stub=-1, mode='direct') and stub=nan -> accepted; waypoint mode with stub=-1 -> accepted |
+| W1-T12-04 | still_reproduces | task-8 | route(..., mode=[{'x': 0}]) -> KeyError 0; mode=[0, 10] -> TypeError 'int' object is not subscriptable |
+| W1-T12-05 | still_reproduces | task-8 | count_crossings([(0,0),(10,0)], [[(5,-5),(5,0),(5,5)]]) -> 0; the same crossing without the vertex at (5,0) -> 1 |
+| W2-T3-06 | still_reproduces | task-8 | block_define with an ATTDEF on ezdxf -> ATTDEF linetype unset (BYLAYER), lineweight unset; com_backend block_define styles it ByBlock through _style() |
+| W2-T3-07 | still_reproduces | task-4 | block_define('B2', [...], attdefs={}) -> accepted as no ATTDEFs; block_define(123, [...]) -> AttributeError 'int' object has no attribute 'strip' |
+| W2-T3-08 | still_reproduces | task-8 | same repro as W1-T1-08: no ATTRIBs without attributes on ezdxf |
+| W2-T4-03 | still_reproduces | 1.7.1 | entity_set_xdata(h, 'APP_A', ['x']) then (h, 'app_a', ['y']) -> entity_get_xdata keys ['APP_A', 'app_a'] |
+| W2-T4-04 | still_reproduces | 1.7.1 | ezdxf entity_set_xdata(h, 'NEWAPP', []) -> 'NEWAPP' not in doc.appids; com_backend.entity_set_xdata calls RegisteredApplications.Add before the empty case |
+| W2-T4-05 | still_reproduces | 1.7.1 | decode_values([(1004, b'\x01\x02')]) -> the string "b'\x01\x02'" (the repr of a bytes object) |
+| W2-T4-06 | still_reproduces | 1.7.1 | entity_get_xdata(h, 'ACAD') -> ValueError reserved while the unfiltered read returns ACAD; entity_set_xdata(h, 'AcDbAttr', ['z']) -> written |
+| W2-T5-02 | still_reproduces | task-8 | pytest tests/test_pid_xdata.py -> 4 PytestWarnings 'marked with @pytest.mark.asyncio but it is not an async function' |
+| W2-T5-04 | still_reproduces | task-4 | encode_payload({'a': float('nan')}) -> ['json', '{"a":NaN}'] |
+| W2-T5-05 | still_reproduces | task-4 | symbol_payload(column_spec, params={})['params'] -> the spec's full params, not {} |
+| W2-T5-06 | still_reproduces | task-4 | make_spec(..., ports=[shaft, shaft]) -> two ports named 'shaft'; symbol_payload keeps one |
+| W2-T5-07 | still_reproduces | task-4 | encode_payload([1, 2]) -> ['json', '[1,2]']; decode_payload of it -> None (written, never readable) |
+| W2-T5-08 | fixed | none | tests/test_pid_insert.py::test_xdata_payload_carries_ports_and_params (4b6abf7) round-trips a vertical_vessel payload through the ezdxf backend; measured 3 chunks after the marker |
+| W2-T7-05 | still_reproduces | task-8 | len(all_specs()) == 109 today; the only pin is tests/test_pid_resources_prompt.py '>= 100' and all_specs() still swallows builder ValueErrors |
+| W2-T7-06 | still_reproduces | task-8 | appending to list_symbols()[i]['variants'][k] mutates _REGISTRY (True); register() overwrites an existing symbol without a word |
+| W2-T8-02 | still_reproduces | task-8 | symbols_valves.py registers every body with variants {'actuator': ACTUATORS}, check and relief included, while build_valve refuses an actuator on them |
+| W2-T8-03 | still_reproduces | task-8 | diaphragm body: arc(0, 2, r=2) ends at (+-2, 2) while the bow-tie edge at x = +-2 is at y = 1: the dome floats 1 mm (file unchanged since 352ce21) |
+| W2-T9-02 | still_reproduces | task-8 | symbols_equipment.py SOURCE = 'ISO 10628-2:2012' for spectacle_blind too |
+| W2-T9-06 | still_reproduces | task-8 | air_cooler fan cross ends at hypot(1.8, 1.8) = 2.5456 against the 2.5 circle: 0.046 mm outside |
+| W2-T10-04 | still_reproduces | task-4 | validate_vessel_params('vertical_vessel', {'width': nan}) -> width nan accepted; build_vessel(height=inf) -> RuntimeError "nozzle 'N1': x=0.0 meets no outline" |
+| W2-T10-05 | still_reproduces | task-4 | build_vessel('column', width 16, height 20, trays 9) -> tray lines up to 3.254 mm beyond the dished head |
+| W2-T10-06 | still_reproduces | task-4 | vertical_vessel nozzle side=left fraction=0 -> stub from (0, -20) to (-13, -20): a 13 mm stub from the bottom pole |
+| W2-T10-07 | still_reproduces | task-4 | validate_vessel_params('column', {'trays': 10 ** 9}) -> accepted, no cap |
+| W2-T10-08 | still_reproduces | task-4 | two top nozzles at fraction 0.5 -> 2 identical stubs; fraction 0.0 and -0.0 -> block names ..._72E67B86 and ..._B19D56A8 |
+| W3-T13-05 | still_reproduces | task-8 | pid_line_draw in Model -> number 1; layout_set_current('Layout1') and a second line -> number 1 again (existing_pid_lines reads entity_list of the current space) |
+| W3-T13-09 | still_reproduces | task-13 | (a) fixed-in-task-7; (b) live AutoCAD 2026 (25.1) probe: ModelSpace.AddPolyline of 3 vertices -> AcDb2dPolyline.Coordinates has 9 values (x, y, z triples) while com_backend entity_get reads stride 2 |
+| W3-T13-11 | still_reproduces | task-8 | in-memory Client: pid_line_draw(from_={'handle': 'FFFF'}) -> 'Internal error: ... Entity with handle FFFF not found'; route=[10, 20] -> "'int' object is not subscriptable" |
+| W3-T14-05 | still_reproduces | task-8 | pytest tests/test_pid_graph.py -> 7 PytestWarnings 'marked with @pytest.mark.asyncio but it is not an async function' |
+| W3-T14-06 | still_reproduces | task-8 | _Edge has no closed flag; _Edge(vertices=[(0,0),(10,0),(10,10)]).segments() -> 2 segments, a closed polyline needs 3 |
+| W3-T14-07 | still_reproduces | task-8 | instrument bubble (signal port radius 5) and a signal line ending 2 mm off the circle -> dangling nearest None (radial ports never enter the port grid) |
+| W3-T14-09 | still_reproduces | task-2 | active paper layout Layout1, current Model, layout SHEET2 added -> build_graph(scope='all') -> doc.layouts.active_layout() is SHEET2 afterwards |
+| W3-T14-11 | still_reproduces | task-8 | pid_symbol_insert('centrifugal_pump'), XDATA cleared -> build_graph node source 'heuristic', confidence 0.6, ports ['p1'] (catalogue ports lost) |
+| W3-T14-17 | still_reproduces | task-8 | spec 2026-09-15-v1.6-pid-design.md section 9.1 and the pid_graph docstring list none of y_scale, mirrored, notes, description |
+| W3-T14-19 | still_reproduces | task-13 | ezdxf entity_get INSERT: props['mirrored'] = extrusion[2] < 0 (com_backend: Normal[2] < 0), so a tilted normal (0.5, 0, -0.866) reads as mirrored |
+| W3-T15-04 | still_reproduces | task-3 | natural_key('FT-1²') -> ValueError invalid literal for int() with base 10: '²' |
+| W3-T15-05 | still_reproduces | task-3 | _far_ends reads only edge['from'] / edge['to'] of the instrument's own line (unchanged since 346eac4) |
+| W3-T15-06 | still_reproduces | task-3 | _tag_of returns ref.get('junction') as the tag of a junction end |
+| W3-T15-07 | still_reproduces | task-3 | write_csv([], p) -> 0-byte file; write_csv(rows, path of a directory) -> PermissionError; deliverable(csv_path='') -> csv_path None |
+| W3-T15-08 | still_reproduces | task-3 | write_csv([{'tag': '=1+1'}, {'tag': '@x'}]) -> lines 'tag', '=1+1', '@x' |
+| W3-T15-09 | still_reproduces | task-3 | in-memory Client: pid_instrument_index / pid_line_list / pid_equipment_list inputSchema -> csv_path, scope, tolerance only |
+| W3-T15-10 | still_reproduces | task-3 | instrument_index counts signal_lines += 1 for every edge on a bubble port, whatever its class |
+| W3-T16-04 | still_reproduces | task-8 | pytest tests/test_pid_critique.py -> 2 PytestWarnings 'marked with @pytest.mark.asyncio but it is not an async function' |
+| W3-T16-05 | still_reproduces | task-8 | pid/critique.py _untagged tests not n.get('tag') (the composed tag), not FUNC / LOOP |
+| W3-T16-07 | still_reproduces | task-8 | _duplicate_tags emits severity 'error' for every node with a tag, tag_source 'text' included |
+| W4-T17-07 | still_reproduces | task-4 | run_spec(spec with equipment[0].scale = -1, dry_run=True) -> approved; the real run -> ValueError 'equipment[0]: scale must be > 0' |
+| W4-T17-08 | still_reproduces | task-12 | run_spec(dry_run=True) -> keys crossings_total, dry_run, items, lines; no crossings_scope |
+| W4-T17-09 | still_reproduces | task-4 | ezdxf: transaction_begin() then run_spec -> accepted (nests); run_spec calls drawing_plan before transaction_begin, and COM transaction_begin returns 'A transaction is already active' |
+| W4-T17-10 | still_reproduces | task-4 | validate_spec(sheet={'layer_set': 'nonsense', 'sheet_size': 'Z9', 'bogus': 1, 'scale': 'abc'}) -> accepted; run_spec -> ValueError could not convert string to float: 'abc' |
+| W4-T17-11 | still_reproduces | task-4 | validate_spec(lines[0] arrow='no', number=123) -> accepted; equipment id 'P.1' -> accepted |
+| W4-T19-04 | still_reproduces | task-8 | place_symbol('offpage', tag='TO P&ID-002', direction='out') -> tag_warnings ["'TO P&ID-002': not in [area-]LETTERS[-]loop[suffix] format"] |
+| W4-T19-05 | still_reproduces | task-8 | same repro as W1-T6-05 |
+| W4-T18-01 | still_reproduces | task-8 | pytest tests/test_tool_packs.py -> PytestWarning on test_pack_registry_names_real_tools_and_only_them |
+| W4-T18-02 | still_reproduces | task-8 | README part settled by fixed-in-track-A; config.py:105, .env.example:52 and server.py:864 still say ~47 / 47 while lean is 65 |
+| W4-T18-03 | still_reproduces | task-8 | TOOL_PACKS='all,mech3000' -> _enabled_packs() returns every pack and ignored [], no warning |
+| W4-T18-04 | still_reproduces | task-8 | TOOL_PACKS='core,foo,foo' -> one _apply_tool_profile('full') logs 4 warnings (_profile_enabled_names and the apply each call _enabled_packs), ignored ['foo', 'foo'] |
+| W4-T18-05 | still_reproduces | task-8 | tests/test_tool_packs.py compares PACK_TOOL_NAMES with hand-copied sets; test_every_pack_member_is_a_registered_tool (70afd57) checks one direction only, no test compares the registered tools' pack tags |
+| W4-T20-03 | superseded | none | benchmarks/README.md no longer claims 16/16; benchmarks/results/published/autocad-mcp-pro.json is matrix v7, 21/21 at 554daff, which contains the v4 tasks |
+| W4-T20-04 | still_reproduces | task-20 | no test calls _task_pid_roundtrip (tests/test_benchmark_v4.py checks ids, category and adapter coverage only; test_benchmark_v7 reads the published JSON) |
+| W4-T21-05 | still_reproduces | task-23 | CHANGELOG.md:221 ([1.6.0]) and engineering/pid/graph.py:154 still say 12.5 %; the tested jump (tests/test_pid_graph.py:421) is 50 against 40 + 5 pi: 10.25 % short |
+| W4-T21-07 | still_reproduces | task-21 | scripts/smoke_pid_com.py:80 -> return 0 if stats['dangling'] == 0 else 1 |
+| W4-T21-08 | still_reproduces | task-23 | CHANGELOG.md:515 claims drawing_plan reports LAYER_SET_INTENT_MISMATCH; drawing_plan('P&ID ...', layer_set_id='mech') returns only warnings ['intent reads as a P&ID but the layer set is ...'] (drawing_preflight does emit the code) |
