@@ -7,6 +7,8 @@ AutoCAD's STA (Single-Threaded Apartment) COM requirement.
 from __future__ import annotations
 
 import asyncio
+import collections
+import concurrent.futures
 import io
 import logging
 import math
@@ -15,7 +17,6 @@ import sys
 import time
 import uuid
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,7 @@ from .base import (
     shoelace_area,
 )
 from .contracts.settings import SUMMARY_FIELDS, validate_drawing_properties
+from .quarantine import DaemonExecutor, real_call_name
 
 log = logging.getLogger(__name__)
 
@@ -125,7 +127,7 @@ _COM_STATE: dict[str, Any] = {}  # keys: "app"
 
 
 def _com_init():
-    """COM thread initializer – called once by the ThreadPoolExecutor."""
+    """COM thread initializer – called once by the STA worker thread."""
     if _COM_IMPORTS_OK:
         pythoncom.CoInitialize()
 
@@ -1641,8 +1643,14 @@ class ComBackend(AutoCADBackend):
     _REJECTED_RETRY_BUDGET_S = 20.0
     _REJECTED_RETRY_FIRST_PAUSE_S = 0.25
 
+    #: ``call_outcomes`` keeps this many rows; ``system_status`` reports the last few.
+    _MAX_CALL_OUTCOMES = 50
+    _STATUS_CALL_OUTCOMES = 10
+
     def __init__(self):
-        self._executor: ThreadPoolExecutor | None = None
+        self._executor: concurrent.futures.Executor | None = None
+        # B01: cancellations recorded by `_run`, newest last; Task 10 reads it.
+        self.call_outcomes: collections.deque = collections.deque(maxlen=self._MAX_CALL_OUTCOMES)
         self._connected = False
         self._transaction_active = False
         self._document_scope_key: tuple[str, str] | None = None
@@ -1749,7 +1757,7 @@ class ComBackend(AutoCADBackend):
         # Lazy connection: just set up the executor. AutoCAD is connected
         # on the first actual tool call so the server starts even if AutoCAD
         # is not open yet — it will be found as soon as the user opens it.
-        self._executor = ThreadPoolExecutor(max_workers=1, initializer=_com_init)
+        self._executor = self._new_executor()
         self._connected = True
         progid = config.settings.cad_progid
         log.info("COM backend ready (will connect to %s on first tool call)", progid)
@@ -1761,14 +1769,38 @@ class ComBackend(AutoCADBackend):
                 config.DEFAULT_CAD_PROGID,
             )
 
+    @staticmethod
+    def _new_executor() -> concurrent.futures.Executor:
+        """The single STA thread every COM call runs on (B01: a daemon thread,
+        so a call stuck inside AutoCAD never holds the server process open)."""
+        return DaemonExecutor(max_workers=1, name="com-sta", initializer=_com_init)
+
     async def disconnect(self) -> None:
-        if self._executor:
+        executor, self._executor = self._executor, None
+        if executor is not None:
+            teardown = None
             try:
-                self._executor.submit(_com_teardown)  # release COM apartment (R5)
+                teardown = executor.submit(_com_teardown)  # release COM apartment (R5)
             except Exception:
                 pass
-            self._executor.shutdown(wait=False)
-            self._executor = None
+            executor.shutdown(wait=False)
+            if teardown is not None:
+                # B01: wait a bounded SHUTDOWN_GRACE for the call ahead of the
+                # teardown; a worker still inside AutoCAD after it is logged and
+                # left on its daemon thread. `asyncio.wait` never cancels the
+                # teardown, so it still runs when that call returns.
+                grace = config.settings.shutdown_grace
+                waiter = asyncio.wrap_future(teardown)
+                if grace > 0:
+                    await asyncio.wait([waiter], timeout=grace)
+                if not teardown.done():
+                    waiter.cancel()
+                    log.warning(
+                        "disconnect: the COM worker is still inside a call after "
+                        "SHUTDOWN_GRACE=%gs; it runs on a daemon thread and will not hold "
+                        "the process open",
+                        grace,
+                    )
         self._document_scope_key = None
         self._transaction_active = False
         self._reset_document_state()
@@ -1838,11 +1870,21 @@ class ComBackend(AutoCADBackend):
             raise RuntimeError("ComBackend not connected. Call connect() first.")
         loop = asyncio.get_running_loop()
         timeout = config.settings.com_call_timeout
-        future = loop.run_in_executor(self._executor, lambda: func(*args, **kwargs))
+        started = time.time()
+        document = self._document_label()
+        work = self._executor.submit(lambda: func(*args, **kwargs))
+        future = asyncio.wrap_future(work, loop=loop)
         try:
             if timeout > 0:
                 return await asyncio.wait_for(future, timeout=timeout)
             return await future
+        except asyncio.CancelledError:
+            # B01: one STA thread, FIFO, so a cancelled call cannot overlap the
+            # next one — but whether it ran matters to Task 10's
+            # `unknown_commit`. `work.cancel()` is True only for a call no
+            # worker ever took (it never runs); False means it is running or done.
+            self._record_cancel(func, work, started, document)
+            raise
         except TimeoutError as e:
             if not future.cancelled():
                 # The call raised TimeoutError instead of overrunning the
@@ -1858,7 +1900,7 @@ class ComBackend(AutoCADBackend):
             # stuck one and time out too. Drop the cached COM app for the same
             # reason — the new thread must re-Dispatch in its own apartment.
             stuck = self._executor
-            self._executor = ThreadPoolExecutor(max_workers=1, initializer=_com_init)
+            self._executor = self._new_executor()
             if stuck is not None:
                 # When the stuck SendCommand eventually unblocks, the queued
                 # teardown releases its COM apartment instead of leaking it (R5).
@@ -1886,6 +1928,29 @@ class ComBackend(AutoCADBackend):
             raise RuntimeError(
                 f"AutoCAD COM error ({hr:#010x}): {e.args[1] if len(e.args) > 1 else e}"
             ) from e
+
+    def _document_label(self) -> str | None:
+        """The bound document's FullName (or Name), captured when a call starts."""
+        key = self._document_scope_key
+        if key is None:
+            return None
+        name, full_name = key
+        return full_name or name
+
+    def _record_cancel(self, func, work, started: float, document: str | None) -> None:
+        queued = work.cancel()
+        row = {
+            "call": real_call_name(func),
+            "outcome": "cancelled_queued" if queued else "cancelled_running",
+            "started": started,
+            "ended": time.time() if queued else None,
+            "document": document,
+        }
+        self.call_outcomes.append(row)
+        if not queued:
+            # Runs on the worker thread when the call returns (at once if it
+            # already has); a dict store is atomic under the GIL.
+            work.add_done_callback(lambda _work: row.__setitem__("ended", time.time()))
 
     # ── drawing management ────────────────────────────────────────────────────
 
@@ -6925,7 +6990,11 @@ class ComBackend(AutoCADBackend):
                     "error": str(exc),
                 }
 
-        return await self._run(_sync)
+        status = await self._run(_sync)
+        status["call_outcomes"] = [dict(row) for row in self.call_outcomes][
+            -self._STATUS_CALL_OUTCOMES :
+        ]
+        return status
 
     async def system_get_variable(self, name) -> Any:
         # GetVariable / SetVariable are members of AcadDocument, not of

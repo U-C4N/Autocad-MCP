@@ -87,6 +87,14 @@ class Settings:
         # slow. Set to 0 to disable the check.
         self.ezdxf_call_timeout: float = float(os.environ.get("EZDXF_CALL_TIMEOUT", "120"))
 
+        # How long disconnect() (server shutdown) waits for a worker thread that
+        # is still inside a call, in seconds. Nothing can stop a worker thread:
+        # with EZDXF_CALL_TIMEOUT=0 a cancelled call keeps the document lock
+        # until its worker ends and nothing is ever quarantined, and at shutdown
+        # a worker still running after this grace is logged and left behind on a
+        # daemon thread, so the process still exits. 0 = do not wait.
+        self.shutdown_grace: float = max(0.0, float(os.environ.get("SHUTDOWN_GRACE", "5")))
+
         # How many undo steps the headless backend keeps. 0 = off, which is the
         # default because it is not free: ezdxf has no journal, so a step is a
         # full DXF snapshot. Measured — 10 entities 3.1 ms / 19 KB, 1000

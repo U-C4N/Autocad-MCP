@@ -25,11 +25,17 @@ type to classify a refusal on a box where a backend's dependencies are missing.
 
 from __future__ import annotations
 
+import concurrent.futures
+import logging
+import queue
+import threading
 import time
+from collections.abc import Callable
 from typing import Any
 
 __all__ = [
     "AbandonedCall",
+    "DaemonExecutor",
     "DocumentQuarantineError",
     "QuarantineRecord",
     "quarantine_refusal",
@@ -40,6 +46,8 @@ __all__ = [
 #: ``entity_list`` can return thousands of entities; the diagnostic is that the
 #: value was lost, not what was in it.
 _MAX_RESULT_REPR = 200
+
+log = logging.getLogger(__name__)
 
 
 def real_call_name(func: Any) -> str:
@@ -67,23 +75,42 @@ class AbandonedCall:
     ``asyncio.timeout_at`` **cancels** the Future ``_async`` awaits, so by the
     time the abandon branch runs that Future is already done and
     ``add_done_callback`` fires immediately with ``cancelled()`` True. It reports
-    the *await* ending, never the thread — which ``asyncio.to_thread`` cannot
-    cancel. The only place the thread's outcome is observable is inside the
-    thread, so ``_async`` wraps every timed call in one of these.
+    the *await* ending, never the thread — which nothing can cancel. The only
+    place the thread's outcome is observable is inside the thread, so
+    ``_async`` wraps every call in one of these.
 
-    Deliberately no ``threading.Event``: this is allocated on every ``_async``
-    call and an Event carries a Condition and a Lock. ``finished`` is a plain
-    bool written once by the worker and read from the event loop; a bool store is
-    atomic under the GIL and nothing here ever waits on it.
+    v1.7.0 (B01): the document lease follows the worker thread, not the
+    awaiting coroutine. When the coroutine is cancelled while the worker runs,
+    ``_async`` registers a one-shot hook with ``set_on_finish`` and the worker
+    calls it as it ends. ``_hook_lock`` closes the race with the worker
+    finishing at that moment: either ``set_on_finish`` sees ``finished`` and
+    returns False (the caller releases at once), or the worker takes the hook
+    and runs it — never both, never neither. ``finished`` stays a plain bool for
+    the readers that only poll it.
     """
 
-    __slots__ = ("func", "finished", "result", "error")
+    __slots__ = ("func", "finished", "result", "error", "_hook", "_hook_lock")
 
     def __init__(self, func):
         self.func = func
         self.finished = False
         self.result: Any = None
         self.error: BaseException | None = None
+        self._hook: Callable[[], None] | None = None
+        self._hook_lock = threading.Lock()
+
+    def set_on_finish(self, hook: Callable[[], None]) -> bool:
+        """Register ``hook`` for the worker thread to call when it ends.
+
+        Returns False when the worker has already finished: the hook is not
+        stored and the caller does the hook's work itself, now. A registered
+        hook runs exactly once, on the worker thread.
+        """
+        with self._hook_lock:
+            if self.finished:
+                return False
+            self._hook = hook
+            return True
 
     def __call__(self, *args, **kwargs):
         try:
@@ -93,7 +120,116 @@ class AbandonedCall:
             self.error = exc
             raise
         finally:
-            self.finished = True
+            with self._hook_lock:
+                self.finished = True
+                hook, self._hook = self._hook, None
+            if hook is not None:
+                try:
+                    hook()
+                except Exception:  # a hook failure must not replace the call's outcome
+                    log.exception("on_finish hook of %r failed", real_call_name(self.func))
+
+
+class DaemonExecutor(concurrent.futures.Executor):
+    """Worker threads that never hold the interpreter open.
+
+    ``asyncio.to_thread`` runs on the loop's default ``ThreadPoolExecutor``,
+    whose threads ``asyncio.run`` (``shutdown_default_executor``) and
+    ``concurrent.futures``' exit hook both join. A worker nothing can cancel
+    therefore kept the server process alive until it finished — measured on
+    2026-10-24: a 6 s runaway held ``asyncio.run`` for 6.0 s and the process for
+    7.2 s after the call had been abandoned. These threads are daemon threads
+    that nothing joins at exit; ``disconnect()`` waits a bounded
+    ``SHUTDOWN_GRACE`` for them instead.
+
+    Reuse follows ``ThreadPoolExecutor`` (CPython 3.13): a worker marks itself
+    idle only when the queue is empty, and ``submit`` claims an idle worker
+    before spawning a new one. ``max_workers=1`` keeps one strictly FIFO thread
+    (the COM STA apartment).
+    """
+
+    def __init__(
+        self,
+        max_workers: int | None = None,
+        *,
+        name: str = "acadmcp-worker",
+        initializer: Callable[[], None] | None = None,
+    ):
+        if max_workers is not None and max_workers < 1:
+            raise ValueError("max_workers must be at least 1")
+        self._max_workers = max_workers
+        self._name = name
+        self._initializer = initializer
+        self._queue: queue.SimpleQueue = queue.SimpleQueue()
+        self._idle = threading.Semaphore(0)
+        self._guard = threading.Lock()
+        self._threads: list[threading.Thread] = []
+        self._shutdown = False
+
+    @property
+    def threads(self) -> tuple[threading.Thread, ...]:
+        return tuple(self._threads)
+
+    def submit(self, fn, /, *args, **kwargs) -> concurrent.futures.Future:
+        with self._guard:
+            if self._shutdown:
+                raise RuntimeError("cannot schedule new futures after shutdown")
+            future: concurrent.futures.Future = concurrent.futures.Future()
+            self._queue.put((future, fn, args, kwargs))
+            if not self._idle.acquire(timeout=0) and (
+                self._max_workers is None or len(self._threads) < self._max_workers
+            ):
+                thread = threading.Thread(
+                    target=self._work, name=f"{self._name}-{len(self._threads)}", daemon=True
+                )
+                self._threads.append(thread)
+                thread.start()
+            return future
+
+    def _work(self) -> None:
+        if self._initializer is not None:
+            try:
+                self._initializer()
+            except BaseException:
+                log.exception("%s: worker initializer failed", self._name)
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except queue.Empty:
+                self._idle.release()
+                item = self._queue.get()
+            if item is None:
+                return
+            future, fn, args, kwargs = item
+            del item
+            if future.set_running_or_notify_cancel():
+                try:
+                    result = fn(*args, **kwargs)
+                except BaseException as exc:
+                    future.set_exception(exc)
+                else:
+                    future.set_result(result)
+                    del result
+            del future, fn, args, kwargs
+
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+        with self._guard:
+            self._shutdown = True
+            threads = list(self._threads)
+            if cancel_futures:
+                while True:
+                    try:
+                        item = self._queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    if item is not None:
+                        item[0].cancel()
+        for _ in threads:
+            self._queue.put(None)
+        if wait:
+            for thread in threads:
+                if thread is not threading.current_thread():
+                    thread.join()
 
 
 class QuarantineRecord:
@@ -115,8 +251,10 @@ class QuarantineRecord:
         *,
         document_path: str | None = None,
         document_id: int | None = None,
+        cause: str = "deadline",
     ):
         self.call = call
+        self.cause = cause
         self.timeout = float(timeout)
         self.watcher = watcher
         self.document_path = document_path
@@ -162,6 +300,7 @@ class QuarantineRecord:
             "result_lost": self.result_lost,
             "lost_return_value": self.result_repr,
             "document_path": self.document_path,
+            "cause": self.cause,
         }
 
 

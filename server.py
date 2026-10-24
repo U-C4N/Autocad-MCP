@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
 import math
@@ -19,6 +20,7 @@ import time
 from dataclasses import asdict
 from typing import Annotated, Any
 
+import anyio
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import StaticTokenVerifier
@@ -135,15 +137,41 @@ async def autocad_lifespan(server):
         await _apply_tool_profile()
     except Exception as exc:  # profile trouble must never block startup
         log.warning("Tool profile could not be applied: %s", exc)
+    backend = None
     try:
         backend = await _make_backend()
         log.info("Backend ready: %s", backend.name)
-        yield {"backend": backend}
+        context: dict = {"backend": backend}
     except Exception as exc:
         log.error("Backend initialization failed: %s", exc)
-        yield {"backend": None, "init_error": str(exc)}
+        context = {"backend": None, "init_error": str(exc)}
+    # One yield, outside the try that builds the backend: an exception thrown
+    # into the generator at shutdown must reach `finally`, not a second yield.
+    try:
+        yield context
     finally:
         log.info("AutoCAD MCP Pro shutting down")
+        if backend is not None:
+            await _disconnect_backend(backend)
+
+
+async def _disconnect_backend(backend) -> None:
+    """Release the backend at shutdown, shielded and bounded (B01).
+
+    ``disconnect()`` waits up to ``SHUTDOWN_GRACE`` for a worker still inside
+    a call, then logs it; a few seconds more are allowed for the release
+    itself, and past that the server exits without it. Shielded, because the
+    host cancels the server's scope on the way out; a failure is logged, never
+    raised over the shutdown.
+    """
+    budget = config.settings.shutdown_grace + 5.0
+    with anyio.move_on_after(budget, shield=True) as scope:
+        try:
+            await backend.disconnect()
+        except Exception as exc:
+            log.warning("Backend disconnect failed: %s", exc)
+    if scope.cancelled_caught:
+        log.warning("Backend disconnect did not finish within %.1fs; exiting without it", budget)
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +196,12 @@ class AuditMiddleware(Middleware):
             else:
                 log.info("TOOL OK  %-40s %6.1fms", tool_name, elapsed)
             return result
+        except asyncio.CancelledError:
+            # B01: a cancellation is a BaseException, so the handler below never
+            # saw one and a cancelled call left no line in the audit log at all.
+            elapsed = (time.monotonic() - start) * 1000
+            log.warning("TOOL CANCELLED %-34s %6.1fms", tool_name, elapsed)
+            raise
         except Exception as exc:
             elapsed = (time.monotonic() - start) * 1000
             log.warning("TOOL ERR %-40s %6.1fms  %s", tool_name, elapsed, exc)
@@ -4579,82 +4613,108 @@ async def cad_batch(
     total = len(plans)
     await ctx.info(f"cad_batch: {total} step(s), on_error={mode}")
 
-    for position, plan in enumerate(plans):
-        await ctx.report_progress(position, total)
-        name = plan["tool"]
-        row: dict = {"i": plan["i"], "tool": name}
-        if failed and mode == "stop":
-            row["status"] = "skipped"
-            row["reason"] = "an earlier step failed (on_error='stop')"
-            results.append(row)
-            continue
-        try:
-            args = _substitute_batch_refs(plan["_args"], bindings)
-        except BatchReferenceError as exc:
-            failed += 1
-            row["status"] = "error"
-            row["error"] = {"kind": "unresolved_ref", "message": _batch_message(exc)}
-            log.warning("BATCH %d/%d %-38s unresolved_ref", position + 1, total, name)
-            results.append(row)
-            continue
-        try:
-            # run_middleware=False: the cad_batch call itself is already through
-            # the audit/timing chain, and skipping it keeps the error one wrap
-            # deep instead of three, which is what makes the taxonomy above
-            # readable. Each step is logged here instead, tagged as a batch step.
-            outcome = await ctx.fastmcp.call_tool(name, args, run_middleware=False)
-        except Exception as exc:
-            failed += 1
+    try:
+        for position, plan in enumerate(plans):
+            await ctx.report_progress(position, total)
+            name = plan["tool"]
+            row: dict = {"i": plan["i"], "tool": name}
+            if failed and mode == "stop":
+                row["status"] = "skipped"
+                row["reason"] = "an earlier step failed (on_error='stop')"
+                results.append(row)
+                continue
+            try:
+                args = _substitute_batch_refs(plan["_args"], bindings)
+            except BatchReferenceError as exc:
+                failed += 1
+                row["status"] = "error"
+                row["error"] = {"kind": "unresolved_ref", "message": _batch_message(exc)}
+                log.warning("BATCH %d/%d %-38s unresolved_ref", position + 1, total, name)
+                results.append(row)
+                continue
+            try:
+                # run_middleware=False: the cad_batch call itself is already through
+                # the audit/timing chain, and skipping it keeps the error one wrap
+                # deep instead of three, which is what makes the taxonomy above
+                # readable. Each step is logged here instead, tagged as a batch step.
+                outcome = await ctx.fastmcp.call_tool(name, args, run_middleware=False)
+            except Exception as exc:
+                failed += 1
+                executed += 1
+                row["status"] = "error"
+                row["error"] = _classify_batch_error(exc)
+                log.warning("BATCH %d/%d %-38s %s", position + 1, total, name, row["error"]["kind"])
+                results.append(row)
+                if mode == "rollback":
+                    break
+                continue
             executed += 1
-            row["status"] = "error"
-            row["error"] = _classify_batch_error(exc)
-            log.warning("BATCH %d/%d %-38s %s", position + 1, total, name, row["error"]["kind"])
+            structured = getattr(outcome, "structured_content", None)
+            # A tool may decline *by value* instead of raising: an `is_error` result
+            # from the refusal middleware, or an `{"ok": False, ...}` payload. Both
+            # mean the step did not do its work, and counting either as succeeded is
+            # the same class of lie as the DWG bytes and the unverified rollback —
+            # the batch would report succeeded:1 over work that never happened.
+            #
+            # `ok: False` only carries that meaning for a tool that was supposed to
+            # ACT. On a read-only checker it means "I looked and found something",
+            # and treating that as a refusal is how a `validation_check` step came
+            # to trigger a rollback that destroyed the batch's own geometry.
+            refused = bool(getattr(outcome, "is_error", False)) or (
+                name not in read_only
+                and isinstance(structured, dict)
+                and structured.get("ok") is False
+            )
+            if refused:
+                failed += 1
+                declined_payload = structured if isinstance(structured, dict) else {}
+                capability = declined_payload.get("capability")
+                row["status"] = "error"
+                row["error"] = {
+                    "kind": "unsupported" if capability else "refused",
+                    **({"capability": capability} if capability else {}),
+                    "message": _compact_batch_message(
+                        str(declined_payload.get("error") or "the tool declined")
+                    ),
+                }
+                log.warning("BATCH %d/%d %-38s %s", position + 1, total, name, row["error"]["kind"])
+                results.append(row)
+                # `failed` is what on_error='stop' reads at the top of the loop, so
+                # incrementing it above is the whole stop mechanism.
+                if mode == "rollback":
+                    break
+                continue
+            succeeded += 1
+            if plan["_bind"]:
+                bindings[plan["_bind"]] = structured
+                row["bind"] = plan["_bind"]
+            row["status"] = "ok"
+            row["result"] = _compact_batch_result(structured, verbose)
+            log.info("BATCH %d/%d %-38s ok", position + 1, total, name)
             results.append(row)
-            if mode == "rollback":
-                break
-            continue
-        executed += 1
-        structured = getattr(outcome, "structured_content", None)
-        # A tool may decline *by value* instead of raising: an `is_error` result
-        # from the refusal middleware, or an `{"ok": False, ...}` payload. Both
-        # mean the step did not do its work, and counting either as succeeded is
-        # the same class of lie as the DWG bytes and the unverified rollback —
-        # the batch would report succeeded:1 over work that never happened.
-        #
-        # `ok: False` only carries that meaning for a tool that was supposed to
-        # ACT. On a read-only checker it means "I looked and found something",
-        # and treating that as a refusal is how a `validation_check` step came
-        # to trigger a rollback that destroyed the batch's own geometry.
-        refused = bool(getattr(outcome, "is_error", False)) or (
-            name not in read_only and isinstance(structured, dict) and structured.get("ok") is False
-        )
-        if refused:
-            failed += 1
-            declined_payload = structured if isinstance(structured, dict) else {}
-            capability = declined_payload.get("capability")
-            row["status"] = "error"
-            row["error"] = {
-                "kind": "unsupported" if capability else "refused",
-                **({"capability": capability} if capability else {}),
-                "message": _compact_batch_message(
-                    str(declined_payload.get("error") or "the tool declined")
-                ),
-            }
-            log.warning("BATCH %d/%d %-38s %s", position + 1, total, name, row["error"]["kind"])
-            results.append(row)
-            # `failed` is what on_error='stop' reads at the top of the loop, so
-            # incrementing it above is the whole stop mechanism.
-            if mode == "rollback":
-                break
-            continue
-        succeeded += 1
-        if plan["_bind"]:
-            bindings[plan["_bind"]] = structured
-            row["bind"] = plan["_bind"]
-        row["status"] = "ok"
-        row["result"] = _compact_batch_result(structured, verbose)
-        log.info("BATCH %d/%d %-38s ok", position + 1, total, name)
-        results.append(row)
+    except BaseException as exc:
+        # B01: a cancellation (the MCP SDK cancels a request through an anyio
+        # scope) escaped the loop with the checkpoint still open and the steps
+        # that ran still in the drawing. Roll back, shielded: anyio
+        # cancellation is level-triggered, so a bare await here would itself be
+        # cancelled before the rollback body ran (engineering/pid/spec.py has
+        # the measurements). After a cancellation a failed rollback is logged,
+        # never raised: the SDK has already answered the request.
+        if transaction:
+            cancelled = isinstance(exc, anyio.get_cancelled_exc_class())
+            with anyio.CancelScope(shield=True):
+                try:
+                    await backend.transaction_rollback()
+                except Exception as rollback_exc:
+                    if not cancelled:
+                        raise
+                    log.error(
+                        "cad_batch: rollback after a cancelled request failed (%s: %s); "
+                        "check system_status and transaction_rollback before retrying",
+                        type(rollback_exc).__name__,
+                        rollback_exc,
+                    )
+        raise
 
     await ctx.report_progress(total, total)
 
@@ -4663,20 +4723,28 @@ async def cad_batch(
     after = None
     declined = None
     if transaction:
-        if failed:
-            await ctx.warning("cad_batch: rolling back")
-            # Read the backend's answer instead of asserting success from
-            # control flow. A step is free to call transaction_commit and pop
-            # the checkpoint out from under us, in which case the headless
-            # backend returns {"ok": False, "error": "No active transaction to
-            # rollback"} and the caller's work is still there. Reporting
-            # rolled_back=True off the bare await would be the same class of
-            # lie as writing DXF bytes into a .dwg.
-            rolled_back, declined = _batch_transaction_ok(await backend.transaction_rollback())
-            after = await _batch_fingerprint(backend)
-            verified = None if (before is None or after is None) else before == after
-        else:
-            committed, declined = _batch_transaction_ok(await backend.transaction_commit())
+        # B01: the commit or rollback that closes the checkpoint runs shielded;
+        # a cancellation arriving now must not leave it half-closed.
+        with anyio.CancelScope(shield=True):
+            if failed:
+                await ctx.warning("cad_batch: rolling back")
+                # Read the backend's answer instead of asserting success from
+                # control flow. A step is free to call transaction_commit and pop
+                # the checkpoint out from under us, in which case the headless
+                # backend returns {"ok": False, "error": "No active transaction to
+                # rollback"} and the caller's work is still there. Reporting
+                # rolled_back=True off the bare await would be the same class of
+                # lie as writing DXF bytes into a .dwg.
+                rolled_back, declined = _batch_transaction_ok(await backend.transaction_rollback())
+                after = await _batch_fingerprint(backend)
+                verified = None if (before is None or after is None) else before == after
+            else:
+                committed, declined = _batch_transaction_ok(await backend.transaction_commit())
+        # A request cancelled while the shield held still ends as a
+        # cancellation: returning normally makes the SDK answer it a second
+        # time, and `assert not self._completed` in mcp.shared.session kills
+        # the session (measured on 2026-10-24).
+        await anyio.lowlevel.checkpoint_if_cancelled()
 
     ok = failed == 0
     atomicity = _batch_atomicity(
