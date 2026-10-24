@@ -153,8 +153,10 @@ line-length = 100
 target-version = "py311"
 # Design documents and implementation plans quote code as illustration; ruff
 # 0.16 formats Markdown code blocks, and reflowing a plan's quoted code would
-# change what the document says was written.
-extend-exclude = ["docs/superpowers"]
+# change what the document says was written. The premium skill is the same case:
+# its code blocks are tool-call illustrations restored verbatim, and the plugin's
+# copy must stay byte-equal to it (scripts/build_plugin.py --check).
+extend-exclude = ["docs/superpowers", ".claude/skills", "plugin/skills"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B"]

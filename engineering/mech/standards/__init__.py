@@ -4,7 +4,9 @@ Every table registers itself at import with the standard's name, its rows, the
 coverage it was transcribed for and a SOURCE line naming standard, edition and
 table. ``lookup`` returns a row or refuses by name: a size outside the coverage
 is refused against the coverage, and a size *inside* it that is not a listed row
-is refused against the rows. Nothing is ever interpolated — the rule
+is refused against the rows - both refusals name the nearest transcribed sizes
+(``nearest_sizes``), and none of them is ever returned in the requested size's
+place. Nothing is ever interpolated — the rule
 `engineering/fits.py` (ISO 286) already follows, applied to every table here. A
 wrong row ships a wrong workshop drawing; a narrow table is merely narrow.
 
@@ -18,11 +20,18 @@ one — an ambiguous lookup never quietly picks the first row.
 ship before any row could be verified against the standard (DIN 509, DIN 471,
 DIN 472, DIN 332-1 and ISO 3601-2 in this build). Registering it keeps the
 later transcription a data edit, and every lookup against it is refused by
-name — which is exactly the table rule, not an exception to it.
+name — which is exactly the table rule, not an exception to it. The refusal
+says "no rows transcribed" and quotes the SOURCE, never a 0-0 range.
+
+``coverage.py`` publishes the whole registry as one manifest (edition, table
+locator, implemented sizes, range, source) - ``std_part_list`` returns it and
+the resource ``autocad://standards/coverage`` serves it.
 """
 
 from __future__ import annotations
 
+import difflib
+import re
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -117,19 +126,66 @@ def _kw_text(kw: dict) -> str:
     return ", ".join(f"{k}={v!r}" for k, v in sorted(kw.items()))
 
 
+_DESIGNATION_NUMBER_RE = re.compile(r"^M(\d+(?:\.\d+)?)$")
+
+
+def _size_number(key) -> float | None:
+    """A size key as a number of millimetres: 12.0 -> 12.0, 'M12' -> 12.0, '6205' -> None."""
+    if isinstance(key, float):
+        return key
+    match = _DESIGNATION_NUMBER_RE.match(key)
+    return float(match.group(1)) if match else None
+
+
+def _key_text(key) -> str:
+    return key if isinstance(key, str) else _num(key)
+
+
+def nearest_sizes(standard: str, size, count: int = 3) -> tuple[str, ...]:
+    """The ``count`` transcribed sizes closest to ``size``, nearest first.
+
+    Numeric sizes (and ``'M<d>'`` designations) are ranked by distance in
+    millimetres, the smaller size first on a tie; any other designation by
+    spelling. Used only to *name* alternatives in a refusal - a caller never
+    receives one of these rows in place of the size it asked for.
+    """
+    table = _table(standard)
+    key = _key(size)
+    target = _size_number(key)
+    numeric = [(k, _size_number(k)) for k in table.rows]
+    numeric = [(k, v) for k, v in numeric if v is not None]
+    if target is not None and numeric:
+        ranked = sorted(numeric, key=lambda kv: (abs(kv[1] - target), kv[1]))
+        return tuple(_key_text(k) for k, _ in ranked[:count])
+    names = [_key_text(k) for k in table.rows]
+    return tuple(difflib.get_close_matches(_key_text(key), names, n=count, cutoff=0.0))
+
+
 def lookup(standard: str, size, **kw) -> dict:
     """One row, or a ValueError naming the standard and what it does cover."""
     table = _table(standard)
     key = _key(size)
+    if not table.rows:
+        raise ValueError(
+            f"{standard}: no rows transcribed in this build ({table.source}); "
+            f"{size!r} cannot be looked up. Nothing is substituted and nothing is interpolated."
+        )
     rows = table.rows.get(key)
     if rows is None:
-        if isinstance(key, float) and not (table.coverage.low <= key <= table.coverage.high):
+        nearest = ", ".join(nearest_sizes(standard, key))
+        number = _size_number(key)
+        if number is not None and not (table.coverage.low <= number <= table.coverage.high):
             unit = table.coverage.unit
+            shown = key if isinstance(key, str) else f"{_num(key)} {unit}"
             raise ValueError(
                 f"{standard} covers {_num(table.coverage.low)}-{_num(table.coverage.high)} "
-                f"{unit}; {_num(key)} {unit} is outside the table"
+                f"{unit}; {shown} is outside the table; nearest transcribed sizes: {nearest}. "
+                "Nothing is substituted."
             )
-        raise ValueError(f"{standard} has no row for {size!r}; the table lists {_listing(table)}")
+        raise ValueError(
+            f"{standard} has no row for {size!r}; the table lists {_listing(table)}; "
+            f"nearest transcribed sizes: {nearest}. Nothing is interpolated."
+        )
     matches = [row for row in rows if all(row.get(k) == v for k, v in kw.items())]
     if not matches:
         offered = sorted({str(row.get(k)) for row in rows for k in kw})

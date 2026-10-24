@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "autocad": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "${AUTOCAD_MCP_SOURCE:-autocad-mcp-pro[com,pdf,office]==1.6.0}",
+        "autocad-mcp"
+      ]
+    }
+  }
+}

@@ -319,6 +319,24 @@ def catalogue(query: str | None = None, standard: str | None = None) -> tuple[di
     return tuple(rows)
 
 
+def catalogue_listing(query: str | None = None, standard: str | None = None) -> dict:
+    """What ``std_part_list`` returns: the matching rows plus the coverage manifest.
+
+    ``coverage`` is :func:`engineering.mech.standards.coverage.coverage_manifest`
+    unfiltered - every registered table, including the feature tables that ship
+    with no rows - so a caller sees what is *not* transcribed as well as what is.
+    """
+    from engineering.mech.standards.coverage import coverage_manifest
+
+    rows = catalogue(query, standard)
+    return {
+        "count": len(rows),
+        "standards": list(FAMILY_STANDARDS),
+        "parts": list(rows),
+        "coverage": coverage_manifest(),
+    }
+
+
 def _numeric_key(family: str, size: str) -> float | None:
     if family == "deep_groove_bearing":
         return float(size) if size.isdigit() else None

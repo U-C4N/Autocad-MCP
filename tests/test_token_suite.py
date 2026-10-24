@@ -170,7 +170,8 @@ def test_the_idle_lane_covers_the_five_advertised_surfaces(report):
     assert set(variants) == {"default", "lean", "packs_core_mech", "packs_core_arch", "search"}
     assert variants["default"]["advertised_tools"] > 100
     assert variants["lean"]["advertised_tools"] == len(server.LEAN_TOOL_NAMES)
-    assert variants["search"]["advertised_tools"] == 2
+    # search_tools + call_tool + describe_tool
+    assert variants["search"]["advertised_tools"] == 3
     packs = server.PACK_TOOL_NAMES
     assert variants["packs_core_mech"]["advertised_tools"] == (
         variants["default"]["advertised_tools"]

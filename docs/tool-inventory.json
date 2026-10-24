@@ -4,7 +4,7 @@
   "package_version": "1.6.0",
   "totals": {
     "tools": 247,
-    "resources": 8,
+    "resources": 9,
     "prompts": 5,
     "groups": 28
   },
@@ -3592,6 +3592,18 @@
       "mime_type": "application/json",
       "tags": [
         "pid"
+      ],
+      "templated": false,
+      "parameters": []
+    },
+    {
+      "uri": "autocad://standards/coverage",
+      "name": "Standards Coverage Manifest",
+      "description": "Every authored standards table: edition, table locator, implemented sizes, coverage range and source; the empty feature tables say no rows transcribed",
+      "mime_type": "application/json",
+      "tags": [
+        "mech",
+        "standards"
       ],
       "templated": false,
       "parameters": []
