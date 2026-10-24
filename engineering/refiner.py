@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 import anyio
 
+from .critique import CHECK_FAILED, SCAN_INCOMPLETE
 from .plan_spec import Issue
 from .repairs import (
     repair_construction_left,
@@ -106,6 +107,19 @@ class RepairRegistry:
         return self._handlers.get(focus)
 
 
+#: ``Issue.detail["code"]`` values that are not findings: a check that raised,
+#: or a read that did not cover the drawing. They carry no handles and no
+#: layer, so no repair handler can act on them - sent to one, it raised and the
+#: whole round rolled back, the valid repairs beside it included (W1 review).
+UNREPAIRABLE_CODES = frozenset({CHECK_FAILED, SCAN_INCOMPLETE})
+
+
+def unrepairable_code(issue: Issue) -> str | None:
+    """The issue's ``detail["code"]`` when it is one of ``UNREPAIRABLE_CODES``."""
+    code = (issue.detail or {}).get("code")
+    return code if code in UNREPAIRABLE_CODES else None
+
+
 def issue_fingerprint(issue: Issue) -> str:
     payload = {
         "focus": issue.focus,
@@ -151,7 +165,8 @@ async def refine_drawing(
     if dry_run:
         actions = []
         for issue in issues:
-            handler = registry.get(issue.focus)
+            code = unrepairable_code(issue)
+            handler = registry.get(issue.focus) if code is None else None
             permitted = allowed is None or issue.focus in allowed
             actions.append(
                 RepairAction(
@@ -159,6 +174,7 @@ async def refine_drawing(
                     issue_fingerprint(issue),
                     list(issue.handles),
                     "planned" if handler is not None and permitted else "manual_required",
+                    {"code": code} if code is not None else {},
                 )
             )
         score, errors = _metrics(issues)
@@ -169,7 +185,22 @@ async def refine_drawing(
     for number in range(1, max_rounds + 1):
         score_before, errors_before = _metrics(issues)
         candidates: list[tuple[Issue, RepairHandler]] = []
+        # A check_failed / scan_incomplete issue is reported, never repaired:
+        # the round's real repairs go ahead beside it.
+        manual: list[RepairAction] = []
         for issue in issues:
+            code = unrepairable_code(issue)
+            if code is not None:
+                manual.append(
+                    RepairAction(
+                        issue.focus,
+                        issue_fingerprint(issue),
+                        list(issue.handles),
+                        "manual_required",
+                        {"code": code},
+                    )
+                )
+                continue
             handler = registry.get(issue.focus)
             if handler is not None and (allowed is None or issue.focus in allowed):
                 candidates.append((issue, handler))
@@ -184,7 +215,7 @@ async def refine_drawing(
         # try below, whose handler rolls the round back.
         with anyio.CancelScope(shield=True):
             transaction = await backend.transaction_begin()
-        actions: list[RepairAction] = []
+        actions: list[RepairAction] = list(manual)
         if not isinstance(transaction, dict) or not transaction.get("ok"):
             await anyio.lowlevel.checkpoint_if_cancelled()
             detail = transaction if isinstance(transaction, dict) else {"result": transaction}
