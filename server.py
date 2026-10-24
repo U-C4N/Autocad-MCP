@@ -314,10 +314,11 @@ mcp.add_middleware(CapabilityRefusalMiddleware())
 # Tool discovery mode (DISCOVERY_MODE)
 # ---------------------------------------------------------------------------
 # "off"    the whole catalog is advertised (default, backwards compatible)
-# "search" list_tools returns a search tool + a call_tool proxy instead, and
-#          the catalog is reached through discovery/transform.py — which
-#          indexes each tool's AutoCAD command aliases as well as its
-#          description, so BPOLY/QSELECT/MATCHPROP resolve at all.
+# "search" list_tools returns a search tool + a call_tool proxy + describe_tool
+#          (one tool's full schema) instead, and the catalog is reached through
+#          discovery/transform.py — which indexes each tool's AutoCAD command
+#          aliases as well as its description, so BPOLY/QSELECT/MATCHPROP
+#          resolve at all.
 #
 # Tool *counts* are unaffected: system_status / system_about / _tool_groups /
 # _apply_tool_profile all read the untransformed registry (_registered_tools).
@@ -325,6 +326,18 @@ mcp.add_middleware(CapabilityRefusalMiddleware())
 DISCOVERY_MODES = ("off", "search")
 
 _discovery_transform = None
+
+
+def _tool_pack(name: str) -> str:
+    """The TOOL_PACKS pack a tool belongs to: its claiming pack, else ``core``.
+
+    Handed to the search transform so ``describe_tool`` can report it;
+    ``PACK_TOOL_NAMES`` is defined further down and read at call time.
+    """
+    for pack, names in PACK_TOOL_NAMES.items():
+        if name in names:
+            return pack
+    return "core"
 
 
 def _apply_discovery_mode(mode: str | None = None) -> str:
@@ -353,9 +366,12 @@ def _apply_discovery_mode(mode: str | None = None) -> str:
         # modules are kept out of import time.
         from discovery.transform import CadSearchTransform
 
-        _discovery_transform = CadSearchTransform()
+        _discovery_transform = CadSearchTransform(pack_of=_tool_pack)
         mcp.add_transform(_discovery_transform)
-        log.info("Tool discovery: search transform attached (clients see search_tools/call_tool)")
+        log.info(
+            "Tool discovery: search transform attached "
+            "(clients see search_tools/call_tool/describe_tool)"
+        )
     return selected
 
 
@@ -628,7 +644,7 @@ async def _registered_tools() -> list:
       * *server-level* — ``mcp.add_transform(...)``, which is what
         ``_apply_discovery_mode("search")`` installs — is applied by the public
         ``mcp.list_tools()``, i.e. at the wire, where a client sees
-        ``search_tools``/``call_tool`` in place of the catalog.
+        ``search_tools``/``call_tool``/``describe_tool`` in place of the catalog.
         ``mcp._list_tools()`` sits upstream of that chain and still lists the
         full inventory, so search mode as shipped does not move these counts.
       * *provider-level* — ``provider.add_transform(...)`` — is applied inside
@@ -4469,7 +4485,8 @@ async def cad_batch(
             elif not card:
                 # Fail closed on unknown provenance. This is not a nicety: under
                 # DISCOVERY_MODE=search the advertised surface is search_tools +
-                # `call_tool`, and `call_tool` invokes any tool by name. It is a
+                # `call_tool` + `describe_tool` (also card-less, so also refused
+                # here), and `call_tool` invokes any tool by name. It is a
                 # general-purpose proxy living in the same server as this
                 # denylist, and being card-less is the ONLY thing that stops
                 # cad_batch -> call_tool -> system_run_command. The deny set

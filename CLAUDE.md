@@ -107,7 +107,7 @@ Tools are organized into sections (counts are indicative — `system_about` is a
 
 **Tool packs:** `TOOL_PACKS=all|core,pid,settings,mech,arch,plant` (default `all`) advertises only the vertical packs a client uses; `core` is always on and is everything no other pack claims; `settings` is the 22 SECTION 20 environment tools, `pid` the nine P&ID tools, `mech` the 14 SECTION 21-23 mechanical tools, `arch` the 12 SECTION 25 architectural tools, `plant` the two SECTION 27 takeoffs (track D's Plant 3D readers join it); SECTION 18/19/24/26 are core; unknown names are ignored with a warning; a `lean` profile intersects with the enabled packs. `system_about` reports `tool_packs`.
 
-**Tool discovery:** `DISCOVERY_MODE=off|search` (default `off`). `search` replaces the advertised catalog with `search_tools` + `call_tool`, ranking hits over an AutoCAD command / synonym corpus (`discovery/aliases.py`) layered on fastmcp's BM25 index.
+**Tool discovery:** `DISCOVERY_MODE=off|search` (default `off`). `search` replaces the advertised catalog with `search_tools` + `call_tool` + `describe_tool` (one tool's full input schema, risk, pack and its docstring's own examples), ranking hits over an AutoCAD command / synonym corpus (`discovery/aliases.py`) layered on fastmcp's BM25 index.
 
 **ISO 129 tolerances:** `dimension_linear` / `dimension_radius` / `dimension_diameter` take `tol_upper` / `tol_lower` / `tol_mode` (`symmetric` ± / `deviation` +a/-b / `limit` / `basic`) and `text_override` (e.g. `⌀20 H7`). Prefer these over hand-drawn tolerance text.
 

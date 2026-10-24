@@ -20,6 +20,7 @@ import pytest
 import server
 from discovery.aliases import (
     SHARED_ACAD_COMMANDS,
+    SYNTHETIC_TOOL_ALIASES,
     TOOL_ALIASES,
     ToolAliases,
     alias_text,
@@ -208,6 +209,39 @@ def test_alias_text_contains_commands_and_synonyms():
     for token in (*record.acad, *record.synonyms):
         assert token in text
     assert alias_text("no_such_tool") == ""
+
+
+# ── the synthetic search-mode tools ─────────────────────────────────────────
+#
+# describe_tool exists only in DISCOVERY_MODE=search and is never registered,
+# so its record lives beside TOOL_ALIASES rather than in it: the coverage gate
+# above ("no alias key is an unknown tool") keeps meaning "registered tools".
+
+
+def test_describe_tool_has_its_own_alias_record():
+    record = aliases_for("describe_tool")
+    assert record is SYNTHETIC_TOOL_ALIASES["describe_tool"]
+    assert "describe_tool" not in TOOL_ALIASES
+    assert record.synonyms
+    assert "tool schema" in record.synonyms
+    assert "tool schema" in alias_text("describe_tool")
+
+
+@pytest.mark.asyncio
+async def test_synthetic_records_obey_the_field_contract_and_shadow_nothing():
+    registered = await _registered_names()
+    assert not (set(SYNTHETIC_TOOL_ALIASES) & registered)
+    assert not (set(SYNTHETIC_TOOL_ALIASES) & set(TOOL_ALIASES))
+    owned = set(_acad_owners())
+    for name, record in SYNTHETIC_TOOL_ALIASES.items():
+        assert isinstance(record, ToolAliases), name
+        for command in record.acad:
+            assert _ACAD_RE.fullmatch(command), (name, command)
+            assert command not in owned, (name, command)
+        assert record.synonyms, name
+        assert len(set(record.synonyms)) == len(record.synonyms), name
+        for phrase in record.synonyms:
+            assert phrase and phrase == phrase.lower() == phrase.strip(), (name, phrase)
 
 
 # ── track H: spec §12's five-language vocabulary ───────────────────────────

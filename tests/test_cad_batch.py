@@ -463,8 +463,8 @@ async def test_the_refusal_points_at_the_direct_tool(client):
 # The production laundering vector: DISCOVERY_MODE=search
 # ---------------------------------------------------------------------------
 #
-# In search mode the advertised surface is just ``search_tools`` + ``call_tool``,
-# and ``call_tool`` invokes any tool by name. That is a general-purpose proxy
+# In search mode the advertised surface is just ``search_tools`` + ``call_tool``
+# + ``describe_tool``, and ``call_tool`` invokes any tool by name. That is a general-purpose proxy
 # sitting inside the same server as a denylist — i.e. exactly the shape of a way
 # around it. The deny set is derived from ``cost="escape"`` cards, and the proxy
 # is not a local component, so nothing in the *denylist* stops it; what stops it
@@ -489,9 +489,33 @@ async def search_mode(monkeypatch):
 
 async def test_search_mode_advertises_the_proxy_that_makes_this_a_risk(search_mode):
     names = {tool.name for tool in await search_mode.list_tools()}
-    assert names == {"search_tools", "call_tool"}, (
+    assert names == {"search_tools", "call_tool", "describe_tool"}, (
         "if the search surface changed, the laundering test below is aiming at the wrong target"
     )
+
+
+async def test_cad_batch_refuses_describe_tool_as_a_step(search_mode):
+    """The third synthetic tool is refused like the other two: card-less, so denied.
+
+    ``describe_tool`` only reads, but a batch step must name a costed catalog
+    tool; a synthetic proxy is not one, whatever it does.
+    """
+    result = (
+        await search_mode.call_tool(
+            "call_tool",
+            {
+                "name": "cad_batch",
+                "arguments": {
+                    "steps": [{"tool": "describe_tool", "args": {"name": LINE}}],
+                    "dry_run": True,
+                },
+            },
+        )
+    ).structured_content or {}
+    assert result["ok"] is False
+    error = result["results"][0]["error"]
+    assert error["kind"] == "denied"
+    assert "describe_tool" in error["message"]
 
 
 @pytest.mark.parametrize("hatch", ["system_run_command", "system_run_lisp"])

@@ -39,6 +39,7 @@ from dataclasses import dataclass
 
 __all__ = [
     "SHARED_ACAD_COMMANDS",
+    "SYNTHETIC_TOOL_ALIASES",
     "TOOL_ALIASES",
     "ToolAliases",
     "alias_text",
@@ -2724,9 +2725,36 @@ def _fold_in(records: dict[str, ToolAliases], extra) -> None:
 _fold_in(TOOL_ALIASES, _TRACK_H_VOCABULARY)
 
 
+# The synthetic tools DISCOVERY_MODE=search adds in front of the catalog. They
+# are never registered, so they stay out of TOOL_ALIASES, whose coverage gate
+# means "one record per registered tool". ``acad`` is empty on purpose: no
+# AutoCAD command shows a tool's schema, and a wrong alias misroutes a search.
+SYNTHETIC_TOOL_ALIASES: dict[str, ToolAliases] = {
+    "describe_tool": ToolAliases(
+        acad=(),
+        synonyms=(
+            "describe a tool",
+            "tool schema",
+            "full parameters",
+            "optional parameters",
+            "what arguments does it take",
+            "tool help",
+            "araç parametreleri",
+            "arac parametreleri",
+        ),
+    ),
+}
+
+
 def aliases_for(tool_name: str) -> ToolAliases | None:
-    """Return the alias record for ``tool_name``, or ``None`` if it has none."""
-    return TOOL_ALIASES.get(tool_name)
+    """Return the alias record for ``tool_name``, or ``None`` if it has none.
+
+    Registered tools first, then the synthetic search-mode tools.
+    """
+    record = TOOL_ALIASES.get(tool_name)
+    if record is None:
+        record = SYNTHETIC_TOOL_ALIASES.get(tool_name)
+    return record
 
 
 def alias_text(tool_name: str) -> str:
@@ -2735,7 +2763,7 @@ def alias_text(tool_name: str) -> str:
     Suitable for appending to the text a search index builds from a tool. Returns
     an empty string for unknown tools so callers can concatenate unconditionally.
     """
-    record = TOOL_ALIASES.get(tool_name)
+    record = aliases_for(tool_name)
     if record is None:
         return ""
     return " ".join((*record.acad, *record.synonyms))

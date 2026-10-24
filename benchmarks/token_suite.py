@@ -536,8 +536,9 @@ async def idle_lane(counter: Any, turns: int = SESSION_TURNS) -> list[dict[str, 
         rows.append(
             await _idle_row(
                 "search",
-                "DISCOVERY_MODE=search - search_tools plus the call_tool proxy; the "
-                "catalog is reached through the search tool instead of advertised.",
+                "DISCOVERY_MODE=search - search_tools, the call_tool proxy and "
+                "describe_tool; the catalog is reached through the search tool "
+                "instead of advertised.",
                 counter,
                 turns,
             )

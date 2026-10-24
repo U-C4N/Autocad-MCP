@@ -15,6 +15,11 @@ deliberately absent — the honest cost of this format is that a caller must
 either already know the optional arguments or read the error from a failed
 call. That trade is worth it at five hits per search; it would not be at one.
 
+:func:`describe_payload` is the other half of that trade: ``describe_tool``
+renders one tool's whole card — full input schema included — so a search-mode
+client asks for the optional arguments of the one tool it is about to call
+instead of paying for every hit's schema up front.
+
 Scope note: the compact payload is a real saving but it is **not** what makes
 this discovery layer better than stock. Stock BM25 with this same serializer
 gets the same size win. The differentiators are the alias corpus (which lets a
@@ -23,13 +28,21 @@ query find anything at all) and the risk filter — not bytes.
 
 from __future__ import annotations
 
+import re
+import textwrap
 from collections.abc import Sequence
+from typing import Any
 
 from fastmcp.tools.base import Tool
 
 from discovery.aliases import aliases_for
 
-__all__ = ["MAX_SUMMARY_CHARS", "serialize_search_results"]
+__all__ = [
+    "MAX_SUMMARY_CHARS",
+    "describe_payload",
+    "docstring_examples",
+    "serialize_search_results",
+]
 
 # Long enough for every first docstring line in the live catalog (measured max
 # 96 characters), short enough that a rambling one cannot dominate the payload.
@@ -112,3 +125,113 @@ def serialize_search_results(tools: Sequence[Tool]) -> str:
     if not tools:
         return EMPTY_RESULT
     return "\n".join(_card(tool) for tool in tools)
+
+
+# ---------------------------------------------------------------------------
+# describe_tool: one tool's whole card
+# ---------------------------------------------------------------------------
+
+# "Example:" / "Examples:" as a label, at a line start or after a sentence —
+# capitalised and followed by one colon. "for example, ..." is prose, and
+# "Example::" is a literal-block marker the "::" rule below handles.
+_EXAMPLE_LABEL_RE = re.compile(r"(?<![A-Za-z])Examples?:(?!:)[ \t]*(.*)$")
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def _indented_block(lines: Sequence[str], start: int, base: int) -> tuple[str, int]:
+    """The block indented deeper than ``base`` from ``start``, dedented.
+
+    Leading blank lines are skipped, interior blank lines kept, trailing ones
+    dropped. Returns ``("", start)`` when nothing is indented there, so the
+    caller does not swallow the next paragraph.
+    """
+    i = start
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    body: list[str] = []
+    while i < len(lines) and (not lines[i].strip() or _indent(lines[i]) > base):
+        body.append(lines[i])
+        i += 1
+    while body and not body[-1].strip():
+        body.pop()
+    if not body:
+        return "", start
+    return textwrap.dedent("\n".join(body)), i
+
+
+def docstring_examples(text: str | None) -> list[str]:
+    """The example blocks a docstring writes itself, verbatim — never invented.
+
+    Three forms are read, the three this catalog uses:
+
+    * an inline label — ``Example: points=[[0,0],[100,0]]`` — gives the rest
+      of its line;
+    * a bare ``Example:`` / ``Examples:`` heading gives the indented block
+      below it;
+    * a reStructuredText literal block (a paragraph ending in ``::``) gives
+      the indented block that follows, dedented.
+
+    A docstring with none of them yields ``[]``.
+    """
+    if not text:
+        return []
+    lines = text.splitlines()
+    examples: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        label = _EXAMPLE_LABEL_RE.search(line)
+        if label:
+            rest = label.group(1).strip()
+            if rest:
+                examples.append(rest)
+                i += 1
+                continue
+            block, i = _indented_block(lines, i + 1, _indent(line))
+            if block:
+                examples.append(block)
+            else:
+                i += 1
+            continue
+        if line.rstrip().endswith("::"):
+            block, i = _indented_block(lines, i + 1, _indent(line))
+            if block:
+                examples.append(block)
+            else:
+                i += 1
+            continue
+        i += 1
+    return examples
+
+
+def describe_payload(tool: Tool, *, pack: str | None = None) -> dict[str, Any]:
+    """Everything a client needs to call ``tool``, from what it already carries.
+
+    ``input_schema``, ``description`` and ``annotations`` are the tool's own MCP
+    rendering — the same object a full-catalog ``list_tools`` sends — so the
+    schema cannot drift from what the call validates against. ``cost`` is the
+    ``@cad_tool`` card's, ``acad`` / ``synonyms`` the alias corpus's, and
+    ``examples`` only what the docstring itself writes (:func:`docstring_examples`).
+    """
+    wire = tool.to_mcp_tool()
+    cad = (tool.meta or {}).get("cad")
+    record = aliases_for(tool.name)
+    return {
+        "name": tool.name,
+        "description": wire.description,
+        "input_schema": wire.inputSchema,
+        "annotations": (
+            wire.annotations.model_dump(mode="json", exclude_none=True)
+            if wire.annotations is not None
+            else {}
+        ),
+        "risk": _risk(tool),
+        "cost": cad.get("cost") if isinstance(cad, dict) else None,
+        "pack": pack,
+        "acad": list(record.acad) if record else [],
+        "synonyms": list(record.synonyms) if record else [],
+        "examples": docstring_examples(tool.description),
+    }

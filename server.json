@@ -47,7 +47,7 @@
         },
         {
           "name": "DISCOVERY_MODE",
-          "description": "Tool discovery: off (default) advertises the full catalog; search replaces it with search_tools plus a call_tool proxy.",
+          "description": "Tool discovery: off (default) advertises the full catalog; search replaces it with search_tools, a call_tool proxy and describe_tool.",
           "isRequired": false,
           "format": "string",
           "isSecret": false

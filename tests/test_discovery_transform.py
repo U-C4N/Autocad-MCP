@@ -16,12 +16,14 @@ import json
 
 import pytest
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
 from fastmcp.server.transforms.search import BM25SearchTransform
 from fastmcp.server.transforms.search.base import serialize_tools_for_output_json
 
 import config
 import server
-from discovery.serialize import serialize_search_results
+from discovery.aliases import aliases_for
+from discovery.serialize import docstring_examples, serialize_search_results
 from discovery.transform import CadSearchTransform, tool_risk
 from tests.data.discovery_golden import ALL_CASES, HOLDOUT_CASES, TUNING_CASES
 
@@ -596,11 +598,11 @@ async def test_off_leaves_the_whole_catalog_on_the_wire():
     assert "search_tools" not in names
 
 
-async def test_search_replaces_the_catalog_with_the_two_synthetic_tools():
+async def test_search_replaces_the_catalog_with_the_three_synthetic_tools():
     server._apply_discovery_mode("search")
     async with Client(server.mcp) as client:
         names = {tool.name for tool in await client.list_tools()}
-    assert names == {"search_tools", "call_tool"}
+    assert names == {"search_tools", "call_tool", "describe_tool"}
 
 
 async def test_search_mode_is_reversible_and_attaches_only_once():
@@ -666,3 +668,232 @@ async def test_search_mode_does_not_shrink_what_the_server_reports_about_itself(
     server._apply_discovery_mode("search")
     assert await server._registered_tool_count() > 100
     assert len(await server._tool_groups()) > 5
+
+
+# ── describe_tool: one tool's full card, search mode only ──────────────────
+#
+# A search card lists required parameters only (discovery/serialize.py says
+# why). describe_tool is the other half of that trade: the whole input schema
+# of one tool, so a search-mode client never has to guess an optional argument
+# or learn it from a failed call.
+
+
+async def _describe(client, name: str) -> dict:
+    return (await client.call_tool("describe_tool", {"name": name})).structured_content
+
+
+def _refusal(excinfo, tool: str) -> str:
+    """The refusal itself, without the envelope FastMCP puts around it.
+
+    Both tools refuse with FastMCP's own ``NotFoundError("Unknown tool: ...")``.
+    The envelopes differ, measured: call_tool's refusal is raised by the
+    *nested* ``ctx.fastmcp.call_tool``, whose middleware already turned it into
+    an McpError, so the outer middleware labels the wrapped error
+    ``Internal error: Error calling tool 'call_tool': Not found: Unknown tool:
+    'x'``; describe_tool raises the NotFoundError itself and gets the accurate
+    ``Not found: Error calling tool 'describe_tool': Unknown tool: 'x'``.
+    """
+    text = str(excinfo.value).replace(f"Error calling tool '{tool}': ", "")
+    for envelope in ("Internal error: ", "Not found: "):
+        text = text.replace(envelope, "")
+    return text
+
+
+async def test_describe_tool_returns_the_full_mode_schema_of_every_visible_tool():
+    """The gate: for every tool call_tool accepts, the schema is the full-mode one."""
+    server._apply_discovery_mode("off")
+    async with Client(server.mcp) as client:
+        full = {tool.name: tool for tool in await client.list_tools()}
+    server._apply_discovery_mode("search")
+    async with Client(server.mcp) as client:
+        for name, tool in full.items():
+            card = await _describe(client, name)
+            assert card["name"] == name
+            assert card["input_schema"] == tool.inputSchema, name
+            assert card["description"] == tool.description, name
+            expected = (
+                tool.annotations.model_dump(mode="json", exclude_none=True)
+                if tool.annotations is not None
+                else {}
+            )
+            assert card["annotations"] == expected, name
+    assert len(full) > 100
+
+
+async def test_describe_tool_carries_risk_cost_pack_and_the_alias_vocabulary():
+    server._apply_discovery_mode("search")
+    async with Client(server.mcp) as client:
+        fillet = await _describe(client, "entity_fillet")
+        graph = await _describe(client, "pid_graph")
+        wipe = await _describe(client, "entity_delete_many")
+    record = aliases_for("entity_fillet")
+    assert fillet["risk"] == "write"
+    assert fillet["cost"] == "mutate"
+    assert fillet["pack"] == "core"
+    assert fillet["acad"] == list(record.acad)
+    assert "FILLET" in fillet["acad"]
+    assert fillet["synonyms"] == list(record.synonyms)
+    assert graph["pack"] == "pid"
+    assert graph["risk"] == "read"
+    assert wipe["risk"] == "destructive"
+    assert set(fillet) == {
+        "name",
+        "description",
+        "input_schema",
+        "annotations",
+        "risk",
+        "cost",
+        "pack",
+        "acad",
+        "synonyms",
+        "examples",
+    }
+
+
+async def test_describe_tool_shows_the_optional_parameters_a_search_card_leaves_out():
+    """The reason the tool exists: entity_list's search card says req: (none)."""
+    server._apply_discovery_mode("search")
+    async with Client(server.mcp) as client:
+        card = await _describe(client, "entity_list")
+    assert {"fields", "compact", "layer_filter"} <= set(card["input_schema"]["properties"])
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "solid_box",  # registered, hidden by the ENABLE_3D gate
+        "no_such_tool",  # never registered
+    ],
+)
+async def test_describe_tool_refuses_hidden_and_unknown_names_as_call_tool_does(name):
+    server._apply_discovery_mode("search")
+    async with Client(server.mcp) as client:
+        with pytest.raises(ToolError) as described:
+            await client.call_tool("describe_tool", {"name": name})
+        with pytest.raises(ToolError) as called:
+            await client.call_tool("call_tool", {"name": name, "arguments": {}})
+    assert _refusal(described, "describe_tool") == _refusal(called, "call_tool")
+    assert _refusal(described, "describe_tool") == f"Unknown tool: {name!r}"
+    assert "Not found: " in str(described.value)
+
+
+def _first_pid_tool_outside_lean() -> str:
+    return sorted(server.PACK_TOOL_NAMES["pid"] - server.LEAN_TOOL_NAMES)[0]
+
+
+@pytest.mark.parametrize(
+    ("profile", "packs", "pick"),
+    [
+        # TOOL_PACKS=core hides the pid pack
+        ("full", "core", lambda: "pid_graph"),
+        # TOOL_PROFILE=lean hides every tool outside the curated core
+        ("lean", "all", _first_pid_tool_outside_lean),
+    ],
+    ids=["pack", "profile"],
+)
+async def test_describe_tool_refuses_a_profile_or_pack_hidden_tool_as_call_tool_does(
+    monkeypatch, profile, packs, pick
+):
+    monkeypatch.setattr(config.settings, "tool_profile", profile)
+    monkeypatch.setattr(config.settings, "tool_packs", packs)
+    name = pick()
+    server._apply_discovery_mode("search")
+    try:
+        async with Client(server.mcp) as client:
+            with pytest.raises(ToolError) as described:
+                await client.call_tool("describe_tool", {"name": name})
+            with pytest.raises(ToolError) as called:
+                await client.call_tool("call_tool", {"name": name, "arguments": {}})
+    finally:
+        monkeypatch.undo()
+        await server._apply_tool_profile()
+    assert _refusal(described, "describe_tool") == _refusal(called, "call_tool")
+    assert _refusal(described, "describe_tool") == f"Unknown tool: {name!r}"
+    assert "Not found: " in str(described.value)
+
+
+@pytest.mark.parametrize("name", ["search_tools", "call_tool", "describe_tool"])
+async def test_describe_tool_refuses_the_synthetic_names(name):
+    """They are already advertised with their whole schema; a card would be a loop."""
+    server._apply_discovery_mode("search")
+    async with Client(server.mcp) as client:
+        with pytest.raises(ToolError, match="synthetic search tool"):
+            await client.call_tool("describe_tool", {"name": name})
+
+
+async def test_call_tool_refuses_describe_tool_like_the_other_synthetic_tools():
+    server._apply_discovery_mode("search")
+    async with Client(server.mcp) as client:
+        with pytest.raises(ToolError) as excinfo:
+            await client.call_tool(
+                "call_tool", {"name": "describe_tool", "arguments": {"name": "entity_fillet"}}
+            )
+    assert "'describe_tool' is a synthetic search tool" in str(excinfo.value)
+
+
+async def test_describe_tool_takes_one_name_and_reads_only(transform):
+    tool = transform._make_describe_tool()
+    assert tool.name == "describe_tool"
+    assert set(tool.parameters["properties"]) == {"name"}
+    assert tool.parameters["required"] == ["name"]
+    assert tool.annotations is not None and tool.annotations.readOnlyHint is True
+
+
+async def test_describe_tool_is_not_a_registered_tool():
+    """Synthetic, search mode only: the registry and every count stay untouched."""
+    assert "describe_tool" not in {t.name for t in await server._registered_tools()}
+
+
+# ── examples: the docstring's own, never invented ──────────────────────────
+
+
+async def test_examples_come_only_from_the_docstrings_own_example_blocks():
+    server._apply_discovery_mode("search")
+    visible = {t.name for t in await server._registered_tools()} - server.SOLID_TOOL_NAMES
+    async with Client(server.mcp) as client:
+        cards = {name: await _describe(client, name) for name in sorted(visible)}
+    with_examples = {name for name, card in cards.items() if card["examples"]}
+    for name in with_examples:
+        description = cards[name]["description"]
+        for example in cards[name]["examples"]:
+            for line in example.splitlines():
+                assert line.strip() in description, (name, line)
+    assert {
+        "entity_create_polyline",
+        "entity_batch_create",
+        "entity_batch_modify",
+        "entity_list",
+        "selection_get",
+        "system_run_command",
+        "system_run_lisp",
+    } <= with_examples
+    # a docstring with no example block gets none - nothing is made up
+    assert cards["entity_fillet"]["examples"] == []
+    assert cards["system_run_command"]["examples"] == [
+        "'_LINE 0,0 100,0 \\n'.",
+        "'_-LINETYPE _LOAD CENTER acad.lin\\n\\n'.",
+    ]
+    assert cards["selection_get"]["examples"] == [
+        'sel = selection_get()\ndimension_auto(sel["handles"], style="chain")'
+    ]
+
+
+async def test_an_inline_example_is_the_rest_of_its_line():
+    text = "Draw it.\n\nExample: points=[[0,0],[1,0]], closed=true\n"
+    assert docstring_examples(text) == ["points=[[0,0],[1,0]], closed=true"]
+
+
+async def test_a_literal_block_is_dedented_and_kept_whole():
+    text = "Do it like so::\n\n    a = 1\n      b = 2\n\nAfter the block.\n"
+    assert docstring_examples(text) == ["a = 1\n  b = 2"]
+
+
+async def test_an_example_heading_takes_the_indented_block_below_it():
+    text = "Examples:\n    f(1)\n    f(2)\n\nNot an example.\n"
+    assert docstring_examples(text) == ["f(1)\nf(2)"]
+
+
+async def test_prose_that_merely_mentions_an_example_yields_nothing():
+    assert docstring_examples("Returns, for example, the handle.\n") == []
+    assert docstring_examples("") == []
+    assert docstring_examples(None) == []
