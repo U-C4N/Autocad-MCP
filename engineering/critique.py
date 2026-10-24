@@ -189,37 +189,73 @@ def scan_incomplete_issue(focus: str, coverage: ScanCoverage) -> Issue:
     )
 
 
+#: Two points closer than this are one point (mm): ``untrimmed_corner`` skips them.
+COINCIDENT_MM = 1e-9
+
+
 def _close_pairs(
-    points: list[tuple[str, float, float]], tol: float
+    points: list[tuple[str, float, float]],
+    tol: float,
+    *,
+    owners: list[str] | None = None,
+    skip_coincident: bool = False,
 ) -> list[tuple[int, int, float]]:
     """Every pair ``(i, j, d)``, ``i < j``, of points in the same space with
     ``d = hypot(p_i - p_j) <= tol``, sorted by ``(i, j)``.
+
+    ``skip_coincident`` leaves out every pair with ``d <= COINCIDENT_MM`` and
+    ``owners`` (one per point) every pair of one owner - both dropped before
+    they are stored. A caller that throws them away afterwards
+    (``untrimmed_corner``) otherwise pays for them: 4,000 zero-length LINEs at
+    the origin stored 32 million pairs, 3.45 GB (W1 review, measured).
 
     A grid hash replaces the all-pairs loop (8.9 s at 5,000 lines on the event
     loop, measured): the cell is the tolerance, so a partner lies in one of
     the nine cells around a point. The cell is widened by one part in a
     million so a float quotient at a cell boundary cannot hide a pair that is
-    exactly ``tol`` apart. Sorting by ``(i, j)`` reproduces the order the
+    exactly ``tol`` apart. The grid holds each distinct point once, with the
+    indices standing on it: a pair inside one group is at distance 0, so with
+    ``skip_coincident`` a cluster of equal points costs one entry, not the
+    square of its size. Sorting by ``(i, j)`` reproduces the order the
     all-pairs loop reported in.
     """
     cell = tol * (1.0 + 1e-6)
+    groups: dict[tuple[str, float, float], list[int]] = {}
+    for index, point in enumerate(points):
+        groups.setdefault(point, []).append(index)
+    distinct = list(groups.items())
     grid: dict[tuple[str, int, int], list[int]] = {}
     keys = []
-    for index, (space, x, y) in enumerate(points):
+    for slot, ((space, x, y), _members) in enumerate(distinct):
         key = (space, math.floor(x / cell), math.floor(y / cell))
         keys.append(key)
-        grid.setdefault(key, []).append(index)
+        grid.setdefault(key, []).append(slot)
+
     pairs: list[tuple[int, int, float]] = []
-    for index, (space, x, y) in enumerate(points):
-        _space, cx, cy = keys[index]
+
+    def _emit(first: list[int], second: list[int], d: float) -> None:
+        for i in first:
+            for j in second:
+                a, b = (i, j) if i < j else (j, i)
+                if a == b or (owners is not None and owners[a] == owners[b]):
+                    continue
+                pairs.append((a, b, d))
+
+    for slot, ((space, x, y), members) in enumerate(distinct):
+        if not skip_coincident and len(members) > 1:
+            for k, i in enumerate(members):
+                _emit([i], members[k + 1 :], 0.0)
+        _space, cx, cy = keys[slot]
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
                 for other in grid.get((space, cx + dx, cy + dy), ()):
-                    if other <= index:
+                    if other <= slot:
                         continue
-                    d = math.hypot(x - points[other][1], y - points[other][2])
-                    if d <= tol:
-                        pairs.append((index, other, d))
+                    (_s, ox, oy), others = distinct[other]
+                    d = math.hypot(x - ox, y - oy)
+                    if d > tol or (skip_coincident and d <= COINCIDENT_MM):
+                        continue
+                    _emit(members, others, d)
     pairs.sort()
     return pairs
 
@@ -265,14 +301,19 @@ def _untrimmed_issues(records) -> list[Issue]:
         if r.type == "LINE" and len(r.points) == 2
         for point in r.points
     ]
-    pairs = _close_pairs([(space, p[0], p[1]) for _h, space, p in endpoints], UNTRIMMED_TOL_MM)
+    # Coincident ends (a corner that IS trimmed) and a line's own two ends are
+    # dropped inside _close_pairs, before they are stored.
+    pairs = _close_pairs(
+        [(space, p[0], p[1]) for _h, space, p in endpoints],
+        UNTRIMMED_TOL_MM,
+        owners=[h for h, _space, _p in endpoints],
+        skip_coincident=True,
+    )
     issues: list[Issue] = []
     seen: set[frozenset[str]] = set()
     for i, j, d in pairs:
         h1, space, p1 = endpoints[i]
         h2, _space, p2 = endpoints[j]
-        if h1 == h2 or d <= 1e-9:
-            continue
         key = frozenset((h1, h2))
         if key in seen:
             continue

@@ -25,14 +25,17 @@ entity would take minutes; every expected handle is one the test placed.
 from __future__ import annotations
 
 import asyncio
+import math
+import random
 import threading
 import time
+import tracemalloc
 
 import pytest
 
 import config
 from engineering import critique, qa_scan
-from engineering.critique import CHECK_FAILED, SCAN_INCOMPLETE, run_critique
+from engineering.critique import CHECK_FAILED, SCAN_INCOMPLETE, _untrimmed_issues, run_critique
 from engineering.qa_scan import qa_snapshot
 from engineering.refiner import refine_drawing
 from engineering.understand.critique import build_index, issues_for
@@ -367,3 +370,100 @@ async def test_the_topology_lane_still_sees_equipment_boxes(backend, pipe_layer)
     pipe.dxf.end = (1500.0, 600.0)  # off the second tank now: one dangling end
     (issue,) = await run_critique(backend, ["topo_dangling_endpoint"])
     assert issue.handles == [pipe.dxf.handle] and issue.detail["end"] == "end"
+
+
+# -- finding 4: coincident endpoints cost no memory -------------------------------------
+
+#: 4,000 zero-length LINEs at the origin: 8,000 coincident ends, 31,996,000
+#: pairs stored before (3.45 GB working set in the review; 193 MB of
+#: tracemalloc peak already at 2,000 ends here). After: 0 pairs stored, a
+#: measured peak of 1.5 MB (the endpoint list itself) in 0.04 s, so 16 MB is a
+#: 10x margin.
+CLOSE_PAIRS_PEAK_BOUND = 16 * 1024 * 1024
+ZERO_LENGTH_LINES = 4_000
+
+
+async def test_coincident_endpoints_are_dropped_before_they_are_stored(backend):
+    msp = backend._doc.modelspace()
+    for _ in range(ZERO_LENGTH_LINES):
+        msp.add_line((0.0, 0.0), (0.0, 0.0))
+    records = records_from_doc(backend._doc, source="x").records
+
+    tracemalloc.start()
+    try:
+        issues = _untrimmed_issues(records)
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert issues == []
+    assert peak < CLOSE_PAIRS_PEAK_BOUND, f"{peak / 1e6:.1f} MB"
+
+
+def _all_pairs_untrimmed(records) -> list[tuple[str, str, float]]:
+    """The all-pairs reference ``untrimmed_corner`` was before the grid hash:
+    every pair of LINE ends of one space within the tolerance, in index order,
+    coincident and same-handle pairs skipped, one issue per handle pair."""
+    ends = [
+        (r.handle, r.space, p)
+        for r in records
+        if r.type == "LINE" and len(r.points) == 2
+        for p in r.points
+    ]
+    out, seen = [], set()
+    for i in range(len(ends)):
+        for j in range(i + 1, len(ends)):
+            (h1, s1, p1), (h2, s2, p2) = ends[i], ends[j]
+            d = math.hypot(p1[0] - p2[0], p1[1] - p2[1])
+            if s1 != s2 or d > critique.UNTRIMMED_TOL_MM or h1 == h2 or d <= 1e-9:
+                continue
+            if frozenset((h1, h2)) in seen:
+                continue
+            seen.add(frozenset((h1, h2)))
+            out.append((h1, h2, d))
+    return out
+
+
+@pytest.mark.parametrize("seed", range(5))
+async def test_untrimmed_corner_equals_the_all_pairs_reference(backend, seed):
+    """Random ends on a 0.25 mm lattice (so exact coincidences are common),
+    zero-length lines, and two spaces: the same issues, in the same order,
+    with the same gaps as the all-pairs loop."""
+    rng = random.Random(seed)
+    doc = backend._doc
+    spaces = (doc.modelspace(), doc.layouts.get("Layout1"))
+
+    def point():
+        return (0.25 * rng.randint(0, 12), 0.25 * rng.randint(0, 12))
+
+    for _ in range(150):
+        start = point()
+        end = start if rng.random() < 0.2 else point()
+        rng.choice(spaces).add_line(start, end)
+    records = records_from_doc(doc, source="x").records
+
+    got = [(i.handles[0], i.handles[1], i.detail["gap_mm"]) for i in _untrimmed_issues(records)]
+
+    assert got == _all_pairs_untrimmed(records)
+    assert got  # the lattice makes plenty of corners
+
+
+async def test_untrimmed_corners_beside_a_coincident_cluster_are_unchanged(backend):
+    """A cluster of coincident ends does not hide or duplicate a real corner."""
+    msp = backend._doc.modelspace()
+    for _ in range(50):
+        msp.add_line((0.0, 0.0), (0.0, 0.0))
+    a = msp.add_line((0.0, 0.0), (100.0, 0.0)).dxf.handle
+    b = msp.add_line((100.3, 0.0), (100.3, 100.0)).dxf.handle
+    c = msp.add_line((0.2, 0.0), (0.2, -50.0)).dxf.handle
+
+    issues = await run_critique(backend, ["untrimmed_corner"])
+
+    pairs = sorted(tuple(sorted(i.handles)) for i in issues)
+    zero = {e.dxf.handle for e in msp if e.dxf.start == e.dxf.end}
+    # The 0.3 mm corner a-b, a-c at the origin end, and each zero-length
+    # line's ends 0.2 mm from c's start.
+    expected = {tuple(sorted((a, b))), tuple(sorted((a, c)))} | {
+        tuple(sorted((z, c))) for z in zero
+    }
+    assert set(pairs) == expected and len(pairs) == len(expected)
