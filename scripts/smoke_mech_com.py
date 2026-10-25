@@ -1,7 +1,8 @@
 """Exercise tracks B and G once against the live AutoCAD on this machine.
 
-Creates NEW documents (never touches the operator's open drawings), then runs
-the whole track through the same code the tools call:
+Runs on the live harness (scripts/live/harness.py): attach only, NEW
+documents of its own (never the operator's drawings), each closed on every
+path. The whole track goes through the same code the tools call:
 
     xref source: drawing_new -> a line -> drawing_export_dwg -> close
     apply_layer_set("mech") -> apply_titleblock (ISO 5457 A3 + ISO 7200)
@@ -12,138 +13,110 @@ the whole track through the same code the tools call:
       -> xref_attach / xref_manage("list") / xref_manage("detach")
       -> run_critique(focus=None) -> drawing_export_dwg
 
-and prints what came back as JSON. Exit codes:
+Checks: the section view omitted nothing; the part was dimensioned; the bolt
+carries its ACADMCP_MECH XDATA; the parts list read off the drawing is the
+bolt (the shaft is lines, not a block) and was drawn as a native TABLE; the
+balloon was placed; the xref was listed once attached and gone once detached;
+the DWG is on disk and opens with the "AC10" magic; the critique found nothing.
 
-    0  the sheet drew, the critique returned nothing and the .dwg exists
-    1  it drew but the critique found something or the DWG is missing
-    2  no live CAD application reachable (pywin32 missing, or the ProgID
-       cannot be created) -- the COM paths then remain fake-tested only
+Exit codes are the harness's: 0 every check passed, 1 one failed or raised,
+2 no running AutoCAD to attach to or the active document changed under it.
 
-The backend's ``connect()`` is lazy on purpose (the server must start before
-AutoCAD is open), so reachability is read from ``system_status()`` rather than
-from ``connect()``. Every document this run opens is closed on the way out,
-also when a step fails, unless ``--keep`` is given.
-
-    AUTOCAD_MCP_BACKEND=com uv run --frozen python scripts/smoke_mech_com.py
-    uv run --frozen python scripts/smoke_mech_com.py --keep   # leave it open
+    uv run --frozen python scripts/smoke_mech_com.py [--keep] [--json PATH]
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from scripts.live.harness import LiveHarness, main_cli  # noqa: E402
+
 XDATA_APP = "ACADMCP_MECH"
 
 #: Every DWG since R13 opens with "AC10xx" (AC1032 for the 2018 format).
-DWG_MAGIC = b"AC10"
+DWG_MAGIC = "AC10"
 
-#: ``RPC_E_CALL_REJECTED``: AutoCAD's message filter refused the call because
-#: it was busy (a document still initialising after ``Documents.Add`` is the
-#: case measured on this seat). A refused call was not executed.
-RPC_E_CALL_REJECTED = -2147418111
-
-#: How long a refused call is retried before the smoke gives up on it.
-REJECTED_PATIENCE_S = 90.0
-
-#: Names of the documents this run opened and has not closed yet.
-_OPENED: list[str] = []
+#: The parts list of the sheet below. A parts-list record is read off a block
+#: reference (``extract_records``), so the drawn shaft - lines, not a block -
+#: has none: one row, the ISO 4014 bolt.
+PARTS_LIST_ROWS = 1
 
 
-def _patient(backend) -> None:
-    """Retry any backend call AutoCAD refused with ``RPC_E_CALL_REJECTED``.
-
-    Measured on AutoCAD 2026: the first call after ``Documents.Add`` was
-    refused, the smoke died, and its cleanup - refused as well - left the
-    scratch document open. Refused calls are retried with backoff for up to
-    ``REJECTED_PATIENCE_S``; a document created twice by a retried
-    ``drawing_new`` is still closed, because ``_new_document`` tracks the
-    document list, not a name it assumes.
-    """
-    run = backend._run
-
-    async def patient(func, *args, **kwargs):
-        deadline = time.monotonic() + REJECTED_PATIENCE_S
-        pause = 0.5
-        while True:
-            try:
-                return await run(func, *args, **kwargs)
-            except RuntimeError as exc:
-                cause = exc.__cause__
-                hr = cause.args[0] if cause is not None and cause.args else None
-                if hr != RPC_E_CALL_REJECTED or time.monotonic() + pause > deadline:
-                    raise
-                await asyncio.sleep(pause)
-                pause = min(pause * 2.0, 5.0)
-
-    backend._run = patient
-
-
-async def _names(backend) -> set[str]:
-    return {row["name"] for row in await backend.document_list()}
-
-
-async def _new_document(backend) -> str:
-    """``drawing_new``, recording every document it added (normally one)."""
-    before = await _names(backend)
-    await backend.drawing_new()
-    added = sorted((await _names(backend)) - before)
-    _OPENED.extend(name for name in added if name not in _OPENED)
-    return added[-1] if added else ""
-
-
-async def _close_leftovers(backend) -> None:
-    open_names = {row["name"] for row in await backend.document_list()}
-    for name in list(_OPENED):
-        if name in open_names:
-            try:
-                await backend.document_close(name, discard=True)
-            except Exception as exc:  # best effort on the way out
-                print(f"could not close {name}: {exc}", file=sys.stderr)
-        _OPENED.remove(name)
-
-
-async def _xref_source(backend, workspace: Path) -> Path:
-    """A one-line DWG in its own scratch document, saved and closed.
+async def _xref_source(h: LiveHarness, workspace: Path) -> Path:
+    """A one-line DWG in its own document, saved and closed.
 
     An xref has to be a DWG, and it cannot be the host document itself -
     ``SaveAs`` rebinds the host to the file it wrote.
     """
-    created = await _new_document(backend)
-    await backend.entity_create_line(0.0, 0.0, 50.0, 0.0, layer="0")
+    name = await h.new_document()
+    await h.backend.entity_create_line(0.0, 0.0, 50.0, 0.0, layer="0")
     path = workspace / "xref_source.dwg"
-    before = await _names(backend)
-    await backend.drawing_export_dwg(str(path), "R2018")
-    rebound = await _rebound(backend, created, before)
-    await backend.document_close(rebound, discard=True)
-    _OPENED.remove(rebound)
+    await h.backend.drawing_export_dwg(str(path), "R2018")
+    await h.close_document(name)
     return path
 
 
-async def _rebound(backend, created: str, before: set[str]) -> str:
-    """``SaveAs`` renames the active document to the file it wrote; track that name.
+def assess(h: LiveHarness, report: dict) -> None:
+    h.check(
+        "the section view omitted nothing",
+        not report["section_omitted"],
+        expected=[],
+        observed=report["section_omitted"],
+    )
+    h.check("the part was dimensioned", report["dimensions"] > 0, observed=report["dimensions"])
+    h.check(
+        "the bolt carries ACADMCP_MECH XDATA",
+        report["xdata_chunks"] >= 1,
+        expected=">= 1",
+        observed=report["xdata_chunks"],
+    )
+    h.check(
+        "the parts list read off the drawing is the bolt",
+        report["parts_list_rows"] == PARTS_LIST_ROWS
+        and report["bolt_handle"] in report["parts_list_handles"],
+        expected={"rows": PARTS_LIST_ROWS, "handle": report["bolt_handle"]},
+        observed={"rows": report["parts_list_rows"], "handles": report["parts_list_handles"]},
+    )
+    h.check(
+        "the parts list drawn as a native TABLE",
+        report["parts_list_representation"] == "native",
+        expected="native",
+        observed=report["parts_list_representation"],
+    )
+    h.check("the balloon placed", bool(report["balloon"]), observed=report["balloon"])
+    h.check(
+        "the xref listed once attached",
+        report["xref_listed"] == 1,
+        expected=1,
+        observed=report["xref_listed"],
+    )
+    h.check(
+        "the xref gone once detached",
+        report["xref_detached"] and report["xrefs_after_detach"] == 0,
+        expected=0,
+        observed=report["xrefs_after_detach"],
+    )
+    dwg = report["dwg"]
+    h.check(
+        "the DWG is on disk with the AC10 magic",
+        dwg["exists"] and dwg["magic"].startswith(DWG_MAGIC),
+        expected=DWG_MAGIC,
+        observed=dwg["magic"],
+    )
+    h.check(
+        "the critique found nothing",
+        report["critique_issues"] == 0,
+        expected=0,
+        observed=report["critique"],
+    )
 
-    Read from the document list rather than ``system_status``: the latter
-    swallows a refused call and answers without ``active_document``.
-    """
-    after = await _names(backend)
-    renamed = sorted(after - before)
-    rebound = renamed[0] if created not in after and len(renamed) == 1 else created
-    if created in _OPENED:
-        _OPENED.remove(created)
-    if rebound not in _OPENED:
-        _OPENED.append(rebound)
-    return rebound
 
-
-async def _sheet(backend, workspace: Path, xref_path: Path) -> dict:
+async def body(h: LiveHarness) -> dict:
     from engineering.critique import run_critique
     from engineering.layers import apply_layer_set
     from engineering.mech.annotate import weld_symbol_prims
@@ -163,7 +136,13 @@ async def _sheet(backend, workspace: Path, xref_path: Path) -> dict:
         titleblock_origin,
     )
 
-    created = await _new_document(backend)
+    workspace = Path(tempfile.mkdtemp(prefix="mech_smoke_"))
+    h.stage("xref source")
+    xref_path = await _xref_source(h, workspace)
+
+    h.stage("sheet")
+    await h.new_document()
+    backend = h.backend
     await apply_layer_set(backend, "mech")
     await apply_titleblock(
         backend,
@@ -174,7 +153,6 @@ async def _sheet(backend, workspace: Path, xref_path: Path) -> dict:
         zones=True,
         marks=True,
     )
-
     shaft = build_part(
         {
             "kind": "revolved",
@@ -200,6 +178,7 @@ async def _sheet(backend, workspace: Path, xref_path: Path) -> dict:
     got = await backend.entity_get_xdata(bolt_handle, XDATA_APP)
     await draw_prims(backend, weld_symbol_prims(kind="fillet", size=5.0), at=(60.0, 100.0))
 
+    h.stage("parts list")
     records = await extract_records(backend)
     rows = rows_from_records(records)
     tb_x, tb_y = titleblock_origin("A3")
@@ -209,21 +188,21 @@ async def _sheet(backend, workspace: Path, xref_path: Path) -> dict:
         item=int(rows[0]["item"]),
         at=(250.0, 150.0),
         leader_to=(250.0, 125.0),
-        targets=[str(h) for h in rows[0]["handles"]],
+        targets=[str(handle) for handle in rows[0]["handles"]],
     )
 
+    h.stage("xref")
     attached = await backend.xref_attach(str(xref_path), (30.0, 30.0), 1.0, 0.0, "attach")
     listed = await backend.xref_manage(attached["name"], "list", None)
     detached = await backend.xref_manage(attached["name"], "detach", None)
     after = await backend.xref_manage(attached["name"], "list", None)
 
+    h.stage("critique and DWG")
     issues = await run_critique(backend, None)
     dwg_path = workspace / "mech_smoke.dwg"
-    before = await _names(backend)
     exported = await backend.drawing_export_dwg(str(dwg_path), "R2018")
-    await _rebound(backend, created, before)
     head = dwg_path.read_bytes()[:6] if dwg_path.exists() else b""
-    return {
+    report = {
         "part_id": drawn["part_id"],
         "views": len(drawn.get("views") or []) + 1,
         "section_omitted": section.get("omitted"),
@@ -231,6 +210,7 @@ async def _sheet(backend, workspace: Path, xref_path: Path) -> dict:
         "bolt_handle": bolt_handle,
         "xdata_chunks": len(got["xdata"].get(XDATA_APP, [])),
         "parts_list_rows": len(rows),
+        "parts_list_handles": sorted({str(h) for row in rows for h in row["handles"]}),
         "parts_list_representation": table.get("representation"),
         "balloon": balloon.get("handle"),
         "xref_attached": attached.get("name"),
@@ -238,7 +218,7 @@ async def _sheet(backend, workspace: Path, xref_path: Path) -> dict:
         "xref_detached": bool(detached.get("ok")),
         "xrefs_after_detach": len(after.get("xrefs") or []),
         "dwg": {
-            "path": exported.get("path", str(dwg_path)),
+            "name": Path(exported.get("path", str(dwg_path))).name,
             "exists": dwg_path.exists(),
             "bytes": dwg_path.stat().st_size if dwg_path.exists() else 0,
             "magic": head.decode("ascii", "replace"),
@@ -246,45 +226,10 @@ async def _sheet(backend, workspace: Path, xref_path: Path) -> dict:
         "critique_issues": len(issues),
         "critique": [issue.to_dict() for issue in issues],
     }
-
-
-async def main(keep_document: bool = False) -> int:
-    try:
-        from backends.com_backend import ComBackend
-    except ImportError as exc:
-        print(f"pywin32 not available: {exc}")
-        return 2
-    backend = ComBackend()
-    _patient(backend)
-    try:
-        await backend.connect()
-    except Exception as exc:
-        print(f"no live AutoCAD reachable: {exc}")
-        return 2
-    try:
-        status = await backend.system_status()
-        if not status.get("connected"):
-            print(f"no live AutoCAD reachable: {status.get('error', status)}")
-            return 2
-        workspace = Path(tempfile.mkdtemp(prefix="mech_smoke_"))
-        xref_path = await _xref_source(backend, workspace)
-        report = {
-            "autocad": status.get("autocad_version") or status.get("cad_progid"),
-            **await _sheet(backend, workspace, xref_path),
-        }
-        print(json.dumps(report, indent=2))
-        ok = (
-            report["critique_issues"] == 0
-            and report["dwg"]["exists"]
-            and report["dwg"]["magic"].startswith(DWG_MAGIC.decode())
-            and report["xrefs_after_detach"] == 0
-        )
-        return 0 if ok else 1
-    finally:
-        if not keep_document:
-            await _close_leftovers(backend)
-        await backend.disconnect()
+    h.stage("checks")
+    assess(h, report)
+    return report
 
 
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main(keep_document="--keep" in sys.argv[1:])))
+    raise SystemExit(main_cli("mech", body, description=__doc__.split("\n\n")[0]))
