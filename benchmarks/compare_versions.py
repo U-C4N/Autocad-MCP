@@ -7,9 +7,15 @@ recorded as a miss instead of taking down the whole run.
     python benchmarks/compare_versions.py                 # vs origin/main
     python benchmarks/compare_versions.py v1.0.0          # vs a tag/ref
     python benchmarks/compare_versions.py --json out.json # also dump JSON
+    python benchmarks/compare_versions.py v1.6.0 --fail-on-regression
 
 The older ref is checked out into a throwaway git worktree, benchmarked, and
 removed. The "new" side is always the current repository checkout.
+
+``--fail-on-regression`` makes the run a gate (spec §6 Task 20, B56): the exit
+code is 1 when any check that passed on the baseline does not pass now - a
+``fail``, a ``miss``, a ``crash`` or a ``timeout`` all count - and 0 otherwise.
+Without the flag the run only reports and exits 0, as it always did.
 """
 
 from __future__ import annotations
@@ -61,41 +67,64 @@ def run_one(repo, suite, name):
     return "miss"
 
 
-def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    ref = args[0] if args else "origin/main"
+class baseline_worktree:  # noqa: N801 - used as a context manager, like a function
+    """The older ref checked out into a throwaway worktree, removed on exit."""
+
+    def __init__(self, ref: str):
+        self.ref = ref
+        self.path = tempfile.mkdtemp(prefix="acadmcp_bench_")
+
+    def __enter__(self) -> str:
+        subprocess.run(
+            ["git", "-C", REPO, "worktree", "add", "--quiet", self.path, self.ref], check=True
+        )
+        return self.path
+
+    def __exit__(self, *exc) -> bool:
+        subprocess.run(["git", "-C", REPO, "worktree", "remove", "--force", self.path])
+        return False
+
+
+def summarize(ref: str, rows: list[dict]) -> dict:
+    total = len(rows)
+    op = sum(r["old"] == "pass" for r in rows)
+    npass = sum(r["new"] == "pass" for r in rows)
+    return {
+        "baseline_ref": ref,
+        "total": total,
+        "old_pass": op,
+        "new_pass": npass,
+        "old_pct": round(100 * op / total, 1) if total else 0.0,
+        "new_pct": round(100 * npass / total, 1) if total else 0.0,
+        "fixed": sum(r["old"] != "pass" and r["new"] == "pass" for r in rows),
+        "regressed": sum(r["old"] == "pass" and r["new"] != "pass" for r in rows),
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
     json_out = None
-    if "--json" in sys.argv:
-        json_out = sys.argv[sys.argv.index("--json") + 1]
+    if "--json" in argv:
+        index = argv.index("--json")
+        json_out = argv[index + 1]
+        del argv[index : index + 2]
+    fail_on_regression = "--fail-on-regression" in argv
+    args = [a for a in argv if not a.startswith("--")]
+    ref = args[0] if args else "origin/main"
 
     checks = list_checks()
-    wt = tempfile.mkdtemp(prefix="acadmcp_bench_")
-    subprocess.run(["git", "-C", REPO, "worktree", "add", "--quiet", wt, ref], check=True)
     # The OLD worktree runs the CURRENT suite file (kept outside both trees on
     # PYTHONPATH would be cleaner, but the suite only imports `backends.*`, so we
     # pass an absolute suite path and point cwd/PYTHONPATH at the old repo).
-    try:
+    with baseline_worktree(ref) as wt:
         rows = []
         for name, cat in checks:
             o = run_one(wt, SUITE, name)
             n = run_one(REPO, SUITE, name)
             rows.append({"check": name, "category": cat, "old": o, "new": n})
-    finally:
-        subprocess.run(["git", "-C", REPO, "worktree", "remove", "--force", wt])
 
-    total = len(rows)
-    op = sum(r["old"] == "pass" for r in rows)
-    npass = sum(r["new"] == "pass" for r in rows)
-    summary = {
-        "baseline_ref": ref,
-        "total": total,
-        "old_pass": op,
-        "new_pass": npass,
-        "old_pct": round(100 * op / total, 1),
-        "new_pct": round(100 * npass / total, 1),
-        "fixed": sum(r["old"] != "pass" and r["new"] == "pass" for r in rows),
-        "regressed": sum(r["old"] == "pass" and r["new"] != "pass" for r in rows),
-    }
+    summary = summarize(ref, rows)
+    total, op, npass = summary["total"], summary["old_pass"], summary["new_pass"]
     print(f"{'CHECK':<32} {'CATEGORY':<13} {'baseline':<8} {'current':<8}")
     print("-" * 66)
     for r in rows:
@@ -114,7 +143,12 @@ def main():
     if json_out:
         with open(json_out, "w") as fh:
             json.dump({"summary": summary, "rows": rows}, fh, indent=2)
+    if fail_on_regression and summary["regressed"]:
+        regressed = [r["check"] for r in rows if r["old"] == "pass" and r["new"] != "pass"]
+        print(f"FAIL: {len(regressed)} check(s) regressed: {', '.join(regressed)}")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

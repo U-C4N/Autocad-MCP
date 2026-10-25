@@ -21,6 +21,13 @@
       "repo": "https://github.com/beiming183-cloud/AutoCAD-MCP",
       "pinned_sha": "11f7c47e5038796a20451b38b23032e625b5aa26",
       "notes": "Black-box MCP stdio lane; deliver/undo/redo are documented File-IPC only and reported unsupported."
+    },
+    {
+      "id": "best-cad-mcp",
+      "adapter": null,
+      "backends": ["com"],
+      "repo": "https://github.com/LokmenoWer/best-cad-mcp",
+      "notes": "COM-only server (live AutoCAD): no headless lane exists and no adapter was written, so every task is not_run, never zero."
     }
   ]
 }

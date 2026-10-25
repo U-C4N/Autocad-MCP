@@ -105,10 +105,44 @@ def _resolve_entry(spec: CompetitorSpec, repo_dir: Path) -> tuple[str, ...]:
     )
 
 
-def ensure_competitor(spec: CompetitorSpec, cache_root: Path | None = None) -> CompetitorRuntime:
-    """Clone, pin, install and resolve one competitor. Idempotent."""
+def _prepared(spec: CompetitorSpec, root: Path) -> str | None:
+    """Why the cached environment is not ready to launch, or None when it is."""
+    repo_dir = root / "repo"
+    if not (repo_dir / ".git").exists():
+        return f"no checkout at {repo_dir}"
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo_dir, capture_output=True, text=True
+    ).stdout.strip()
+    if head != spec.pinned_sha:
+        return f"the checkout is at {head or 'nothing'}, not the pinned {spec.pinned_sha}"
+    venv_dir = root / "venv"
+    marker = venv_dir / ".installed-sha"
+    if not _venv_python(venv_dir).exists() or not marker.exists():
+        return f"no installed venv at {venv_dir}"
+    if marker.read_text().strip() != spec.pinned_sha:
+        return f"the venv at {venv_dir} was installed for another commit"
+    return None
+
+
+def ensure_competitor(
+    spec: CompetitorSpec, cache_root: Path | None = None, *, fetch: bool = True
+) -> CompetitorRuntime:
+    """Clone, pin, install and resolve one competitor. Idempotent.
+
+    With ``fetch=False`` nothing is downloaded or installed: an environment
+    that is not already cached at the pinned commit raises
+    :class:`benchmarks.adapters.base.EnvironmentBlocked` naming what is missing.
+    """
+    from benchmarks.adapters.base import EnvironmentBlocked
+
     root = (cache_root or CACHE_ROOT) / spec.competitor_id
     repo_dir = root / "repo"
+    if not fetch:
+        missing = _prepared(spec, root)
+        if missing is not None:
+            raise EnvironmentBlocked(
+                f"{spec.competitor_id}: environment absent and fetching is off ({missing})"
+            )
     _ensure_checkout(spec, repo_dir)
     python_exe = _ensure_venv(spec, root / "venv", repo_dir)
     entry_args = _resolve_entry(spec, repo_dir)

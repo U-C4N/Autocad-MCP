@@ -39,17 +39,17 @@ def test_v7_extends_v6_without_touching_it():
     assert task_by_id("understand_foreign").category == "understand"
 
 
-def test_the_published_reference_report_covers_the_whole_current_matrix():
-    # The release's reference run: every task of the current matrix, all passed.
-    # It replaces 1.5's v3 run; the competitor reports stay the v2 runs.
+def test_the_published_reference_report_covers_every_v7_task():
+    # The release's reference run passed every v7 task. Since 1.7.0 it is a v8
+    # run (tests/test_benchmark_v8.py holds it to the whole current matrix);
+    # the v7 twenty-one are still all in it, all passed.
     published = Path(__file__).resolve().parents[1] / "benchmarks" / "results" / "published"
     report = json.loads((published / "autocad-mcp-pro.json").read_text(encoding="utf-8"))
-    scored = {item["task_id"] for item in report["results"]}
+    status = {item["task_id"]: item["status"] for item in report["results"]}
 
-    assert scored == {task.task_id for task in TASKS_V7}
-    assert report["matrix"] == DEFAULT_MATRIX == "v7"
-    assert report["summary"]["score"] == 100.0
-    assert {item["status"] for item in report["results"]} == {"pass"}
+    assert {task.task_id for task in TASKS_V7} <= set(status)
+    assert {status[task.task_id] for task in TASKS_V7} == {"pass"}
+    assert DEFAULT_MATRIX == "v7", "tasks_v7 keeps its own default; v8 is the runner's"
 
 
 def test_the_adapter_implements_every_v7_task():
@@ -64,7 +64,7 @@ def test_the_suite_carries_the_five_understanding_checks():
 
     for name in UNDERSTANDING_CHECKS:
         assert CHECKS[name][1] == "Understanding"
-    assert len(CHECKS) == 52
+    assert len(CHECKS) == 61
 
 
 async def _run(task_id, tmp_path):
@@ -166,7 +166,7 @@ def test_the_suite_carries_the_four_reliability_checks():
 
     for name in RELIABILITY_CHECKS:
         assert CHECKS[name][1] == "Reliability"
-    assert len(CHECKS) == 52
+    assert len(CHECKS) == 61
 
 
 def test_the_published_report_shows_the_four_fixed_and_nothing_regressed():

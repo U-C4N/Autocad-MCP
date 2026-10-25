@@ -12,7 +12,8 @@ This repository publishes two deliberately separate forms of evidence:
    dated data lives in [`source_review.json`](source_review.json), and the README
    graphic is generated—not hand-edited—from that file.
 2. **Fixed-task runtime benchmark.** Adapters execute the same task matrix and
-   return `pass`, `partial`, `unsupported`, `fail`, `timeout`, or `not_run`.
+   return `pass`, `partial`, `unsupported`, `fail`, `timeout`, `not_run` or
+   `environment_blocked`.
    AutoCAD MCP Pro currently has the reference adapter; other projects do not
    receive runtime scores until an adapter actually runs their public interface.
 
@@ -30,7 +31,7 @@ dates, evidence grades, project URLs, and the boundary are stored with the data.
 
 The runner separates runtime evidence from the source-review rubric. Every
 adapter receives the same tasks and produces the same closed result enum:
-`pass`, `partial`, `unsupported`, `fail`, `timeout`, or `not_run`. A timeout is
+`pass`, `partial`, `unsupported`, `fail`, `timeout`, `not_run` or `environment_blocked`. A timeout is
 reported per task, and a capability refusal is recorded `unsupported` rather
 than `fail` — "cannot reach this" and "got this wrong" are different findings.
 Execution is in-process, so adapters that delegate blocking work must provide
@@ -38,16 +39,18 @@ cancellation-safe task implementations or be wrapped by an external process
 supervisor. Reports include commit SHA, Python/platform details, backend
 capability claims, durations, coverage, and hashes for returned artifacts.
 Unsupported tasks remain in the fixed-matrix denominator with score zero,
-preventing partial implementations from receiving an inflated score.
+preventing partial implementations from receiving an inflated score. `not_run`
+and `environment_blocked` say the task was never attempted and stay out of
+every denominator (matrix v8 below).
 
 ```bash
-python -m benchmarks.run_competitors --list --matrix v7
-python -m benchmarks.run_competitors --server autocad-mcp-pro --backend ezdxf --matrix v7 --json
+python -m benchmarks.run_competitors --list --matrix v8
+python -m benchmarks.run_competitors --server autocad-mcp-pro --backend ezdxf --matrix v8 --timeout 180 --json
 python -m benchmarks.run_competitors --task table_mleader --task hatch_islands --json
 ```
 
-The release-machine ezdxf self-check is **21/21 (100.0)** on the v7 matrix
-(`--matrix v6` … `--matrix v2` reproduce the earlier sets); the published
+The release-machine ezdxf self-check is **31/31 (100.0)** on the v8 matrix
+(`--matrix v7` … `--matrix v2` reproduce the earlier sets); the published
 report is [`results/published/autocad-mcp-pro.json`](results/published/autocad-mcp-pro.json).
 Repository stars and raw tool counts do not contribute to the score. Adapter
 registration lives in `competitors.yaml`.
@@ -139,6 +142,29 @@ The competitor reports carry no result for it.
 
 The competitor reports carry no result for them.
 
+### Matrix v8 (v1.7.0) — measured acceptance, safe execution, the rivals' ground
+
+`tasks_v8.py` keeps the v7 twenty-one unchanged and adds ten. Each runs once in `tests/test_benchmark_v8.py` and once on a broken input, where its gate must fail and say what failed:
+
+| Task | Category | Verified against | Broken input that must fail it |
+|---|---|---|---|
+| `requirements_roundtrip` | verify | a 120 × 80 plate drawn from its part model in mm: four requirements bound by feature tag (Ø20 bore, 90 pitch, bore 51.478 = √(45² + 25²) from c1, exactly four Ø8) pass on the document; the saved file's bore is moved 3 mm inside the outline (counts and extents unchanged — what 1.6's parity compared) and **exactly R3** fails (54.120 = √(48² + 25²)), re-bound from the document and opened alone by a fresh engine | `verify_artifact` replaced by a read of the in-memory document |
+| `cancel_safety` | reliability | a call cancelled while its worker holds the drawing; the next call runs after the worker (trace A, then B) | an `_async` that releases the drawing on cancel |
+| `qa_large_drawing` | reliability | 10,000 lines with CONSTRUCTION lines at position 5,001, after 10,000 and on Layout1, and a duplicate pair drawn backwards: all found by handle, no `scan_incomplete`, no `check_failed` | `MAX_QA_ENTITIES = 5000` |
+| `export_safety` | reliability | a P&ID whose authored line number is `=1+1` (read back off the drawing) and block attributes / an ACADMCP_MECH payload carrying `@SUM(A1:A9)`, `+cmd\|…`, `-2+3`: no CSV cell a spreadsheet would evaluate, only string cells in XLSX, the `-12.5` mass numeric | a `csv_text` without the `'` |
+| `stale_preview` | preview | a `cad_batch` dry run, the line recoloured directly in the document, the apply refused `stale_revision` naming that handle, the line unmoved; a fresh preview applies | a fingerprint that cannot see the edit |
+| `revision_guarded_edit` | preview | beiming183's ground: two guarded edits move the revision forward; a third on the first revision is refused with expected / actual revisions and changes nothing | a revision that never moves |
+| `pid_file_roundtrip` | pid | puran-water's ground: `EXAMPLE_SPEC` drawn, saved, reopened by a fresh engine: same tags, edges, line numbers, instrument index, equipment list, nothing dangling | a save that drops a process line |
+| `foreign_edit_verified` | verify | a raw-ezdxf plate (no record of ours) measured by geometric selectors: only H3 (drawn Ø9) fails; repaired by a `cad_batch` under its fingerprint precondition; the saved file passes all six and a diff shows one changed entity | an `entity_edit_geometry` that does nothing |
+| `damaged_dxf_refusal` | reliability | a truncated DXF and a non-DXF refused with the fault named, the open document kept (same id, revision, entities). 1.7.0 refuses; `recover` is B09, 1.7.1 | an open that silently returns an empty drawing |
+| `dimension_binding` | verify | best-cad's claim: four DIMENSIONs bound to the features at their defpoints; rows measured on geometry (42, 40, 21, Ø40 all pass), the "42" override over 40 and the DIMLFAC 2 over 21 are `dimension_mismatch` findings that block acceptance | a displayed value that believes the geometry |
+
+The v8 tasks stage their inputs inside the headless engine; on the live engine they report `not_run` (the live evidence is the COM harness, `scripts/live`).
+
+**No zero for a task nobody asked.** A rival lane reports a task it has no playbook for as `not_run` (a v2 task keeps the v1.4 verdict, `unsupported`), and a lane whose environment is absent — no cached checkout or venv at the pinned commit with `--no-fetch`, a clone or install that cannot run — as `environment_blocked`. Neither enters the score: `summary.score` is over attempted tasks and is `null` when nothing was attempted. `competitors.yaml` lists best-cad-mcp with `"adapter": null` (COM-only), so its lane is `not_run`. The v8 rival records live in [`results/published/lanes-v8/`](results/published/lanes-v8/); the v1.4 rival reports are not touched.
+
+**Run manifest.** Every report carries `manifest`: the server's commit and whether tracked files were modified (`dirty`), the sha256 of the files that generate the fixtures (`FIXTURE_SOURCES`), `EVALUATOR_VERSION` and the installed versions of ezdxf, fastmcp, mcp, numpy, openpyxl, matplotlib and pywin32.
+
 ## Live competitor lane (v1.4)
 
 Two competitor adapters now execute the exact same task matrix, black-box over
@@ -146,12 +172,12 @@ MCP stdio, against commits pinned in `competitors.yaml`:
 
 | Server | Matrix | Pinned | Score | Pass | Coverage |
 |---|---|---|---:|---:|---:|
-| autocad-mcp-pro (reference) | v7 (21) | 1.6.0 tree | 100.0 | 21/21 | 100% |
+| autocad-mcp-pro (reference) | v8 (31) | 1.7.0 tree | 100.0 | 31/31 | 100% |
 | beiming183-cloud/AutoCAD-MCP | v2 (10) | `11f7c47e` | 50.0 | 5/10 | 50% |
 | puran-water/autocad-mcp | v2 (10) | `95476a33` | 45.0 | 4/10 | 50% |
 
 The competitor rows are the v1.4 runs, unchanged. Read the matrix column
-before the score column: the denominators differ because the eleven tasks
+before the score column: the denominators differ because the twenty-one tasks
 added since v2 came after those runs and have not been put to them.
 
 Method and boundaries:

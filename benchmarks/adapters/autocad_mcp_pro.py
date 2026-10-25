@@ -1,4 +1,4 @@
-"""Reference adapter for this repository, covering the v7 task matrix.
+"""Reference adapter for this repository, covering the v8 task matrix.
 
 Every task verifies against a value worked out independently of the code under
 test — a closed-form area, a count of entities placed on purpose, a token
@@ -8,11 +8,17 @@ with itself is a task that cannot fail.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import copy
+import csv
 import math
+import threading
+from collections import Counter
 from pathlib import Path
 
-from benchmarks.adapters.base import BenchmarkAdapter, TaskResult
-from benchmarks.tasks_v7 import TaskSpec
+from benchmarks.adapters.base import BenchmarkAdapter, EnvironmentBlocked, TaskResult
+from benchmarks.tasks_v8 import NEW_TASKS_V8, TaskSpec
 from engineering.delivery import deliver_drawing
 from engineering.layers import ensure_engineering_layers, ensure_standard_linetypes
 from engineering.refiner import refine_drawing
@@ -49,6 +55,85 @@ ROUNDTRIP_AREAS_MM2: dict[str, float] = {
     "02": 3825.0 * 5750.0,
 }
 
+# ── v8 (v1.7.0) fixtures ──────────────────────────────────────────────────────
+
+#: The v8 tasks reach into the headless engine (its document, its lock, its
+#: files) to stage what an operator or a damaged file would do. On the live
+#: engine they report ``not_run``; the live evidence is the COM harness
+#: (``scripts/live``, spec §6 Task 21), never a zero here.
+HEADLESS_ONLY: frozenset[str] = frozenset(task.task_id for task in NEW_TASKS_V8)
+
+#: ``requirements_roundtrip``: a 120 x 80 plate, a Ø20 bore at (60, 40) and four
+#: Ø8 holes 15 mm in from the corners. Every target below is worked out by hand.
+ROUNDTRIP_PLATE: dict = {
+    "kind": "prismatic",
+    "name": "plate",
+    "material": "steel",
+    "thickness": 10.0,
+    "outline": [[0.0, 0.0], [120.0, 0.0], [120.0, 80.0], [0.0, 80.0]],
+    "features": [
+        {"kind": "hole", "id": "bore", "x": 60.0, "y": 40.0, "diameter": 20.0},
+        {"kind": "hole", "id": "c1", "x": 15.0, "y": 15.0, "diameter": 8.0},
+        {"kind": "hole", "id": "c2", "x": 105.0, "y": 15.0, "diameter": 8.0},
+        {"kind": "hole", "id": "c3", "x": 105.0, "y": 65.0, "diameter": 8.0},
+        {"kind": "hole", "id": "c4", "x": 15.0, "y": 65.0, "diameter": 8.0},
+    ],
+}
+#: How far the saved file's bore is moved: inside the outline, so counts and
+#: extents - all 1.6's delivery parity compared - stay the same.
+ROUNDTRIP_MOVE_MM = 3.0
+
+#: Text that starts like a spreadsheet formula, as a drawing can carry it.
+HOSTILE_TEXT: tuple[str, ...] = ("=1+1", "@SUM(A1:A9)", "+cmd|' /C calc'!A0", "-2+3")
+
+#: ``foreign_edit_verified``: a plate somebody else drew - four holes, H3 drawn
+#: Ø9 where its requirement says Ø10. ``(id, x, y, radius)``.
+FOREIGN_HOLES: tuple[tuple[str, float, float, float], ...] = (
+    ("H1", 20.0, 20.0, 5.0),
+    ("H2", 80.0, 20.0, 5.0),
+    ("H3", 80.0, 40.0, 4.5),
+    ("H4", 20.0, 40.0, 5.0),
+)
+
+
+def _failed(report: dict) -> list[str]:
+    return sorted(row["id"] for row in report["rows"] if row["status"] == "fail")
+
+
+def _measured(report: dict) -> dict[str, float | None]:
+    return {row["id"]: (row.get("measured") or {}).get("value") for row in report["rows"]}
+
+
+def _parity_view(path: Path) -> tuple[Counter, tuple]:
+    """What 1.6's delivery parity compared: entity counts by type and the
+    model-space extents."""
+    import ezdxf
+    from ezdxf import bbox
+
+    msp = ezdxf.readfile(str(path)).modelspace()
+    box = bbox.extents(msp)
+    corners = tuple(round(v, 9) for v in (*box.extmin, *box.extmax)) if box.has_data else ()
+    return Counter(entity.dxftype() for entity in msp), corners
+
+
+def _formula_cells(rows: list[list[str]], filename: str) -> list[dict]:
+    """CSV cells a spreadsheet would evaluate: text starting with a formula lead
+    that is not a plain number."""
+    from engineering.export.cells import FORMULA_PREFIXES, parse_decimal
+
+    found = []
+    for r, row in enumerate(rows):
+        for c, cell in enumerate(row):
+            # parse_decimal hands anything but a plain decimal back unchanged
+            if cell.startswith(FORMULA_PREFIXES) and isinstance(parse_decimal(cell), str):
+                found.append({"file": filename, "row": r, "column": c, "value": cell})
+    return found
+
+
+def _read_csv(path: Path) -> list[list[str]]:
+    with open(path, newline="", encoding="utf-8-sig") as handle:
+        return list(csv.reader(handle))
+
 
 class AutoCADMCPProAdapter(BenchmarkAdapter):
     name = "autocad-mcp-pro"
@@ -64,9 +149,12 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
 
             self.backend = EzdxfBackend()
         elif self.backend_name == "com":
-            from backends.com_backend import ComBackend
+            try:
+                from backends.com_backend import ComBackend
 
-            self.backend = ComBackend()
+                self.backend = ComBackend()
+            except ImportError as exc:  # no pywin32: not a Windows seat
+                raise EnvironmentBlocked(f"the live engine is unavailable here: {exc}") from exc
         else:
             raise ValueError(f"Unknown backend: {self.backend_name}")
         self.artifact_dir = artifact_dir
@@ -86,6 +174,14 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
         await self.backend.drawing_new()
 
     async def run_task(self, task: TaskSpec) -> TaskResult:
+        if self.backend_name != "ezdxf" and task.task_id in HEADLESS_ONLY:
+            return TaskResult(
+                task.task_id,
+                "not_run",
+                0.0,
+                "headless lane only in 1.7.0: the task stages its input inside the ezdxf "
+                "engine; the live evidence is the COM harness (scripts/live)",
+            )
         await self._reset()
         handler = getattr(self, f"_task_{task.task_id}", None)
         if handler is None:
@@ -934,3 +1030,878 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
             strict_critique=False,
         )
         return result.status == "success", {"score": result.score}, [result.manifest_path]
+
+    # ── v8 (v1.7.0) ─────────────────────────────────────────────────────────
+
+    async def _fresh_backend(self):
+        from backends.ezdxf_backend import EzdxfBackend
+
+        backend = EzdxfBackend()
+        await backend.connect()
+        return backend
+
+    @contextlib.asynccontextmanager
+    async def _served(self):
+        """An in-memory MCP client whose server works on THIS adapter's backend,
+        so a task can call the tools the way a client does and still reach the
+        document behind the server's back, the way an operator would. The
+        server's lifespan normally disconnects its backend on exit; here the
+        adapter owns it, so the disconnect is held off until ``cleanup``."""
+        from fastmcp import Client
+
+        import server
+
+        backend = self.backend
+        make, disconnect = server._make_backend, server._disconnect_backend
+
+        async def _make():
+            return backend
+
+        async def _keep(_backend):
+            return None
+
+        server._make_backend, server._disconnect_backend = _make, _keep
+        try:
+            async with Client(server.mcp) as client:
+                yield client
+        finally:
+            server._make_backend, server._disconnect_backend = make, disconnect
+
+    async def _task_requirements_roundtrip(self):
+        """Measured on the document, then on the saved file after it changed.
+
+        Spec §6 Task 20 / roadmap T11. A plate is drawn from its part model in
+        millimetres (``$INSUNITS`` 4 - the verification holds a drawing to its
+        declared unit) and four requirements are bound by feature tag:
+        R1 the bore is Ø20; R2 the c1-c2 pitch is 90; R3 the bore centre is
+        sqrt(45² + 25²) = 51.478 from c1; R4 exactly four Ø8 holes. All four
+        must pass on the document. The bore of the SAVED file is then moved
+        3 mm right - inside the outline, so the entity counts and extents
+        1.6's delivery parity compared do not move - and the file must fail
+        exactly R3 (now sqrt(48² + 25²) = 54.120), both re-bound from the
+        document (``verify_artifact``) and opened on its own by a fresh engine.
+        """
+        import ezdxf
+
+        from engineering.layers import apply_layer_set
+        from engineering.mech.draw import draw_part
+        from engineering.mech.part import build_part
+        from engineering.verification import artifact as artifact_module
+        from engineering.verification.report import verify_requirements
+        from engineering.verification.requirements import parse_requirements
+
+        await self.backend.system_set_variable("INSUNITS", 4)
+        await apply_layer_set(self.backend, "mech")
+        drawn = await draw_part(
+            self.backend,
+            build_part(ROUNDTRIP_PLATE),
+            at=(0.0, 0.0),
+            views=("front",),
+            dimension=False,
+        )
+        part = drawn["part_id"]
+
+        def tag(feature: str) -> dict:
+            return {"kind": "feature_tag", "part": part, "feature": feature, "type": "circle"}
+
+        rs = parse_requirements(
+            {
+                "units": "mm",
+                "items": [
+                    {
+                        "id": "R1",
+                        "quantity": "diameter",
+                        "target": {"nominal": 20.0},
+                        "features": [tag("bore")],
+                        "provenance": "explicit",
+                    },
+                    {
+                        "id": "R2",
+                        "quantity": "distance",
+                        "target": {"nominal": 90.0},
+                        "features": [tag("c1"), tag("c2")],
+                        "provenance": "explicit",
+                    },
+                    {
+                        "id": "R3",
+                        "quantity": "distance",
+                        "target": {"nominal": math.hypot(45.0, 25.0)},
+                        "features": [tag("c1"), tag("bore")],
+                        "provenance": "explicit",
+                    },
+                    {
+                        "id": "R4",
+                        "quantity": "count",
+                        "target": {"exact": 4},
+                        "features": [
+                            {
+                                "kind": "predicate",
+                                "type": "circle",
+                                "radius_min": 3.999,
+                                "radius_max": 4.001,
+                            }
+                        ],
+                        "provenance": "explicit",
+                    },
+                ],
+            }
+        )
+        on_document = await verify_requirements(self.backend, rs)
+
+        saved = self.artifact_dir / "requirements_roundtrip.dxf"
+        await self.backend.drawing_save_as(str(saved))
+        parity_before = _parity_view(saved)
+        doc = ezdxf.readfile(str(saved))
+        bores = [c for c in doc.modelspace().query("CIRCLE") if abs(c.dxf.radius - 10.0) < 1e-9]
+        for circle in bores:
+            centre = circle.dxf.center
+            circle.dxf.center = (centre.x + ROUNDTRIP_MOVE_MM, centre.y, centre.z)
+        doc.saveas(str(saved))
+        parity_blind = _parity_view(saved) == parity_before
+
+        on_artifact = await artifact_module.verify_artifact(str(saved), rs, backend=self.backend)
+        fresh = await self._fresh_backend()
+        try:
+            await fresh.drawing_open(str(saved))
+            reopened = await verify_requirements(fresh, rs)
+        finally:
+            await fresh.disconnect()
+
+        passed = (
+            on_document["status"] == "pass"
+            and on_document["counts"]["pass"] == 4
+            and len(bores) == 1
+            and parity_blind
+            and on_artifact["status"] == "fail"
+            and _failed(on_artifact) == ["R3"]
+            and _failed(reopened) == ["R3"]
+        )
+        return (
+            passed,
+            {
+                "document": {"status": on_document["status"], "counts": on_document["counts"]},
+                "artifact": {
+                    "status": on_artifact["status"],
+                    "counts": on_artifact["counts"],
+                    "failed": _failed(on_artifact),
+                    "measured": _measured(on_artifact),
+                    "handles_stable": (on_artifact.get("rebinding") or {}).get("handles_stable"),
+                },
+                "reopened": {"status": reopened["status"], "failed": _failed(reopened)},
+                "bores_moved": len(bores),
+                "moved_mm": ROUNDTRIP_MOVE_MM,
+                "parity_blind": parity_blind,
+            },
+            [str(saved)],
+        )
+
+    async def _task_cancel_safety(self):
+        """A cancelled call's worker keeps the drawing until it ends (B01).
+
+        The first call's worker blocks on an event; the awaiting task is
+        cancelled - what an MCP client's Esc does - and a second call starts at
+        once. The second must not run while the first worker is still inside
+        the drawing: the trace is A then B. Afterwards the document answers.
+        """
+        entered, release = threading.Event(), threading.Event()
+        trace: list[str] = []
+
+        def held():
+            entered.set()
+            release.wait(10)
+            trace.append("A:end")
+
+        overlapped = None
+        try:
+            first = asyncio.ensure_future(self.backend._async(held))
+            if not await asyncio.to_thread(entered.wait, 10):
+                return False, {"error": "the first call never started"}, []
+            first.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await first
+            second = asyncio.ensure_future(self.backend._async(lambda: trace.append("B:run")))
+            await asyncio.sleep(0.3)
+            overlapped = "B:run" in trace  # B ran while A's worker was still blocked
+        finally:
+            release.set()
+        await asyncio.wait_for(second, 10)
+        line = await self.backend.entity_create_line(0, 0, 10, 0)
+        count = (await self.backend.drawing_info()).entity_count
+        passed = overlapped is False and trace == ["A:end", "B:run"] and count == 1
+        return (
+            passed,
+            {
+                "trace": trace,
+                "overlapped": overlapped,
+                "entity_count_after": count,
+                "line": line.handle,
+            },
+            [],
+        )
+
+    async def _task_qa_large_drawing(self):
+        """Every offender of a 10,000-line drawing, by handle (B02).
+
+        1.6's checks read the first 5,000 entities of the current space and
+        reported a crash as a clean result. Offenders are placed on purpose: a
+        CONSTRUCTION line as the 5,001st entity, another after the 10,000th, one
+        on a paper layout, and a duplicate LINE pair (one drawn backwards) last.
+        Every one must come back by handle with no ``scan_incomplete`` and no
+        ``check_failed``. The longest event-loop stall is reported, not gated.
+        """
+        import time
+
+        from engineering.critique import CHECK_FAILED, SCAN_INCOMPLETE, run_critique
+
+        await ensure_engineering_layers(self.backend)
+        doc = self.backend._doc
+        msp = doc.modelspace()
+        construction: dict[str, str] = {}
+        for index in range(1, 10_001):
+            layer = "CONSTRUCTION" if index == 5_001 else "GEOMETRY"
+            y = 10.0 * index
+            line = msp.add_line((0.0, y), (100.0, y), dxfattribs={"layer": layer})
+            if index == 5_001:
+                construction["at_5001"] = line.dxf.handle
+        construction["after_10000"] = msp.add_line(
+            (-300.0, 0.0), (-200.0, 0.0), dxfattribs={"layer": "CONSTRUCTION"}
+        ).dxf.handle
+        construction["paper"] = (
+            doc.layouts.get("Layout1")
+            .add_line((0.0, 0.0), (50.0, 0.0), dxfattribs={"layer": "CONSTRUCTION"})
+            .dxf.handle
+        )
+        twin_a = msp.add_line((500.0, -50.0), (600.0, -50.0), dxfattribs={"layer": "GEOMETRY"})
+        twin_b = msp.add_line((600.0, -50.0), (500.0, -50.0), dxfattribs={"layer": "GEOMETRY"})
+        duplicate = sorted([twin_a.dxf.handle, twin_b.dxf.handle])
+
+        stalls: list[float] = []
+        running = True
+
+        async def ticker():
+            last = time.perf_counter()
+            while running:
+                await asyncio.sleep(0.02)
+                now = time.perf_counter()
+                stalls.append(now - last)
+                last = now
+
+        tick = asyncio.ensure_future(ticker())
+        started = time.perf_counter()
+        try:
+            issues = await run_critique(self.backend, ["construction_left", "duplicate_entities"])
+        finally:
+            running = False
+            await tick
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+
+        found_construction = {
+            handle
+            for issue in issues
+            if issue.focus == "construction_left" and not (issue.detail or {}).get("code")
+            for handle in issue.handles
+        }
+        found_duplicates = [
+            sorted(issue.handles)
+            for issue in issues
+            if issue.focus == "duplicate_entities" and not (issue.detail or {}).get("code")
+        ]
+        incomplete = sorted(
+            {
+                str((issue.detail or {}).get("code"))
+                for issue in issues
+                if (issue.detail or {}).get("code") in (SCAN_INCOMPLETE, CHECK_FAILED)
+            }
+        )
+        missing = [
+            name for name, handle in construction.items() if handle not in found_construction
+        ]
+        if duplicate not in found_duplicates:
+            missing.append("duplicate_pair")
+        passed = not missing and not incomplete
+        return (
+            passed,
+            {
+                "entities": len(msp) + len(doc.layouts.get("Layout1")),
+                "construction": construction,
+                "duplicate": duplicate,
+                "missing": missing,
+                "incomplete": incomplete,
+                "elapsed_ms": round(elapsed_ms, 1),
+                "max_loop_stall_ms": round(max(stalls, default=0.0) * 1000.0, 1),
+            },
+            [],
+        )
+
+    async def _task_export_safety(self):
+        """Drawing text that starts like a formula leaves as text (B03).
+
+        Two exporters, fed from the drawing rather than from rows typed beside
+        it: the P&ID line list of a sheet whose authored line number is
+        ``=1+1`` (read back off the drawing by the graph reader), and the parts
+        list read off block references whose attributes and ACADMCP_MECH payload
+        carry the hostile texts and a genuine ``-12.5`` mass. In CSV no cell a
+        spreadsheet would evaluate may remain; in XLSX every text cell is a
+        string cell and the mass a numeric one.
+        """
+        from openpyxl import load_workbook
+
+        from engineering.layers import apply_layer_set
+        from engineering.mech.xdata import APP_ID, PAYLOAD_VERSION, to_values
+        from engineering.pid.deliverables import LINE_COLUMNS, line_list
+        from engineering.pid.deliverables import write_csv as write_pid_csv
+        from engineering.pid.spec import EXAMPLE_SPEC, run_spec
+        from engineering.sheet.bom import extract_records, rows_from_records
+        from engineering.sheet.extract import write_rows
+
+        out = self.artifact_dir / "export_safety"
+        out.mkdir(parents=True, exist_ok=True)
+
+        # 1. the P&ID line list: the authored number is read back off the drawing
+        await apply_layer_set(self.backend, "pid")
+        spec = copy.deepcopy(EXAMPLE_SPEC)
+        for line in spec["lines"]:
+            if line.get("number"):
+                line["number"] = HOSTILE_TEXT[0]
+        drawn = await run_spec(self.backend, spec)
+        lines = line_list(drawn["graph"])
+        lines_csv = out / "lines.csv"
+        write_pid_csv(lines, str(lines_csv), LINE_COLUMNS)
+        line_rows = _read_csv(lines_csv)
+        numbers = [row[LINE_COLUMNS.index("line_number")] for row in line_rows[1:]]
+        pid_ok = numbers.count("'" + HOSTILE_TEXT[0]) == 2
+
+        # 2. the parts list: block attributes and a std_part payload
+        await self.backend.drawing_new()
+        await ensure_engineering_layers(self.backend)
+        await self.backend.block_define(
+            "BENCH_PART",
+            [{"type": "line", "x1": 0, "y1": 0, "x2": 10, "y2": 0}],
+            [
+                {"tag": "DESIGNATION", "x": 0, "y": 3, "height": 2.5},
+                {"tag": "MATERIAL", "x": 0, "y": 6, "height": 2.5},
+            ],
+        )
+        for index, text in enumerate(HOSTILE_TEXT[:3]):
+            await self.backend.block_insert(
+                "BENCH_PART",
+                20.0 * index,
+                0.0,
+                attributes={"DESIGNATION": text, "MATERIAL": HOSTILE_TEXT[3]},
+            )
+        payload_ref = await self.backend.block_insert("BENCH_PART", 100.0, 0.0)
+        payload = {
+            "v": PAYLOAD_VERSION,
+            "kind": "std_part",
+            "designation": "@NOW()",
+            "standard": "-ISO 4014",
+            "qty": 1,
+            "material": "=HYPERLINK(1)",
+            "mass": "-12.5",
+        }
+        await self.backend.entity_set_xdata(payload_ref.handle, APP_ID, to_values(payload))
+        columns = ("item", "qty", "designation", "standard", "material", "mass")
+        rows = rows_from_records(await extract_records(self.backend), columns=columns)
+        bom_csv, bom_xlsx = out / "bom.csv", out / "bom.xlsx"
+        write_rows(rows, str(bom_csv), columns=columns, fmt="csv")
+        write_rows(rows, str(bom_xlsx), columns=columns, fmt="xlsx")
+        bom_rows = _read_csv(bom_csv)
+        masses = [row[columns.index("mass")] for row in bom_rows[1:]]
+        bom_csv_ok = "-12.5" in masses and len(bom_rows) == 1 + len(rows) == 5
+
+        sheet = load_workbook(bom_xlsx).active
+        formula_xlsx = []
+        texts = set()
+        numeric_mass = None
+        for row in sheet.iter_rows(min_row=2):
+            for cell in row:
+                if cell.data_type == "f":
+                    formula_xlsx.append({"cell": cell.coordinate, "value": cell.value})
+                elif cell.data_type == "s":
+                    texts.add(cell.value)
+            mass = row[columns.index("mass")]
+            if mass.data_type == "n" and mass.value == -12.5:
+                numeric_mass = mass.value
+        wanted = {*HOSTILE_TEXT, "@NOW()", "-ISO 4014", "=HYPERLINK(1)"}
+        xlsx_ok = not formula_xlsx and wanted <= texts and numeric_mass == -12.5
+
+        formula_cells = _formula_cells(line_rows, "lines.csv") + _formula_cells(bom_rows, "bom.csv")
+        passed = pid_ok and bom_csv_ok and xlsx_ok and not formula_cells
+        return (
+            passed,
+            {
+                "pid_csv": {"ok": pid_ok, "line_numbers": numbers},
+                "bom_csv": {"ok": bom_csv_ok, "rows": len(bom_rows) - 1, "masses": masses},
+                "bom_xlsx": {
+                    "ok": xlsx_ok,
+                    "formula_cells": formula_xlsx,
+                    "mass": numeric_mass,
+                    "texts_missing": sorted(wanted - texts),
+                },
+                "formula_cells": formula_cells,
+            },
+            [str(lines_csv), str(bom_csv), str(bom_xlsx)],
+        )
+
+    async def _task_stale_preview(self):
+        """A preview, an edit behind the server's back, a refused apply (Task 12).
+
+        Through the real ``cad_batch`` tool: a dry run fingerprints the line the
+        batch would move; the line's colour is then changed directly in the
+        document, as an operator or a second program would - the content
+        revision cannot see that, the exact fingerprint does. The apply carrying
+        the preview must be refused ``stale_revision`` naming that handle, and
+        the line must not move. A fresh preview then applies.
+        """
+        line = await self.backend.entity_create_line(0, 0, 10, 0)
+        handle = line.handle
+        steps = [{"tool": "entity_move", "args": {"handle": handle, "dx": 5.0, "dy": 0.0}}]
+
+        def start() -> tuple[float, float]:
+            point = self.backend._doc.entitydb[handle].dxf.start
+            return (point.x, point.y)
+
+        async with self._served() as client:
+            dry = await client.call_tool("cad_batch", {"steps": steps, "dry_run": True})
+            preview = dry.structured_content["preview"]
+            self.backend._doc.entitydb[handle].dxf.color = 5  # behind the server's back
+            stale = await client.call_tool(
+                "cad_batch",
+                {
+                    "steps": steps,
+                    "expected_revision": preview["revision"],
+                    "preconditions": preview["preconditions"],
+                },
+                raise_on_error=False,
+            )
+            payload = stale.structured_content or {}
+            refused_kind = payload.get("kind") if stale.is_error else None
+            changed = [row.get("handle") for row in payload.get("changed") or []]
+            after_stale = start()
+            moved_over = after_stale != (0.0, 0.0)
+
+            again = await client.call_tool("cad_batch", {"steps": steps, "dry_run": True})
+            fresh = again.structured_content["preview"]
+            applied = await client.call_tool(
+                "cad_batch",
+                {
+                    "steps": steps,
+                    "expected_revision": fresh["revision"],
+                    "preconditions": fresh["preconditions"],
+                },
+                raise_on_error=False,
+            )
+            applied_ok = not applied.is_error and (applied.structured_content or {}).get("ok")
+        final = start()
+        passed = (
+            refused_kind == "stale_revision"
+            and changed == [handle]
+            and not moved_over
+            and bool(applied_ok)
+            and final == (5.0, 0.0)
+        )
+        return (
+            passed,
+            {
+                "refused_kind": refused_kind,
+                "changed_handles": changed,
+                "moved_over_a_stale_preview": moved_over,
+                "fresh_apply_ok": bool(applied_ok),
+                "start_after_the_refused_apply": list(after_stale),
+                "final_start": list(final),
+            },
+            [],
+        )
+
+    async def _task_revision_guarded_edit(self):
+        """beiming183's ground: every edit names the revision it was planned on.
+
+        Two ``cad_batch`` edits, each carrying the revision read before it,
+        must each move the revision forward; a third carrying the FIRST
+        revision - planned before the other two landed - must be refused
+        ``stale_revision`` with the expected and actual revisions, and change
+        nothing: neither the line nor the revision moves.
+        """
+        line = await self.backend.entity_create_line(0, 0, 10, 0)
+        handle = line.handle
+
+        def revision() -> int:
+            return int(self.backend.document_identity()["revision"])
+
+        def start() -> tuple[float, float]:
+            point = self.backend._doc.entitydb[handle].dxf.start
+            return (point.x, point.y)
+
+        steps = [{"tool": "entity_move", "args": {"handle": handle, "dx": 1.0, "dy": 0.0}}]
+        revisions = [revision()]
+        async with self._served() as client:
+            oks = []
+            for _ in range(2):
+                result = await client.call_tool(
+                    "cad_batch",
+                    {"steps": steps, "expected_revision": revisions[-1]},
+                    raise_on_error=False,
+                )
+                oks.append(not result.is_error and (result.structured_content or {}).get("ok"))
+                revisions.append(revision())
+            before = start()
+            stale = await client.call_tool(
+                "cad_batch",
+                {"steps": steps, "expected_revision": revisions[0]},
+                raise_on_error=False,
+            )
+            payload = stale.structured_content or {}
+        stale_refused = bool(stale.is_error) and payload.get("kind") == "stale_revision"
+        unchanged = start() == before and revision() == revisions[-1]
+        forward = all(b > a for a, b in zip(revisions, revisions[1:], strict=False))
+        passed = (
+            all(oks)
+            and forward
+            and stale_refused
+            and payload.get("expected_revision") == revisions[0]
+            and payload.get("actual_revision") == revisions[-1]
+            and unchanged
+            and before == (2.0, 0.0)
+        )
+        return (
+            passed,
+            {
+                "revisions": revisions,
+                "edits_applied": [bool(ok) for ok in oks],
+                "stale_refused": stale_refused,
+                "refusal": {
+                    key: payload.get(key)
+                    for key in ("kind", "expected_revision", "actual_revision")
+                },
+                "unchanged_after_refusal": unchanged,
+                "start_after_edits": list(before),
+            },
+            [],
+        )
+
+    async def _task_pid_file_roundtrip(self):
+        """puran-water's ground: a P&ID sheet survives its own file.
+
+        ``engineering/pid/spec.py::EXAMPLE_SPEC`` is drawn, saved as DXF and
+        opened by a FRESH engine, whose reader never saw the spec or the first
+        engine. The graph read off the file must equal the graph read off the
+        drawing it came from: the same tags, the same edges (from, to, class),
+        the same line numbers, the same instrument index and equipment list,
+        nothing dangling.
+        """
+        from engineering.layers import apply_layer_set
+        from engineering.pid.deliverables import equipment_list, instrument_index, line_list
+        from engineering.pid.graph import build_graph
+        from engineering.pid.spec import EXAMPLE_SPEC, run_spec
+
+        await apply_layer_set(self.backend, "pid")
+        drawn = await run_spec(self.backend, EXAMPLE_SPEC)
+        saved = self.artifact_dir / "pid_file_roundtrip.dxf"
+        await self.backend.drawing_save_as(str(saved))
+        fresh = await self._fresh_backend()
+        try:
+            await fresh.drawing_open(str(saved))
+            read = await build_graph(fresh)
+        finally:
+            await fresh.disconnect()
+
+        def tags(graph):
+            return sorted(str(node.get("tag") or "") for node in graph["nodes"])
+
+        def edges(graph):
+            return sorted(
+                (str(row["from_tag"]), str(row["to_tag"]), str(row["line_class"]))
+                for row in line_list(graph)
+            )
+
+        def numbers(graph):
+            return sorted(str(row["line_number"]) for row in line_list(graph))
+
+        def index(graph):
+            return [(row["tag"], row.get("connected_to")) for row in instrument_index(graph)]
+
+        def equipment(graph):
+            return [row.get("tag") for row in equipment_list(graph)]
+
+        original = drawn["graph"]
+        result = {
+            "nodes": len(read["nodes"]),
+            "edges": len(read["edges"]),
+            "dangling": read["stats"]["dangling"],
+            "tags_equal": tags(read) == tags(original),
+            "edges_equal": edges(read) == edges(original),
+            "line_numbers_equal": numbers(read) == numbers(original),
+            "index_equal": index(read) == index(original),
+            "equipment_equal": equipment(read) == equipment(original),
+        }
+        passed = (
+            result["nodes"] == len(original["nodes"]) == 5
+            and result["edges"] == len(original["edges"]) == 4
+            and result["dangling"] == 0
+            and all(result[key] for key in result if key.endswith("_equal"))
+        )
+        return passed, result, [str(saved)]
+
+    async def _task_foreign_edit_verified(self):
+        """A drawing somebody else made: measured, repaired, accepted on file.
+
+        The plate is written with raw ezdxf - no record of ours, its own
+        handles - and opened. Requirements select by geometry (a region and a
+        size window, since there are no tags): four Ø10 holes, exactly four
+        holes, a 60 pitch. H3 is drawn Ø9 and must be the one failure. The
+        repair is a ``cad_batch`` ``entity_edit_geometry`` applied under the
+        dry run's fingerprint precondition; the saved file must then pass every
+        requirement, and a diff against the original must show exactly one
+        changed entity, nothing added or removed.
+        """
+        import ezdxf
+
+        from engineering.understand.diff import diff_snapshots
+        from engineering.understand.snapshot import read_snapshot
+        from engineering.verification.artifact import verify_artifact
+        from engineering.verification.report import verify_requirements
+        from engineering.verification.requirements import parse_requirements
+
+        original = self.artifact_dir / "foreign_plate.dxf"
+        doc = ezdxf.new("R2010", units=4)
+        msp = doc.modelspace()
+        msp.add_lwpolyline([(0, 0), (100, 0), (100, 60), (0, 60)], close=True)
+        for _name, x, y, radius in FOREIGN_HOLES:
+            msp.add_circle((x, y), radius)
+        msp.add_text("PLATE 100 x 60", height=2.5).set_placement((5, 52))
+        doc.saveas(str(original))
+        await self.backend.drawing_open(str(original))
+
+        def hole(x: float, y: float) -> dict:
+            return {
+                "kind": "predicate",
+                "type": "circle",
+                "region": [x - 6.0, y - 6.0, x + 6.0, y + 6.0],
+                "radius_min": 3.0,
+                "radius_max": 7.0,
+            }
+
+        items = [
+            {
+                "id": name,
+                "quantity": "diameter",
+                "target": {"nominal": 10.0},
+                "features": [hole(x, y)],
+                "provenance": "explicit",
+            }
+            for name, x, y, _radius in FOREIGN_HOLES
+        ]
+        items.append(
+            {
+                "id": "N",
+                "quantity": "count",
+                "target": {"exact": 4},
+                "features": [
+                    {"kind": "predicate", "type": "circle", "radius_min": 3.0, "radius_max": 7.0}
+                ],
+                "provenance": "explicit",
+            }
+        )
+        items.append(
+            {
+                "id": "P",
+                "quantity": "distance",
+                "target": {"nominal": 60.0},
+                "features": [hole(20.0, 20.0), hole(80.0, 20.0)],
+                "provenance": "explicit",
+            }
+        )
+        rs = parse_requirements({"units": "mm", "items": items})
+        before = await verify_requirements(self.backend, rs)
+        failing = [row for row in before["rows"] if row["status"] == "fail"]
+        handle = failing[0]["handles"][0] if len(failing) == 1 and failing[0]["handles"] else None
+
+        applied_ok = False
+        if handle is not None:
+            steps = [{"tool": "entity_edit_geometry", "args": {"handle": handle, "radius": 5.0}}]
+            async with self._served() as client:
+                dry = await client.call_tool("cad_batch", {"steps": steps, "dry_run": True})
+                preview = dry.structured_content["preview"]
+                result = await client.call_tool(
+                    "cad_batch",
+                    {
+                        "steps": steps,
+                        "expected_revision": preview["revision"],
+                        "preconditions": preview["preconditions"],
+                    },
+                    raise_on_error=False,
+                )
+                applied_ok = bool(
+                    not result.is_error and (result.structured_content or {}).get("ok")
+                )
+        repaired = self.artifact_dir / "foreign_plate_repaired.dxf"
+        await self.backend.drawing_save_as(str(repaired))
+        after = await verify_artifact(str(repaired), rs, backend=self.backend)
+        diff = diff_snapshots(read_snapshot(str(original)), read_snapshot(str(repaired)))
+        counts = {key: len(diff[key]) for key in ("changed", "added", "removed")}
+        passed = (
+            _failed(before) == ["H3"]
+            and applied_ok
+            and after["status"] == "pass"
+            and after["counts"]["pass"] == len(items)
+            and counts == {"changed": 1, "added": 0, "removed": 0}
+        )
+        return (
+            passed,
+            {
+                "before": {"status": before["status"], "failed": _failed(before)},
+                "repaired_handle": handle,
+                "precondition_held": applied_ok,
+                "after": {
+                    "status": after["status"],
+                    "failed": _failed(after),
+                    "measured": _measured(after),
+                },
+                "diff": counts,
+            },
+            [str(original), str(repaired)],
+        )
+
+    async def _task_damaged_dxf_refusal(self):
+        """A damaged file is refused by name and the open work is kept.
+
+        1.7.0 does not recover a damaged DXF (``ezdxf.recover`` is B09, 1.7.1);
+        what it must do is refuse honestly. A valid 50-line DXF is cut in half
+        (no ENDSEC, no EOF) and a text file is given a .dxf name. Opening each
+        must raise an error that names the fault (DXF in its text), and the
+        document that was open - one line - must still be the current document,
+        unchanged: never an empty or half-read drawing reported as opened.
+        """
+        import ezdxf
+
+        await self.backend.entity_create_line(0, 0, 10, 0)
+        identity = dict(self.backend.document_identity())
+        count = (await self.backend.drawing_info()).entity_count
+
+        intact = self.artifact_dir / "intact.dxf"
+        doc = ezdxf.new("R2010", units=4)
+        for index in range(50):
+            doc.modelspace().add_line((0, index), (10, index))
+        doc.saveas(str(intact))
+        data = intact.read_bytes()
+        truncated = self.artifact_dir / "truncated.dxf"
+        truncated.write_bytes(data[: len(data) // 2])
+        not_dxf = self.artifact_dir / "not_a_drawing.dxf"
+        not_dxf.write_bytes(b"this is not a drawing\n" * 8)
+
+        cases: dict[str, dict] = {}
+        for name, path in (("truncated", truncated), ("not_dxf", not_dxf)):
+            try:
+                await self.backend.drawing_open(str(path))
+                cases[name] = {"refused": False, "error": None, "named": False}
+            except Exception as exc:  # noqa: BLE001 - the refusal is the measurement
+                error = f"{type(exc).__name__}: {exc}"
+                cases[name] = {"refused": True, "error": error, "named": "DXF" in error.upper()}
+        identity_after = dict(self.backend.document_identity())
+        count_after = (await self.backend.drawing_info()).entity_count
+        document_kept = (
+            identity_after.get("document_id") == identity.get("document_id")
+            and identity_after.get("revision") == identity.get("revision")
+            and count_after == count == 1
+        )
+        passed = all(case["refused"] and case["named"] for case in cases.values()) and document_kept
+        return (
+            passed,
+            {
+                "cases": cases,
+                "document_kept": document_kept,
+                "entity_count_after": count_after,
+                "recover": "not in 1.7.0 (B09, 1.7.1)",
+            },
+            [str(truncated), str(not_dxf)],
+        )
+
+    async def _task_dimension_binding(self):
+        """best-cad-mcp's claim: a dimension bound to what it measures.
+
+        Four DIMENSIONs over isolated features, written with raw ezdxf: D1
+        honest over 42; D2 over 40 with its text overridden to "42"; D3 over 21
+        with DIMLFAC 2 (the sheet shows 42); D4 an honest Ø40. Each requirement
+        names its DIMENSION; the row is measured on the geometry the defpoints
+        land on (42, 40, 21, 40 - all pass), and D2 and D3 are
+        ``dimension_mismatch`` findings that block acceptance: the annotation
+        is judged separately from the geometry and the lie is visible.
+        """
+        import ezdxf
+
+        from engineering.verification.report import verify_requirements
+        from engineering.verification.requirements import parse_requirements
+
+        doc = ezdxf.new("R2010", setup=True, units=4)
+        msp = doc.modelspace()
+        handles: dict[str, str] = {}
+
+        def linear(name, x0, width, **kw):
+            msp.add_line((x0, 0), (x0, 20))
+            msp.add_line((x0 + width, 0), (x0 + width, 20))
+            dim = msp.add_linear_dim(
+                base=(x0, 30), p1=(x0, 0), p2=(x0 + width, 0), dimstyle="Standard", **kw
+            )
+            dim.render()
+            handles[name] = dim.dimension.dxf.handle
+
+        linear("D1", 0.0, 42.0)
+        linear("D2", 100.0, 40.0, text="42")
+        linear("D3", 200.0, 21.0, override={"dimlfac": 2.0})
+        msp.add_circle((350, 10), 20)
+        # "Standard", not ezdxf's EZ_RADIUS: that style carries DIMLFAC 100 (a
+        # metre drawing dimensioned in cm), which is exactly the lie D3 stages
+        diameter = msp.add_diameter_dim(center=(350, 10), radius=20, angle=0, dimstyle="Standard")
+        diameter.render()
+        handles["D4"] = diameter.dimension.dxf.handle
+        path = self.artifact_dir / "dimension_binding.dxf"
+        doc.saveas(str(path))
+        await self.backend.drawing_open(str(path))
+
+        targets = {"D1": ("distance", 42.0), "D2": ("distance", 40.0)}
+        targets.update({"D3": ("distance", 21.0), "D4": ("diameter", 40.0)})
+        rs = parse_requirements(
+            {
+                "units": "mm",
+                "items": [
+                    {
+                        "id": name,
+                        "quantity": quantity,
+                        "target": {"nominal": nominal},
+                        "features": [{"kind": "dimension", "handle": handles[name]}],
+                        "provenance": "explicit",
+                    }
+                    for name, (quantity, nominal) in targets.items()
+                ],
+            }
+        )
+        report = await verify_requirements(self.backend, rs)
+        rows = {
+            row["id"]: {
+                "status": row["status"],
+                "measured": (row.get("measured") or {}).get("value"),
+                "displayed": (row.get("dimension") or {}).get("displayed_value"),
+                "dimension_findings": (row.get("dimension") or {}).get("findings"),
+            }
+            for row in report["rows"]
+        }
+        findings = {
+            str(finding.get("requirement")): str(finding.get("kind"))
+            for finding in report.get("findings") or []
+        }
+        geometry_ok = all(rows[name]["status"] == "pass" for name in targets) and all(
+            rows[name]["measured"] is not None and abs(rows[name]["measured"] - nominal) < 1e-9
+            for name, (_quantity, nominal) in targets.items()
+        )
+        passed = (
+            geometry_ok
+            and findings == {"D2": "dimension_mismatch", "D3": "dimension_mismatch"}
+            and rows["D2"]["displayed"] == 42.0
+            and rows["D3"]["displayed"] == 42.0
+            and report["accepted"] is False
+        )
+        return (
+            passed,
+            {"rows": rows, "findings": findings, "accepted": report["accepted"]},
+            [str(path)],
+        )

@@ -7,8 +7,10 @@ response payload — every task that claims to have produced geometry must
 save a DXF which the harness re-opens with ezdxf and inspects itself.
 
 Subclasses provide the launch runtime (via ``benchmarks.competitors_env``)
-and per-task playbooks named ``_task_<task_id>``; anything unmapped is
-reported as ``unsupported`` (coverage-aware scoring already accounts for it).
+and per-task playbooks named ``_task_<task_id>``; an unmapped v2 task is
+reported as ``unsupported`` (the v1.4 verdict: no documented equivalent), an
+unmapped later task as ``not_run`` (never asked), and a lane whose environment
+is absent as ``environment_blocked`` - neither of the last two is ever a zero.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -23,12 +26,17 @@ import ezdxf
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 
-from benchmarks.adapters.base import BenchmarkAdapter, TaskResult
+from benchmarks.adapters.base import BenchmarkAdapter, EnvironmentBlocked, TaskResult
 from benchmarks.competitors_env import CompetitorRuntime, CompetitorSpec, ensure_competitor
-from benchmarks.tasks_v2 import TaskSpec
+from benchmarks.tasks_v2 import TASKS_V2, TaskSpec
 
 CALL_TIMEOUT_SECONDS = 15.0
 WARMUP_TIMEOUT_SECONDS = 90.0
+
+#: The ten tasks the v1.4 competitor runs were asked. A missing playbook for one
+#: of them is the v1.4 verdict, ``unsupported`` (no documented equivalent); a
+#: missing playbook for anything later is ``not_run``.
+_V2_TASK_IDS = frozenset(task.task_id for task in TASKS_V2)
 
 
 class ToolCallFailed(RuntimeError):
@@ -72,6 +80,8 @@ class McpStdioAdapter(BenchmarkAdapter):
         self.backend_name = backend
         self.artifact_dir = Path()
         self.runtime: CompetitorRuntime | None = None
+        #: where the pinned sources and venv are cached (None: the default)
+        self.cache_root: Path | None = None
         self._client: Client | None = None
         self.tool_names: set[str] = set()
 
@@ -83,7 +93,16 @@ class McpStdioAdapter(BenchmarkAdapter):
 
     async def setup(self, artifact_dir: Path) -> None:
         self.artifact_dir = Path(artifact_dir)
-        self.runtime = ensure_competitor(self.spec)
+        try:
+            self.runtime = ensure_competitor(self.spec, self.cache_root, fetch=self.fetch)
+        except EnvironmentBlocked:
+            raise
+        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            # a clone or an install that cannot run here (no git, no network, a
+            # build that fails) is an absent environment, not a server failure
+            raise EnvironmentBlocked(
+                f"{self.spec.competitor_id}: the environment could not be prepared ({exc})"
+            ) from exc
         env = {**self.runtime.env, **self.extra_launch_env()}
         env.setdefault("PYTHONIOENCODING", "utf-8")
         transport = StdioTransport(
@@ -186,6 +205,16 @@ class McpStdioAdapter(BenchmarkAdapter):
 
     async def run_task(self, task: TaskSpec) -> TaskResult:
         handler = getattr(self, f"_task_{task.task_id}", None)
+        if handler is None and task.task_id not in _V2_TASK_IDS:
+            # Tasks added after v2 were never put to the competitors: no
+            # playbook was written from their documentation, so there is no
+            # finding to report - not_run, never a zero (spec §6 Task 20).
+            return TaskResult(
+                task.task_id,
+                "not_run",
+                0.0,
+                f"{self.name} was never asked this task: no playbook exists for it",
+            )
         if handler is None:
             return TaskResult(
                 task.task_id,

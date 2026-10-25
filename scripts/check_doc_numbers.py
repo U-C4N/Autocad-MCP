@@ -68,6 +68,15 @@ def _collected_tests() -> int:
     return int(match.group(1))
 
 
+def matrix_tasks() -> int:
+    """How many tasks the current benchmark matrix holds (``DEFAULT_MATRIX``,
+    v8 in 1.7.0) - the number CLAUDE.md quotes for "the current set"."""
+    sys.path.insert(0, str(ROOT))
+    from benchmarks.tasks_v8 import DEFAULT_MATRIX, MATRICES
+
+    return len(MATRICES[DEFAULT_MATRIX])
+
+
 def derived() -> dict[str, object]:
     """Every number a document is allowed to quote, computed from the tree."""
     sys.path.insert(0, str(ROOT))
@@ -79,7 +88,6 @@ def derived() -> dict[str, object]:
     }
 
     from benchmarks import correctness_suite
-    from benchmarks.tasks_v7 import TASKS_V7
 
     return {
         "collected_tests": _collected_tests(),
@@ -94,7 +102,7 @@ def derived() -> dict[str, object]:
         "ab_fixed": ab["fixed"],
         "ab_regressed": ab["regressed"],
         "suite_checks": len(correctness_suite.CHECKS),
-        "matrix_tasks": len(TASKS_V7),
+        "matrix_tasks": matrix_tasks(),
         "perf_ms": perf,
     }
 
