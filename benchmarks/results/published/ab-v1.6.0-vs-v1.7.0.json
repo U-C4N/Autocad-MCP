@@ -1,12 +1,12 @@
 {
   "summary": {
     "baseline_ref": "v1.6.0",
-    "total": 52,
+    "total": 61,
     "old_pass": 48,
-    "new_pass": 52,
-    "old_pct": 92.3,
+    "new_pass": 61,
+    "old_pct": 78.7,
     "new_pct": 100.0,
-    "fixed": 4,
+    "fixed": 13,
     "regressed": 0
   },
   "rows": [
@@ -320,6 +320,60 @@
       "check": "spec_refuses_non_finite",
       "category": "Reliability",
       "old": "fail",
+      "new": "pass"
+    },
+    {
+      "check": "verify_t05_stale_preview_no_silent_mutation",
+      "category": "Verification",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "verify_t09_diameter_under_its_label",
+      "category": "Verification",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "verify_t10_moved_circle_against_its_model",
+      "category": "Verification",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "verify_t11_inner_hole_moved_caught_on_reopen",
+      "category": "Verification",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "verify_t12_equal_holes_ambiguous",
+      "category": "Verification",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "verify_t13_hole_count_cardinality",
+      "category": "Verification",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "verify_t18_dimension_override_and_dimlfac_visible",
+      "category": "Verification",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "verify_t25_handle_renumber_rebinds",
+      "category": "Verification",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "verify_t36_report_stale_after_file_change",
+      "category": "Verification",
+      "old": "miss",
       "new": "pass"
     }
   ]

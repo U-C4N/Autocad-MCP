@@ -319,19 +319,20 @@ Reproduce:
 python benchmarks/compare_versions.py            # current tree vs origin/main
 python benchmarks/compare_versions.py v1.0.0     # vs a tag/ref
 python benchmarks/compare_versions.py --json results.json
+python benchmarks/compare_versions.py v1.6.0 --fail-on-regression   # exit 1 on any regression
 ```
 
 ### Result — v1.7.0 vs v1.6.0 (release gate)
 
-52 checks, ezdxf backend, one subprocess per check. Machine-readable report:
+61 checks, ezdxf backend, one subprocess per check. Machine-readable report:
 [`results/published/ab-v1.6.0-vs-v1.7.0.json`](results/published/ab-v1.6.0-vs-v1.7.0.json).
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---------|----------------|-----------|-------|-----------|
-| **v1.6.0** (baseline)     | 48 / 52 | 92.3 % | — | — |
-| **v1.7.0** (this release) | 52 / 52 | 100 % | 4 | **0** |
+| **v1.6.0** (baseline)     | 48 / 61 | 78.7 % | — | — |
+| **v1.7.0** (this release) | 61 / 61 | 100 % | 13 | **0** |
 
-The four are `fail → pass`: v1.6.0 has every method they call and gets the
+Thirteen are fixed. Four are `fail → pass`: v1.6.0 has every method they call and gets the
 answer wrong. They are the three reproducers of the 1.7.0 W1 review focus and
 the shared spec validation. `cancel_never_overlaps` cancels a call whose worker
 is blocked and starts a second one: on v1.6.0 the second ran while the first
@@ -345,7 +346,15 @@ only and XLSX holds string cells and a numeric mass (B03).
 `spec_refuses_non_finite` hands a vessel a NaN width and an infinite height
 and `pid_from_spec`'s dry run a NaN scale: 1.6.0 accepted the first, died in
 a `RuntimeError` on the second and approved the third; each is now refused by
-its path (B07). The 48 checks v1.6.0 was released on all still pass.
+its path (B07). The other nine are `miss → pass`: the roadmap's acceptance
+scenarios T05, T09-T13, T18, T25 and T36 (`verify_t*`), which call the
+verification engine 1.7.0 added - a stale preview refused with nothing moved,
+a Ø39.8 bore failing under its "Ø40" label, a moved hole failing against the
+model that still says it did not move, an inner hole moved inside a saved
+file, two equal holes left ambiguous, five and seven holes failing "exactly
+six", an override and a DIMLFAC made blocking findings, a renumbering save
+re-bound by geometry, and a delivery made stale by an edit after it. The 48
+checks v1.6.0 was released on all still pass.
 
 ### Result — v1.6.0 vs v1.5.1
 

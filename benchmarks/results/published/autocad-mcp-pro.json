@@ -224,8 +224,8 @@
     "platform": "Windows-11-10.0.26300-SP0",
     "python": "3.13.15"
   },
-  "generated_at": "2026-10-25T15:46:56.058698+00:00",
-  "git_sha": "ca6ea4371ed4363e387f5758448f2612d306ed4e",
+  "generated_at": "2026-10-25T15:48:22.012580+00:00",
+  "git_sha": "96106c7784fe5500d610228c9f5cb6b1d0e0a419",
   "manifest": {
     "dependencies": {
       "ezdxf": "1.4.4",
@@ -241,8 +241,8 @@
     "fixtures": [
       {
         "path": "benchmarks/adapters/autocad_mcp_pro.py",
-        "sha256": "1a3c488b80d145ba3fee0bd826440973dc2266f44d21680bd55d73453c1f4c48",
-        "size_bytes": 86223
+        "sha256": "5c40688cd9de97a6a4e3ee17b64c347b2de12931191bdc196b1f908db4a1815e",
+        "size_bytes": 86335
       },
       {
         "path": "engineering/arch/spec.py",
@@ -260,13 +260,13 @@
         "size_bytes": 25419
       }
     ],
-    "server_sha": "ca6ea4371ed4363e387f5758448f2612d306ed4e"
+    "server_sha": "96106c7784fe5500d610228c9f5cb6b1d0e0a419"
   },
   "matrix": "v8",
   "results": [
     {
       "artifacts": [],
-      "duration_ms": 2.5,
+      "duration_ms": 2.72,
       "message": "",
       "metrics": {
         "line_length": 5.0
@@ -279,7 +279,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 1.5,
+      "duration_ms": 1.53,
       "message": "",
       "metrics": {},
       "score": 100.0,
@@ -290,7 +290,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 4.06,
+      "duration_ms": 4.0,
       "message": "",
       "metrics": {},
       "score": 100.0,
@@ -301,7 +301,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 26.41,
+      "duration_ms": 26.29,
       "message": "",
       "metrics": {
         "entity_type": "DIMENSION"
@@ -314,7 +314,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 4.69,
+      "duration_ms": 4.62,
       "message": "",
       "metrics": {
         "representations": [
@@ -330,7 +330,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 8.37,
+      "duration_ms": 8.59,
       "message": "",
       "metrics": {
         "entity_count": 0
@@ -343,7 +343,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 0.81,
+      "duration_ms": 0.83,
       "message": "",
       "metrics": {},
       "score": 100.0,
@@ -354,7 +354,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 10.02,
+      "duration_ms": 11.55,
       "message": "",
       "metrics": {
         "final_score": 100.0,
@@ -397,11 +397,11 @@
       "artifacts": [
         {
           "filename": "roundtrip.dxf",
-          "sha256": "0606123ece5fc2898956b0f62ead9d1e75136aafad6c1c348d4beeec5fbcc2e6",
-          "size_bytes": 18436
+          "sha256": "4466f0d81dcbf96ffebe1e9e0e37ec806e5698a89922b1433c42a1cc5a5f2626",
+          "size_bytes": 18448
         }
       ],
-      "duration_ms": 7.32,
+      "duration_ms": 7.38,
       "message": "",
       "metrics": {
         "entity_count": 1
@@ -416,11 +416,11 @@
       "artifacts": [
         {
           "filename": "manifest.json",
-          "sha256": "d13e1c7cfd697027d5014533648da56d83a59ad1200a30c017d3e7f871446162",
+          "sha256": "90b39841fa4073122cd66c437e70fe0c2a2bc3fbb6e110516537bf6654017e9f",
           "size_bytes": 8456
         }
       ],
-      "duration_ms": 375.92,
+      "duration_ms": 371.67,
       "message": "",
       "metrics": {
         "score": {
@@ -440,7 +440,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 722.33,
+      "duration_ms": 697.96,
       "message": "",
       "metrics": {
         "ranks": {
@@ -461,7 +461,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 46.52,
+      "duration_ms": 45.42,
       "message": "",
       "metrics": {
         "advertised_tools": 3,
@@ -480,7 +480,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 7.47,
+      "duration_ms": 8.28,
       "message": "",
       "metrics": {
         "area_ignoring_islands": 400.0,
@@ -497,7 +497,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 6.83,
+      "duration_ms": 6.43,
       "message": "",
       "metrics": {
         "bounding_box": 3,
@@ -514,7 +514,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 4.98,
+      "duration_ms": 4.72,
       "message": "",
       "metrics": {
         "boundary_agrees": true,
@@ -531,7 +531,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 71.78,
+      "duration_ms": 70.5,
       "message": "",
       "metrics": {
         "authored_line_numbers_kept": true,
@@ -554,16 +554,16 @@
       "artifacts": [
         {
           "filename": "untitled-Layout1-ansi_b.pdf",
-          "sha256": "e21e723e534704c78e5445b2e3b95979616378f357a20956c5260ef98c91c4ea",
+          "sha256": "db50387555e5a82d42d06d16a70eefcb5f7562a8119023c54f2b85267f6b9997",
           "size_bytes": 1287
         },
         {
           "filename": "untitled-Layout1-iso_a3.pdf",
-          "sha256": "67ed2be5e752a2e6511230e805547df7e0e262953475b2688d86ec36c0772e3a",
+          "sha256": "9798a8dea4803201bbec744a339866efcde432f236e171ddc2017d889925bba4",
           "size_bytes": 1287
         }
       ],
-      "duration_ms": 71.01,
+      "duration_ms": 67.3,
       "message": "",
       "metrics": {
         "mediabox_mm": [
@@ -603,11 +603,11 @@
       "artifacts": [
         {
           "filename": "mech_assembly.dxf",
-          "sha256": "08db01131831c4f7a43a6b8a415732b76ea4de81dc7817ef13df5f9690581cfe",
-          "size_bytes": 107970
+          "sha256": "902a0405d87aaa8bf1021151d7ec8f5f89ab825420dbf1b141d9bc5ba732d615",
+          "size_bytes": 107972
         }
       ],
-      "duration_ms": 526.78,
+      "duration_ms": 510.18,
       "message": "",
       "metrics": {
         "critique_focuses": [],
@@ -629,11 +629,11 @@
       "artifacts": [
         {
           "filename": "arch_roundtrip.dxf",
-          "sha256": "47f12bd2308524495431cef85a0d7ab622a87d0cfe570a711e3411f1fd6d3429",
+          "sha256": "090a0cada6de31eb762f6fe319d21cba0b28ff6c8f614a148614079660d0bd35",
           "size_bytes": 82828
         }
       ],
-      "duration_ms": 925.12,
+      "duration_ms": 778.4,
       "message": "",
       "metrics": {
         "confidence_min": 1.0,
@@ -678,16 +678,16 @@
       "artifacts": [
         {
           "filename": "pid.dxf",
-          "sha256": "305c57f8a6e463f1a28c05da66c4fb27a84fe684632fb488611be1ee2b6442ad",
-          "size_bytes": 33795
+          "sha256": "5c6351cd4d6ed7de19561528c19431d4efa42faf48f2c76b36799e7d890a151c",
+          "size_bytes": 33793
         },
         {
           "filename": "layout.dxf",
-          "sha256": "1aa4a2d5b3184869d39fc8b18f256f974e161ba46d4566d576ca0f4d01469428",
-          "size_bytes": 40503
+          "sha256": "6054ee95ebbf35a95b523b35c73a4a73ac5686de4b72dc26ce5bc377a8f26f9a",
+          "size_bytes": 40501
         }
       ],
-      "duration_ms": 359.3,
+      "duration_ms": 385.48,
       "message": "",
       "metrics": {
         "cable_mismatch": [],
@@ -708,16 +708,16 @@
       "artifacts": [
         {
           "filename": "layout.dxf",
-          "sha256": "01c71f4a0d0933dcdf96a402638f5f064c884a8b9fbbafa6da97feae2b2478ae",
-          "size_bytes": 40503
+          "sha256": "8b607493dba022fa80ef9222b4519ea34b695f794ba3fa084e0d42f7857a3088",
+          "size_bytes": 40501
         },
         {
           "filename": "pid.dxf",
-          "sha256": "42296b353e6ef13ae80deb4b41fb5d8542e329507272f62ed255ae18d23bd99c",
-          "size_bytes": 33795
+          "sha256": "a0b076668564b417ad90e7ed2c4b1fb0829526eb4bbf7d1df432303a52391d37",
+          "size_bytes": 33793
         }
       ],
-      "duration_ms": 172.77,
+      "duration_ms": 151.68,
       "message": "",
       "metrics": {
         "clusters": 2,
@@ -847,11 +847,11 @@
       "artifacts": [
         {
           "filename": "requirements_roundtrip.dxf",
-          "sha256": "dbdc2edc81f141d9c376664d857c11689105775478070bf6a9093d5e0b714535",
-          "size_bytes": 26880
+          "sha256": "7ef7219e071d68576bde102f872a391969fe5d11c687b8120fff09df072b3546",
+          "size_bytes": 26878
         }
       ],
-      "duration_ms": 117.39,
+      "duration_ms": 116.94,
       "message": "",
       "metrics": {
         "artifact": {
@@ -904,7 +904,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 318.24,
+      "duration_ms": 328.49,
       "message": "",
       "metrics": {
         "entity_count_after": 1,
@@ -923,7 +923,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 1060.52,
+      "duration_ms": 1073.96,
       "message": "",
       "metrics": {
         "construction": {
@@ -935,10 +935,10 @@
           "274F",
           "2750"
         ],
-        "elapsed_ms": 830.4,
+        "elapsed_ms": 854.4,
         "entities": 10004,
         "incomplete": [],
-        "max_loop_stall_ms": 201.8,
+        "max_loop_stall_ms": 179.3,
         "missing": []
       },
       "score": 100.0,
@@ -961,11 +961,11 @@
         },
         {
           "filename": "bom.xlsx",
-          "sha256": "3a447afd6009d12cb0f14ece81ad176f10228a909dcc9bfb0b88da623ebb1809",
+          "sha256": "0c97f84c90ec9c9b3f200627a4eaedab715d823701d6a3fbd1ddd25499f48cda",
           "size_bytes": 5086
         }
       ],
-      "duration_ms": 367.83,
+      "duration_ms": 452.17,
       "message": "",
       "metrics": {
         "bom_csv": {
@@ -1003,7 +1003,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 528.45,
+      "duration_ms": 534.7,
       "message": "",
       "metrics": {
         "changed_handles": [
@@ -1029,7 +1029,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 463.42,
+      "duration_ms": 481.56,
       "message": "",
       "metrics": {
         "edits_applied": [
@@ -1063,11 +1063,11 @@
       "artifacts": [
         {
           "filename": "pid_file_roundtrip.dxf",
-          "sha256": "b2e0e764da2667b81c616093ac1a9d7a84813ea15cf824f572e31c7de9e899dd",
-          "size_bytes": 39239
+          "sha256": "565f8b4e02651a5d61f889c374c1fc010ab4ebbf3009ab6c6ea6486596583599",
+          "size_bytes": 39237
         }
       ],
-      "duration_ms": 216.1,
+      "duration_ms": 211.45,
       "message": "",
       "metrics": {
         "dangling": 0,
@@ -1089,16 +1089,16 @@
       "artifacts": [
         {
           "filename": "foreign_plate.dxf",
-          "sha256": "22e097ada7dedc718124ab013536d7685cf45abae51cf1f6f151ca277a7a341e",
-          "size_bytes": 19129
+          "sha256": "9086aa48dca2bfa8e278435cebac402fe1ae24cf372242b182f63574c4d74178",
+          "size_bytes": 19127
         },
         {
           "filename": "foreign_plate_repaired.dxf",
-          "sha256": "3f2add6280b2dc7be6aba2ae50165ac8885d68409085c32b8def56e74df914ff",
-          "size_bytes": 19129
+          "sha256": "5c8a78c629021f0eaf16c0c18d1a57b9d8a730094d931bad57873df854cfb5eb",
+          "size_bytes": 19127
         }
       ],
-      "duration_ms": 110.33,
+      "duration_ms": 120.62,
       "message": "",
       "metrics": {
         "after": {
@@ -1137,8 +1137,8 @@
       "artifacts": [
         {
           "filename": "truncated.dxf",
-          "sha256": "5b135b50bca6507580967d4a6d1d080e61e0f7a6095a7ba0410e06db73ba304b",
-          "size_bytes": 12445
+          "sha256": "853c1ced9c7cc7062cbef5aa41120e121156996ad12b423aeb2fb9308e4be23e",
+          "size_bytes": 12444
         },
         {
           "filename": "not_a_drawing.dxf",
@@ -1146,12 +1146,12 @@
           "size_bytes": 176
         }
       ],
-      "duration_ms": 19.84,
+      "duration_ms": 18.06,
       "message": "",
       "metrics": {
         "cases": {
           "not_dxf": {
-            "error": "OSError: File 'C:\\Users\\VECTOR\\Documents\\GitHub\\Autocad-MCP\\.claude\\worktrees\\wf_943572c7-c92-2\\out\\bench-v8\\not_a_drawing.dxf' is not a DXF file.",
+            "error": "OSError: File 'not_a_drawing.dxf' is not a DXF file.",
             "named": true,
             "refused": true
           },
@@ -1175,11 +1175,11 @@
       "artifacts": [
         {
           "filename": "dimension_binding.dxf",
-          "sha256": "c52898feac2640e22785f0be33e776022cfbd516025a7b80d8aa723756061a48",
-          "size_bytes": 51223
+          "sha256": "df5826c0dc945fa621688cb89aceae063e718a700d08a3ed04da7f028cd90dfd",
+          "size_bytes": 51221
         }
       ],
-      "duration_ms": 418.32,
+      "duration_ms": 378.08,
       "message": "",
       "metrics": {
         "accepted": false,
