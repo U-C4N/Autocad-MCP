@@ -31,7 +31,12 @@ class DrawingContract(ABC):
     async def drawing_save_as(self, path: str, fmt: str = "dwg") -> dict: ...
 
     @abstractmethod
-    async def drawing_export_dxf(self, path: str) -> dict: ...
+    async def drawing_export_dxf(self, path: str) -> dict:
+        """Write a DXF copy of the open document to ``path``. The document is never
+        re-pointed: its name, path and saved flag stay as they were and its content
+        revision does not move (``drawing_save_as`` is the call that re-points).
+        Returns ``{"ok", "path", "format", "method", "dxf_version", "document",
+        "repointed": False}``."""
 
     @abstractmethod
     async def drawing_export_pdf(self, path: str, layout: str | None = None) -> dict: ...

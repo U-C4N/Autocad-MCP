@@ -690,8 +690,14 @@ def block_changes(old: dict[str, str] | None, new: dict[str, str] | None) -> dic
     }
 
 
-def read_revision(path: str, *, tol: float = DEFAULT_TOL) -> tuple[Snapshot, dict[str, str]]:
+def read_revision(
+    path: str, *, tol: float = DEFAULT_TOL, insert_boxes: bool = True
+) -> tuple[Snapshot, dict[str, str]]:
     """One read of a DXF revision: its records and its block signatures.
+
+    ``insert_boxes=False`` leaves every INSERT's box uncomputed (see
+    ``records_from_doc``): delivery parity matches INSERTs by their insertion
+    point, never by their box, and 5,000 INSERT boxes cost seconds.
 
     Refused before reading: a file that cannot be stat'ed and one over
     ``MAX_DXF_BYTES`` (the size and the variable named). A file ezdxf cannot
@@ -716,7 +722,10 @@ def read_revision(path: str, *, tol: float = DEFAULT_TOL) -> tuple[Snapshot, dic
         )
     try:
         doc = ezdxf.readfile(path)
-        return records_from_doc(doc, source=str(path)), block_signatures(doc, tol=tol)
+        return (
+            records_from_doc(doc, source=str(path), insert_boxes=insert_boxes),
+            block_signatures(doc, tol=tol),
+        )
     except MemoryError:
         raise
     except Exception as exc:  # noqa: BLE001 - every parse failure is one refusal

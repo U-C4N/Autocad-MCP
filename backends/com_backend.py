@@ -2525,7 +2525,64 @@ class ComBackend(AutoCADBackend):
         return await self._run(_sync)
 
     async def drawing_export_dxf(self, path: str) -> dict:
-        return await self.drawing_save_as(path, "dxf")
+        """A DXF copy through ``Document.Export``; the open document is not re-pointed.
+
+        ``SaveAs(path, 61)`` - what this method did until 1.7.0 - makes the
+        open document the DXF. ``Export`` does not. Measured on AutoCAD 2026
+        (25.1s) on 2026-10-24 in a scratch document: ``Export(<base>, "DXF",
+        <selection set of all>)`` writes ``<base>.DXF`` (upper-case extension,
+        ``$ACADVER`` AC1032 = R2018) and leaves ``Name``, ``FullName`` and
+        ``Saved`` as they were; ``".dxf"`` as the extension argument is
+        refused. The file is written into a private folder beside the target
+        and renamed onto it, so the name is the caller's and a file already
+        there is replaced in one step - AutoCAD is never asked about it. The
+        version reported is the one read back from the file's header.
+        """
+        target = Path(path)
+        if target.suffix.lower() != ".dxf":
+            raise ValueError(
+                f"drawing_export_dxf writes DXF; name the file .dxf, got {target.name!r}"
+            )
+
+        def _sync():
+            import shutil
+            import tempfile
+
+            from engineering.understand.snapshot import dxf_version_of
+
+            doc = _acad_doc()  # inside a job: the bound document, guarded (Task 9)
+            name, full_name = str(doc.Name), str(doc.FullName)
+            folder = tempfile.mkdtemp(prefix=".acadmcp_export_", dir=str(target.parent))
+            try:
+                selection = doc.SelectionSets.Add(f"_EXP_{uuid.uuid4().hex[:8]}")
+                try:
+                    selection.Select(_AC_SELECTION_SET_ALL)
+                    # "DXF", never ".dxf" (measured: "Invalid argument").
+                    doc.Export(os.path.join(folder, "export"), "DXF", selection)
+                finally:
+                    try:
+                        selection.Delete()
+                    except Exception:  # a selection set left behind is harmless; the export is not
+                        pass
+                written = sorted(Path(folder).glob("export.*"))
+                if not written:
+                    raise RuntimeError(
+                        f"AutoCAD reported the export of {name} done but wrote no file"
+                    )
+                os.replace(written[0], target)
+            finally:
+                shutil.rmtree(folder, ignore_errors=True)
+            return {
+                "ok": True,
+                "path": str(target),
+                "format": "dxf",
+                "method": "Document.Export",
+                "dxf_version": dxf_version_of(target),
+                "document": {"name": name, "full_name": full_name},
+                "repointed": False,
+            }
+
+        return await self._run(_sync)
 
     # ── external references, rasters and DWG (v1.6 track G) ──────────────────
     #

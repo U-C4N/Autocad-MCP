@@ -610,8 +610,16 @@ async def measure_requirements(
 async def verify_requirements(backend, rs, *, binding_policy="strict", artifact_path=None) -> dict:
     """Measure ``rs`` and report it. On the current document the evidence is the
     document's id and revision, checked again after the measurement (an edit that
-    landed meanwhile makes the report stale); with ``artifact_path`` it is the
-    file's sha256."""
+    landed meanwhile makes the report stale). With ``artifact_path`` the saved file
+    is read fresh and re-bound from the current document
+    (``engineering.verification.artifact.verify_artifact``): the report adds
+    ``rebinding`` and the before / after ``comparison``."""
+    if artifact_path is not None:
+        from engineering.verification.artifact import verify_artifact
+
+        return await verify_artifact(
+            str(artifact_path), rs, backend=backend, binding_policy=binding_policy
+        )
     run = await measure_requirements(
         backend, rs, binding_policy=binding_policy, artifact_path=artifact_path
     )

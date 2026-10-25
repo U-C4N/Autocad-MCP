@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from backends.quarantine import DocumentQuarantineError
 
 from .qa_scan import qa_snapshot
+from .understand.snapshot import dxf_version_of
 
 if TYPE_CHECKING:
     from backends.base import AutoCADBackend
@@ -90,6 +91,30 @@ class ValidationResult:
         }
 
 
+def _delivered_findings(path: str) -> list[ValidationFinding]:
+    """Step 6 in a delivery: the bundle's canonical DXF exists and is a DXF."""
+    target = Path(path)
+    if not target.is_file():
+        return [
+            ValidationFinding(
+                "error",
+                "delivery_artifact_missing",
+                f"The delivered DXF is not on disk: {target}",
+                {"path": str(target)},
+            )
+        ]
+    if target.stat().st_size == 0 or dxf_version_of(target) is None:
+        return [
+            ValidationFinding(
+                "error",
+                "delivery_artifact_unreadable",
+                f"The delivered DXF has no $ACADVER header: {target}",
+                {"path": str(target)},
+            )
+        ]
+    return []
+
+
 class DrawingValidator:
     """8-step pre-completion validator."""
 
@@ -99,6 +124,7 @@ class DrawingValidator:
         *,
         expected: dict | None = None,
         shared: dict | None = None,
+        delivered_path: str | None = None,
     ) -> ValidationResult:
         """Run all 8 checks; return aggregate ValidationResult.
 
@@ -109,6 +135,12 @@ class DrawingValidator:
         once. A read that did not cover the drawing is an ``error`` finding
         ``scan_incomplete``; a step that raises is a finding naming the step;
         a quarantine refusal propagates. Nothing is swallowed.
+
+        ``delivered_path`` is the delivery context (``drawing_deliver``): the
+        bundle's canonical DXF. Steps 6 and 8 then check that file - on disk,
+        not empty, a ``$ACADVER`` header - instead of the open document's saved
+        flag and path, because a delivery exports a copy and never saves or
+        re-points the document.
         """
 
         findings: list[ValidationFinding] = []
@@ -262,7 +294,50 @@ class DrawingValidator:
                     )
                 )
 
-        # 6 — saved to disk
+        # 6 — saved to disk (in a delivery: the delivered DXF)
+        if delivered_path is not None:
+            findings.extend(_delivered_findings(delivered_path))
+        else:
+            await self._saved_step(backend, findings)
+
+        # 7 — screenshot
+        try:
+            shot = await backend.view_screenshot()
+            if not shot:
+                findings.append(
+                    ValidationFinding(
+                        "info",
+                        "screenshot_unavailable",
+                        "Screenshot returned no bytes (ezdxf needs matplotlib install)",
+                    )
+                )
+        except DocumentQuarantineError:
+            raise
+        except Exception as exc:
+            findings.append(
+                ValidationFinding(
+                    "info",
+                    "screenshot_failed",
+                    str(exc),
+                )
+            )
+
+        # 8 — dwg path returned (in a delivery the delivered DXF is the path)
+        if delivered_path is None:
+            await self._path_step(backend, findings)
+
+        summary = {
+            sev: sum(1 for f in findings if f.severity == sev)
+            for sev in ("error", "warning", "info")
+        }
+        return ValidationResult(
+            ok=summary["error"] == 0,
+            findings=findings,
+            summary=summary,
+        )
+
+    @staticmethod
+    async def _saved_step(backend: AutoCADBackend, findings: list[ValidationFinding]) -> None:
         try:
             info = await backend.drawing_info()
             saved_attr = getattr(info, "saved", None)
@@ -295,29 +370,8 @@ class DrawingValidator:
                 )
             )
 
-        # 7 — screenshot
-        try:
-            shot = await backend.view_screenshot()
-            if not shot:
-                findings.append(
-                    ValidationFinding(
-                        "info",
-                        "screenshot_unavailable",
-                        "Screenshot returned no bytes (ezdxf needs matplotlib install)",
-                    )
-                )
-        except DocumentQuarantineError:
-            raise
-        except Exception as exc:
-            findings.append(
-                ValidationFinding(
-                    "info",
-                    "screenshot_failed",
-                    str(exc),
-                )
-            )
-
-        # 8 — dwg path returned
+    @staticmethod
+    async def _path_step(backend: AutoCADBackend, findings: list[ValidationFinding]) -> None:
         try:
             info = await backend.drawing_info()
             if not getattr(info, "full_path", ""):
@@ -338,13 +392,3 @@ class DrawingValidator:
                     str(exc),
                 )
             )
-
-        summary = {
-            sev: sum(1 for f in findings if f.severity == sev)
-            for sev in ("error", "warning", "info")
-        }
-        return ValidationResult(
-            ok=summary["error"] == 0,
-            findings=findings,
-            summary=summary,
-        )

@@ -1747,7 +1747,14 @@ async def drawing_export_dxf(
     path: Annotated[str, "Output .dxf file path"],
     ctx: Context = None,
 ) -> dict:
-    """Export the current drawing as a DXF file."""
+    """Export the current drawing as a DXF copy.
+
+    The open document is never re-pointed: it keeps its name, path and saved flag
+    (drawing_save_as is the call that re-points). Live: `Document.Export`, renamed to
+    the name given; headless: a copy written by ezdxf. The result names the method
+    and the DXF version written. Refused: a name that is not .dxf (a .dwg headlessly
+    with capability `dwg`).
+    """
     validated = validate_path(path, allow_write=True)
     await ctx.info(f"Exporting DXF: {validated}")
     return await _backend(ctx).drawing_export_dxf(str(validated))
@@ -6616,7 +6623,11 @@ async def drawing_finalize(
     With `requirements` (the drawing_verify_requirements shape) every requirement is
     measured on the CAD geometry after the save: the payload adds `geometry_acceptance`
     (the full report), `drafting_quality` (the score, unchanged), `artifact_integrity`
-    (the saved file's sha256) and `coverage`, and a requirement that does not pass,
+    (the saved file's sha256 and `reverified`: every requirement measured again on the
+    saved file, read fresh and re-bound by handle, feature tag, then geometry, with the
+    before / after comparison; a saved file that cannot be re-read - a .dwg AutoCAD
+    will not let us copy - fails the acceptance) and `coverage`, and a requirement
+    that does not pass,
     stale evidence or a dimension that disagrees with its geometry raises
     `failed_acceptance` - a high drafting score never offsets it. Requirements that do
     not parse are refused before anything is saved (invalid_args).
@@ -6680,10 +6691,28 @@ async def drawing_finalize(
     if rs is not None:
         from pathlib import Path as _P
 
-        from engineering.verification.report import sha256_file, verify_requirements
+        from backends.base import UnsupportedCapabilityError
+        from engineering.verification.artifact import verify_artifact
+        from engineering.verification.report import sha256_file, summarize, verify_requirements
 
         saved_path = str(validated) if save_path else None
         report = await verify_requirements(backend, rs)
+        reverified = None
+        if saved_path is not None:
+            try:
+                saved_report = await verify_artifact(saved_path, rs, backend=backend)
+                reverified = {
+                    **summarize(saved_report),
+                    "comparison": saved_report["comparison"],
+                    "rebinding": saved_report["rebinding"],
+                }
+            except (ValueError, OSError, UnsupportedCapabilityError) as exc:
+                reverified = {
+                    "status": "unknown",
+                    "accepted": False,
+                    "reason": str(exc),
+                    "blocking": [f"artifact_unread: {exc}"],
+                }
         payload["geometry_acceptance"] = report
         payload["drafting_quality"] = dict(payload["score"])
         payload["artifact_integrity"] = {
@@ -6691,6 +6720,7 @@ async def drawing_finalize(
             "sha256": sha256_file(saved_path)
             if saved_path is not None and _P(saved_path).is_file()
             else None,
+            "reverified": reverified,
         }
         payload["coverage"] = dict(report["coverage"])
 
@@ -6716,14 +6746,20 @@ async def drawing_finalize(
             f"drawing_finalize: critique gate failed with {len(gate_failures)} blocking issue(s). "
             f"First: {first.focus}: {first.message}"
         )
-    if rs is not None and not payload["geometry_acceptance"]["accepted"]:
+    if rs is not None:
         report = payload["geometry_acceptance"]
-        raise ToolError(
-            "drawing_finalize: failed_acceptance - "
-            + "; ".join(report["blocking"][:5])
-            + f" ({report['counts']['pass']} of {report['counts']['required']} requirement(s) "
-            "pass; drawing_verify_requirements returns the full report)"
-        )
+        blocking = list(report["blocking"])
+        reverified = payload["artifact_integrity"]["reverified"]
+        if reverified is not None and not reverified["accepted"]:
+            blocking.extend(f"saved file: {item}" for item in reverified["blocking"])
+        if blocking:
+            raise ToolError(
+                "drawing_finalize: failed_acceptance - "
+                + "; ".join(blocking[:5])
+                + f" ({report['counts']['pass']} of {report['counts']['required']} "
+                "requirement(s) pass on the drawing; drawing_verify_requirements returns the "
+                "full report)"
+            )
     return payload
 
 
@@ -6776,8 +6812,15 @@ async def drawing_deliver(
     ``failed_acceptance``. Failure intentionally keeps all generated artifacts for
     diagnosis.
 
-    With ``requirements`` every requirement is measured on the CAD geometry
-    (drawing_verify_requirements' engine); the bundle gains ``acceptance.json`` and
+    The open document is never re-pointed or saved: the DXF is a copy (live:
+    ``Document.Export``), and the manifest records the document's id, revision, path
+    and saved flag, the DXF version, every sha256 and the build. Parity reads the
+    delivered DXF back and compares it with a fresh serialisation of the document over
+    every space: zero changed, added or removed entities, the same counts per space,
+    the same block definitions.
+
+    With ``requirements`` every requirement is measured on the delivered DXF, read
+    fresh and re-bound from the document; the bundle gains ``acceptance.json`` and
     ``acceptance.md``, the result ``geometry_acceptance``, ``drafting_quality`` (the
     unchanged score), ``artifact_integrity``, ``coverage`` and ``blocking``, and a
     requirement that does not pass, stale evidence or a dimension that disagrees
@@ -12245,7 +12288,11 @@ async def drawing_verify_requirements(
       nothing) or `use_stored=True`: measured on
       the current document. `evidence` records its id and content revision; a
       later revision makes the report stale.
-    - `artifact_path`: measured on that saved file, read fresh.
+    - `artifact_path`: measured on that saved file, read fresh (a .dwg on a live seat
+      through a private copy), each feature re-bound from the current document - by
+      handle while handles are stable, then by feature tag, then by geometry, two
+      candidates being `unknown` - with `rebinding` and the before / after
+      `comparison` in the report.
     - `manifest_path`: re-hashes a drawing_deliver bundle and lists every
       artifact whose sha256 no longer matches (`stale`) or that is gone
       (`missing`).

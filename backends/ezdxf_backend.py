@@ -2863,7 +2863,37 @@ class EzdxfBackend(AutoCADBackend):
         return await self._async(_sync)
 
     async def drawing_export_dxf(self, path: str) -> dict:
-        return await self.drawing_save_as(path, "dxf")
+        """A DXF copy of the active document; the document is not re-pointed.
+
+        ``doc.saveas`` (``drawing_save_as``) sets ``doc.filename`` and this
+        backend's path and saved flag; an export must do neither (v1.7.0,
+        B23), so the document is written through ``doc.write`` into a stream
+        this method opens, with ``Drawing.save``'s own encoding rule
+        (``output_encoding``, errors ``dxfreplace``). Not a content change:
+        the revision does not move. A ``.dwg`` name is refused (``dwg``).
+        """
+        if _is_dwg_path(path):
+            raise _refuse_dwg("drawing_export_dxf", path)
+
+        def _sync():
+            doc = self._require_doc()
+            self._refuse_path_held_elsewhere("drawing_export_dxf", path)
+            with open(path, "w", encoding=doc.output_encoding, errors="dxfreplace") as stream:
+                doc.write(stream)
+            return {
+                "ok": True,
+                "path": path,
+                "format": "dxf",
+                "method": "ezdxf.write",
+                "dxf_version": doc.dxfversion,
+                "document": {
+                    "name": Path(self._doc_path).name if self._doc_path else "untitled.dxf",
+                    "full_name": self._doc_path or "",
+                },
+                "repointed": False,
+            }
+
+        return await self._async(_sync)
 
     # ── external references, rasters and DWG (v1.6 track G) ──────────────────
 

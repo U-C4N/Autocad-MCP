@@ -19,7 +19,7 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 
 </div>
 
-> **v1.6 release snapshot:** 248 tools · 9 resources · 5 prompt templates · 5439 collected tests.
+> **v1.6 release snapshot:** 248 tools · 9 resources · 5 prompt templates · 5806 collected tests.
 > 248 is the **registered** count; a default install advertises 243 over `tools/list`,
 > because `ENABLE_3D` is unset. `system_about` is the runtime authority.
 

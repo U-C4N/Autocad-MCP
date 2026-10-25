@@ -56,6 +56,7 @@ from __future__ import annotations
 import asyncio
 import math
 import os
+import re
 import shutil
 import tempfile
 import uuid
@@ -76,6 +77,7 @@ __all__ = [
     "EntityRecord",
     "Pt",
     "Snapshot",
+    "dxf_version_of",
     "length_of",
     "read_snapshot",
     "records_from_doc",
@@ -618,6 +620,22 @@ async def take_snapshot(backend, path: str | None = None, *, block_defs: bool = 
         lambda: records_from_doc(backend._doc, source=source, block_defs=block_defs),
         readonly=True,
     )
+
+
+_ACADVER = re.compile(rb"\$ACADVER\s+1\s+(AC\d{4})")
+
+
+def dxf_version_of(path) -> str | None:
+    """The ``$ACADVER`` of an ASCII DXF (``AC1024`` = R2010, ``AC1032`` = R2018),
+    read from the first 16 KB; None for a missing file, a binary DXF or anything
+    without the header variable."""
+    try:
+        with open(path, "rb") as stream:
+            head = stream.read(16384)
+    except OSError:
+        return None
+    match = _ACADVER.search(head)
+    return match.group(1).decode("ascii") if match else None
 
 
 def length_of(rec: EntityRecord) -> float:
