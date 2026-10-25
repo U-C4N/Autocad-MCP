@@ -278,16 +278,18 @@ Recorded in the spec, not dropped:
 
 ### Live COM smoke
 
-`scripts/live/harness.py` on AutoCAD 2026 (`25.1s`, build `W.60.0.0`), Windows 11, CPython 3.13.15, pywin32 312; server 1.6.0 at `e212f1b`, clean tree. 91 of 91 checks passed, 0 `RPC_E_CALL_REJECTED` retries; every smoke worked only in documents it added and closed them with `Close(False)`, and the operator's drawing was neither activated, written, saved nor closed. The JSON results are `benchmarks/results/live/*.json`.
+`scripts/live/harness.py` on AutoCAD 2026 (`25.1s`, build `W.60.0.0`), Windows 11, CPython 3.13.15, pywin32 312; server 1.7.0 at `c54ea94`, clean tree. 91 of 91 checks passed, 3 `RPC_E_CALL_REJECTED` retries; every smoke worked only in documents it added and closed them with `Close(False)`, and the operator's drawing was neither activated, written, saved nor closed. The JSON results are `benchmarks/results/live/*.json`.
 
 | Smoke | Checks | Time | What it covers |
 |---|---:|---:|---|
-| `smoke_pid_com.py` | 8 / 8 | 14.8 s | P&ID: placement, classification, node confidence, nodes and edges equal to the headless run of the same spec, the six `pid_*` focuses, the pump's XDATA |
-| `smoke_arch_com.py` | 6 / 6 | 87.0 s | architecture: the plan from its spec, both rooms read back within 0.1 % of label and hand-computed floor, the three schedules, zero critique issues |
-| `smoke_mech_com.py` | 10 / 10 | 37.9 s | mechanical: part, section, dimensions, an ISO 4014 block with its XDATA, the parts list read off the drawing as a native TABLE, a linked balloon, an xref attached and detached, a real `.dwg`, zero critique issues |
-| `smoke_settings_com.py` | 33 / 33 | 2.9 s | environment: styles, a template, the page setup read back from the plotted PDF's `/MediaBox`, layer states, named views, UCS, preferences, document properties |
-| `smoke_understand_com.py` | 7 / 7 | 2.6 s | understanding: `Document.Export` snapshots of a DWG pair, the P&ID read as schematic, every pipe run and cable row equal to the truth, a diff naming exactly the moved entity |
-| `smoke_verify_com.py` | 27 / 27 | 3.9 s | verification: the bound document and its refusal, HATCH loops and DIMENSION read-back, requirements on the live document, Export delivery (not re-pointed), the delivered DXF and a DWG re-measured, an edited copy failing at 22 |
+| `smoke_pid_com.py` | 8 / 8 | 68.2 s | P&ID: placement, classification, node confidence, nodes and edges equal to the headless run of the same spec, the six `pid_*` focuses, the pump's XDATA |
+| `smoke_arch_com.py` | 6 / 6 | 133.7 s | architecture: the plan from its spec, both rooms read back within 0.1 % of label and hand-computed floor, the three schedules, zero critique issues |
+| `smoke_mech_com.py` | 10 / 10 | 50.2 s | mechanical: part, section, dimensions, an ISO 4014 block with its XDATA, the parts list read off the drawing as a native TABLE, a linked balloon, an xref attached and detached, a real `.dwg`, zero critique issues |
+| `smoke_settings_com.py` | 33 / 33 | 4.7 s | environment: styles, a template, the page setup read back from the plotted PDF's `/MediaBox`, layer states, named views, UCS, preferences, document properties |
+| `smoke_understand_com.py` | 7 / 7 | 4.5 s | understanding: `Document.Export` snapshots of a DWG pair, the P&ID read as schematic, every pipe run and cable row equal to the truth, a diff naming exactly the moved entity |
+| `smoke_verify_com.py` | 27 / 27 | 7.6 s | verification: the bound document and its refusal, HATCH loops and DIMENSION read-back, requirements on the live document, Export delivery (not re-pointed), the delivered DXF and a DWG re-measured, an edited copy failing at 22 |
+
+The first clean run of `smoke_arch_com.py` stopped in its plan stage on a per-call `TimeoutError` (`COM_CALL_TIMEOUT`, the seat busy, one `RPC_E_CALL_REJECTED` retry before it) with its document closed; the rerun recorded here passed all six checks in 133.7 s. The same smoke took 87 s on the W3 run at `e212f1b`.
 
 ## [1.6.0] — 2026-09-25
 

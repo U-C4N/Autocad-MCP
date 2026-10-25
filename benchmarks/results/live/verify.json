@@ -4,8 +4,8 @@
   "status": "pass",
   "exit_code": 0,
   "reason": null,
-  "started_at": "2026-10-25T15:44:24+00:00",
-  "duration_s": 3.942,
+  "started_at": "2026-10-25T18:01:56+00:00",
+  "duration_s": 7.64,
   "environment": {
     "autocad": {
       "name": "AutoCAD",
@@ -25,8 +25,8 @@
     },
     "pywin32": "312",
     "server": {
-      "version": "1.6.0",
-      "sha": "e212f1b13a8273eb76cc12966e2c797cad24ccd2",
+      "version": "1.7.0",
+      "sha": "c54ea945d85ca6c3d74588ccd3258e7d5c58357d",
       "dirty": false
     }
   },
@@ -41,11 +41,11 @@
     {
       "name": "drawing_new binds the new document",
       "status": "pass",
-      "expected": "Drawing49.dwg",
+      "expected": "Drawing64.dwg",
       "observed": {
-        "document_id": "fec825c41a9d4be8b634ac6e320f974b",
+        "document_id": "8b55d1d59d1f46b28a0472612a1aab19",
         "revision": 0,
-        "name": "Drawing49.dwg",
+        "name": "Drawing64.dwg",
         "path": null,
         "backend": "com"
       },
@@ -58,15 +58,15 @@
       "observed": {
         "ok": false,
         "kind": "active_document_changed",
-        "error": "AutoCAD's active document changed: this session is bound to 'Drawing49.dwg' but 'Drawing48.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing49.dwg', or call document_activate('Drawing48.dwg') to bind this session to it.",
+        "error": "AutoCAD's active document changed: this session is bound to 'Drawing64.dwg' but 'Drawing63.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing64.dwg', or call document_activate('Drawing63.dwg') to bind this session to it.",
         "bound": {
-          "document_id": "fec825c41a9d4be8b634ac6e320f974b",
-          "name": "Drawing49.dwg",
+          "document_id": "8b55d1d59d1f46b28a0472612a1aab19",
+          "name": "Drawing64.dwg",
           "path": null
         },
         "active": {
-          "document_id": "de9e614932cc49ddb5d5bb947ca957a6",
-          "name": "Drawing48.dwg",
+          "document_id": "b673eae70bd546299ee19890193fd346",
+          "name": "Drawing63.dwg",
           "path": null
         }
       },
@@ -76,21 +76,21 @@
       "name": "the refusal names the bound and the active document",
       "status": "pass",
       "expected": {
-        "bound": "Drawing49.dwg",
-        "active": "Drawing48.dwg"
+        "bound": "Drawing64.dwg",
+        "active": "Drawing63.dwg"
       },
       "observed": {
         "ok": false,
         "kind": "active_document_changed",
-        "error": "AutoCAD's active document changed: this session is bound to 'Drawing49.dwg' but 'Drawing48.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing49.dwg', or call document_activate('Drawing48.dwg') to bind this session to it.",
+        "error": "AutoCAD's active document changed: this session is bound to 'Drawing64.dwg' but 'Drawing63.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing64.dwg', or call document_activate('Drawing63.dwg') to bind this session to it.",
         "bound": {
-          "document_id": "fec825c41a9d4be8b634ac6e320f974b",
-          "name": "Drawing49.dwg",
+          "document_id": "8b55d1d59d1f46b28a0472612a1aab19",
+          "name": "Drawing64.dwg",
           "path": null
         },
         "active": {
-          "document_id": "de9e614932cc49ddb5d5bb947ca957a6",
-          "name": "Drawing48.dwg",
+          "document_id": "b673eae70bd546299ee19890193fd346",
+          "name": "Drawing63.dwg",
           "path": null
         }
       },
@@ -100,12 +100,12 @@
       "name": "nothing landed in either document",
       "status": "pass",
       "expected": {
-        "Drawing48.dwg": 1,
-        "Drawing49.dwg": 0
+        "Drawing63.dwg": 1,
+        "Drawing64.dwg": 0
       },
       "observed": {
-        "Drawing48.dwg": 1,
-        "Drawing49.dwg": 0
+        "Drawing63.dwg": 1,
+        "Drawing64.dwg": 0
       },
       "stage": "bound document"
     },
@@ -119,8 +119,8 @@
     {
       "name": "document_activate binds the session again, under the same id",
       "status": "pass",
-      "expected": "fec825c41a9d4be8b634ac6e320f974b",
-      "observed": "fec825c41a9d4be8b634ac6e320f974b",
+      "expected": "8b55d1d59d1f46b28a0472612a1aab19",
+      "observed": "8b55d1d59d1f46b28a0472612a1aab19",
       "stage": "bound document"
     },
     {
@@ -305,12 +305,12 @@
       "name": "the open document is not re-pointed or saved",
       "status": "pass",
       "expected": {
-        "name": "Drawing49.dwg",
+        "name": "Drawing64.dwg",
         "full_name": "",
         "saved": false
       },
       "observed": {
-        "name": "Drawing49.dwg",
+        "name": "Drawing64.dwg",
         "full_name": "",
         "saved": false
       },
@@ -511,27 +511,27 @@
   "report": {
     "bound": {
       "documents": [
-        "Drawing48.dwg",
-        "Drawing49.dwg"
+        "Drawing63.dwg",
+        "Drawing64.dwg"
       ],
       "refusal": {
         "ok": false,
         "kind": "active_document_changed",
-        "error": "AutoCAD's active document changed: this session is bound to 'Drawing49.dwg' but 'Drawing48.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing49.dwg', or call document_activate('Drawing48.dwg') to bind this session to it.",
+        "error": "AutoCAD's active document changed: this session is bound to 'Drawing64.dwg' but 'Drawing63.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing64.dwg', or call document_activate('Drawing63.dwg') to bind this session to it.",
         "bound": {
-          "document_id": "fec825c41a9d4be8b634ac6e320f974b",
-          "name": "Drawing49.dwg",
+          "document_id": "8b55d1d59d1f46b28a0472612a1aab19",
+          "name": "Drawing64.dwg",
           "path": null
         },
         "active": {
-          "document_id": "de9e614932cc49ddb5d5bb947ca957a6",
-          "name": "Drawing48.dwg",
+          "document_id": "b673eae70bd546299ee19890193fd346",
+          "name": "Drawing63.dwg",
           "path": null
         }
       },
       "counts": {
-        "Drawing48.dwg": 1,
-        "Drawing49.dwg": 0
+        "Drawing63.dwg": 1,
+        "Drawing64.dwg": 0
       }
     },
     "read_back": {

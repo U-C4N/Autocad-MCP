@@ -346,7 +346,7 @@ The rivals' lanes record these tasks as `not_run` or `environment_blocked`, neve
 | Task | Verified against |
 |---|---|
 | `tool_discovery` | six AutoCAD command names, each ranking #1 |
-| `token_budget` | 89,210 → 503 tokens for the 243-tool catalog, against a ceiling fixed in advance |
+| `token_budget` | 89,226 → 503 tokens for the 243-tool catalog, against a ceiling fixed in advance |
 | `hatch_islands` | 300 filled with the island, 400 ignoring it |
 | `selection_filter` | window 1, crossing 2, bounding box 3, polygon 1 |
 | `measure_from_handle` | 139.2699 against the 100.0 a vertex shoelace gives |
