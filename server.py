@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import math
+import re
 import sys
 import time
 from dataclasses import asdict
@@ -501,7 +502,8 @@ class CapabilityRefusalMiddleware(Middleware):
                 )
             capability = _batch_capability_of(exc)
             quarantine = None if capability else _batch_quarantine_of(exc)
-            if capability is None and quarantine is None:
+            stale = None if (capability or quarantine is not None) else _batch_stale_of(exc)
+            if capability is None and quarantine is None and stale is None:
                 raise  # not ours — leave it byte-for-byte as it was
             message = _refusal_message(exc)
             payload = {
@@ -515,6 +517,11 @@ class CapabilityRefusalMiddleware(Middleware):
             if capability is not None:
                 payload["kind"] = "unsupported"
                 payload["capability"] = capability
+            elif stale is not None:
+                # Task 12: the preview no longer holds; nothing was changed.
+                payload["kind"] = "stale_revision"
+                for key in ("expected_revision", "actual_revision", "changed"):
+                    payload[key] = stale[key]
             elif _batch_refusal_kind(exc) == "busy":
                 # A detached read holds the document: not untrusted, busy.
                 payload["kind"] = "busy"
@@ -2916,6 +2923,64 @@ async def text_set_background(
     return await _backend(ctx).text_set_background(handle, enabled, color or None, scale)
 
 
+async def _guarded_text_find_replace(
+    backend, find, replace, layer, match_case, expected_revision, preconditions
+) -> dict:
+    """``text_find_replace`` applied only if its preview still holds (Task 12).
+
+    The preconditions are checked, then the search runs again as a dry run: a
+    match the preview did not list (a text added since) refuses the apply as
+    surely as an edited one, because a precondition vouches only for the
+    entities it names. Search and apply are two locked calls; a change another
+    call makes before either refuses too, before anything is written.
+    """
+    from engineering.changes.preview import (
+        RevisionWatch,
+        StaleRevisionError,
+        check_preconditions,
+        parse_preconditions,
+    )
+
+    rows = parse_preconditions(preconditions)
+    await check_preconditions(backend, expected_revision=expected_revision, preconditions=rows)
+    watch = await RevisionWatch.begin(backend)
+
+    async def _settled(label: str) -> None:
+        if await watch.before(f"text_find_replace: {label}"):
+            raise StaleRevisionError(
+                "stale_revision: another call changed the document after the preconditions "
+                "were checked; nothing was changed. Run the dry run again and apply its new "
+                "preview.",
+                expected=expected_revision,
+                actual=watch.last,
+            )
+
+    await _settled("search")
+    probe = await backend.text_find_replace(find, replace, layer, match_case, True)
+    await watch.after()
+    if not probe.get("ok"):
+        return probe
+    if preconditions is not None:
+        listed = {row["handle"] for row in rows if "handle" in row}
+        unlisted = sorted({str(row["handle"]).upper() for row in probe["entities"]} - listed)
+        if unlisted:
+            raise StaleRevisionError(
+                f"stale_revision: {len(unlisted)} entity(ies) now match {find!r} that the "
+                f"preview did not list ({', '.join(unlisted[:5])}); nothing was changed. Run "
+                "the dry run again and apply its new preview.",
+                expected=expected_revision,
+                actual=watch.last,
+                changed=[
+                    {"handle": h, "expected": "not in the preview", "actual": "matches"}
+                    for h in unlisted
+                ],
+            )
+    await _settled("apply")
+    result = await backend.text_find_replace(find, replace, layer, match_case, False)
+    await watch.after()
+    return {**result, "revision": watch.report()}
+
+
 @cad_tool(summary="Find and replace text across the drawing.", cost="mutate")
 @mcp.tool(
     annotations={"title": "Find and Replace Text", "destructiveHint": False},
@@ -2926,21 +2991,71 @@ async def text_find_replace(
     replace: Annotated[str, "Replacement text."],
     layer: Annotated[str, "Restrict to one layer. Empty searches every layer."] = "",
     match_case: Annotated[bool, "Case-sensitive search."] = True,
-    dry_run: Annotated[bool, "Report what would change without changing it."] = False,
+    dry_run: Annotated[
+        bool, "Report what would change, with a `preview` to apply it by; change nothing."
+    ] = False,
+    expected_revision: Annotated[
+        int | None,
+        Field(
+            default=None,
+            ge=0,
+            description=(
+                "Apply only at this content revision (a dry run's `preview.revision`); "
+                "otherwise refused stale_revision and nothing is replaced."
+            ),
+        ),
+    ] = None,
+    preconditions: Annotated[
+        list[dict] | None,
+        Field(
+            default=None,
+            description=(
+                "A dry run's `preview.preconditions` ({handle, fingerprint} per match): apply "
+                "only if each is unchanged and nothing else now matches; otherwise refused "
+                "stale_revision and nothing is replaced."
+            ),
+        ),
+    ] = None,
     ctx: Context = None,
 ) -> dict:
     """Replace text in TEXT, MTEXT and block attributes (ATTRIB and ATTDEF).
 
+    Both engines search the same places (`searched_scope`): model space, every
+    paper layout, every named block definition - so the next insert does not
+    reintroduce the old text - and the attributes of every block reference in
+    any of them; an xref's block holds another file's text and is not searched.
     `searched_types` is on the response because "no matches" and "that type was
-    never searched" are different answers. Block *definitions* are included, so
-    the next insert does not reintroduce the old text. DIMENSION text is out of
+    never searched" are different answers. DIMENSION text is out of
     scope: its text field holds the `<>` override placeholder rather than the
-    measurement, so editing it would break the association. A multi-line
+    measurement, so editing it would break the association. Anonymous blocks
+    (`*D` - a dimension's rendered measurement - `*T`, `*U`, `*X`) are
+    renderings regenerated from their owner and are not searched either. A multi-line
     attribute is matched and rewritten as the whole value (`Line1\\PLine2`),
     the same value `block_get_attributes` reports and `block_explode` bursts.
+
+    dry_run=True adds `preview`: the document's content revision, the exact
+    fingerprint of every matched entity and the planned rows. Applied with that
+    `revision` (expected_revision) and/or its `preconditions`, the search runs
+    again first: an edited entity, a moved revision or a new match the preview
+    did not list refuses the call with kind stale_revision and nothing is
+    replaced. A guarded apply reports `revision` ({checked, after, interleaved}).
     """
     await ctx.info(f"Replacing {find!r} with {replace!r}{' (dry run)' if dry_run else ''}")
-    return await _backend(ctx).text_find_replace(find, replace, layer or None, match_case, dry_run)
+    backend = _backend(ctx)
+    if dry_run:
+        from engineering.changes.preview import make_preview
+
+        result = await backend.text_find_replace(find, replace, layer or None, match_case, True)
+        if not result.get("ok"):
+            return result
+        rows = list(result.get("entities") or [])
+        preview = await make_preview(backend, handles=[row["handle"] for row in rows], planned=rows)
+        return {**result, "preview": preview.to_dict()}
+    if expected_revision is None and preconditions is None:
+        return await backend.text_find_replace(find, replace, layer or None, match_case, False)
+    return await _guarded_text_find_replace(
+        backend, find, replace, layer or None, match_case, expected_revision, preconditions
+    )
 
 
 @cad_tool(
@@ -4326,6 +4441,21 @@ def _batch_refusal_kind(exc: BaseException) -> str:
     return "quarantined"
 
 
+def _batch_stale_of(exc: BaseException) -> dict | None:
+    """The ``StaleRevisionError.to_dict()`` refusal ``exc`` carries, or None.
+
+    By type, like the quarantine: a preview whose precondition no longer holds
+    is neither an engine boundary nor a failure to act - the caller re-runs the
+    dry run and applies its new preview (spec section 5, Task 12).
+    """
+    from engineering.changes.preview import StaleRevisionError
+
+    for error in _batch_cause_chain(exc):
+        if isinstance(error, StaleRevisionError):
+            return error.to_dict()
+    return None
+
+
 def _refusal_message(exc: BaseException) -> str:
     """The most specific message on the cause chain, in full.
 
@@ -4397,6 +4527,15 @@ def _classify_batch_error(exc: BaseException) -> dict:
         return {
             "kind": "quarantined",
             "quarantine": quarantine,
+            "message": _batch_message(exc),
+        }
+    stale = _batch_stale_of(exc)
+    if stale is not None:
+        return {
+            "kind": "stale_revision",
+            "expected_revision": stale["expected_revision"],
+            "actual_revision": stale["actual_revision"],
+            "changed": stale["changed"],
             "message": _batch_message(exc),
         }
     chain = _batch_cause_chain(exc)
@@ -4512,6 +4651,30 @@ def _batch_sentinel_refs(value: Any) -> Any:
     if isinstance(value, list):
         return [_batch_sentinel_refs(item) for item in value]
     return value
+
+
+#: An argument whose name says it carries entity handles: ``handle``,
+#: ``handles``, ``handle1`` / ``handle2``, ``target_handle``,
+#: ``overlay_handles``, ``circle_handle``, ... (every handle parameter the
+#: registered tools declare).
+_BATCH_HANDLE_ARG = re.compile(r"^(?:[a-z0-9_]+_)?handles?\d*$")
+
+
+def _batch_literal_handles(args: dict) -> list[str]:
+    """The literal entity handles in a step's handle parameters, upper-cased.
+
+    A ``$reference`` is skipped: it resolves only when the step that binds it
+    has run, so a dry run has nothing to fingerprint for it - and an entity a
+    step creates does not exist yet.
+    """
+    found: list[str] = []
+    for key, value in args.items():
+        if not isinstance(key, str) or not _BATCH_HANDLE_ARG.match(key):
+            continue
+        for item in value if isinstance(value, list) else [value]:
+            if isinstance(item, str) and item.strip() and not item.startswith(_BATCH_REF_SIGIL):
+                found.append(item.strip().upper())
+    return found
 
 
 # ── schema validation (dry_run, and the pre-flight of every real run) ───────
@@ -4783,6 +4946,28 @@ async def cad_batch(
         bool,
         "Return each step's full result instead of just its handle.",
     ] = False,
+    expected_revision: Annotated[
+        int | None,
+        Field(
+            default=None,
+            ge=0,
+            description=(
+                "Run only if the document's content revision is still this one (a dry "
+                "run's `preview.revision`); otherwise refused stale_revision, no step run."
+            ),
+        ),
+    ] = None,
+    preconditions: Annotated[
+        list[dict] | None,
+        Field(
+            default=None,
+            description=(
+                "A dry run's `preview.preconditions` ({handle, fingerprint} per literal "
+                "handle): run only if every entity is exactly as previewed; otherwise "
+                "refused stale_revision, no step run."
+            ),
+        ),
+    ] = None,
     operation_id: Annotated[
         str | None,
         Field(
@@ -4826,6 +5011,17 @@ async def cad_batch(
     stale_revision, scan_incomplete, timed_out, unknown_commit (a write that
     outran its deadline while its worker ran), cancelled, operation_conflict -
     and its own `operation_id`.
+
+    PREVIEW AND APPLY. dry_run=True also returns `preview`: the document id and
+    content revision, the exact fingerprint of every LITERAL handle in a handle
+    parameter (a '$reference' resolves late and an entity a step creates has
+    none) and the planned steps. Pass its `revision` as expected_revision and
+    its `preconditions` back, and the batch runs only if nothing moved -
+    otherwise it is refused with kind stale_revision and no step runs. A
+    guarded batch reports `revision`: {checked, after, interleaved}; each step
+    is its own locked call, so a change another call made between two steps is
+    listed under `interleaved` (a rollback restores the checkpoint, that change
+    included).
 
     OPERATIONS: the batch and each step are operations with their own ids
     (system_status lists the recent ones). Pass `operation_id` (or the
@@ -4963,6 +5159,14 @@ async def cad_batch(
         if mode == "rollback":
             guarantee, note = _batch_rollback_guarantee(_backend(ctx))
             note = f"Planned only - a dry run opens no checkpoint. {note}"
+        from engineering.changes.preview import make_preview
+
+        valid = [row for row in plans if row["status"] == "valid"]
+        preview = await make_preview(
+            _backend(ctx),
+            handles=sorted({h for row in valid for h in _batch_literal_handles(row["_args"])}),
+            planned=[{"i": row["i"], "tool": row["tool"], "args": row["_args"]} for row in valid],
+        )
         return {
             "ok": invalid == 0,
             "dry_run": True,
@@ -4975,6 +5179,7 @@ async def cad_batch(
             "bindings": sorted(bound_names),
             "results": [{k: v for k, v in row.items() if not k.startswith("_")} for row in plans],
             "atomicity": _batch_atomicity(mode=mode, guarantee=guarantee, note=note),
+            "preview": preview.to_dict(),
             "note": (
                 "Validated against each tool's real JSON Schema; nothing was executed. "
                 "A '$reference' validates as a wildcard because its type is only known "
@@ -4993,6 +5198,16 @@ async def cad_batch(
     journal = _operations_journal(ctx.lifespan_context)
     # The middleware set the batch's own operation (a client's id included).
     batch_id = CURRENT_OPERATION.get() or operation_id
+    watch = None
+    if expected_revision is not None or preconditions is not None:
+        # Task 12: checked before any checkpoint opens, so a refusal leaves
+        # nothing to close and nothing ran.
+        from engineering.changes.preview import RevisionWatch, check_preconditions
+
+        await check_preconditions(
+            backend, expected_revision=expected_revision, preconditions=preconditions
+        )
+        watch = await RevisionWatch.begin(backend)
     guarantee, note = "none", _BATCH_NO_CLAIM_NOTE.format(mode=mode)
     transaction = False
     before = None
@@ -5077,6 +5292,8 @@ async def cad_batch(
             # whose call_outcomes rows then carry it.
             step, _ = journal.begin(name, args, document=_identity_of(backend))
             step_token = CURRENT_OPERATION.set(step.operation_id)
+            if watch is not None:
+                await watch.before(f"step {plan['i']} ({name})")
             try:
                 # run_middleware=False: the cad_batch call itself is already through
                 # the audit/timing chain, and skipping it keeps the error one wrap
@@ -5092,6 +5309,8 @@ async def cad_batch(
                 )
                 raise
             except Exception as exc:
+                if watch is not None:
+                    await watch.after()
                 failed += 1
                 executed += 1
                 row["status"] = "error"
@@ -5114,6 +5333,8 @@ async def cad_batch(
                 continue
             finally:
                 CURRENT_OPERATION.reset(step_token)
+            if watch is not None:
+                await watch.after()
             executed += 1
             structured = getattr(outcome, "structured_content", None)
             # A tool may decline *by value* instead of raising: an `is_error` result
@@ -5252,6 +5473,8 @@ async def cad_batch(
         "results": results,
         "atomicity": atomicity,
     }
+    if watch is not None:
+        payload["revision"] = watch.report()
     if declined:
         payload["atomicity"]["note"] = (
             f"BACKEND DECLINED THE {'ROLLBACK' if failed else 'COMMIT'} ({declined}). "
@@ -6702,10 +6925,43 @@ async def drawing_refine(
     allowed_repairs: Annotated[
         list[str] | None, "Optional allowlist of repair focus names."
     ] = None,
-    dry_run: Annotated[bool, "Return the repair plan without modifying the drawing."] = False,
+    dry_run: Annotated[
+        bool, "Return the repair plan and its `preview` without modifying the drawing."
+    ] = False,
+    expected_revision: Annotated[
+        int | None,
+        Field(
+            default=None,
+            ge=0,
+            description=(
+                "Repair only at this content revision (a dry run's `preview.revision`); "
+                "otherwise refused stale_revision and nothing is repaired."
+            ),
+        ),
+    ] = None,
+    preconditions: Annotated[
+        list[dict] | None,
+        Field(
+            default=None,
+            description=(
+                "A dry run's `preview.preconditions` ({handle, fingerprint} per entity a "
+                "planned repair touches): repair only if each is unchanged; otherwise "
+                "refused stale_revision and nothing is repaired."
+            ),
+        ),
+    ] = None,
     ctx: Context = None,
 ) -> dict:
-    """Run a bounded, transaction-safe critique/repair/re-critique loop."""
+    """Run a bounded, transaction-safe critique/repair/re-critique loop.
+
+    dry_run=True returns the plan with `preview` - the content revision and the
+    exact fingerprint of every handle a planned repair touches - also when the
+    score already meets min_score: `threshold_met` then says an apply at that
+    min_score would stop before repairing. Applied with the preview's
+    `revision` (expected_revision) and/or `preconditions`, the call is refused
+    with kind stale_revision and nothing changed when the document moved since;
+    the result then carries `revision` ({checked, after, interleaved}).
+    """
     from engineering.refiner import refine_drawing
 
     result = await refine_drawing(
@@ -6715,6 +6971,8 @@ async def drawing_refine(
         focus=focus,
         allowed_repairs=allowed_repairs,
         dry_run=dry_run,
+        expected_revision=expected_revision,
+        preconditions=preconditions,
     )
     return result.to_dict()
 
@@ -7782,6 +8040,28 @@ async def pid_from_spec(
         "{sheet, equipment[], valves[], instruments[], lines[], connectors[]} — see the P&ID prompt",
     ],
     dry_run: Annotated[bool, "Validate and route in memory; draw nothing"] = False,
+    expected_revision: Annotated[
+        int | None,
+        Field(
+            default=None,
+            ge=0,
+            description=(
+                "Draw only at this content revision (a dry run's `preview.revision`); "
+                "otherwise refused stale_revision and nothing is drawn."
+            ),
+        ),
+    ] = None,
+    preconditions: Annotated[
+        list[dict] | None,
+        Field(
+            default=None,
+            description=(
+                "A dry run's `preview.preconditions` (the routing region's fingerprint): "
+                "draw only if nothing in the region changed; otherwise refused "
+                "stale_revision and nothing is drawn."
+            ),
+        ),
+    ] = None,
     ctx: Context = None,
 ) -> dict:
     """Equipment, valves, instruments and connectors placed, then every line
@@ -7796,12 +8076,27 @@ async def pid_from_spec(
     by path before anything is placed. The response carries the graph read
     back from the drawing and the P&ID critique issues, so the caller sees
     dangling ends or duplicate tags in the same round trip. `dry_run` returns
-    the planned vertices and crossings without touching the drawing.
+    the planned vertices and crossings without touching the drawing; crossings
+    are counted, on both runs, against the spec's own lines and the P&ID lines
+    already on the current layout (`crossings_scope`). The dry run also returns
+    the routing `region` and a `preview` whose precondition is the fingerprint
+    of every entity in that region. Applied with the preview's `revision`
+    (expected_revision) and/or `preconditions`, the run is refused with kind
+    stale_revision and nothing drawn when anything in the region (or the
+    revision) changed; a region precondition taken from another spec is
+    refused by path. A guarded run reports `revision` ({checked, after,
+    interleaved}).
     """
     from engineering.pid.spec import run_spec
 
     await ctx.info("P&ID from spec" + (" (dry run)" if dry_run else ""))
-    return await run_spec(_backend(ctx), spec, dry_run)
+    return await run_spec(
+        _backend(ctx),
+        spec,
+        dry_run,
+        expected_revision=expected_revision,
+        preconditions=preconditions,
+    )
 
 
 @cad_tool(

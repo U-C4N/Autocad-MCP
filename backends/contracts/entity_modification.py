@@ -13,6 +13,15 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from backends.base import EntityInfo
 
+#: Where ``text_find_replace`` looks, on both engines: model space, every paper
+#: layout, every block definition that is neither a layout block, an xref nor
+#: anonymous (``*D`` / ``*T`` / ``*U`` / ``*X``: renderings regenerated from a
+#: dimension, a table, a dynamic block or a hatch, so "block_definitions" means
+#: the named ones), and the ATTRIBs of every block reference found in any of
+#: them. Reported on
+#: every answer as ``searched_scope`` (spec section 5, Task 12).
+TEXT_SEARCH_SCOPE = ("model_space", "paper_layouts", "block_definitions", "block_attributes")
+
 
 class EntityModificationContract(ABC):
     @abstractmethod
@@ -114,11 +123,12 @@ class EntityModificationContract(ABC):
     ) -> dict:
         """Replace text across the drawing.
 
-        Returns ``{ok, replaced, entities, searched_types, note, dry_run}``.
-        ``searched_types`` is reported rather than assumed: "no matches" and
-        "that type was never searched" are different answers, and an editor
-        that silently skips block attributes is the classic version of this
-        bug. DIMENSION text is deliberately out of scope — its ``text`` field
+        Returns ``{ok, replaced, entities, searched_types, searched_scope,
+        note, dry_run}``. ``searched_types`` and ``searched_scope``
+        (:data:`TEXT_SEARCH_SCOPE`) are reported rather than assumed: "no
+        matches" and "that place was never searched" are different answers,
+        and an editor that silently skips block attributes is the classic
+        version of this bug. Both engines search the same scope. DIMENSION text is deliberately out of scope — its ``text`` field
         holds the ``<>`` override placeholder rather than the measurement, so
         editing it would either do nothing or break the association.
         """

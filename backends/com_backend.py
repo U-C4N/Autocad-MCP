@@ -42,6 +42,7 @@ from .base import (
     rad2deg,
     shoelace_area,
 )
+from .contracts.entity_modification import TEXT_SEARCH_SCOPE
 from .contracts.settings import SUMMARY_FIELDS, validate_drawing_properties
 from .document_guard import ActiveDocumentChangedError
 from .operations import CURRENT_OPERATION
@@ -404,6 +405,86 @@ def _delete_on_layer_all_layouts(doc, layer: str) -> dict:
         else:
             deleted.append(handle)
     return {"deleted": deleted, "failed": failed}
+
+
+#: The ActiveX object names ``text_find_replace`` reads and writes
+#: (``TextString``): TEXT, MTEXT, ATTRIB, ATTDEF.
+_COM_TEXT_OBJECTS = ("AcDbText", "AcDbMText", "AcDbAttribute", "AcDbAttributeDefinition")
+#: A block reference and a MINSERT (``block_explode`` measured both names).
+_COM_REFERENCE_OBJECTS = ("AcDbBlockReference", "AcDbMInsertBlock")
+
+
+def _com_text_candidates(doc):
+    """Every object ``text_find_replace`` reads on the live engine, in the
+    headless engine's scope (``TEXT_SEARCH_SCOPE``): model space and every paper
+    layout (``Layouts.Item(i).Block``, in ``TabOrder``), every block definition
+    that is neither a layout block nor an xref (``Blocks.Item(i).IsLayout`` /
+    ``IsXRef``), and the ATTRIBs of every block reference found in any of them
+    (``GetAttributes()``, which answers an empty array for a reference without
+    attributes). It searched ``ModelSpace`` alone, so an attribute on a sheet,
+    a title-block field or a block definition's ATTDEF default was never found
+    on the live engine while the headless one replaced it.
+
+    An anonymous block (``Name`` starting with ``*``) is not searched: a
+    dimension's ``*D`` block, a table's ``*T`` and a dynamic or hatch ``*U`` /
+    ``*X`` hold a rendering AutoCAD regenerates from the owning object, so a
+    match there rewrote a dimension's displayed measurement while the
+    dimension still measured the old value (measured on AutoCAD 2026: an
+    ``AddDimAligned`` of 50 mm owns ``*D1`` and its MText ``50`` was matched).
+    The headless engine skips the same blocks by the same rule.
+
+    Every item is yielded through ``_com_concrete_entity``: with a makepy cache
+    ``Block.Item(i)`` is the gen_py ``IAcadEntity`` wrapper, which has no
+    ``TextString`` (measured on AutoCAD 2026: ``hasattr(item, "TextString")``
+    is False on a TEXT, and the walk raised ``AttributeError``).
+
+    Members measured on AutoCAD 2026 by Task 12's probe (a scratch
+    ``Documents.Add()`` document closed with ``Close(False)``).
+    """
+    layouts = doc.Layouts
+    spaces = []
+    for index in range(int(layouts.Count)):
+        layout = layouts.Item(index)
+        spaces.append((int(layout.TabOrder), layout.Block))
+    containers = [block for _order, block in sorted(spaces, key=lambda row: row[0])]
+    blocks = doc.Blocks
+    for index in range(int(blocks.Count)):
+        block = blocks.Item(index)
+        if bool(block.IsLayout) or bool(block.IsXRef) or str(block.Name).startswith("*"):
+            continue
+        containers.append(block)
+    for container in containers:
+        for index in range(int(container.Count)):
+            entity = _com_concrete_entity(container.Item(index))
+            yield entity
+            if str(entity.ObjectName) in _COM_REFERENCE_OBJECTS:
+                for attribute in entity.GetAttributes():
+                    yield _com_concrete_entity(attribute)
+
+
+def _com_text_find_replace(doc, pattern, replace: str, layer: str | None, dry_run: bool) -> list:
+    """``[{handle, type, before, after}]`` for every match in the live scope;
+    written through ``TextString`` unless ``dry_run``. Each handle once."""
+    changed: list[dict] = []
+    seen: set[str] = set()
+    for entity in _com_text_candidates(doc):
+        object_name = str(entity.ObjectName)
+        if object_name not in _COM_TEXT_OBJECTS:
+            continue
+        handle = str(entity.Handle)
+        if handle in seen:
+            continue
+        seen.add(handle)
+        if layer and str(entity.Layer) != layer:
+            continue
+        current = str(entity.TextString or "")
+        if not current or not pattern.search(current):
+            continue
+        updated = pattern.sub(replace, current)
+        if not dry_run:
+            entity.TextString = updated
+        changed.append({"handle": handle, "type": object_name, "before": current, "after": updated})
+    return changed
 
 
 def _int_member(obj, name: str) -> int | None:
@@ -4200,7 +4281,7 @@ class ComBackend(AutoCADBackend):
 
     #: Same scope as the headless backend, and DIMENSION is out for the same
     #: reason: its TextOverride is the '<>' placeholder, not the measurement.
-    _TEXT_BEARING_OBJECTS = ("AcDbText", "AcDbMText", "AcDbAttribute", "AcDbAttributeDefinition")
+    _TEXT_BEARING_OBJECTS = _COM_TEXT_OBJECTS
 
     @staticmethod
     def _plane_points(points) -> list[tuple[float, float]] | None:
@@ -4299,39 +4380,21 @@ class ComBackend(AutoCADBackend):
                         "character and would shred the text"
                     ),
                 }
+            # The bound document: inside a _run job Task 9's _JobGuard makes
+            # _acad_doc() return it (or refuse), never whatever is active.
             doc = _acad_doc()
             pattern = re.compile(re.escape(needle), 0 if match_case else re.IGNORECASE)
-
-            changed: list[dict] = []
-            for i in range(doc.ModelSpace.Count):
-                entity = doc.ModelSpace.Item(i)
-                if entity.ObjectName not in self._TEXT_BEARING_OBJECTS:
-                    continue
-                if layer and entity.Layer != layer:
-                    continue
-                current = entity.TextString
-                if not current or not pattern.search(current):
-                    continue
-                updated = pattern.sub(replace, current)
-                if not dry_run:
-                    entity.TextString = updated
-                changed.append(
-                    {
-                        "handle": entity.Handle,
-                        "type": entity.ObjectName,
-                        "before": current,
-                        "after": updated,
-                    }
-                )
-
+            changed = _com_text_find_replace(doc, pattern, replace, layer, dry_run)
             return {
                 "ok": True,
                 "replaced": len(changed),
                 "entities": changed,
                 "searched_types": list(self._TEXT_BEARING_OBJECTS),
+                "searched_scope": list(TEXT_SEARCH_SCOPE),
                 "note": (
                     "DIMENSION text is not searched: its TextOverride holds the '<>' "
-                    "placeholder rather than the measured value."
+                    "placeholder rather than the measured value; nor is any anonymous "
+                    "block ('*D' holds a dimension's rendered measurement, '*T' a table's)."
                 ),
                 "dry_run": bool(dry_run),
             }

@@ -44,6 +44,7 @@ from .base import (
     normalize_lineweight,
     shoelace_area,
 )
+from .contracts.entity_modification import TEXT_SEARCH_SCOPE
 from .contracts.settings import (
     SUMMARY_FIELDS,
     custom_key_fold,
@@ -6450,8 +6451,9 @@ class EzdxfBackend(AutoCADBackend):
     _DIMENSION_NOTE = (
         "DIMENSION text is not searched: its text field holds the '<>' override "
         "placeholder rather than the measured value, so editing it would either do "
-        "nothing or detach the dimension from what it measures. Use "
-        "dimension_* text_override for that."
+        "nothing or detach the dimension from what it measures; nor is any "
+        "anonymous block ('*D' holds a dimension's rendered measurement, '*T' a "
+        "table's). Use dimension_* text_override for that."
     )
 
     async def text_set_background(
@@ -6519,17 +6521,37 @@ class EzdxfBackend(AutoCADBackend):
             doc = self._require_doc()
             pattern = re.compile(re.escape(needle), 0 if match_case else re.IGNORECASE)
 
-            def _candidates():
+            def _containers():
                 # Block *definitions* carry ATTDEF and any text drawn inside the
                 # block; a search that only walks layouts silently misses them.
-                yield from doc.modelspace()
+                # Layout blocks are the layouts already walked; an xref's block
+                # holds another file's content, never this drawing's. An
+                # anonymous block ("*D", "*T", "*U", "*X" ...) is a rendering
+                # regenerated from its owner: a DIMENSION's "*D" block holds
+                # the displayed measurement as MTEXT, and rewriting it showed
+                # a number the dimension does not measure. Same rule live.
+                yield doc.modelspace()
                 for layout_name in doc.layouts.names():
                     if layout_name != "Model":
-                        yield from doc.layouts.get(layout_name)
+                        yield doc.layouts.get(layout_name)
                 for block in doc.blocks:
-                    yield from block
-                for entity in doc.modelspace().query("INSERT"):
-                    yield from entity.attribs
+                    if (
+                        block.is_any_layout
+                        or block.block_record.is_xref
+                        or block.name.startswith("*")
+                    ):
+                        continue
+                    yield block
+
+            def _candidates():
+                # The ATTRIBs of EVERY block reference - on a paper layout or
+                # nested in a block definition too, not only in model space:
+                # the live engine searches exactly this (TEXT_SEARCH_SCOPE).
+                for container in _containers():
+                    for entity in container:
+                        yield entity
+                        if entity.dxftype() == "INSERT":
+                            yield from entity.attribs
 
             changed: list[dict] = []
             seen: set[str] = set()
@@ -6585,6 +6607,7 @@ class EzdxfBackend(AutoCADBackend):
                 # are different answers, and the caller can only tell them apart
                 # if the scope is on the response.
                 "searched_types": list(self._TEXT_BEARING_TYPES),
+                "searched_scope": list(TEXT_SEARCH_SCOPE),
                 "note": self._DIMENSION_NOTE,
                 "dry_run": bool(dry_run),
             }
