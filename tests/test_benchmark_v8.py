@@ -308,6 +308,15 @@ async def test_foreign_edit_verified_fails_loudly_when_the_edit_is_a_no_op(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_damaged_dxf_refusal_names_the_fault_and_not_the_machine(tmp_path):
+    passed, metrics, _artifacts = await _run("damaged_dxf_refusal", tmp_path)
+    assert passed, metrics
+    assert "ENDSEC" in metrics["cases"]["truncated"]["error"]
+    assert "not_a_drawing.dxf" in metrics["cases"]["not_dxf"]["error"]
+    assert str(tmp_path) not in json.dumps(metrics), "a published report carries no machine layout"
+
+
+@pytest.mark.asyncio
 async def test_damaged_dxf_refusal_fails_loudly_on_a_silent_empty_document(tmp_path, monkeypatch):
     """The failure 1.7.0 must not have: a damaged file 'opened' as an empty drawing."""
     from backends.ezdxf_backend import EzdxfBackend

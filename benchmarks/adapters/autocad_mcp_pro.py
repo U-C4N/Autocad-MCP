@@ -1795,7 +1795,8 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
                 await self.backend.drawing_open(str(path))
                 cases[name] = {"refused": False, "error": None, "named": False}
             except Exception as exc:  # noqa: BLE001 - the refusal is the measurement
-                error = f"{type(exc).__name__}: {exc}"
+                # the file by name: a published report carries no machine layout
+                error = f"{type(exc).__name__}: {exc}".replace(str(path), path.name)
                 cases[name] = {"refused": True, "error": error, "named": "DXF" in error.upper()}
         identity_after = dict(self.backend.document_identity())
         count_after = (await self.backend.drawing_info()).entity_count
