@@ -1,0 +1,208 @@
+{
+  "schema": "acadmcp-live-harness/1",
+  "smoke": "understand",
+  "status": "pass",
+  "exit_code": 0,
+  "reason": null,
+  "started_at": "2026-10-25T15:44:21+00:00",
+  "duration_s": 2.555,
+  "environment": {
+    "autocad": {
+      "name": "AutoCAD",
+      "version": "25.1s",
+      "build": "W.60.0.0 (UNICODE)",
+      "progid": "AutoCAD.Application"
+    },
+    "os": {
+      "platform": "Windows-11-10.0.26300-SP0",
+      "system": "Windows",
+      "release": "11",
+      "machine": "AMD64"
+    },
+    "python": {
+      "version": "3.13.15",
+      "implementation": "CPython"
+    },
+    "pywin32": "312",
+    "server": {
+      "version": "1.6.0",
+      "sha": "e212f1b13a8273eb76cc12966e2c797cad24ccd2",
+      "dirty": false
+    }
+  },
+  "summary": {
+    "checks": 7,
+    "passed": 7,
+    "failed": 0,
+    "errors": 0,
+    "rpc_retries": 0
+  },
+  "checks": [
+    {
+      "name": "the live P&ID snapshot holds the file's model space",
+      "status": "pass",
+      "expected": {
+        "ARC": 1,
+        "INSERT": 15,
+        "LINE": 8,
+        "LWPOLYLINE": 8,
+        "MTEXT": 8,
+        "TEXT": 31
+      },
+      "observed": {
+        "ARC": 1,
+        "INSERT": 15,
+        "LINE": 8,
+        "LWPOLYLINE": 8,
+        "MTEXT": 8,
+        "TEXT": 31
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "the P&ID read from its DWG holds the file's model space",
+      "status": "pass",
+      "expected": {
+        "ARC": 1,
+        "INSERT": 15,
+        "LINE": 8,
+        "LWPOLYLINE": 8,
+        "MTEXT": 8,
+        "TEXT": 31
+      },
+      "observed": {
+        "ARC": 1,
+        "INSERT": 15,
+        "LINE": 8,
+        "LWPOLYLINE": 8,
+        "MTEXT": 8,
+        "TEXT": 31
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "the live layout snapshot holds the file's model space",
+      "status": "pass",
+      "expected": {
+        "CIRCLE": 18,
+        "LINE": 25,
+        "LWPOLYLINE": 4,
+        "MULTILEADER": 8,
+        "TEXT": 26
+      },
+      "observed": {
+        "CIRCLE": 18,
+        "LINE": 25,
+        "LWPOLYLINE": 4,
+        "MULTILEADER": 8,
+        "TEXT": 26
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "the P&ID is schematic",
+      "status": "pass",
+      "expected": "schematic",
+      "observed": "schematic",
+      "stage": "checks"
+    },
+    {
+      "name": "every pipe run as the truth",
+      "status": "pass",
+      "expected": [],
+      "observed": [],
+      "stage": "checks"
+    },
+    {
+      "name": "every cable row as the truth",
+      "status": "pass",
+      "expected": [],
+      "observed": [],
+      "stage": "checks"
+    },
+    {
+      "name": "the diff reports exactly the moved entity",
+      "status": "pass",
+      "expected": {
+        "changed": 1,
+        "added": 0,
+        "removed": 0
+      },
+      "observed": {
+        "moved": "44",
+        "added": 0,
+        "removed": 0,
+        "changed": 1,
+        "moved_is_the_change": true
+      },
+      "stage": "checks"
+    }
+  ],
+  "documents": {
+    "opened": 2,
+    "closed": 2,
+    "left_open": [],
+    "kept": false
+  },
+  "report": {
+    "export_s": 0.046,
+    "live_pid_source": "live:pid.dxf",
+    "dwg_pid_source": "live:pid.dwg",
+    "model_space": {
+      "pid_file": {
+        "ARC": 1,
+        "INSERT": 15,
+        "LINE": 8,
+        "LWPOLYLINE": 8,
+        "MTEXT": 8,
+        "TEXT": 31
+      },
+      "pid_live": {
+        "ARC": 1,
+        "INSERT": 15,
+        "LINE": 8,
+        "LWPOLYLINE": 8,
+        "MTEXT": 8,
+        "TEXT": 31
+      },
+      "pid_dwg": {
+        "ARC": 1,
+        "INSERT": 15,
+        "LINE": 8,
+        "LWPOLYLINE": 8,
+        "MTEXT": 8,
+        "TEXT": 31
+      },
+      "layout_file": {
+        "CIRCLE": 18,
+        "LINE": 25,
+        "LWPOLYLINE": 4,
+        "MULTILEADER": 8,
+        "TEXT": 26
+      },
+      "layout_live": {
+        "CIRCLE": 18,
+        "LINE": 25,
+        "LWPOLYLINE": 4,
+        "MULTILEADER": 8,
+        "TEXT": 26
+      }
+    },
+    "paper_space_layouts": [],
+    "takeoffs": {
+      "scale_verdict": "schematic",
+      "within_10pct": 0.21818181818181817,
+      "runs_checked": 9,
+      "pipe_mismatch": [],
+      "loads_checked": 4,
+      "cable_mismatch": []
+    },
+    "diff": {
+      "moved": "44",
+      "added": 0,
+      "removed": 0,
+      "changed": 1,
+      "moved_is_the_change": true
+    }
+  }
+}

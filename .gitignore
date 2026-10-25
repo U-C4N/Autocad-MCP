@@ -45,6 +45,9 @@ benchmarks/results/*
 !benchmarks/results/.gitkeep
 !benchmarks/results/published
 !benchmarks/results/published/**
+# The live COM harness's committed evidence (scripts/live/harness.py, B63).
+!benchmarks/results/live
+!benchmarks/results/live/**
 benchmarks/.competitors/
 *.dxf
 # The bundled templates are the one committed DXF set: built by

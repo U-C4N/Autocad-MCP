@@ -1,0 +1,662 @@
+{
+  "schema": "acadmcp-live-harness/1",
+  "smoke": "settings",
+  "status": "pass",
+  "exit_code": 0,
+  "reason": null,
+  "started_at": "2026-10-25T15:44:18+00:00",
+  "duration_s": 2.853,
+  "environment": {
+    "autocad": {
+      "name": "AutoCAD",
+      "version": "25.1s",
+      "build": "W.60.0.0 (UNICODE)",
+      "progid": "AutoCAD.Application"
+    },
+    "os": {
+      "platform": "Windows-11-10.0.26300-SP0",
+      "system": "Windows",
+      "release": "11",
+      "machine": "AMD64"
+    },
+    "python": {
+      "version": "3.13.15",
+      "implementation": "CPython"
+    },
+    "pywin32": "312",
+    "server": {
+      "version": "1.6.0",
+      "sha": "e212f1b13a8273eb76cc12966e2c797cad24ccd2",
+      "dirty": false
+    }
+  },
+  "summary": {
+    "checks": 33,
+    "passed": 33,
+    "failed": 0,
+    "errors": 0,
+    "rpc_retries": 0
+  },
+  "checks": [
+    {
+      "name": "system_launch attached",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "attached": true,
+        "launched": false
+      },
+      "stage": "attach"
+    },
+    {
+      "name": "system_launch launched nothing",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "attached": true,
+        "launched": false
+      },
+      "stage": "attach"
+    },
+    {
+      "name": "dimstyle DIMTXT 2.5",
+      "status": "pass",
+      "expected": 2.5,
+      "observed": 2.5,
+      "stage": "styles"
+    },
+    {
+      "name": "dimstyle DIMDSEP ','",
+      "status": "pass",
+      "expected": ",",
+      "observed": ",",
+      "stage": "styles"
+    },
+    {
+      "name": "dimstyle current",
+      "status": "pass",
+      "expected": null,
+      "observed": true,
+      "stage": "styles"
+    },
+    {
+      "name": "isocp.shx resolved on the seat",
+      "status": "pass",
+      "expected": null,
+      "observed": true,
+      "stage": "styles"
+    },
+    {
+      "name": "mleaderstyle created on COM",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "styles"
+    },
+    {
+      "name": "mleaderstyle listed",
+      "status": "pass",
+      "expected": null,
+      "observed": [
+        "SMOKE",
+        "Standard"
+      ],
+      "stage": "styles"
+    },
+    {
+      "name": "mleaderstyle ISO arrow 2.5",
+      "status": "pass",
+      "expected": 2.5,
+      "observed": 2.5,
+      "stage": "styles"
+    },
+    {
+      "name": "page_setup_list says 420 x 297",
+      "status": "pass",
+      "expected": [
+        420.0,
+        297.0
+      ],
+      "observed": [
+        420.0,
+        297.0
+      ],
+      "stage": "page setup"
+    },
+    {
+      "name": "PDF /MediaBox is 420 x 297 (+-0.5 mm)",
+      "status": "pass",
+      "expected": [
+        420.0,
+        297.0
+      ],
+      "observed": [
+        420.158,
+        297.039
+      ],
+      "stage": "page setup"
+    },
+    {
+      "name": "monochrome.ctb installed on the seat",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "page setup"
+    },
+    {
+      "name": "template carries the mech layers",
+      "status": "pass",
+      "expected": null,
+      "observed": [
+        "0",
+        "CENTER",
+        "CONSTRUCTION",
+        "DIM",
+        "Defpoints",
+        "GEOMETRY",
+        "HATCH",
+        "HIDDEN",
+        "PHANTOM",
+        "TEXT",
+        "TITLEBLOCK"
+      ],
+      "stage": "template"
+    },
+    {
+      "name": "template has ISO-25 current",
+      "status": "pass",
+      "expected": [
+        "ISO-25"
+      ],
+      "observed": [
+        "ISO-25"
+      ],
+      "stage": "template"
+    },
+    {
+      "name": "template has an ISO_A3 page setup",
+      "status": "pass",
+      "expected": null,
+      "observed": [
+        "ISO_A3"
+      ],
+      "stage": "template"
+    },
+    {
+      "name": "smoke document re-activated",
+      "status": "pass",
+      "expected": "Drawing46.dwg",
+      "observed": "Drawing46.dwg",
+      "stage": "template"
+    },
+    {
+      "name": "layer state restored the colour",
+      "status": "pass",
+      "expected": 1,
+      "observed": 1,
+      "stage": "layer state"
+    },
+    {
+      "name": "layer state thawed SMOKE_B",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "layer state"
+    },
+    {
+      "name": "restore reports nothing missing",
+      "status": "pass",
+      "expected": null,
+      "observed": [],
+      "stage": "layer state"
+    },
+    {
+      "name": "restore applied every layer",
+      "status": "pass",
+      "expected": 3,
+      "observed": 3,
+      "stage": "layer state"
+    },
+    {
+      "name": "restore raised no warnings",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "layer state"
+    },
+    {
+      "name": "layer state listed",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "layer state"
+    },
+    {
+      "name": "named view listed",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "view and ucs"
+    },
+    {
+      "name": "ucs current",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "view and ucs"
+    },
+    {
+      "name": "non-orthogonal UCS refusal names the angle",
+      "status": "pass",
+      "expected": null,
+      "observed": "ucs_set: x_axis and y_axis must be perpendicular; measured 45.00° between them (tolerance 0.001°)",
+      "stage": "view and ucs"
+    },
+    {
+      "name": "preference set reports old",
+      "status": "pass",
+      "expected": 5,
+      "observed": {
+        "ok": true,
+        "key": "Display.CursorSize",
+        "old": 5,
+        "new": 6,
+        "changed": true,
+        "backend": "com"
+      },
+      "stage": "preferences"
+    },
+    {
+      "name": "preference set reports new",
+      "status": "pass",
+      "expected": 6,
+      "observed": {
+        "ok": true,
+        "key": "Display.CursorSize",
+        "old": 5,
+        "new": 6,
+        "changed": true,
+        "backend": "com"
+      },
+      "stage": "preferences"
+    },
+    {
+      "name": "preference reverted",
+      "status": "pass",
+      "expected": 5,
+      "observed": {
+        "ok": true,
+        "key": "Display.CursorSize",
+        "old": 6,
+        "new": 5,
+        "changed": true,
+        "backend": "com"
+      },
+      "stage": "preferences"
+    },
+    {
+      "name": "read-only keys listed",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "preferences"
+    },
+    {
+      "name": "read-only preference refused",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "preferences"
+    },
+    {
+      "name": "summary available on COM",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "properties"
+    },
+    {
+      "name": "title round trip",
+      "status": "pass",
+      "expected": null,
+      "observed": "ACADMCP settings smoke",
+      "stage": "properties"
+    },
+    {
+      "name": "custom property round trip",
+      "status": "pass",
+      "expected": null,
+      "observed": "1",
+      "stage": "properties"
+    }
+  ],
+  "documents": {
+    "opened": 2,
+    "closed": 2,
+    "left_open": [],
+    "kept": false
+  },
+  "report": {
+    "system_launch": {
+      "attached": true,
+      "launched": false
+    },
+    "document": "Drawing46.dwg",
+    "styles": {
+      "dimstyle": {
+        "ok": true,
+        "name": "ISO-25-SMOKE",
+        "values": {
+          "DIMTXT": 2.5,
+          "DIMASZ": 2.5,
+          "DIMEXE": 1.25,
+          "DIMEXO": 0.625,
+          "DIMGAP": 0.625,
+          "DIMTAD": 1,
+          "DIMTIH": 0,
+          "DIMTOH": 0,
+          "DIMDEC": 2,
+          "DIMDSEP": ",",
+          "DIMLUNIT": 2,
+          "DIMZIN": 8,
+          "DIMBLK": "",
+          "DIMTXSTY": "ISOCP",
+          "DIMLWD": -2,
+          "DIMLWE": -2,
+          "DIMSCALE": 1.0
+        },
+        "written": [
+          "DIMASZ",
+          "DIMBLK",
+          "DIMDEC",
+          "DIMDSEP",
+          "DIMEXE",
+          "DIMEXO",
+          "DIMGAP",
+          "DIMLUNIT",
+          "DIMLWD",
+          "DIMLWE",
+          "DIMSCALE",
+          "DIMTAD",
+          "DIMTIH",
+          "DIMTOH",
+          "DIMTXSTY",
+          "DIMTXT",
+          "DIMZIN"
+        ],
+        "current": true,
+        "textstyle_created": true
+      },
+      "textstyle": {
+        "ok": true,
+        "name": "ISOCP-SMOKE",
+        "font": "isocp.shx",
+        "font_resolved": true,
+        "current": false
+      },
+      "mleaderstyle": {
+        "ok": true,
+        "name": "SMOKE",
+        "values": {
+          "arrow_size": 2.5,
+          "landing_gap": 1.0,
+          "text_style": "ISOCP",
+          "text_height": 2.5
+        },
+        "textstyle_created": false
+      },
+      "mleaderstyles_on_seat": [
+        "SMOKE",
+        "Standard"
+      ]
+    },
+    "page_setup": {
+      "applied": {
+        "paper": "ISO_A3",
+        "orientation": "landscape",
+        "size_mm": [
+          420.0,
+          297.0
+        ],
+        "canonical_media_name": "ISO_A3_(420.00_x_297.00_MM)",
+        "plot_style": "monochrome.ctb",
+        "plot_style_known": true,
+        "scale": "1:1",
+        "scale_factor": 1.0,
+        "scale_ratio": [
+          1.0,
+          1.0
+        ],
+        "dxf_standard_scale_type": 16,
+        "activex_standard_scale": 16,
+        "plot_area": "layout",
+        "plot_type": 5,
+        "device": "DWG To PDF.pc3",
+        "margins_mm": null,
+        "center": null,
+        "paper_units": "mm"
+      },
+      "changed": {
+        "paper": [
+          "",
+          "ISO_A3"
+        ],
+        "canonical_media_name": [
+          "",
+          "ISO_A3_(420.00_x_297.00_MM)"
+        ],
+        "size_mm": [
+          [
+            0.0,
+            0.0
+          ],
+          [
+            420.0,
+            297.0
+          ]
+        ],
+        "plot_style": [
+          "",
+          "monochrome.ctb"
+        ],
+        "device": [
+          "Microsoft Print to PDF",
+          "DWG To PDF.pc3"
+        ],
+        "margins_mm": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            17.0,
+            17.0,
+            5.0,
+            5.0
+          ]
+        ],
+        "paper_units": [
+          "inches",
+          "mm"
+        ]
+      },
+      "pdf": {
+        "layout": "Layout1",
+        "ok": true,
+        "bytes": 2774,
+        "mediabox_mm": [
+          420.158,
+          297.039
+        ],
+        "paper": "ISO_A3",
+        "name": "Drawing46-Layout1.pdf"
+      },
+      "installed_plot_styles": [
+        "Autodesk-Color.stb",
+        "Autodesk-MONO.stb",
+        "DWF Virtual Pens.ctb",
+        "Fill Patterns.ctb",
+        "Grayscale.ctb",
+        "Screening 100%.ctb",
+        "Screening 25%.ctb",
+        "Screening 50%.ctb",
+        "Screening 75%.ctb",
+        "acad.ctb",
+        "acad.stb",
+        "monochrome.ctb",
+        "monochrome.stb"
+      ]
+    },
+    "template": {
+      "template": "iso_a3_mech.dwt",
+      "source": "bundled",
+      "dimstyle_current": [
+        "ISO-25"
+      ],
+      "papers": [
+        "ISO_A3"
+      ]
+    },
+    "layer_state": {
+      "saved": {
+        "ok": true,
+        "name": "SMOKE",
+        "layer_count": 3,
+        "replaced": false,
+        "chunks": 2,
+        "backend": "com"
+      },
+      "restored": {
+        "ok": true,
+        "name": "SMOKE",
+        "applied": {
+          "layers": 3,
+          "properties": [
+            "on",
+            "frozen",
+            "locked",
+            "color",
+            "linetype",
+            "lineweight",
+            "plot",
+            "current"
+          ],
+          "current_layer": "0"
+        },
+        "missing_layers": [],
+        "new_layers": [],
+        "backend": "com"
+      },
+      "deleted": {
+        "ok": true,
+        "deleted": "SMOKE",
+        "backend": "com"
+      }
+    },
+    "view": {
+      "saved": {
+        "ok": true,
+        "name": "SMOKE_VIEW",
+        "center": [
+          100.0,
+          50.0
+        ],
+        "height": 80.0,
+        "width": 286.8965517241379,
+        "replaced": false,
+        "backend": "com"
+      },
+      "restored": {
+        "ok": true,
+        "name": "SMOKE_VIEW",
+        "center": [
+          100.0,
+          50.0
+        ],
+        "height": 80.0,
+        "width": 286.8965517241379,
+        "applied": "zoom_window",
+        "backend": "com",
+        "viewctr": [
+          100.0,
+          50.0
+        ],
+        "viewsize": 80.0
+      }
+    },
+    "ucs": {
+      "set": {
+        "ok": true,
+        "name": "SMOKE_UCS",
+        "origin": [
+          10.0,
+          20.0,
+          0.0
+        ],
+        "x_axis": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "y_axis": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "replaced": false,
+        "current": true,
+        "backend": "com"
+      },
+      "world": {
+        "ok": true,
+        "name": "world",
+        "current": true,
+        "backend": "com"
+      }
+    },
+    "preferences": {
+      "cursor_size": 5,
+      "read_only": [
+        "Files.SupportPath",
+        "Files.TemplateDwgPath",
+        "Files.PrinterStyleSheetPath",
+        "Files.PrinterConfigPath"
+      ]
+    },
+    "properties": {
+      "set": {
+        "ok": true,
+        "summary_written": [
+          "author",
+          "title"
+        ],
+        "custom_written": [
+          "ACADMCP_SMOKE"
+        ],
+        "custom_deleted": [],
+        "backend": "com"
+      },
+      "get": {
+        "summary": {
+          "title": "ACADMCP settings smoke",
+          "subject": "",
+          "author": "smoke_settings_com.py",
+          "keywords": "",
+          "comments": ""
+        },
+        "summary_available": true,
+        "custom": {
+          "ACADMCP_SMOKE": "1"
+        },
+        "backend": "com"
+      }
+    },
+    "prompt_message": {
+      "ok": true,
+      "text": "ACADMCP settings smoke: done",
+      "backend": "com"
+    }
+  }
+}

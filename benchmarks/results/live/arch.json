@@ -1,0 +1,159 @@
+{
+  "schema": "acadmcp-live-harness/1",
+  "smoke": "arch",
+  "status": "pass",
+  "exit_code": 0,
+  "reason": null,
+  "started_at": "2026-10-25T15:42:12+00:00",
+  "duration_s": 86.955,
+  "environment": {
+    "autocad": {
+      "name": "AutoCAD",
+      "version": "25.1s",
+      "build": "W.60.0.0 (UNICODE)",
+      "progid": "AutoCAD.Application"
+    },
+    "os": {
+      "platform": "Windows-11-10.0.26300-SP0",
+      "system": "Windows",
+      "release": "11",
+      "machine": "AMD64"
+    },
+    "python": {
+      "version": "3.13.15",
+      "implementation": "CPython"
+    },
+    "pywin32": "312",
+    "server": {
+      "version": "1.6.0",
+      "sha": "e212f1b13a8273eb76cc12966e2c797cad24ccd2",
+      "dirty": false
+    }
+  },
+  "summary": {
+    "checks": 6,
+    "passed": 6,
+    "failed": 0,
+    "errors": 0,
+    "rpc_retries": 0
+  },
+  "checks": [
+    {
+      "name": "nothing omitted",
+      "status": "pass",
+      "expected": [],
+      "observed": [],
+      "stage": "checks"
+    },
+    {
+      "name": "both rooms labelled",
+      "status": "pass",
+      "expected": [
+        "01",
+        "02"
+      ],
+      "observed": [
+        "01",
+        "02"
+      ],
+      "stage": "checks"
+    },
+    {
+      "name": "room 01 reads back within 0.1 % of its label and the hand floor",
+      "status": "pass",
+      "expected": {
+        "label_mm2": 27743750.0,
+        "hand_mm2": 27743750.0
+      },
+      "observed": 27743750.0,
+      "stage": "checks"
+    },
+    {
+      "name": "room 02 reads back within 0.1 % of its label and the hand floor",
+      "status": "pass",
+      "expected": {
+        "label_mm2": 21993750.0,
+        "hand_mm2": 21993750.0
+      },
+      "observed": 21993750.0,
+      "stage": "checks"
+    },
+    {
+      "name": "the three schedules drawn",
+      "status": "pass",
+      "expected": [
+        "doors",
+        "rooms",
+        "windows"
+      ],
+      "observed": [
+        "doors",
+        "rooms",
+        "windows"
+      ],
+      "stage": "checks"
+    },
+    {
+      "name": "the critique found nothing",
+      "status": "pass",
+      "expected": 0,
+      "observed": [],
+      "stage": "checks"
+    }
+  ],
+  "documents": {
+    "opened": 1,
+    "closed": 1,
+    "left_open": [],
+    "kept": false
+  },
+  "report": {
+    "walls": [
+      "EXT",
+      "INT"
+    ],
+    "openings": [
+      "D1",
+      "D2",
+      "W1",
+      "W2"
+    ],
+    "omitted": [],
+    "stairs": 1,
+    "schedules": [
+      {
+        "kind": "doors",
+        "representation": "native",
+        "rows": 2
+      },
+      {
+        "kind": "windows",
+        "representation": "native",
+        "rows": 2
+      },
+      {
+        "kind": "rooms",
+        "representation": "native",
+        "rows": 3
+      }
+    ],
+    "rooms": {
+      "01": {
+        "label_mm2": 27743750.0,
+        "detected_mm2": 27743750.0,
+        "hand_mm2": 27743750.0,
+        "agrees": true
+      },
+      "02": {
+        "label_mm2": 21993750.0,
+        "detected_mm2": 21993750.0,
+        "hand_mm2": 21993750.0,
+        "agrees": true
+      }
+    },
+    "faces_detected": 2,
+    "confidence_min": 1.0,
+    "critique_issues": 0,
+    "critique": []
+  }
+}
