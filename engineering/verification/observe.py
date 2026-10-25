@@ -12,6 +12,13 @@ its block definition plus ``block_path`` - the INSERT handles from the
 outermost down. ``Snapshot.records`` never sees exploded geometry, so the diff,
 the takeoffs, ``drawing_understand`` and the benchmark tasks keep their inputs.
 
+A MINSERT (an INSERT with a row / column grid, ``mcount`` > 1) is exploded
+once per cell (``EntityRecord.cells``), never only at its own placement:
+counting its first cell would let a ``count`` or an ``absence`` requirement
+pass over copies that are there. Each cell's features carry the path element
+``"<handle>[<row>,<column>]"`` (:func:`cell_path_element`) in place of the bare
+INSERT handle, so the copies stay distinct features with distinct identities.
+
 What a transform does to a curve is computed, not assumed:
 
 * a similarity (uniform scale, rotation, mirror) keeps a circle a circle; a
@@ -47,7 +54,14 @@ from ezdxf import units as ezdxf_units
 from engineering.understand.units import infer_units
 from engineering.verification.types import ObservedFeature, ObservedGeometry
 
-__all__ = ["MAX_NESTING", "NON_UNIFORM", "NON_UNIFORM_BULGE", "TILTED", "observe"]
+__all__ = [
+    "MAX_NESTING",
+    "NON_UNIFORM",
+    "NON_UNIFORM_BULGE",
+    "TILTED",
+    "cell_path_element",
+    "observe",
+]
 
 Affine = tuple[float, float, float, float, float, float]
 _IDENTITY: Affine = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
@@ -251,6 +265,24 @@ def _features_of(rec, m: Affine, path, space, parent_layer, tilted_above) -> lis
     return []
 
 
+def cell_path_element(handle: str, row: int, column: int) -> str:
+    """The ``block_path`` element of one MINSERT cell: ``"<handle>[<row>,<column>]"``."""
+    return f"{handle}[{int(row)},{int(column)}]"
+
+
+def _placements(insert) -> list:
+    """``(path element, affine)`` for each copy an INSERT places: one for an
+    INSERT, one per grid cell for a MINSERT."""
+    if insert.cells:
+        return [
+            (cell_path_element(insert.handle, row, column), transform)
+            for row, column, transform in insert.cells
+        ]
+    if insert.transform is None:
+        return []
+    return [(insert.handle, insert.transform)]
+
+
 def _explode(
     insert, blocks, m: Affine, path, space, tilted_above, stack, parent_layer=None
 ) -> list:
@@ -260,20 +292,21 @@ def _explode(
         raise ValueError(f"observe: block {name!r} contains itself ({chain})")
     if len(stack) >= MAX_NESTING:
         raise ValueError(f"observe: INSERT nesting deeper than {MAX_NESTING} at {name!r}")
-    if insert.transform is None:
-        return []
-    inner = _compose(m, insert.transform)
-    here = (*path, insert.handle)
     tilted = tilted_above or insert.tilted
     # Layer 0 inside a block takes the layer of the INSERT placing it - and an
     # INSERT on 0 inside a block passes on the layer it inherited itself.
     layer = parent_layer if (insert.layer == "0" and parent_layer is not None) else insert.layer
     out: list = []
-    for member in blocks.get(name, ()):
-        if member.type == "INSERT":
-            out.extend(_explode(member, blocks, inner, here, space, tilted, (*stack, name), layer))
-        else:
-            out.extend(_features_of(member, inner, here, space, layer, tilted))
+    for element, transform in _placements(insert):
+        inner = _compose(m, transform)
+        here = (*path, element)
+        for member in blocks.get(name, ()):
+            if member.type == "INSERT":
+                out.extend(
+                    _explode(member, blocks, inner, here, space, tilted, (*stack, name), layer)
+                )
+            else:
+                out.extend(_features_of(member, inner, here, space, layer, tilted))
     return out
 
 

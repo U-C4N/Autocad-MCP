@@ -15,7 +15,8 @@ equals** (v1.7.0, B17):
 Selectors (``FeatureSelector.kind`` and the keys of its ``value``):
 
 * ``handle`` - ``{"handle", "block_path"?}``: that entity; an exploded one
-  needs its ``block_path`` (the INSERT handles, outermost first).
+  needs its ``block_path`` (the INSERT handles, outermost first; a MINSERT
+  cell is ``"<handle>[<row>,<column>]"``).
 * ``feature_tag`` - ``{"feature", "part"?, "view"?, "type"?, "fallback"?}``:
   the entities whose ``ACADMCP_MECH`` feature tag matches. A drawing made
   before 1.7.0 carries no tags; ``fallback`` (a predicate's pairs) is then

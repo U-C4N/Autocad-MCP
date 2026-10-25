@@ -53,11 +53,11 @@ def point(handle, at):
     return _f(handle, "point", location=at)
 
 
-def drawing(*features, unit="mm"):
+def drawing(*features, unit="mm", inferred="same"):
     return ObservedGeometry(
         features=tuple(features),
         declared_unit=unit,
-        inferred_unit=unit,
+        inferred_unit=unit if inferred == "same" else inferred,
         document_id="doc",
         revision=1,
         source="test",
@@ -348,6 +348,42 @@ def test_lengths_convert_between_the_drawing_and_the_requirement_unit():
     unitless = drawing(circle("C", (0.0, 0.0), 1.0), unit=None)
     m = measure(req("radius", nominal=1.0, unit="mm"), unitless, "C")
     assert m.status == "unknown" and m.method == "units"
+
+
+def test_the_declared_unit_wins_over_the_inferred_one_and_the_detail_says_so():
+    # declared mm, inferred in (a plan heuristic on a mechanical part): R10 is
+    # 10 mm, never 254 mm; the inference is recorded, not applied
+    observed = drawing(circle("C", (0.0, 0.0), 10.0), unit="mm", inferred="in")
+    m = measure(req("radius", nominal=10.0, unit="mm"), observed, "C")
+    assert (m.value, m.unit, m.status) == (10.0, "mm", "pass")
+    detail = dict(m.detail)
+    assert (detail["drawing_unit"], detail["unit_source"], detail["inferred_unit"]) == (
+        "mm",
+        "declared",
+        "in",
+    )
+    # agreement records no inferred unit
+    agreed = measure(
+        req("radius", nominal=10.0, unit="mm"), drawing(circle("C", (0, 0), 10.0)), "C"
+    )
+    assert "inferred_unit" not in dict(agreed.detail)
+    assert dict(agreed.detail)["unit_source"] == "declared"
+
+
+def test_a_unitless_drawing_is_measured_in_its_inferred_unit_and_says_so():
+    observed = drawing(circle("C", (0.0, 0.0), 1.0), unit=None, inferred="in")
+    m = measure(req("radius", nominal=25.4, unit="mm"), observed, "C")
+    assert m.value == pytest.approx(25.4, abs=1e-12) and m.status == "pass"
+    detail = dict(m.detail)
+    assert (detail["drawing_unit"], detail["unit_source"]) == ("in", "inferred")
+
+
+def test_a_declared_unit_without_an_exact_factor_is_unknown_never_the_inferred_one():
+    observed = drawing(circle("C", (0.0, 0.0), 1.0), unit="yd", inferred="mm")
+    m = measure(req("radius", nominal=1.0, unit="mm"), observed, "C")
+    assert (m.status, m.method) == ("unknown", "units")
+    assert "'yd'" in dict(m.detail)["units"]
+    assert dict(m.detail)["unit_source"] == "declared"
 
 
 def test_a_requirement_s_own_epsilon_overrides_the_default():

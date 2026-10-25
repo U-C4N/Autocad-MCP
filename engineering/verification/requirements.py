@@ -287,13 +287,27 @@ def _parse_selector(value: Any, path: str) -> FeatureSelector:
     return FeatureSelector(kind=kind, value=freeze(out))
 
 
+#: One MINSERT cell in a ``block_path``: ``"<handle>[<row>,<column>]"``
+#: (``engineering/verification/observe.py::cell_path_element``).
+_CELL = re.compile(r"^([0-9A-Fa-f]{1,16})\[([0-9]+),([0-9]+)\]$")
+
+
 def _block_path(value: Any, path: str) -> list[str]:
-    """The INSERT handles above an exploded feature, outermost first."""
+    """The INSERT handles above an exploded feature, outermost first; a MINSERT
+    cell is ``"<handle>[<row>,<column>]"``."""
     if not isinstance(value, (list, tuple)) or not value:
         raise RequirementError(
             f"{path}: expected a non-empty list of handles, got {short_repr(value)}."
         )
-    return [_handle(item, f"{path}[{index}]") for index, item in enumerate(value)]
+    out = []
+    for index, item in enumerate(value):
+        where = f"{path}[{index}]"
+        cell = _CELL.match(item) if isinstance(item, str) else None
+        if cell is not None:
+            out.append(f"{cell.group(1).upper()}[{int(cell.group(2))},{int(cell.group(3))}]")
+        else:
+            out.append(_handle(item, where))
+    return out
 
 
 def _parse_predicate(selector: Mapping, path: str) -> dict:

@@ -45,8 +45,8 @@ exploded: an INSERT is one record with its block name, attributes and box.
 
 v1.7.0 (B16): a record also carries what the verification engine measures -
 HATCH loops, DIMENSION defpoints and fields, ELLIPSE and SPLINE data, an
-INSERT's block-to-WCS affine, a tilted-plane flag and our ``ACADMCP_*`` XDATA -
-all with defaults, so every 1.6 reader is unchanged. ``block_defs=True``
+INSERT's block-to-WCS affine (one per cell of a MINSERT), a tilted-plane flag
+and our ``ACADMCP_*`` XDATA - all with defaults, so every 1.6 reader is unchanged. ``block_defs=True``
 reads block definitions into ``Snapshot.blocks``; exploding them is
 ``engineering/verification/observe.py``'s job and never touches ``records``.
 """
@@ -131,6 +131,11 @@ class EntityRecord:
     #: WCS, ``x' = a*x + c*y + e``, ``y' = b*x + d*y + f`` - read off ezdxf's
     #: ``matrix44()``, so base point, scale, rotation and mirror are included.
     transform: tuple | None = None
+    #: MINSERT (an INSERT whose ``mcount`` > 1): every cell of the grid as
+    #: ``(row, column, affine)``, the affine as in ``transform``. ``transform``
+    #: stays the MINSERT's own placement - cell (0, 0) - so a 1.6 reader sees
+    #: what it always saw; empty for a plain INSERT.
+    cells: tuple = ()
     #: Every ``ACADMCP_*`` application on the entity, as ``(app id, json)``.
     xdata: tuple[tuple[str, str], ...] = ()
 
@@ -284,6 +289,7 @@ def _record(entity, space: str, *, insert_boxes: bool = True) -> EntityRecord | 
             rotation=float(dxf.get("rotation", 0.0)),
             scale=(float(dxf.get("xscale", 1.0)), float(dxf.get("yscale", 1.0))),
             transform=_insert_transform(entity),
+            cells=_minsert_cells(entity),
         )
     if kind == "MULTILEADER":
         context = entity.context
@@ -345,6 +351,37 @@ def _insert_transform(entity) -> tuple[float, float, float, float, float, float]
         float(uy[1]),
         float(origin[0]),
         float(origin[1]),
+    )
+
+
+def _minsert_cells(entity) -> tuple:
+    """A MINSERT's grid as ``((row, column, affine), ...)``; ``()`` for an INSERT.
+
+    The cells are ezdxf's own ``multi_insert()`` copies (the grid offset is
+    turned by the INSERT's rotation and is not scaled), labelled in the order
+    that method walks them - rows outer, columns inner, a repeated location
+    yielded once (a zero spacing: the ``mcount`` rule). ``virtual_entities()``
+    resolves only the first cell, which is why a MINSERT needs this at all.
+    """
+    if int(entity.mcount) <= 1:
+        return ()
+    dxf = entity.dxf
+    row_spacing = float(dxf.get("row_spacing", 0.0))
+    column_spacing = float(dxf.get("column_spacing", 0.0))
+    labels = []
+    seen = set()
+    for row in range(int(dxf.get("row_count", 1))):
+        for column in range(int(dxf.get("column_count", 1))):
+            offset = (column * column_spacing, row * row_spacing)
+            if offset not in seen:
+                seen.add(offset)
+                labels.append((row, column))
+    copies = list(entity.multi_insert())
+    if len(copies) != len(labels):  # never seen; an unlabelled grid is still every cell
+        labels = [(index, 0) for index in range(len(copies))]
+    return tuple(
+        (row, column, _insert_transform(copy))
+        for (row, column), copy in zip(labels, copies, strict=True)
     )
 
 

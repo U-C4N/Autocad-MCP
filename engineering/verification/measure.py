@@ -32,10 +32,22 @@ G1 continuity by the angle between the tangents when an arc shares an end
 with the other curve), ``count`` (``exact`` / ``min`` / ``max``) and
 ``absence``. A point-like feature is a POINT or the centre of a circle or arc.
 
-Units: the drawing's unit is ``observed.inferred_unit``, else its
-``declared_unit``; a length is converted to the requirement's unit (its
-target's ``unit``, else the set's ``units`` passed to :func:`evaluate`) with the
-exact factors of ``engineering/understand/units.py::MM_PER_UNIT``. An angle is
+Units: the drawing's unit is its ``declared_unit`` (``$INSUNITS``); only a
+unitless drawing falls back to ``observed.inferred_unit``. The inference
+(``engineering/understand/units.py::infer_units``) is tuned for plans - a
+quarter-circle arc of 0.5-1.5 m reads as a door swing and outweighs the header
+- so a millimetre part with R25 quarter fillets infers as inches; trusting it
+over the header measured that part 25.4 times too large, and a part drawn 25.4
+times too small would have passed. The header is the drawing's claim and the
+artifact is held to it. Every length measurement says which unit it used and
+where it came from (``detail["drawing_unit"]``, ``detail["unit_source"]``:
+``declared`` or ``inferred``), and when the header and the inference disagree
+``detail["inferred_unit"]`` names the unit the geometry suggested - recorded,
+never silently applied. A declared unit with no exact factor (yards, microns)
+answers ``unknown``, never a guess. A length is converted to the requirement's
+unit (its target's ``unit``, else the set's ``units`` passed to
+:func:`evaluate`) with the exact factors of
+``engineering/understand/units.py::MM_PER_UNIT``. An angle is
 reported in degrees, or in radians when its target says ``"rad"``. Two
 undirected lines meet at an angle and at its supplement; ``angle`` reports the
 one nearer the nominal - the same pair of lines, not a choice between
@@ -49,6 +61,7 @@ Epsilons: lengths ``RELATIVE_EPSILON`` x the largest coordinate (at least
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 from engineering.understand.units import MM_PER_UNIT
 from engineering.verification.binding import feature_of
@@ -103,8 +116,24 @@ def _result(req, value, unit, method, residual, status, **detail) -> Measurement
     )
 
 
-def _drawing_unit(observed) -> str | None:
-    return observed.inferred_unit or observed.declared_unit
+def _drawing_unit(observed) -> tuple[str | None, str]:
+    """``(unit, source)``: the declared unit (``"declared"``); for a unitless
+    drawing the inferred one (``"inferred"``); else ``(None, "unknown")``."""
+    if observed.declared_unit is not None:
+        return observed.declared_unit, "declared"
+    if observed.inferred_unit is not None:
+        return observed.inferred_unit, "inferred"
+    return None, "unknown"
+
+
+def _unit_detail(observed) -> dict:
+    """What a length measurement records about the drawing's unit."""
+    unit, source = _drawing_unit(observed)
+    detail = {"drawing_unit": unit, "unit_source": source}
+    inferred = observed.inferred_unit
+    if source == "declared" and inferred is not None and inferred != unit:
+        detail["inferred_unit"] = inferred
+    return detail
 
 
 def _factor(observed, unit: str | None) -> tuple[float | None, str]:
@@ -114,10 +143,19 @@ def _factor(observed, unit: str | None) -> tuple[float | None, str]:
         return 1.0, ""
     if unit not in MM_PER_UNIT:
         return None, f"the requirement unit {unit!r} is not a length unit"
-    drawing = _drawing_unit(observed)
-    if drawing not in MM_PER_UNIT:
+    drawing, source = _drawing_unit(observed)
+    if drawing is None:
         return None, "the drawing unit is unknown"
+    if drawing not in MM_PER_UNIT:
+        return None, f"the {source} drawing unit {drawing!r} has no exact length factor"
     return MM_PER_UNIT[drawing] / MM_PER_UNIT[unit], ""
+
+
+def _with_units(measurement: Measurement, observed) -> Measurement:
+    """``measurement`` with the drawing's unit and its source in its detail."""
+    detail = dict(measurement.detail)
+    detail.update(_unit_detail(observed))
+    return replace(measurement, detail=tuple(sorted(detail.items())))
 
 
 def _unsupported(features) -> str | None:
@@ -428,6 +466,13 @@ def evaluate(
         return _result(req, None, unit or "", why, None, "unsupported")
     if quantity in _ANGULAR:
         return _angular(req, features, nominal)
+    return _with_units(_length(req, features, observed, unit, nominal, epsilon), observed)
+
+
+def _length(req, features, observed, unit, nominal, epsilon) -> Measurement:
+    """The quantities measured in length: radius, diameter, distance,
+    concentric, coincident and tangent."""
+    quantity = req.quantity
     factor, units_why = _factor(observed, unit)
     if factor is None:
         return _result(req, None, unit or "", "units", None, "unknown", units=units_why)
@@ -435,7 +480,7 @@ def evaluate(
         eps = float(req.verification_epsilon)
     else:
         eps = (epsilon if epsilon is not None else default_epsilon(observed)) * factor
-    out_unit = unit or (_drawing_unit(observed) or "")
+    out_unit = unit or (_drawing_unit(observed)[0] or "")
     if quantity in ("radius", "diameter"):
         return _radial(req, features, nominal, factor, eps, out_unit)
     if len(features) != 2:
