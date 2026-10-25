@@ -49,6 +49,9 @@ benchmarks/results/*
 !benchmarks/results/live
 !benchmarks/results/live/**
 benchmarks/.competitors/
+# What `claude plugin eval` writes next to the cases it runs (Task 22).
+plugin/evals/results/
+plugin/evals/mocks/
 *.dxf
 # The bundled templates are the one committed DXF set: built by
 # scripts/build_templates.py and pinned reproducible by its --check.

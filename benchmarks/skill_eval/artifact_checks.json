@@ -1,0 +1,42 @@
+{
+  "_comment": "What a correct run's saved drawing holds, re-measured by check_artifacts.py with verify_artifact. One entry per eval case under plugin/evals/ that saves a file; 'path' is relative to the run's folder and is the path the case's prompt and its file_exists grader name; 'expect' is the acceptance status a correct run's file has.",
+  "saved-not-in-memory": {
+    "path": "bracket.dxf",
+    "expect": "pass",
+    "requirements": {
+      "units": "mm",
+      "items": [
+        {"id": "S1", "quantity": "distance", "target": {"nominal": 40, "unit": "mm"},
+         "features": [
+           {"kind": "predicate", "type": "circle", "radius_min": 4.9, "radius_max": 5.1, "region": [0, 0, 40, 50]},
+           {"kind": "predicate", "type": "circle", "radius_min": 4.9, "radius_max": 5.1, "region": [40, 0, 120, 50]}
+         ],
+         "provenance": "explicit", "source": {"label": "centres 40 mm apart on y = 25"}},
+        {"id": "D1", "quantity": "diameter", "target": {"nominal": 10, "unit": "mm"},
+         "features": [{"kind": "predicate", "type": "circle", "radius_min": 4.9, "radius_max": 5.1, "region": [0, 0, 40, 50]}],
+         "provenance": "explicit", "source": {"label": "two holes of diameter 10"}},
+        {"id": "D2", "quantity": "diameter", "target": {"nominal": 10, "unit": "mm"},
+         "features": [{"kind": "predicate", "type": "circle", "radius_min": 4.9, "radius_max": 5.1, "region": [40, 0, 120, 50]}],
+         "provenance": "explicit", "source": {"label": "two holes of diameter 10"}},
+        {"id": "N1", "quantity": "count", "target": {"exact": 2},
+         "features": [{"kind": "predicate", "type": "circle", "radius_min": 4.9, "radius_max": 5.1}],
+         "provenance": "explicit", "source": {"label": "two holes"}}
+      ]
+    }
+  },
+  "construction-left": {
+    "path": "locator.dxf",
+    "expect": "pass",
+    "requirements": {
+      "units": "mm",
+      "items": [
+        {"id": "D1", "quantity": "diameter", "target": {"nominal": 12, "unit": "mm"},
+         "features": [{"kind": "predicate", "type": "circle", "radius_min": 5.9, "radius_max": 6.1, "region": [40, 25, 50, 35]}],
+         "provenance": "explicit", "source": {"label": "circle of diameter 12 at the intersection (45, 30)"}},
+        {"id": "N1", "quantity": "count", "target": {"exact": 1},
+         "features": [{"kind": "predicate", "type": "circle", "radius_min": 5.9, "radius_max": 6.1}],
+         "provenance": "explicit", "source": {"label": "one locating hole"}}
+      ]
+    }
+  }
+}

@@ -615,6 +615,11 @@ REQUIRED_SCENARIOS = {
     "modified-artifact",
     "prompt-injection",
 }
+#: Spec §6 Task 22: "20 cases" - the named scenarios above and the rest of the
+#: suite's negative scenarios.
+SUITE_SIZE = 20
+#: The grader types spec §6 Task 22 names; the suite uses each at least once.
+SPEC_GRADER_TYPES = {"tool_used", "tool_order", "regex", "file_exists", "llm"}
 
 
 def _front_matter(path: Path) -> tuple[dict, str]:
@@ -669,18 +674,49 @@ def test_eval_case_loads_under_the_cli_schema(case: Path) -> None:
         if kind == "regex":
             re.compile(data.get("pattern") or body)
         if kind == "tool_used":
-            tool = data["tool"]
-            if tool.startswith("mcp__"):
-                assert tool.startswith(MCP_PREFIX), (
-                    f"{path.name}: {tool} is not the plugin's server"
-                )
-                assert tool[len(MCP_PREFIX) :] in inventory, f"{path.name}: no tool {tool}"
-            if "input_match" in data:
-                re.compile(data["input_match"])
+            _check_tool_ref(path.name, {"tool": data["tool"], **data}, inventory)
+        if kind == "tool_order":
+            for side in ("before", "after"):
+                assert side in data, f"{path.name}: a tool_order grader needs {side!r}"
+                ref = data[side] if isinstance(data[side], dict) else {"tool": data[side]}
+                assert set(ref) <= {"tool", "input_match"}, f"{path.name}: {side} keys {ref}"
+                _check_tool_ref(path.name, ref, inventory)
+        if kind == "file_exists":
+            target = data.get("path", "")
+            assert target and not Path(target).is_absolute() and ".." not in Path(target).parts, (
+                f"{path.name}: a file_exists path is relative to the run's folder, got {target!r}"
+            )
+            assert target in prompt or target.lstrip("./") in prompt, (
+                f"{path.name}: the prompt never names {target}"
+            )
         kinds.append((path.stem, kind, data))
     fired = [d for stem, kind, d in kinds if kind == "tool_used" and d.get("tool") == "Skill"]
     assert fired and fired[0].get("arm") == "with-only", "the plugin-fired indicator is missing"
     assert any(kind == "llm" for _, kind, _ in kinds), "no grader judges the behaviour"
+
+
+def _check_tool_ref(grader: str, ref: dict, inventory: set[str]) -> None:
+    """A grader's tool: the plugin server's prefix and a tool the server has."""
+    tool = ref["tool"]
+    if tool.startswith("mcp__"):
+        assert tool.startswith(MCP_PREFIX), f"{grader}: {tool} is not the plugin's server"
+        assert tool[len(MCP_PREFIX) :] in inventory, f"{grader}: no tool {tool}"
+    if ref.get("input_match"):
+        re.compile(ref["input_match"])
+
+
+def test_the_suite_has_twenty_cases() -> None:
+    names = [case.name for case in _cases()]
+    assert len(names) == SUITE_SIZE, f"{len(names)} cases: {names}"
+
+
+def test_the_suite_uses_every_grader_type_the_spec_names() -> None:
+    used = {
+        _front_matter(path)[0].get("type")
+        for case in _cases()
+        for path in (case / "graders").glob("*.md")
+    }
+    assert SPEC_GRADER_TYPES <= used, f"never used: {sorted(SPEC_GRADER_TYPES - used)}"
 
 
 def test_eval_tool_names_follow_the_plugin_naming() -> None:
