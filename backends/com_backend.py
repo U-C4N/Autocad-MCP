@@ -44,6 +44,7 @@ from .base import (
 )
 from .contracts.settings import SUMMARY_FIELDS, validate_drawing_properties
 from .document_guard import ActiveDocumentChangedError
+from .operations import CURRENT_OPERATION
 from .quarantine import DaemonExecutor, real_call_name
 
 log = logging.getLogger(__name__)
@@ -2164,16 +2165,22 @@ class ComBackend(AutoCADBackend):
         started = time.time()
         document = self._document_label()
         guard = _JobGuard(self)
+        # B12: a thread pool copies no context, so the operation id travels into
+        # the STA job explicitly - code on the COM thread and the call_outcomes
+        # rows below see the id the caller runs under.
+        operation_id = CURRENT_OPERATION.get()
 
         def _job():
             # B11: the first _acad_doc() of this job checks the bound document,
             # inside the job, before any document work.
+            token = CURRENT_OPERATION.set(operation_id)
             _JOB_STATE.guard = guard
             try:
                 return func(*args, **kwargs)
             finally:
                 _JOB_STATE.guard = None
                 guard.doc = None
+                CURRENT_OPERATION.reset(token)
 
         work = self._executor.submit(_job)
         future = asyncio.wrap_future(work, loop=loop)
@@ -2186,7 +2193,7 @@ class ComBackend(AutoCADBackend):
             # next one — but whether it ran matters to Task 10's
             # `unknown_commit`. `work.cancel()` is True only for a call no
             # worker ever took (it never runs); False means it is running or done.
-            self._record_cancel(func, work, started, document)
+            self._record_cancel(func, work, started, document, operation_id)
             raise
         except TimeoutError as e:
             if not future.cancelled():
@@ -2197,6 +2204,18 @@ class ComBackend(AutoCADBackend):
                 # blaming AutoCAD and discarding a live STA connection.
                 raise
             log.error("COM call timed out after %.1fs; rebuilding executor", timeout)
+            # B12: the worker is still inside AutoCAD; whether the call lands
+            # is unknown, and the middleware reads this row to say so.
+            self.call_outcomes.append(
+                {
+                    "call": real_call_name(func),
+                    "outcome": "abandoned_deadline",
+                    "started": started,
+                    "ended": None,
+                    "document": document,
+                    "operation_id": operation_id,
+                }
+            )
             # The worker thread is still blocked inside SendCommand and cannot be
             # cancelled. Abandon it (shutdown(wait=False)) and start a fresh
             # single-thread executor so the next call doesn't queue behind the
@@ -2240,7 +2259,14 @@ class ComBackend(AutoCADBackend):
         name, full_name = key
         return full_name or name
 
-    def _record_cancel(self, func, work, started: float, document: str | None) -> None:
+    def _record_cancel(
+        self,
+        func,
+        work,
+        started: float,
+        document: str | None,
+        operation_id: str | None = None,
+    ) -> None:
         queued = work.cancel()
         row = {
             "call": real_call_name(func),
@@ -2248,6 +2274,7 @@ class ComBackend(AutoCADBackend):
             "started": started,
             "ended": time.time() if queued else None,
             "document": document,
+            "operation_id": operation_id,
         }
         self.call_outcomes.append(row)
         if not queued:

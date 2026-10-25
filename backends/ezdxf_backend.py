@@ -51,6 +51,7 @@ from .contracts.settings import (
     scale_value,
     validate_drawing_properties,
 )
+from .operations import CURRENT_OPERATION
 from .quarantine import (
     AbandonedCall,
     DaemonExecutor,
@@ -2415,6 +2416,9 @@ class EzdxfBackend(AutoCADBackend):
             "started": started,
             "ended": ended,
             "document": document,
+            # B12: the operation this call belongs to (the middleware's or a
+            # cad_batch step's), read in the awaiting coroutine's context.
+            "operation_id": CURRENT_OPERATION.get(),
         }
         self.call_outcomes.append(row)
         return row

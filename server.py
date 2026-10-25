@@ -34,6 +34,12 @@ from pydantic import Field
 
 import config
 from backends.base import BlockInfo, EntityInfo, LayerInfo
+from backends.operations import (
+    CURRENT_OPERATION,
+    OperationConflictError,
+    OperationJournal,
+    RequiresReconcileError,
+)
 from discovery.aliases import aliases_for
 from engineering.fits import fit_lookup
 from engineering.measure import is_self_intersecting, polygon_area_perimeter
@@ -138,13 +144,16 @@ async def autocad_lifespan(server):
     except Exception as exc:  # profile trouble must never block startup
         log.warning("Tool profile could not be applied: %s", exc)
     backend = None
+    # B12: the operation journal lives as long as the server: in memory, so a
+    # restart forgets every operation id (B13 makes it durable in 1.8.0).
+    operations = OperationJournal()
     try:
         backend = await _make_backend()
         log.info("Backend ready: %s", backend.name)
-        context: dict = {"backend": backend}
+        context: dict = {"backend": backend, "operations": operations}
     except Exception as exc:
         log.error("Backend initialization failed: %s", exc)
-        context = {"backend": None, "init_error": str(exc)}
+        context = {"backend": None, "init_error": str(exc), "operations": operations}
     # One yield, outside the try that builds the backend: an exception thrown
     # into the generator at shutdown must reach `finally`, not a second yield.
     try:
@@ -180,11 +189,76 @@ async def _disconnect_backend(backend) -> None:
 
 
 class AuditMiddleware(Middleware):
-    """Log all tool calls with timing for audit trail."""
+    """Log every tool call with timing, and keep its operation record (B12).
+
+    The record (``backends/operations.py``) is opened before the call and
+    closed with an honest state after it: the result, a refusal, an exception,
+    or a cancellation - ``unknown_commit`` when a mutating call's worker was
+    already running (the backend's ``call_outcomes`` rows carry the id). A
+    client's own id (``_meta.operation_id``, or ``cad_batch``'s
+    ``operation_id``) replays a recorded result, is refused with
+    ``requires_reconcile`` after an ``unknown_commit`` and with
+    ``operation_conflict`` for another request. A call re-entering the
+    middleware (the search proxy's ``call_tool``) reuses the id already set:
+    one request, one record.
+    """
 
     async def on_call_tool(self, context: MiddlewareContext, call_next):
         tool_name = context.message.name
         start = time.monotonic()
+        if CURRENT_OPERATION.get() is not None:
+            return await self._logged(context, call_next, tool_name, start)
+        lifespan = _lifespan_context_or_none(context)
+        journal = _operations_journal(lifespan)
+        backend = lifespan.get("backend") if lifespan is not None else None
+        # getattr: a hand-built context (tests/test_cancel_rollbacks.py) has no arguments.
+        arguments = dict(getattr(context.message, "arguments", None) or {})
+        effective = _effective_tool(tool_name, arguments)
+        try:
+            supplied = _client_operation_id(tool_name, arguments, _request_meta(context))
+            record, replay = journal.begin(
+                tool_name, arguments, operation_id=supplied, document=_identity_of(backend)
+            )
+        except (OperationConflictError, RequiresReconcileError) as exc:
+            elapsed = (time.monotonic() - start) * 1000
+            log.warning("TOOL ERR %-40s %6.1fms  (%s)", tool_name, elapsed, exc.kind)
+            payload = {**exc.to_dict(), "tool": tool_name}
+            return ToolResult(content=str(exc), structured_content=payload, is_error=True)
+        except ValueError as exc:
+            elapsed = (time.monotonic() - start) * 1000
+            log.warning("TOOL ERR %-40s %6.1fms  (invalid operation id)", tool_name, elapsed)
+            payload = {"ok": False, "kind": "invalid_args", "error": str(exc), "tool": tool_name}
+            return ToolResult(content=str(exc), structured_content=payload, is_error=True)
+        if replay is not None:
+            log.info("TOOL REPLAY %-37s %s", tool_name, record.operation_id)
+            return _replayed_result(replay, record.operation_id)
+        token = CURRENT_OPERATION.set(record.operation_id)
+        try:
+            result = await self._logged(context, call_next, tool_name, start)
+        except asyncio.CancelledError:
+            journal.finish(
+                record,
+                _interrupted_state(backend, record.operation_id, effective),
+                error_kind="cancelled",
+                document=_identity_of(backend),
+            )
+            raise
+        except Exception as exc:
+            state, kind = _exception_outcome(backend, record.operation_id, effective, exc)
+            journal.finish(
+                record, state, result=exc, error_kind=kind, document=_identity_of(backend)
+            )
+            raise
+        finally:
+            CURRENT_OPERATION.reset(token)
+        state, kind = _result_outcome(effective, result)
+        journal.finish(
+            record, state, result=result, error_kind=kind, document=_identity_of(backend)
+        )
+        return result
+
+    @staticmethod
+    async def _logged(context: MiddlewareContext, call_next, tool_name: str, start: float):
         try:
             result = await call_next(context)
             elapsed = (time.monotonic() - start) * 1000
@@ -206,6 +280,168 @@ class AuditMiddleware(Middleware):
             elapsed = (time.monotonic() - start) * 1000
             log.warning("TOOL ERR %-40s %6.1fms  %s", tool_name, elapsed, exc)
             raise
+
+
+#: Where an operation is recorded when no lifespan journal is reachable (a
+#: direct call in a test or a script), so recording never fails a call.
+_FALLBACK_OPERATIONS = OperationJournal()
+
+#: ``call_outcomes`` outcomes meaning the worker ran on past the caller (a
+#: cancellation or a deadline): a write may have landed.
+_RAN_PAST_THE_CALLER = frozenset(
+    {"cancelled_running", "completed_after_cancel", "failed_after_cancel", "abandoned_deadline"}
+)
+
+#: The record state for an error kind. Every kind not listed declined before
+#: doing its work, so it is ``refused``.
+_STATE_OF_KIND = {
+    "failed": "failed",
+    "timed_out": "failed",
+    "quarantined": "quarantined",
+    "unknown_commit": "unknown_commit",
+    "cancelled": "cancelled",
+}
+
+
+def _lifespan_context_or_none(context) -> dict | None:
+    try:
+        lifespan = context.fastmcp_context.lifespan_context
+    except Exception:  # no request context: a direct call
+        return None
+    return lifespan if isinstance(lifespan, dict) else None
+
+
+def _operations_journal(lifespan) -> OperationJournal:
+    journal = lifespan.get("operations") if isinstance(lifespan, dict) else None
+    return journal if isinstance(journal, OperationJournal) else _FALLBACK_OPERATIONS
+
+
+def _request_meta(context):
+    """The request's ``_meta`` (a client's ``operation_id`` travels there), or None."""
+    try:
+        return context.fastmcp_context.request_context.meta
+    except Exception:  # no request context: a direct call
+        return None
+
+
+def _effective_tool(tool: str, arguments: dict) -> str:
+    """The tool a call really runs: the search proxy's ``call_tool`` names it."""
+    if tool == "call_tool" and isinstance(arguments.get("name"), str):
+        return arguments["name"]
+    return tool
+
+
+def _client_operation_id(tool: str, arguments: dict, meta) -> str | None:
+    """A client's own id: ``_meta.operation_id``, or ``cad_batch``'s ``operation_id``."""
+    from_meta = getattr(meta, "operation_id", None) if meta is not None else None
+    from_args = None
+    if tool == "cad_batch":
+        from_args = arguments.get("operation_id")
+    elif tool == "call_tool" and arguments.get("name") == "cad_batch":
+        inner = arguments.get("arguments")
+        from_args = inner.get("operation_id") if isinstance(inner, dict) else None
+    if from_meta is not None and from_args is not None and from_meta != from_args:
+        raise ValueError(
+            f"operation_id: _meta.operation_id {from_meta!r} and cad_batch's operation_id "
+            f"{from_args!r} disagree; send one id"
+        )
+    return from_meta if from_meta is not None else from_args
+
+
+def _identity_of(backend) -> dict | None:
+    reader = getattr(backend, "document_identity", None)
+    if reader is None:
+        return None
+    try:
+        return reader()
+    except Exception:  # an identity is evidence, never a reason to fail a call
+        return None
+
+
+def _worker_outcome(backend, operation_id: str) -> str | None:
+    """The latest ``call_outcomes`` outcome recorded under ``operation_id``, or None."""
+    found = None
+    for row in list(getattr(backend, "call_outcomes", None) or ()):
+        if isinstance(row, dict) and row.get("operation_id") == operation_id:
+            found = row.get("outcome")
+    return found
+
+
+def _read_only_tool(tool: str) -> bool:
+    return tool in _batch_read_only_tools()
+
+
+def _timeout_kind(backend, operation_id: str, tool: str) -> str | None:
+    """``unknown_commit`` / ``timed_out`` when a worker outran its deadline, else None."""
+    worker = _worker_outcome(backend, operation_id)
+    if worker == "abandoned_deadline":
+        return "timed_out" if _read_only_tool(tool) else "unknown_commit"
+    if worker == "readonly_overrun":
+        return "timed_out"
+    return None
+
+
+def _interrupted_state(backend, operation_id: str, tool: str) -> str:
+    """A cancelled call: ``unknown_commit`` when a write's worker ran on, else ``cancelled``."""
+    ran_on = _worker_outcome(backend, operation_id) in _RAN_PAST_THE_CALLER
+    if ran_on and not _read_only_tool(tool):
+        return "unknown_commit"
+    return "cancelled"
+
+
+def _exception_outcome(
+    backend, operation_id: str, tool: str, exc: BaseException
+) -> tuple[str, str]:
+    timed = _timeout_kind(backend, operation_id, tool)
+    if timed == "unknown_commit":
+        return "unknown_commit", "timed_out"
+    if timed == "timed_out":
+        return "failed", "timed_out"
+    kind = _classify_batch_error(exc)["kind"]
+    return _STATE_OF_KIND.get(kind, "refused"), kind
+
+
+def _result_outcome(tool: str, result) -> tuple[str, str | None]:
+    structured = getattr(result, "structured_content", None)
+    payload = structured if isinstance(structured, dict) else {}
+    if getattr(result, "is_error", False):
+        kind = str(payload.get("kind") or "refused")
+        return ("quarantined" if kind == "quarantined" else "refused"), kind
+    if tool == "cad_batch" and payload.get("dry_run") is False:
+        if payload.get("ok") is True:
+            return "committed", None
+        first = next(
+            (
+                row["error"]["kind"]
+                for row in payload.get("results", [])
+                if row.get("status") == "error"
+            ),
+            "failed",
+        )
+        if (payload.get("atomicity") or {}).get("rolled_back") or not payload.get("succeeded"):
+            return "failed", first
+        return "partial", first
+    if payload.get("ok") is False and not _read_only_tool(tool):
+        return "refused", "refused"
+    return "committed", None
+
+
+def _replayed_result(stored, operation_id: str):
+    """The recorded answer of ``operation_id``, marked ``replayed`` - nothing runs again."""
+    if isinstance(stored, BaseException):
+        raise ToolError(
+            f"operation {operation_id!r} already ran and failed: {_refusal_message(stored)} "
+            "(replayed, not run again; send a new operation_id to try again)"
+        ) from stored
+    structured = getattr(stored, "structured_content", None)
+    if not isinstance(structured, dict):
+        return stored
+    payload = {**structured, "replayed": True, "operation_id": operation_id}
+    return ToolResult(
+        content=json.dumps(payload, ensure_ascii=False, default=str),
+        structured_content=payload,
+        is_error=bool(getattr(stored, "is_error", False)),
+    )
 
 
 def _backend_name_or_none(context) -> str | None:
@@ -247,6 +483,8 @@ class CapabilityRefusalMiddleware(Middleware):
         try:
             return await call_next(context)
         except Exception as exc:
+            # B12: a refusal names the operation it ended.
+            operation_id = CURRENT_OPERATION.get()
             changed = _document_changed_of(exc)
             if changed is not None:
                 # B11: not a capability boundary and not a quarantine - the
@@ -256,6 +494,8 @@ class CapabilityRefusalMiddleware(Middleware):
                     "tool": context.message.name,
                     "backend": _backend_name_or_none(context),
                 }
+                if operation_id is not None:
+                    payload["operation_id"] = operation_id
                 return ToolResult(
                     content=payload["error"], structured_content=payload, is_error=True
                 )
@@ -270,6 +510,8 @@ class CapabilityRefusalMiddleware(Middleware):
                 "tool": context.message.name,
                 "backend": _backend_name_or_none(context),
             }
+            if operation_id is not None:
+                payload["operation_id"] = operation_id
             if capability is not None:
                 payload["kind"] = "unsupported"
                 payload["capability"] = capability
@@ -3864,6 +4106,15 @@ BATCH_ERROR_KINDS = (
     "unsupported",  # this backend cannot do it (carries `capability`)
     "refused",  # the tool declined on purpose (path/command validation, ...)
     "failed",  # attempted and broke
+    "quarantined",  # the document is quarantined after an abandoned call (R32)
+    "busy",  # a detached read holds the document (W1 review follow-up)
+    "stale_revision",  # the document moved since its preview (Task 12)
+    "active_document_changed",  # live engine: the operator switched documents (B11)
+    "scan_incomplete",  # a QA or verification read could not read everything (B02)
+    "unknown_commit",  # a write that outran its deadline: it may have landed (B12)
+    "timed_out",  # a read that outran its deadline
+    "cancelled",  # the request was cancelled
+    "operation_conflict",  # an operation id reused for another request (B12)
 )
 
 #: What a rollback is actually worth, per backend transaction implementation.
@@ -4114,6 +4365,17 @@ def _classify_batch_error(exc: BaseException) -> dict:
     from fastmcp.exceptions import ValidationError as FastMCPValidationError
     from pydantic import ValidationError as PydanticValidationError
 
+    changed = _document_changed_of(exc)
+    if changed is not None:
+        # B11: its own kind - the step was refused before anything was written,
+        # and every later step is refused the same way until the operator
+        # switches back or document_activate binds the other document.
+        return {
+            "kind": "active_document_changed",
+            "bound": changed["bound"],
+            "active": changed["active"],
+            "message": _batch_message(exc),
+        }
     capability = _batch_capability_of(exc)
     if capability:
         return {
@@ -4521,6 +4783,18 @@ async def cad_batch(
         bool,
         "Return each step's full result instead of just its handle.",
     ] = False,
+    operation_id: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Your own id for this batch (1-128 printable characters). Sent again with the "
+                "same steps it returns the recorded result (replayed: true) instead of running "
+                "twice; with other steps it is refused (operation_conflict); after a run whose "
+                "outcome is unknown (cancelled or timed out mid-write) it is refused "
+                "(requires_reconcile). Held in memory only: a server restart forgets it."
+            )
+        ),
+    ] = None,
     ctx: Context = None,
 ) -> dict:
     """Execute an ordered list of tool calls in ONE round trip.
@@ -4547,7 +4821,17 @@ async def cad_batch(
 
     ERRORS are typed, never text: each failed step carries error.kind - one of
     unsupported (with the backend `capability`), invalid_args, refused, failed,
-    unknown_tool, unresolved_ref, denied, malformed_step.
+    unknown_tool, unresolved_ref, denied, malformed_step, quarantined, busy,
+    active_document_changed (live engine: the operator switched documents),
+    stale_revision, scan_incomplete, timed_out, unknown_commit (a write that
+    outran its deadline while its worker ran), cancelled, operation_conflict -
+    and its own `operation_id`.
+
+    OPERATIONS: the batch and each step are operations with their own ids
+    (system_status lists the recent ones). Pass `operation_id` (or the
+    request's `_meta.operation_id`) to make a retry safe: the same id with the
+    same steps replays the recorded result instead of drawing twice. The
+    journal is in memory: a server restart forgets it (durable in 1.8.0, B13).
 
     ATOMICITY is reported, not assumed. Read the `atomicity` block: on the
     headless backend rollback restores a full document snapshot; on live AutoCAD
@@ -4682,6 +4966,7 @@ async def cad_batch(
         return {
             "ok": invalid == 0,
             "dry_run": True,
+            "operation_id": CURRENT_OPERATION.get() or operation_id,
             "on_error": mode,
             "steps": len(steps),
             "executed": 0,
@@ -4705,6 +4990,9 @@ async def cad_batch(
         )
 
     backend = _backend(ctx)
+    journal = _operations_journal(ctx.lifespan_context)
+    # The middleware set the batch's own operation (a client's id included).
+    batch_id = CURRENT_OPERATION.get() or operation_id
     guarantee, note = "none", _BATCH_NO_CLAIM_NOTE.format(mode=mode)
     transaction = False
     before = None
@@ -4731,6 +5019,7 @@ async def cad_batch(
             return {
                 "ok": False,
                 "dry_run": False,
+                "operation_id": batch_id,
                 "on_error": mode,
                 "steps": len(steps),
                 "executed": 0,
@@ -4783,22 +5072,48 @@ async def cad_batch(
                 log.warning("BATCH %d/%d %-38s unresolved_ref", position + 1, total, name)
                 results.append(row)
                 continue
+            # B12: a step is an operation of its own. Steps skip the middleware,
+            # so the id is minted here and set for the step's backend calls,
+            # whose call_outcomes rows then carry it.
+            step, _ = journal.begin(name, args, document=_identity_of(backend))
+            step_token = CURRENT_OPERATION.set(step.operation_id)
             try:
                 # run_middleware=False: the cad_batch call itself is already through
                 # the audit/timing chain, and skipping it keeps the error one wrap
                 # deep instead of three, which is what makes the taxonomy above
                 # readable. Each step is logged here instead, tagged as a batch step.
                 outcome = await ctx.fastmcp.call_tool(name, args, run_middleware=False)
+            except asyncio.CancelledError:
+                journal.finish(
+                    step,
+                    _interrupted_state(backend, step.operation_id, name),
+                    error_kind="cancelled",
+                    document=_identity_of(backend),
+                )
+                raise
             except Exception as exc:
                 failed += 1
                 executed += 1
                 row["status"] = "error"
                 row["error"] = _classify_batch_error(exc)
-                log.warning("BATCH %d/%d %-38s %s", position + 1, total, name, row["error"]["kind"])
+                timed = _timeout_kind(backend, step.operation_id, name)
+                if timed is not None:
+                    row["error"]["kind"] = timed
+                row["error"]["operation_id"] = step.operation_id
+                kind = row["error"]["kind"]
+                journal.finish(
+                    step,
+                    _STATE_OF_KIND.get(kind, "refused"),
+                    error_kind=kind,
+                    document=_identity_of(backend),
+                )
+                log.warning("BATCH %d/%d %-38s %s", position + 1, total, name, kind)
                 results.append(row)
                 if mode == "rollback":
                     break
                 continue
+            finally:
+                CURRENT_OPERATION.reset(step_token)
             executed += 1
             structured = getattr(outcome, "structured_content", None)
             # A tool may decline *by value* instead of raising: an `is_error` result
@@ -4827,7 +5142,14 @@ async def cad_batch(
                     "message": _compact_batch_message(
                         str(declined_payload.get("error") or "the tool declined")
                     ),
+                    "operation_id": step.operation_id,
                 }
+                journal.finish(
+                    step,
+                    "refused",
+                    error_kind=row["error"]["kind"],
+                    document=_identity_of(backend),
+                )
                 log.warning("BATCH %d/%d %-38s %s", position + 1, total, name, row["error"]["kind"])
                 results.append(row)
                 # `failed` is what on_error='stop' reads at the top of the loop, so
@@ -4836,6 +5158,7 @@ async def cad_batch(
                     break
                 continue
             succeeded += 1
+            journal.finish(step, "committed", document=_identity_of(backend))
             if plan["_bind"]:
                 bindings[plan["_bind"]] = structured
                 row["bind"] = plan["_bind"]
@@ -4918,6 +5241,7 @@ async def cad_batch(
     payload = {
         "ok": ok,
         "dry_run": False,
+        "operation_id": batch_id,
         "on_error": mode,
         "steps": total,
         "executed": executed,
@@ -5449,8 +5773,15 @@ async def system_status(ctx: Context = None) -> dict:
     registry entry; live: the bound document, plus `bound_document` and
     `active_document_changed`). Live, the revision counts this server's own
     writes; edits the operator makes in AutoCAD are not counted.
+
+    `operations` lists the last 20 operation records, newest last: one per
+    tool call (and per cad_batch step), with `operation_id`, `tool`,
+    `request_hash`, `state` (committed / partial / failed / refused /
+    quarantined / cancelled / unknown_commit / running), the document id and
+    the revision before and after. Held in memory; a restart forgets them.
     """
     b = ctx.lifespan_context.get("backend")
+    journal = _operations_journal(ctx.lifespan_context)
     # R20: tool_count may be None when the registry is unavailable; omit the
     # key rather than surface a bogus value (e.g. the old -1).
     tool_count = await _registered_tool_count()
@@ -5466,6 +5797,7 @@ async def system_status(ctx: Context = None) -> dict:
         }
         if tool_count is not None:
             out["tool_count"] = tool_count
+        out["operations"] = journal.recent()
         return out
     status = await b.system_status()
     status["server"] = "AutoCAD MCP Pro"
@@ -5476,6 +5808,7 @@ async def system_status(ctx: Context = None) -> dict:
         status["unsafe_mode_warning"] = (
             "DANGEROUS_COMMANDS_ENABLED=true — command/LISP sanitization disabled."
         )
+    status["operations"] = journal.recent()
     return status
 
 
