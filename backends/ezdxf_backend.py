@@ -51,6 +51,13 @@ from .contracts.settings import (
     scale_value,
     validate_drawing_properties,
 )
+from .entity_fields import (
+    dimension_fields,
+    dimension_props,
+    hatch_loops,
+    hatch_props,
+    nesting_depths,
+)
 from .operations import CURRENT_OPERATION
 from .quarantine import (
     AbandonedCall,
@@ -627,38 +634,6 @@ def _apply_iso_dimstyle(doc) -> None:
 _HATCH_STYLE_NAMES = {0: "normal", 1: "outer", 2: "ignore"}
 
 
-def _nesting_depths(loops: list[list[tuple[float, float]]]) -> list[int]:
-    """How many other loops each loop sits inside.
-
-    Read off containment rather than off the boundary-path flags, because the
-    flags do not carry it: DXF marks a path external or outermost, never "two
-    levels down". Depth is precisely where AutoCAD's three island styles stop
-    agreeing, so guessing it would make `normal` and `outer` return the same
-    number and quietly be wrong for one of them.
-
-    Hatch boundary loops do not cross, so any vertex of the inner loop settles
-    the question — the first one that is not sitting exactly on the other
-    loop's edge decides.
-    """
-    from ezdxf import edgesmith
-    from ezdxf.math import Vec2
-
-    rings = [[Vec2(x, y) for x, y in points] for points in loops]
-    depths = []
-    for index, points in enumerate(loops):
-        depth = 0
-        for other, ring in enumerate(rings):
-            if other == index:
-                continue
-            for x, y in points:
-                verdict = edgesmith.is_point_in_polygon_2d(Vec2(x, y), ring)
-                if verdict != 0:
-                    depth += verdict > 0
-                    break
-        depths.append(depth)
-    return depths
-
-
 def _measure_hatch(ent, tolerance: float, result: dict) -> dict:
     """The area a hatch actually fills: outer loops minus the islands in them.
 
@@ -697,7 +672,7 @@ def _measure_hatch(ent, tolerance: float, result: dict) -> dict:
 
     style_code = int(ent.dxf.get("hatch_style", 0) or 0)
     style = _HATCH_STYLE_NAMES.get(style_code, "normal")
-    depths = _nesting_depths(outlines)
+    depths = nesting_depths(outlines)
 
     area = 0.0
     for points, depth in zip(outlines, depths, strict=True):
@@ -1215,8 +1190,13 @@ _OCS_ENTITY_TYPES = frozenset(
 )
 
 
-def _entity_info_dxf(ent) -> EntityInfo:
-    """Convert an ezdxf entity to EntityInfo. Coordinates out are always WCS."""
+def _entity_info_dxf(ent, *, detail: bool = False) -> EntityInfo:
+    """Convert an ezdxf entity to EntityInfo. Coordinates out are always WCS.
+
+    ``detail=True`` (``entity_get`` - one entity) adds what a list row does not
+    pay for: a HATCH's loops, depths and filled area, a DIMENSION's full
+    fields (v1.7.0, B16, ``backends/entity_fields.py``).
+    """
     handle = ent.dxf.get("handle", "?")
     ent_type = ent.dxftype()
     layer = ent.dxf.get("layer", "0")
@@ -1345,7 +1325,10 @@ def _entity_info_dxf(ent) -> EntityInfo:
             # stored x unnegated); `insertion` above is already WCS, but the
             # block's content is drawn on the mirror image about it, so a
             # reader that places catalogue ports needs to know.
-            props["mirrored"] = float(extrusion[2]) < 0
+            # A mirror is a FLAT frame with -Z. A tilted frame whose normal has
+            # a negative z is not a mirror (backlog W3-T14-19); it reports
+            # `plane_normal` below instead.
+            props["mirrored"] = flat and float(extrusion[2]) < 0
             # The drawn symbol alone. ``bounding_box`` below takes the ATTRIBs
             # with it, so a TAG above a valve pushes the box past the body and
             # a line ending on the body's real edge reads as *inside* it.
@@ -1372,6 +1355,12 @@ def _entity_info_dxf(ent) -> EntityInfo:
             if ent.dxf.hasattr("fit_points"):
                 props["fit_point_count"] = len(list(ent.fit_points))
             props["degree"] = ent.dxf.degree
+        elif ent_type == "HATCH":
+            if detail and flat:
+                style = int(ent.dxf.get("hatch_style", 0) or 0)
+                props.update(hatch_props(hatch_loops(ent), style))
+            elif detail:
+                props["plane_normal"] = ocs.plane_normal(extrusion)
         elif ent_type in (
             "DIMENSION",
             "DIMLINEAR",
@@ -1398,6 +1387,8 @@ def _entity_info_dxf(ent) -> EntityInfo:
                     props["text_position"] = _pt(tm)  # group code 11 — OCS
             except Exception:
                 pass
+            if detail:
+                props["dimension"] = dimension_props(dimension_fields(ent))
     except Exception as exc:
         log.debug("extracting entity properties for %s: %s", ent_type, exc)
 
@@ -1764,6 +1755,11 @@ class EzdxfBackend(AutoCADBackend):
                     reason="straight_edges_split_at_intersections;curved_edges_not_split",
                 ),
                 "hatch_edge_paths": FeatureCapability(True, "native"),
+                "hatch_loops": FeatureCapability(
+                    True,
+                    "native",
+                    reason="entity_get_reports_wcs_loops;ellipse_and_spline_edges_sampled_not_exact",
+                ),
                 "chspace": FeatureCapability(
                     True,
                     "computed",
@@ -1792,7 +1788,7 @@ class EzdxfBackend(AutoCADBackend):
                     "wcs",
                     reason=(
                         "reported_xy_is_wcs;z_component_not_reported;"
-                        "text_rotation_stays_in_entity_frame;hatch_boundaries_not_reported"
+                        "text_rotation_stays_in_entity_frame;hatch_loops_reported_in_wcs"
                     ),
                 ),
                 "ocs_tilted_plane": FeatureCapability(
@@ -6376,7 +6372,7 @@ class EzdxfBackend(AutoCADBackend):
 
     async def entity_get(self, handle) -> EntityInfo:
         def _sync():
-            return _entity_info_dxf(self._get_entity(handle))
+            return _entity_info_dxf(self._get_entity(handle), detail=True)
 
         return await self._async(_sync, readonly=True)
 

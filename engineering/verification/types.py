@@ -75,7 +75,9 @@ Quantity = Literal[
     "vertical",
 ]
 SelectorKind = Literal["handle", "feature_tag", "arch_element", "predicate", "dimension"]
-FeatureType = Literal["line", "circle", "arc", "ellipse", "polyline", "point"]
+FeatureType = Literal[
+    "line", "circle", "arc", "ellipse", "polyline", "point", "spline", "dimension"
+]
 BindingStatus = Literal["bound", "ambiguous", "unknown"]
 
 STATUSES: tuple[str, ...] = get_args(Status)

@@ -3072,7 +3072,22 @@ async def entity_get(
     handle: Annotated[str, "Entity handle"],
     ctx: Context = None,
 ) -> dict:
-    """Get all properties of a specific entity by its handle."""
+    """Get all properties of a specific entity by its handle.
+
+    Coordinates are WCS. A HATCH also reports every boundary loop: `loops`
+    (each with `kind`, `flags`, `depth`, `points` and the parallel `bulges`,
+    `edges` for an edge path, `exact` and its `area`), `hatch_style` and the
+    filled `area` - outer loops minus islands by the hatch's own island style,
+    the rule `analysis_measure_entity` applies; None when a loop has an ellipse
+    or spline edge. A DIMENSION also reports `dimension`: `dimtype`, the five
+    `defpoints`, its own `measurement` (before DIMLFAC), `text_override`,
+    `dimstyle`, `dimlfac` and `angle`. On the live engine those two are read
+    from the drawing's DXF export (one export per call; `detail_source` says
+    so), and a member of a block definition reports `detail_unavailable`. An
+    entity in a plane tilted out of WCS XY reports `plane_normal` (or
+    `tilted`) and omits what xy cannot express. Refused: a handle the drawing
+    does not hold.
+    """
     result = await _backend(ctx).entity_get(handle)
     return _dc(result)
 

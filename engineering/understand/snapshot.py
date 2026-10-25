@@ -42,6 +42,13 @@ translated here with ``backends/ocs.py``, so a mirrored ARC or LWPOLYLINE is
 where it looks), plain text (``labels.plain``: AutoCAD codes and MTEXT format
 runs decoded), block names and attributes, a WCS box. Block definitions are not
 exploded: an INSERT is one record with its block name, attributes and box.
+
+v1.7.0 (B16): a record also carries what the verification engine measures -
+HATCH loops, DIMENSION defpoints and fields, ELLIPSE and SPLINE data, an
+INSERT's block-to-WCS affine, a tilted-plane flag and our ``ACADMCP_*`` XDATA -
+all with defaults, so every 1.6 reader is unchanged. ``block_defs=True``
+reads block definitions into ``Snapshot.blocks``; exploding them is
+``engineering/verification/observe.py``'s job and never touches ``records``.
 """
 
 from __future__ import annotations
@@ -60,7 +67,8 @@ from ezdxf import bbox as ezbbox
 
 import config
 from backends.capability import UnsupportedCapabilityError
-from backends.ocs import to_wcs_2d, wcs_arc_angles, wcs_bulge
+from backends.entity_fields import acadmcp_xdata, dimension_fields, hatch_loops
+from backends.ocs import is_flat_frame, to_wcs_2d, wcs_arc_angles, wcs_bulge
 from engineering.measure import polygon_area_perimeter
 from engineering.understand.labels import plain
 
@@ -104,6 +112,27 @@ class EntityRecord:
     scale: tuple[float, float] = (1.0, 1.0)
     #: DXF group 60 (0 = visible). The validator's hidden-entity step reads it.
     visible: bool = True
+    #: True when a planar entity's plane is not parallel to WCS XY: its xy here
+    #: is a projection, so no 2D measurement of it is exact (v1.7.0, B16).
+    tilted: bool = False
+    #: ELLIPSE: ``(centre, major_axis, ratio, start_param, end_param)`` in WCS,
+    #: the parameters running counter-clockwise seen from +Z.
+    ellipse: tuple | None = None
+    #: SPLINE: ``(degree, control_points, fit_points, closed)``.
+    spline: tuple | None = None
+    #: HATCH: every boundary loop, ``backends/entity_fields.py::hatch_loops``.
+    hatch_loops: tuple = ()
+    #: HATCH: DXF group 75, the island style (0 normal, 1 outer, 2 ignore).
+    hatch_style: int = 0
+    #: DIMENSION: ``(dimtype, defpoints, measurement, text_override, dimstyle,
+    #: dimlfac, angle)`` - ``backends/entity_fields.py::dimension_fields``.
+    dimension: tuple | None = None
+    #: INSERT: the affine ``(a, b, c, d, e, f)`` taking block coordinates to
+    #: WCS, ``x' = a*x + c*y + e``, ``y' = b*x + d*y + f`` - read off ezdxf's
+    #: ``matrix44()``, so base point, scale, rotation and mirror are included.
+    transform: tuple | None = None
+    #: Every ``ACADMCP_*`` application on the entity, as ``(app id, json)``.
+    xdata: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -121,6 +150,17 @@ class Snapshot:
     #: insert_boxes=False)``, the QA read): an INSERT's ``bbox`` None then
     #: means "not computed", not "no geometry".
     insert_boxes: bool = True
+    #: Block definitions by name, each as records in the block's own
+    #: coordinates - read only on request (``block_defs=True``), for
+    #: ``engineering/verification/observe.py``. None means "not read".
+    #: Exploded INSERT geometry never enters ``records``.
+    blocks: dict | None = None
+
+
+#: Planar types whose plane is set by their extrusion: a non-Z extrusion tilts them.
+_PLANAR_TYPES = frozenset(
+    {"CIRCLE", "ARC", "LWPOLYLINE", "POLYLINE", "TEXT", "INSERT", "HATCH", "DIMENSION", "ELLIPSE"}
+)
 
 
 def _xy(point) -> Pt:
@@ -196,8 +236,11 @@ def _record(entity, space: str, *, insert_boxes: bool = True) -> EntityRecord | 
         "space": space,
         "bbox": None if kind == "INSERT" and not insert_boxes else _box(entity),
         "visible": not bool(dxf.get("invisible", 0)),
+        "xdata": acadmcp_xdata(entity),
     }
     extrusion = _extrusion(entity)
+    if kind in _PLANAR_TYPES and not is_flat_frame(extrusion):
+        base["tilted"] = True
     if kind == "LINE":
         return EntityRecord(**base, points=(_xy(dxf.start), _xy(dxf.end)))
     if kind in ("LWPOLYLINE", "POLYLINE"):
@@ -240,6 +283,7 @@ def _record(entity, space: str, *, insert_boxes: bool = True) -> EntityRecord | 
             attribs=attribs,
             rotation=float(dxf.get("rotation", 0.0)),
             scale=(float(dxf.get("xscale", 1.0)), float(dxf.get("yscale", 1.0))),
+            transform=_insert_transform(entity),
         )
     if kind == "MULTILEADER":
         context = entity.context
@@ -260,19 +304,70 @@ def _record(entity, space: str, *, insert_boxes: bool = True) -> EntityRecord | 
         text = plain(override) if override not in ("", "<>") else None
         middle = dxf.get("text_midpoint", dxf.defpoint)
         points = (_xy(dxf.defpoint), tuple(to_wcs_2d(extrusion, middle.x, middle.y, middle.z)))
-        return EntityRecord(**base, points=points, text=text)
+        return EntityRecord(**base, points=points, text=text, dimension=dimension_fields(entity))
     if kind == "LEADER":
         return EntityRecord(**base, points=tuple(_xy(v) for v in entity.vertices))
     if kind == "POINT":
         return EntityRecord(**base, points=(_xy(dxf.location),))
     if kind == "SPLINE":
-        return EntityRecord(**base, points=tuple(_xy(p) for p in entity.control_points))
+        control = tuple(_xy(p) for p in entity.control_points)
+        fit = tuple(_xy(p) for p in entity.fit_points)
+        spline = (int(dxf.get("degree", 3)), control, fit, bool(entity.closed))
+        return EntityRecord(**base, points=control, spline=spline)
     if kind == "ELLIPSE":
-        return EntityRecord(**base, points=(_xy(dxf.center),))
+        return EntityRecord(**base, points=(_xy(dxf.center),), ellipse=_ellipse(entity, extrusion))
+    if kind == "HATCH":
+        # The loop reader is new in 1.7: a hatch it cannot read keeps no loops
+        # (an empty tuple, which every consumer reads as "not read" - a real
+        # hatch has at least one) rather than failing the whole snapshot that
+        # every 1.6 reader handled.
+        try:
+            loops = hatch_loops(entity)
+        except Exception:  # noqa: BLE001 - see above
+            loops = ()
+        return EntityRecord(
+            **base,
+            hatch_loops=loops,
+            hatch_style=int(dxf.get("hatch_style", 0) or 0),
+        )
     return EntityRecord(**base)
 
 
-def records_from_doc(doc, *, source: str, insert_boxes: bool = True) -> Snapshot:
+def _insert_transform(entity) -> tuple[float, float, float, float, float, float]:
+    """The INSERT's block-to-WCS affine, read off ezdxf's own ``matrix44()``
+    (rows: the image of x, the image of y, ..., the origin)."""
+    rows = list(entity.matrix44().rows())
+    ux, uy, origin = rows[0], rows[1], rows[3]
+    return (
+        float(ux[0]),
+        float(ux[1]),
+        float(uy[0]),
+        float(uy[1]),
+        float(origin[0]),
+        float(origin[1]),
+    )
+
+
+def _ellipse(entity, extrusion) -> tuple:
+    """``(centre, major_axis, ratio, start_param, end_param)``, counter-clockwise
+    seen from +Z. ELLIPSE is WCS-native, but its parameter turns about its
+    extrusion: under ``(0, 0, -1)`` it runs clockwise in WCS, so the span
+    ``t0..t1`` becomes ``-t1..-t0`` (measured: the point at parameter 1.0 of a
+    mirrored ellipse with a (2, 0) major axis and ratio 0.5 is
+    ``(1.0806, -0.8415)``)."""
+    dxf = entity.dxf
+    start = float(dxf.get("start_param", 0.0))
+    end = float(dxf.get("end_param", math.tau))
+    if is_flat_frame(extrusion) and float(extrusion[2]) < 0:
+        start, end = (-end) % math.tau, (-start) % math.tau
+        if abs(end - start) < 1e-12:
+            start, end = 0.0, math.tau
+    return (_xy(dxf.center), _xy(dxf.major_axis), float(dxf.ratio), start, end)
+
+
+def records_from_doc(
+    doc, *, source: str, insert_boxes: bool = True, block_defs: bool = False
+) -> Snapshot:
     """Every entity of every layout of an ``ezdxf`` document, as records.
 
     Model space first, then each paper layout in tab order. ``insunits`` is
@@ -287,6 +382,11 @@ def records_from_doc(doc, *, source: str, insert_boxes: bool = True) -> Snapshot
     them - its one consumer, the topology lane, fills them itself
     (``engineering/qa_scan.py::with_insert_boxes``); the understanding readers
     keep the default.
+
+    ``block_defs=True`` also reads every block definition - not the layouts'
+    own blocks, not the ``*D`` blocks holding a DIMENSION's rendering, no
+    ATTDEF - into ``Snapshot.blocks``, in the block's own coordinates, for the
+    observed-geometry reader. ``records`` is the same either way.
     """
     records: list[EntityRecord] = []
     layouts = tuple(doc.layouts.names_in_taborder())
@@ -311,15 +411,41 @@ def records_from_doc(doc, *, source: str, insert_boxes: bool = True) -> Snapshot
         layouts=layouts,
         records=tuple(records),
         insert_boxes=insert_boxes,
+        blocks=_block_records(doc, insert_boxes) if block_defs else None,
     )
 
 
-def _read(path: str, *, source: str, insert_boxes: bool = True) -> Snapshot:
+def _block_records(doc, insert_boxes: bool) -> dict[str, tuple[EntityRecord, ...]]:
+    """Every block definition's entities as records in the block's own frame."""
+    out: dict[str, tuple[EntityRecord, ...]] = {}
+    for block in doc.blocks:
+        name = str(block.name)
+        if block.is_any_layout or name.upper().startswith("*D"):
+            continue
+        rows = []
+        for entity in block:
+            if entity.dxftype() == "ATTDEF":
+                continue
+            record = _record(entity, name, insert_boxes=insert_boxes)
+            if record is not None:
+                rows.append(record)
+        out[name] = tuple(rows)
+    return out
+
+
+def _read(
+    path: str, *, source: str, insert_boxes: bool = True, block_defs: bool = False
+) -> Snapshot:
     # Every parse or walk failure is one refusal. A truncated file makes ezdxf's
     # tag reader raise StopIteration, which asyncio.to_thread cannot hand back to
     # an awaiting tool - uncaught, the tool would never answer.
     try:
-        return records_from_doc(ezdxf.readfile(path), source=source, insert_boxes=insert_boxes)
+        return records_from_doc(
+            ezdxf.readfile(path),
+            source=source,
+            insert_boxes=insert_boxes,
+            block_defs=block_defs,
+        )
     except MemoryError:
         raise
     except Exception as exc:  # noqa: BLE001 - see above
@@ -327,7 +453,7 @@ def _read(path: str, *, source: str, insert_boxes: bool = True) -> Snapshot:
         raise ValueError(f"{path} is not a readable DXF file: {reason}") from exc
 
 
-def read_snapshot(path: str) -> Snapshot:
+def read_snapshot(path: str, *, block_defs: bool = False) -> Snapshot:
     """The snapshot of a DXF file on disk, after the size check.
 
     Refuses a missing file (``FileNotFoundError``) and a file larger than
@@ -345,7 +471,7 @@ def read_snapshot(path: str) -> Snapshot:
             f"limit of {limit:,} bytes ({limit / 2**20:.0f} MB). Raise MAX_DXF_BYTES "
             "(0 disables the check) to read it."
         )
-    return _read(str(target), source=str(target))
+    return _read(str(target), source=str(target), block_defs=block_defs)
 
 
 def _already_open(app, path: str):
@@ -412,7 +538,7 @@ def _com_export(backend, path: str | None) -> tuple[str, str, str]:
     return str(written[0]), folder, f"live:{name}"
 
 
-async def take_snapshot(backend, path: str | None = None) -> Snapshot:
+async def take_snapshot(backend, path: str | None = None, *, block_defs: bool = False) -> Snapshot:
     """The snapshot of ``path``, or of the backend's current document.
 
     ``path`` given: a ``.dxf`` is read directly (on either engine); a ``.dwg``
@@ -428,7 +554,7 @@ async def take_snapshot(backend, path: str | None = None) -> Snapshot:
     if path is not None:
         suffix = Path(path).suffix.lower()
         if suffix == ".dxf":
-            return await asyncio.to_thread(read_snapshot, str(path))
+            return await asyncio.to_thread(read_snapshot, str(path), block_defs=block_defs)
         if suffix != ".dwg":
             raise ValueError(f"{path}: a snapshot reads a .dxf or a .dwg, not {suffix or 'this'}")
         if not Path(path).is_file():
@@ -445,14 +571,15 @@ async def take_snapshot(backend, path: str | None = None) -> Snapshot:
         if path is not None:
             await backend._ensure_document_state()
         try:
-            return await asyncio.to_thread(_read, written, source=source)
+            return await asyncio.to_thread(_read, written, source=source, block_defs=block_defs)
         finally:
             shutil.rmtree(folder, ignore_errors=True)
     source = backend._doc_path or "memory:untitled"
     # A pure read of the drawing: an overrun detaches it instead of
     # quarantining a document it cannot have changed (W1 review follow-up).
     return await backend._async(
-        lambda: records_from_doc(backend._doc, source=source), readonly=True
+        lambda: records_from_doc(backend._doc, source=source, block_defs=block_defs),
+        readonly=True,
     )
 
 
