@@ -21,7 +21,18 @@ are re-bound from the source binding, one feature at a time:
 Two candidates at a stage - a copied feature tag, two identical holes - make
 the requirement ``unknown`` with both candidates listed: never a pick. Nothing
 found is ``unknown`` too. Without ``backend`` the requirements are bound afresh
-on the file. The report carries the re-binding (the method per requirement)
+on the file.
+
+What a selector defines is resolved again on the file, never carried over: a
+``count`` / ``absence`` requirement is counted afresh on the saved file (the
+source's count cannot see a feature the file added), and a requirement whose
+selectors name no handle (predicate, feature tag) is re-bound *and* resolved
+afresh - a disagreement is ``unknown`` with both listed. A handle-naming
+selector on a file that renumbered handles cannot be resolved afresh, so such a
+requirement is ``unknown`` unless re-bound from the source. A requirement's
+DIMENSION is re-bound the same way and ``bind_dimension`` runs on the file's
+own; when it cannot be found again the report carries a blocking
+``dimension_unverified`` finding - the annotation check is never dropped. The report carries the re-binding (the method per requirement)
 and - with ``backend`` - the before / after comparison and the source document
 as its evidence, so ``mark_stale`` can tell when the document moved after the
 artifact was written.
@@ -44,12 +55,14 @@ from pathlib import Path
 from backends.capability import UnsupportedCapabilityError
 from engineering.understand.diff import diff_snapshots
 from engineering.understand.snapshot import Snapshot, dxf_version_of, read_snapshot, take_snapshot
-from engineering.verification.binding import bind
+from engineering.verification.binding import bind, bind_dimension
 from engineering.verification.measure import default_epsilon, evaluate
 from engineering.verification.observe import observe
 from engineering.verification.report import (
     BINDING_POLICIES,
+    DIMENSION_UNVERIFIED,
     MeasuredRun,
+    add_finding,
     attach_dimension_evidence,
     build_report,
     dimension_evidence,
@@ -59,7 +72,11 @@ from engineering.verification.report import (
 )
 from engineering.verification.types import Binding, FeatureRef, ObservedGeometry, RequirementSet
 
-__all__ = ["ArtifactReadError", "rebind", "verify_artifact"]
+__all__ = ["ArtifactReadError", "rebind", "rebound_dimension_evidence", "verify_artifact"]
+
+_COUNTING = ("count", "absence")
+#: selector kinds that resolve without naming a handle
+_HANDLE_FREE = frozenset({"predicate", "feature_tag"})
 
 
 class ArtifactReadError(ValueError):
@@ -148,6 +165,90 @@ def _ref_of(feature) -> FeatureRef:
     )
 
 
+def _keys_of_refs(refs) -> set:
+    return {
+        (ref.space, tuple(ref.block_path), handle.upper()) for ref in refs for handle in ref.handles
+    }
+
+
+def _keys_of_features(features) -> set:
+    return {(g.space, tuple(g.block_path), g.handle.upper()) for g in features}
+
+
+def _handle_free(requirement) -> bool:
+    """True when every selector resolves without naming a handle (a predicate, a
+    feature tag): resolved afresh on the saved file, it means the same thing."""
+    return all(selector.kind in _HANDLE_FREE for selector in requirement.features)
+
+
+def _refs_text(keys: set) -> str:
+    return ", ".join(sorted(handle for _space, _path, handle in keys)) or "nothing"
+
+
+def _unknown(requirement_id: str, reason: str, candidates=()) -> Binding:
+    return Binding(
+        requirement_id=requirement_id,
+        status="unknown",
+        refs=(),
+        candidates=tuple(candidates),
+        reason=reason,
+    )
+
+
+def _with_reason(binding: Binding, reason: str) -> Binding:
+    return Binding(
+        requirement_id=binding.requirement_id,
+        status=binding.status,
+        refs=binding.refs,
+        candidates=binding.candidates,
+        reason=reason,
+    )
+
+
+def _rebind_refs(prior: Binding, after_observed, *, handles_stable, by_key, before_by_key, eps):
+    """Map the source binding's features onto the saved file, one feature at a time:
+    ``(refs, matched features, methods, problem, candidates)``."""
+    refs: list[FeatureRef] = []
+    matched_all: list = []
+    methods: set[str] = set()
+    candidates: list = []
+    for ref in prior.refs:
+        if not ref.handles:
+            refs.append(ref)
+            continue
+        matched = []
+        for handle in ref.handles:
+            feature = before_by_key.get((handle, ref.block_path))
+            if feature is None:
+                problem = f"feature {handle} of the source is not in its observed geometry"
+                return refs, matched_all, methods, problem, candidates
+            found, how, cands = _rebind_feature(
+                feature, after_observed, handles_stable=handles_stable, by_key=by_key, eps=eps
+            )
+            methods.add(how)
+            if found is None:
+                candidates.extend(cands)
+                problem = (
+                    f"{len(cands)} features of the saved file match {handle} by {how}"
+                    if cands
+                    else f"no feature of the saved file matches {handle}"
+                )
+                return refs, matched_all, methods, problem, candidates
+            matched.append(found)
+        matched_all.extend(matched)
+        refs.append(
+            FeatureRef(
+                document_id=None,
+                revision=None,
+                space=matched[0].space,
+                block_path=matched[0].block_path,
+                handles=tuple(g.handle for g in matched),
+                feature=ref.feature,
+            )
+        )
+    return refs, matched_all, methods, None, candidates
+
+
 def rebind(
     rs: RequirementSet,
     before: MeasuredRun | None,
@@ -156,10 +257,32 @@ def rebind(
     *,
     binding_policy: str = "strict",
 ) -> tuple[tuple[Binding, ...], list[dict], bool | None]:
-    """``(bindings on the saved file, one re-binding row per requirement, handles_stable)``."""
+    """``(bindings on the saved file, one re-binding row per requirement, handles_stable)``.
+
+    A ``count`` / ``absence`` requirement is the set its selectors define, so it
+    is resolved afresh on the saved file - never carried over from the source's
+    count, which cannot see a feature the file added. A requirement whose
+    selectors name no handle (predicate, feature tag) is re-bound feature by
+    feature *and* resolved afresh; when the two disagree it is ``unknown`` with
+    both listed. A handle-naming selector (handle, DIMENSION, arch element) on a
+    file whose handles were renumbered cannot be resolved afresh - a handle there
+    names another entity - so such a requirement is ``unknown`` unless it is
+    re-bound from the source binding."""
     fresh = {b.requirement_id: b for b in bind(rs, after_observed, policy=binding_policy)}
     bindings: list[Binding] = []
     rows: list[dict] = []
+
+    def _add(requirement_id: str, method: str, binding: Binding) -> None:
+        bindings.append(binding)
+        rows.append(
+            {
+                "id": requirement_id,
+                "method": method,
+                "status": binding.status,
+                "reason": binding.reason,
+            }
+        )
+
     if before is None:
         for requirement in rs.requirements:
             binding = fresh.get(requirement.id)
@@ -181,84 +304,209 @@ def rebind(
     prior_bindings = {b.requirement_id: b for b in before.bindings}
     for requirement in rs.requirements:
         prior = prior_bindings.get(requirement.id)
-        if prior is None or prior.status != "bound":
-            binding = fresh.get(requirement.id)
-            if binding is not None:
-                bindings.append(binding)
-            rows.append(
-                {
-                    "id": requirement.id,
-                    "method": "fresh",
-                    "status": binding.status if binding is not None else "unknown",
-                    "reason": "the source binding was not bound; bound afresh on the file",
-                }
+        prior_bound = prior is not None and prior.status == "bound"
+        binding = fresh.get(requirement.id) or _unknown(requirement.id, "no binding produced")
+        handle_free = _handle_free(requirement)
+        counting = requirement.quantity in _COUNTING
+        if not handle_free and not handles_stable and (counting or not prior_bound):
+            kinds = sorted({s.kind for s in requirement.features} - _HANDLE_FREE)
+            reason = (
+                f"the requirement names features by {', '.join(kinds)} and the saved file "
+                "renumbered handles: a handle there names another entity, so it cannot be "
+                "resolved afresh"
+            )
+            if counting:
+                reason += ", and a count is never carried over from the source document"
+            _add(requirement.id, "none", _unknown(requirement.id, reason))
+            continue
+        if counting:
+            counted = len(_keys_of_refs(binding.refs))
+            source = (
+                f"; the source document counted {len(_keys_of_refs(prior.refs))}"
+                if prior_bound
+                else ""
+            )
+            _add(
+                requirement.id,
+                "fresh",
+                _with_reason(
+                    binding,
+                    f"counted afresh on the saved file ({counted}): {binding.reason}{source}",
+                ),
             )
             continue
-        refs: list[FeatureRef] = []
-        methods: set[str] = set()
-        problem = None
-        candidates: list = []
-        for ref in prior.refs:
-            if not ref.handles:
-                refs.append(ref)
-                continue
-            matched = []
-            for handle in ref.handles:
-                feature = before_by_key.get((handle, ref.block_path))
-                if feature is None:
-                    problem = f"feature {handle} of the source is not in its observed geometry"
-                    break
-                found, how, cands = _rebind_feature(
-                    feature, after_observed, handles_stable=handles_stable, by_key=by_key, eps=eps
-                )
-                methods.add(how)
-                if found is None:
-                    candidates.extend(cands)
-                    problem = (
-                        f"{len(cands)} features of the saved file match {handle} by {how}"
-                        if cands
-                        else f"no feature of the saved file matches {handle}"
-                    )
-                    break
-                matched.append(found)
-            if problem is not None:
-                break
-            refs.append(
-                FeatureRef(
-                    document_id=None,
-                    revision=None,
-                    space=matched[0].space,
-                    block_path=matched[0].block_path,
-                    handles=tuple(g.handle for g in matched),
-                    feature=ref.feature,
-                )
+        if not prior_bound:
+            _add(
+                requirement.id,
+                "fresh",
+                _with_reason(
+                    binding,
+                    "the source binding was not bound; bound afresh on the file: " + binding.reason,
+                ),
             )
+            continue
+        refs, matched, methods, problem, candidates = _rebind_refs(
+            prior,
+            after_observed,
+            handles_stable=handles_stable,
+            by_key=by_key,
+            before_by_key=before_by_key,
+            eps=eps,
+        )
+        method = "+".join(sorted(methods)) or "none"
+        afresh = _keys_of_refs(binding.refs or binding.candidates)
         if problem is not None:
-            binding = Binding(
-                requirement_id=requirement.id,
-                status="unknown",
-                refs=(),
-                candidates=tuple(_ref_of(g) for g in candidates),
-                reason=f"re-binding on the saved file failed: {problem}",
+            reason = f"re-binding on the saved file failed: {problem}"
+            if handle_free:
+                reason += f"; afresh the selectors are {binding.status} on {_refs_text(afresh)}"
+            _add(
+                requirement.id,
+                method,
+                _unknown(requirement.id, reason, tuple(_ref_of(g) for g in candidates)),
             )
-        else:
-            binding = Binding(
+            continue
+        if handle_free and (
+            binding.status != "bound" or _keys_of_refs(binding.refs) != _keys_of_features(matched)
+        ):
+            _add(
+                requirement.id,
+                method,
+                _unknown(
+                    requirement.id,
+                    f"the saved file disagrees with the source binding: re-bound by {method} "
+                    f"on {_refs_text(_keys_of_features(matched))}, but afresh the selectors "
+                    f"are {binding.status} on {_refs_text(afresh)}",
+                    (*(_ref_of(g) for g in matched), *binding.candidates),
+                ),
+            )
+            continue
+        reason = f"re-bound on the saved file by {', '.join(sorted(methods)) or 'reference'}"
+        if handle_free:
+            reason += "; the selectors resolve to the same features afresh"
+        _add(
+            requirement.id,
+            method,
+            Binding(
                 requirement_id=requirement.id,
                 status="bound",
                 refs=tuple(refs),
                 candidates=(),
-                reason=f"re-bound on the saved file by {', '.join(sorted(methods))}",
-            )
-        bindings.append(binding)
-        rows.append(
-            {
-                "id": requirement.id,
-                "method": "+".join(sorted(methods)) or "none",
-                "status": binding.status,
-                "reason": binding.reason,
-            }
+                reason=reason,
+            ),
         )
     return tuple(bindings), rows, handles_stable
+
+
+def _same_measured_points(f, g, eps: float) -> bool:
+    a, b = dict(f.geometry), dict(g.geometry)
+    return (
+        a.get("dimtype") == b.get("dimtype")
+        and _same(a.get("defpoints"), b.get("defpoints"), eps)
+        and _same(a.get("angle"), b.get("angle"), eps)
+    )
+
+
+def _rebind_dimension(source, after: ObservedGeometry, *, handles_stable, by_key, eps):
+    """``(DIMENSION or None, method, candidates)``: as any feature (handle, tag, the
+    whole geometry), then by what it is drawn to alone - its type, defpoints and
+    angle - so a DIMENSION whose text was edited on the way is still found and
+    its text judged, not lost."""
+    found, how, cands = _rebind_feature(
+        source, after, handles_stable=handles_stable, by_key=by_key, eps=eps
+    )
+    if found is not None or cands:
+        return found, how, cands
+    same = [
+        g
+        for g in after.features
+        if g.type == "dimension"
+        and g.space == source.space
+        and len(g.block_path) == len(source.block_path)
+        and _same_measured_points(source, g, eps)
+    ]
+    if len(same) == 1:
+        return same[0], "geometry", ()
+    if len(same) > 1:
+        return None, "geometry", tuple(same)
+    return None, "none", ()
+
+
+def rebound_dimension_evidence(
+    rs: RequirementSet,
+    before: MeasuredRun,
+    after_snap: Snapshot,
+    after_observed: ObservedGeometry,
+    *,
+    handles_stable: bool,
+) -> tuple[dict, list[tuple[str, str]]]:
+    """``(evidence, unresolved)`` for every requirement naming a DIMENSION, measured
+    on the saved file's own DIMENSION.
+
+    The source's DIMENSION is re-bound like any feature - by handle while handles
+    are stable, then by feature tag, then by geometry (all of it, then its type,
+    defpoints and angle alone) - and ``bind_dimension`` runs on the one found. Nothing found, or two candidates, is an ``unresolved`` entry
+    ``(requirement id, why)``: the dimension check could not be made on the file,
+    which blocks acceptance - never a missing check that reads as clean."""
+    eps = default_epsilon(after_observed)
+    by_key = {(g.handle, g.block_path): g for g in after_observed.features}
+    evidence: dict[str, dict] = {}
+    unresolved: list[tuple[str, str]] = []
+    for requirement in rs.requirements:
+        handle = next(
+            (
+                dict(selector.value).get("handle")
+                for selector in requirement.features
+                if selector.kind == "dimension"
+            ),
+            None,
+        )
+        if handle is None:
+            continue
+        handle = str(handle)
+        source = next(
+            (
+                f
+                for f in before.observed.features
+                if f.type == "dimension" and f.handle.upper() == handle.upper()
+            ),
+            None,
+        )
+        if source is None:
+            # the source has no such DIMENSION: the row is bound afresh by that
+            # handle, which names the same entity only while handles are stable
+            if handles_stable:
+                single = RequirementSet(requirements=(requirement,), units=rs.units)
+                item = dimension_evidence(single, after_snap, after_observed).get(requirement.id)
+                if item is not None:
+                    evidence[requirement.id] = item
+            continue
+        found, how, cands = _rebind_dimension(
+            source, after_observed, handles_stable=handles_stable, by_key=by_key, eps=eps
+        )
+        if found is None:
+            why = (
+                f"{len(cands)} DIMENSIONs of the saved file match {handle} by {how}"
+                if cands
+                else f"no DIMENSION of the saved file matches {handle} by handle, tag or geometry"
+            )
+            evidence[requirement.id] = {
+                "handle": None,
+                "source_handle": source.handle,
+                "rebound": how,
+                "status": "unknown",
+                "candidates": [g.handle for g in cands],
+                "reason": why,
+                "findings": [],
+                "mismatch": False,
+            }
+            unresolved.append((requirement.id, why))
+            continue
+        item = dict(bind_dimension(found, after_observed, epsilon=eps))
+        item["handle"] = found.handle
+        item["source_handle"] = source.handle
+        item["rebound"] = how
+        evidence[requirement.id] = item
+    return evidence, unresolved
 
 
 def _compare(before: dict, after: dict) -> list[dict]:
@@ -330,12 +578,16 @@ async def verify_artifact(
             for requirement in rs.requirements
             if requirement.id in by_id
         )
-        dimensions = (
-            dimension_evidence(rs, after_snap, observed) if before is None or stable else {}
-        )
-        return observed, bindings, measurements, rebinding, stable, dimensions
+        if before is None:
+            dimensions, unresolved = dimension_evidence(rs, after_snap, observed), []
+        else:
+            dimensions, unresolved = rebound_dimension_evidence(
+                rs, before, after_snap, observed, handles_stable=bool(stable)
+            )
+        return observed, bindings, measurements, rebinding, stable, dimensions, unresolved
 
-    observed, bindings, measurements, rebinding, stable, dimensions = await asyncio.to_thread(_work)
+    work = await asyncio.to_thread(_work)
+    observed, bindings, measurements, rebinding, stable, dimensions, unresolved = work
     record = {
         "path": str(target),
         "sha256": sha,
@@ -347,6 +599,13 @@ async def verify_artifact(
         rs, bindings, measurements, observed=observed, document=document, artifact=record
     )
     report = attach_dimension_evidence(report, dimensions)
+    for requirement_id, why in unresolved:
+        report = add_finding(
+            report,
+            kind=DIMENSION_UNVERIFIED,
+            requirement=requirement_id,
+            message=f"the DIMENSION check could not be made on the saved file: {why}",
+        )
     report["rebinding"] = {"handles_stable": stable, "rows": rebinding}
     if before is not None:
         before_report = build_report(

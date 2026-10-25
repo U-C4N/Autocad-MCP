@@ -247,3 +247,196 @@ async def test_finalize_measures_the_saved_file_again(backend, tmp_path):
             "changed": False,
         }
     ]
+
+
+# -- review round: what a selector defines is resolved again on the file ----------
+
+
+def _holes(path, extra=()) -> None:
+    """A 200 x 100 frame and four r = 5 holes at x = 20 / 60 / 100 / 140, then ``extra``."""
+    doc = ezdxf.new("R2010", units=4)
+    msp = doc.modelspace()
+    msp.add_lwpolyline([(0, 0), (200, 0), (200, 100), (0, 100)], close=True)
+    for x in (20, 60, 100, 140):
+        msp.add_circle((x, 50), 5)
+    for centre, radius in extra:
+        msp.add_circle(centre, radius)
+    doc.saveas(path)
+
+
+def _raw_predicate(rid, quantity, target, **crit) -> dict:
+    return {
+        "units": "mm",
+        "items": [
+            {
+                "id": rid,
+                "quantity": quantity,
+                "target": target,
+                "features": [{"kind": "predicate", **crit}],
+                "provenance": "explicit",
+                "source": {"label": "4 x hole"},
+            }
+        ],
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("quantity", "target", "crit", "measured"),
+    [
+        ("count", {"exact": 4}, {"type": "circle", "radius_max": 6}, 5.0),
+        ("absence", {}, {"type": "circle", "radius_min": 30}, 1.0),
+    ],
+)
+async def test_a_count_is_counted_again_on_the_saved_file(
+    backend, tmp_path, quantity, target, crit, measured
+):
+    # the file gained a fifth hole and an r = 35 circle; the document has neither
+    _holes(tmp_path / "doc.dxf")
+    _holes(tmp_path / "saved.dxf", [((180, 50), 5), ((100, 80), 35)])
+    await backend.drawing_open(str(tmp_path / "doc.dxf"))
+    report = await server.drawing_verify_requirements(
+        requirements=_raw_predicate("N", quantity, target, **crit),
+        artifact_path=str(tmp_path / "saved.dxf"),
+        ctx=_FakeCtx(backend),
+    )
+    (row,) = report["rows"]
+    assert (report["status"], report["accepted"]) == ("fail", False)
+    assert row["measured"]["value"] == measured, "counted on the file, not the document"
+    (rebound,) = report["rebinding"]["rows"]
+    assert rebound["method"] == "fresh"
+    assert "the source document counted" in rebound["reason"]
+    (compared,) = report["comparison"]
+    assert compared["before"]["status"] == "pass"
+    assert compared["changed"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_count_by_handle_on_a_renumbered_file_is_unknown(backend, tmp_path):
+    source = _write(tmp_path / "a.dxf", [("bore", 50, 50, 20, False), ("pin", 150, 50, 5, False)])
+    _write(tmp_path / "b.dxf", [("pin", 150, 50, 5, False), ("bore", 50, 50, 20, False)])
+    await backend.drawing_open(str(tmp_path / "a.dxf"))
+    rs = RequirementSet(
+        requirements=(
+            Requirement(
+                id="C1",
+                quantity="count",
+                target=(("exact", 1),),
+                features=(FeatureSelector(kind="handle", value=(("handle", source["bore"]),)),),
+                provenance="explicit",
+                source=(("document", "synthetic-sheet"),),
+            ),
+        ),
+        units="mm",
+    )
+    report = await verify_artifact(str(tmp_path / "b.dxf"), rs, backend=backend)
+    assert report["rebinding"]["handles_stable"] is False
+    (row,) = report["rows"]
+    assert row["status"] == "unknown"
+    assert "renumbered handles" in report["rebinding"]["rows"][0]["reason"]
+    assert report["accepted"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_predicate_that_resolves_differently_on_the_file_is_unknown(backend, tmp_path):
+    # one r = 35 circle in the document; the file adds a second inside the predicate
+    _holes(tmp_path / "doc.dxf", [((100, 50), 35)])
+    _holes(tmp_path / "saved.dxf", [((100, 50), 35), ((100, 50.5), 35)])
+    await backend.drawing_open(str(tmp_path / "doc.dxf"))
+    raw = _raw_predicate("R", "radius", {"nominal": 35, "unit": "mm"}, type="circle", radius_min=30)
+    report = await server.drawing_verify_requirements(
+        requirements=raw, artifact_path=str(tmp_path / "saved.dxf"), ctx=_FakeCtx(backend)
+    )
+    (row,) = report["rows"]
+    assert row["status"] == "unknown"
+    assert "disagrees with the source binding" in report["rebinding"]["rows"][0]["reason"]
+    assert report["accepted"] is False
+
+
+def _dimensioned(path, order, *, text="45", dimension=True) -> dict:
+    """A frame, a bore r = 20 at (50, 50) with a Standard-style (DIMLFAC 1) diameter
+    DIMENSION showing ``text`` and a pin r = 5, created in ``order``. Returns
+    ``{name: handle}``."""
+    doc = ezdxf.new("R2010", units=4, setup=True)
+    msp = doc.modelspace()
+    handles = {}
+    for name in order:
+        if name == "frame":
+            frame = msp.add_lwpolyline([(0, 0), (200, 0), (200, 100), (0, 100)], close=True)
+            handles["frame"] = frame.dxf.handle
+        elif name == "bore":
+            handles["bore"] = msp.add_circle((50, 50), 20).dxf.handle
+            if dimension:
+                dim = msp.add_diameter_dim(
+                    center=(50, 50), radius=20, angle=45, text=text, dimstyle="Standard"
+                )
+                dim.render()
+                handles["dim"] = dim.dimension.dxf.handle
+        else:
+            handles["pin"] = msp.add_circle((150, 50), 5).dxf.handle
+    doc.saveas(path)
+    return handles
+
+
+def _by_dimension(handle) -> RequirementSet:
+    return RequirementSet(
+        requirements=(
+            Requirement(
+                id="RD",
+                quantity="diameter",
+                target=(("nominal", 40.0), ("unit", "mm")),
+                features=(FeatureSelector(kind="dimension", value=(("handle", handle),)),),
+                provenance="explicit",
+                source=(("document", "synthetic-sheet"),),
+            ),
+        ),
+        units="mm",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_dimension_mismatch_survives_a_save_that_renumbers_handles(backend, tmp_path):
+    source = _dimensioned(tmp_path / "a.dxf", ["frame", "bore", "pin"])
+    saved = _dimensioned(tmp_path / "b.dxf", ["pin", "frame", "bore"])
+    assert saved["bore"] == source["dim"], "the save gave the DIMENSION's handle to the bore"
+    await backend.drawing_open(str(tmp_path / "a.dxf"))
+    rs = _by_dimension(source["dim"])
+    on_document = await verify_requirements(backend, rs)
+    assert [f["kind"] for f in on_document["findings"]] == ["dimension_mismatch"]
+    report = await verify_artifact(str(tmp_path / "b.dxf"), rs, backend=backend)
+    assert report["rebinding"]["handles_stable"] is False
+    assert report["accepted"] is False
+    assert [f["kind"] for f in report["findings"]] == ["dimension_mismatch"]
+    (row,) = report["rows"]
+    assert row["dimension"]["handle"] == saved["dim"]
+    assert row["dimension"]["source_handle"] == source["dim"]
+    assert row["dimension"]["displayed_text"] == "45"
+
+
+@pytest.mark.asyncio
+async def test_an_edited_dimension_text_is_judged_on_the_file(backend, tmp_path):
+    # the file's DIMENSION was corrected to show its measurement: found by its
+    # defpoints, judged clean on the file
+    source = _dimensioned(tmp_path / "a.dxf", ["frame", "bore", "pin"])
+    saved = _dimensioned(tmp_path / "b.dxf", ["pin", "frame", "bore"], text="<>")
+    await backend.drawing_open(str(tmp_path / "a.dxf"))
+    rs = _by_dimension(source["dim"])
+    report = await verify_artifact(str(tmp_path / "b.dxf"), rs, backend=backend)
+    (row,) = report["rows"]
+    assert row["dimension"]["handle"] == saved["dim"]
+    assert row["dimension"]["mismatch"] is False
+    assert (report["status"], report["accepted"], report["findings"]) == ("pass", True, [])
+
+
+@pytest.mark.asyncio
+async def test_a_dimension_gone_from_the_file_blocks_acceptance(backend, tmp_path):
+    source = _dimensioned(tmp_path / "a.dxf", ["frame", "bore", "pin"], text="<>")
+    _dimensioned(tmp_path / "b.dxf", ["pin", "frame", "bore"], dimension=False)
+    await backend.drawing_open(str(tmp_path / "a.dxf"))
+    rs = _by_dimension(source["dim"])
+    assert (await verify_requirements(backend, rs))["accepted"] is True
+    report = await verify_artifact(str(tmp_path / "b.dxf"), rs, backend=backend)
+    assert report["accepted"] is False
+    assert [f["kind"] for f in report["findings"]] == ["dimension_unverified"]
+    (row,) = report["rows"]
+    assert row["dimension"]["status"] == "unknown"

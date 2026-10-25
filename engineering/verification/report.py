@@ -62,6 +62,7 @@ __all__ = [
     "AMBIGUOUS_BINDING",
     "BINDING_POLICIES",
     "DIMENSION_MISMATCH",
+    "DIMENSION_UNVERIFIED",
     "MISSING_REQUIREMENT",
     "SCHEMA_VERSION",
     "STATUSES",
@@ -88,6 +89,9 @@ MISSING_REQUIREMENT = "missing_requirement"
 AMBIGUOUS_BINDING = "ambiguous_binding"
 UNSUPPORTED_MEASUREMENT = "unsupported_measurement"
 DIMENSION_MISMATCH = "dimension_mismatch"
+#: a requirement's DIMENSION could not be found again on a saved file: the
+#: annotation check was not made, which blocks acceptance like a mismatch
+DIMENSION_UNVERIFIED = "dimension_unverified"
 
 
 def sha256_file(path) -> str:

@@ -12292,7 +12292,9 @@ async def drawing_verify_requirements(
       through a private copy), each feature re-bound from the current document - by
       handle while handles are stable, then by feature tag, then by geometry, two
       candidates being `unknown` - with `rebinding` and the before / after
-      `comparison` in the report.
+      `comparison` in the report. A count or absence is counted afresh on the
+      file, never carried over; a DIMENSION not found again there is a blocking
+      `dimension_unverified` finding.
     - `manifest_path`: re-hashes a drawing_deliver bundle and lists every
       artifact whose sha256 no longer matches (`stale`) or that is gone
       (`missing`).
