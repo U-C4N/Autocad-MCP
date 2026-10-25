@@ -75,7 +75,16 @@ def test_the_vocabularies_are_closed_and_spelled_once():
         "vertical",
     )
     assert SELECTOR_KINDS == ("handle", "feature_tag", "arch_element", "predicate", "dimension")
-    assert FEATURE_TYPES == ("line", "circle", "arc", "ellipse", "polyline", "point")
+    assert FEATURE_TYPES == (
+        "line",
+        "circle",
+        "arc",
+        "ellipse",
+        "polyline",
+        "point",
+        "spline",
+        "dimension",
+    )
     assert BINDING_STATUSES == ("bound", "ambiguous", "unknown")
 
 
@@ -89,7 +98,8 @@ def test_the_vocabularies_are_closed_and_spelled_once():
         (lambda: Binding("D1", "picked", (), (), "x"), "Binding.status must be one of"),
         (lambda: FeatureSelector("layer", ()), "FeatureSelector.kind must be one of"),
         (
-            lambda: ObservedFeature("1A", "spline", "Model", "0", (), ()),
+            # "spline" is a feature type since Task 13; a HATCH is never observed
+            lambda: ObservedFeature("1A", "hatch", "Model", "0", (), ()),
             "ObservedFeature.type must be one of",
         ),
         (lambda: _req(quantity="volume"), "Requirement.quantity must be one of"),

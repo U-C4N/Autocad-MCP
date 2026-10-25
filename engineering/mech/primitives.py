@@ -37,6 +37,9 @@ class Line(NamedTuple):
     p1: Pt
     p2: Pt
     role: Role = "visible"
+    #: The part feature this primitive draws ("" for the body). v1.7.0 (B17):
+    #: written onto the entity as an ACADMCP_MECH feature tag.
+    feature: str = ""
 
 
 class Arc(NamedTuple):
@@ -47,18 +50,21 @@ class Arc(NamedTuple):
     start_deg: float
     end_deg: float
     role: Role = "visible"
+    feature: str = ""
 
 
 class Circle(NamedTuple):
     center: Pt
     radius: float
     role: Role = "visible"
+    feature: str = ""
 
 
 class Poly(NamedTuple):
     points: tuple[Pt, ...]
     closed: bool = False
     role: Role = "visible"
+    feature: str = ""
 
 
 class HatchArea(NamedTuple):
@@ -70,6 +76,7 @@ class HatchArea(NamedTuple):
 
     loops: tuple[tuple[Pt, ...], ...]
     material: str = "steel"
+    feature: str = ""
 
 
 class Text(NamedTuple):
@@ -78,6 +85,7 @@ class Text(NamedTuple):
     height: float = 3.5
     rotation: float = 0.0
     role: Role = "text"
+    feature: str = ""
 
 
 class DimIntent(NamedTuple):
@@ -105,6 +113,14 @@ def layer_for(prim: Prim) -> str:
         return ROLE_LAYER[role]
     except KeyError:
         raise ValueError(f"unknown line role {role!r}; roles are {', '.join(ROLES)}") from None
+
+
+def with_feature(prim: Prim, feature: str) -> Prim:
+    """``prim`` tagged with the feature it draws. A tag it already carries stays:
+    the first feature to claim a primitive is the one it draws."""
+    if getattr(prim, "feature", "") or not feature:
+        return prim
+    return prim._replace(feature=str(feature))
 
 
 def _on_circle(center: Pt, radius: float, deg: float) -> Pt:

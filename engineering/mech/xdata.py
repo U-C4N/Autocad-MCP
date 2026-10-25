@@ -8,13 +8,20 @@ escapes every newline, so no chunk can carry a line separator into the DXF.
 
 A payload that is not ours is *refused*, never decoded into something
 plausible: a foreign application marker, a chunk stream that is not JSON, a
-version this build does not read, or a kind outside `KINDS`. Three shapes are
+version this build does not read, or a kind outside `KINDS`. Four shapes are
 written, and both the writer and every reader test them literally:
 
     {"v": 1, "kind": "part",     "id": "<hex>", "view": "front", "part": {...}}
     {"v": 1, "kind": "std_part", "designation": "ISO 4014 - M12x60",
      "standard": "ISO 4014", "size": "M12x60", "qty": 1, "material": "8.8"}
     {"v": 1, "kind": "balloon",  "item": 3, "targets": ["1A2B", ...]}
+    {"v": 1, "kind": "feature",  "part": "1A2B", "feature": "h1", "view": "front"}
+
+The fourth (v1.7.0, B17) is small and rides on every entity a mechanical
+generator draws, written in the create call itself; ``part`` is the part's
+anchor handle ("" for a standalone hole pattern), ``feature`` the feature id
+("" for the body) and ``view`` the view kind, ``"<kind>:<label>"`` when the
+view has a label.
 
 The codec is shared: ``app_id=`` / ``kinds=`` let another application write
 its own payloads through the same chunking and the same refusals (track F
@@ -33,7 +40,7 @@ from backends.xdata_specs import MAX_BYTES, app_size
 APP_ID = "ACADMCP_MECH"
 PAYLOAD_VERSION = 1
 CHUNK = 255
-KINDS: tuple[str, ...] = ("part", "std_part", "balloon")
+KINDS: tuple[str, ...] = ("part", "std_part", "balloon", "feature")
 
 
 def _validate(payload: dict, app_id: str, kinds: Sequence[str]) -> dict:

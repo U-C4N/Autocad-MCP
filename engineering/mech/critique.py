@@ -226,6 +226,10 @@ async def build_index(backend: AutoCADBackend) -> dict:
             # A foreign or corrupt payload is not mechanical content; the codec
             # already refused it, and guessing at it here would undo that.
             continue
+        if payload.get("kind") == "feature":
+            # A per-entity feature tag (v1.7.0, B17) is binding data for the
+            # verification engine, not a part, a standard part or a balloon.
+            continue
         at = _anchor_point(ent)
         if at is None:
             continue

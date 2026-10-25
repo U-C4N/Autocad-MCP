@@ -163,9 +163,9 @@ def revision_row_prims(
 #: The revision row's own XDATA application.
 #:
 #: `engineering/mech/xdata.py::KINDS` is pinned to ("part", "std_part",
-#: "balloon") and `engineering/mech/critique.py` scans ACADMCP_MECH for exactly
-#: those three on INSERTs and CIRCLEs. A revision row is neither, so it carries
-#: its own application rather than a fourth kind that `encode` would refuse.
+#: "balloon", "feature") and `engineering/mech/critique.py` scans ACADMCP_MECH
+#: on INSERTs and CIRCLEs. A revision row is none of those, so it carries its
+#: own application rather than a fifth kind that `encode` would refuse.
 #: The chunking is the same rule the mech codec follows -- ASCII JSON split at
 #: 255 characters -- and `entity_set_xdata(handle, app_name, values)` supplies
 #: the 1001 application tag itself, so only the chunks travel.

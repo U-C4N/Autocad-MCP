@@ -3187,7 +3187,22 @@ async def entity_get(
     handle: Annotated[str, "Entity handle"],
     ctx: Context = None,
 ) -> dict:
-    """Get all properties of a specific entity by its handle."""
+    """Get all properties of a specific entity by its handle.
+
+    Coordinates are WCS. A HATCH also reports every boundary loop: `loops`
+    (each with `kind`, `flags`, `depth`, `points` and the parallel `bulges`,
+    `edges` for an edge path, `exact` and its `area`), `hatch_style` and the
+    filled `area` - outer loops minus islands by the hatch's own island style,
+    the rule `analysis_measure_entity` applies; None when a loop has an ellipse
+    or spline edge. A DIMENSION also reports `dimension`: `dimtype`, the five
+    `defpoints`, its own `measurement` (before DIMLFAC), `text_override`,
+    `dimstyle`, `dimlfac` and `angle`. On the live engine those two are read
+    from the drawing's DXF export (one export per call; `detail_source` says
+    so), and a member of a block definition reports `detail_unavailable`. An
+    entity in a plane tilted out of WCS XY reports `plane_normal` (or
+    `tilted`) and omits what xy cannot express. Refused: a handle the drawing
+    does not hold.
+    """
     result = await _backend(ctx).entity_get(handle)
     return _dc(result)
 
@@ -7017,10 +7032,18 @@ async def point_intersection(
 ) -> dict:
     """Compute the intersection of two geometry entities (LINE-LINE, LINE-CIRCLE,
     CIRCLE-CIRCLE). When two candidates exist, ref_x/ref_y selects the nearest.
-    Returns {x, y}.
+
+    Returns {x, y, on_first, on_second, on_both, candidates}. A LINE is
+    intersected as the infinite line through it, so the point can lie beyond
+    a drawn end: `on_first` / `on_second` say whether it lies on each drawn
+    segment (a CIRCLE always holds its own intersection points) and `on_both`
+    whether on both - check it before using the point as a corner.
+    `candidates` is how many intersections existed. Refused, with the case
+    named: parallel or coincident lines, a line that misses the circle,
+    concentric circles, circles that do not meet, any other entity pair.
     """
-    pt = await _backend(ctx).point_intersection(handle1, handle2, ref_x, ref_y)
-    return {"x": float(pt[0]), "y": float(pt[1])}
+    found = await _backend(ctx).point_intersection_detail(handle1, handle2, ref_x, ref_y)
+    return {key: found[key] for key in ("x", "y", "on_first", "on_second", "on_both", "candidates")}
 
 
 @cad_tool(summary="Find where a line from an outside point touches a circle.", cost="read")

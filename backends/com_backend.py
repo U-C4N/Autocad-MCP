@@ -47,6 +47,7 @@ from .contracts.settings import SUMMARY_FIELDS, validate_drawing_properties
 from .document_guard import ActiveDocumentChangedError
 from .operations import CURRENT_OPERATION
 from .quarantine import DaemonExecutor, real_call_name
+from .xdata_specs import prepare_xdata
 
 log = logging.getLogger(__name__)
 
@@ -677,6 +678,26 @@ def _apply_entity_attrs(entity, layer: str | None, color: int | None, linetype: 
         entity.Linetype = linetype
 
 
+def _attach_xdata(entity, prepared) -> None:
+    """XDATA validated by ``prepare_xdata``, written onto an entity this same COM
+    job just created (v1.7.0, B17) - no extra round trip per entity. The APPID
+    is registered first, exactly as ``entity_set_xdata`` does."""
+    if not prepared:
+        return
+    doc = _acad_doc()
+    for app, tags in prepared:
+        try:
+            doc.RegisteredApplications.Add(app)
+        except Exception as exc:  # already registered
+            log.debug("RegisteredApplications.Add(%s): %s", app, exc)
+        codes = [1001] + [code for code, _ in tags]
+        payload = [app] + [_apoint(*value) if code == 1010 else value for code, value in tags]
+        entity.SetXData(
+            _ai(codes),
+            win32com.client.VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_VARIANT, payload),
+        )
+
+
 def _regen():
     """Regen the active viewport so new entities appear immediately on screen."""
     if _COM_STATE.get("batch_mode"):
@@ -1204,16 +1225,17 @@ def _com_bulge(entity, index: int) -> float:
         return 0.0
 
 
-def _com_bulges(entity, coords, closed: bool, length) -> list[float]:
+def _com_bulges(entity, coords, closed: bool, length, stride: int = 2) -> list[float]:
     """Every vertex's bulge, read only when ``Length`` says an arc exists.
 
-    ``coords`` is the flat ``Coordinates`` variant (x0, y0, x1, y1, ...). A
+    ``coords`` is the flat ``Coordinates`` variant: (x, y) pairs on a
+    lightweight polyline, (x, y, z) triples on a heavy 2D one (``stride``). A
     circular arc is strictly longer than its chord, so when AutoCAD's own
     ``Length`` equals the chord walk the polyline is straight everywhere and
     the per-vertex COM round trips are skipped.
     """
-    count = len(coords) // 2
-    pts = [(float(coords[i]), float(coords[i + 1])) for i in range(0, 2 * count, 2)]
+    count = len(coords) // stride
+    pts = [(float(coords[i]), float(coords[i + 1])) for i in range(0, stride * count, stride)]
     chord = sum(math.dist(a, b) for a, b in zip(pts, pts[1:], strict=False))
     if closed and count > 1:
         chord += math.dist(pts[-1], pts[0])
@@ -1579,14 +1601,17 @@ def _entity_info(entity) -> EntityInfo:
             props["length"] = entity.Radius * _sweep
         elif obj_name in _COM_LWPOLYLINE_NAMES or obj_name == "AcDb2dPolyline":
             coords = list(entity.Coordinates)
-            pts = [[coords[i], coords[i + 1]] for i in range(0, len(coords), 2)]
+            # Measured on AutoCAD 2026 (25.1), backlog W3-T13-09: a heavy 2D
+            # polyline's Coordinates are (x, y, z) triples - AddPolyline of three
+            # vertices answers nine values - while a lightweight polyline's are
+            # (x, y) pairs.
+            stride = 3 if obj_name == "AcDb2dPolyline" else 2
+            pts = [[coords[i], coords[i + 1]] for i in range(0, len(coords), stride)]
             # ActiveX hands back WCS for every point property on this backend
-            # *except* this one: "LightweightPolyline object: the variant is an
-            # array of 2D points in OCS." Scoped to the lightweight polyline
-            # deliberately — AcDb2dPolyline's Coordinates may be 3D triples, and
-            # changing its stride on a doc reading alone, with no way to verify
-            # against live AutoCAD from here, risks breaking a path that works
-            # today.
+            # *except* the lightweight polyline: "LightweightPolyline object: the
+            # variant is an array of 2D points in OCS." A heavy 2D polyline's
+            # frame is not translated: that reading is still unverified live, and
+            # the `ocs_normalized` capability reason says so.
             normal = None
             if obj_name in _COM_LWPOLYLINE_NAMES:
                 try:
@@ -1609,7 +1634,9 @@ def _entity_info(entity) -> EntityInfo:
             # is zero and no call is needed. GetBulge answers in the same OCS
             # as Coordinates, so a translated `points` list needs the bulges
             # translated with it — a mirrored frame reverses the arc's sense.
-            bulges = _com_bulges(entity, coords, bool(entity.Closed), props["length"])
+            bulges = _com_bulges(
+                entity, coords, bool(entity.Closed), props["length"], stride=stride
+            )
             if normal is not None:
                 bulges = [ocs.wcs_bulge(normal, b) for b in bulges]
             props["bulges"] = bulges
@@ -1633,12 +1660,17 @@ def _entity_info(entity) -> EntityInfo:
             props["x_scale"] = entity.XScaleFactor
             props["y_scale"] = entity.YScaleFactor
             props["rotation_deg"] = rad2deg(entity.Rotation)
-            # ezdxf parity: a block reference whose Normal points -Z is drawn
-            # on the mirror image (x -> -x) about its insertion point.
+            # ezdxf parity: a block reference whose Normal is -Z in a FLAT frame
+            # is drawn on the mirror image (x -> -x) about its insertion point; a
+            # tilted Normal with a negative z is no mirror (W3-T14-19).
             try:
-                props["mirrored"] = float(entity.Normal[2]) < 0
+                normal = tuple(float(v) for v in entity.Normal)
             except Exception:
-                props["mirrored"] = False
+                normal = (0.0, 0.0, 1.0)
+            flat = ocs.is_flat_frame(normal)
+            props["mirrored"] = flat and normal[2] < 0
+            if not flat:
+                props["plane_normal"] = ocs.plane_normal(normal)
             geometry_bbox = _com_geometry_bbox(entity)
             if geometry_bbox is not None:
                 props["geometry_bbox"] = geometry_bbox
@@ -1916,11 +1948,16 @@ class ComBackend(AutoCADBackend):
                     "activex_wcs",
                     reason=(
                         "activex_returns_wcs_natively;lwpolyline_coordinates_translated_locally;"
-                        "2d_polyline_coordinates_not_verified_against_live_autocad"
+                        "2d_polyline_xyz_stride_measured;2d_polyline_ocs_not_verified_live"
                     ),
                 ),
                 "ocs_tilted_plane": FeatureCapability(
                     False, reason="2d_xy_cannot_address_a_tilted_plane"
+                ),
+                "hatch_loops": FeatureCapability(
+                    True,
+                    "dxf_export",
+                    reason="entity_get_reads_one_document_export;block_definition_members_not_read",
                 ),
                 "table": FeatureCapability(True, "native"),
                 "mleader": FeatureCapability(True, "native"),
@@ -5160,11 +5197,15 @@ class ComBackend(AutoCADBackend):
         layer=None,
         color=None,
         linetype=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             mspace = _msp()
             line = mspace.AddLine(_apoint(x1, y1, z1), _apoint(x2, y2, z2))
             _apply_entity_attrs(line, layer, color, linetype)
+            _attach_xdata(line, prepared)
             _regen()
             return _entity_info(line)
 
@@ -5177,11 +5218,15 @@ class ComBackend(AutoCADBackend):
         radius,
         layer=None,
         color=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             mspace = _msp()
             circle = mspace.AddCircle(_apoint(cx, cy), float(radius))
             _apply_entity_attrs(circle, layer, color, None)
+            _attach_xdata(circle, prepared)
             _regen()
             return _entity_info(circle)
 
@@ -5196,7 +5241,10 @@ class ComBackend(AutoCADBackend):
         end_angle,
         layer=None,
         color=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             mspace = _msp()
             arc = mspace.AddArc(
@@ -5206,6 +5254,7 @@ class ComBackend(AutoCADBackend):
                 deg2rad(end_angle),
             )
             _apply_entity_attrs(arc, layer, color, None)
+            _attach_xdata(arc, prepared)
             _regen()
             return _entity_info(arc)
 
@@ -5217,7 +5266,10 @@ class ComBackend(AutoCADBackend):
         closed=False,
         layer=None,
         color=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             mspace = _msp()
             flat = []
@@ -5226,6 +5278,7 @@ class ComBackend(AutoCADBackend):
             pline = mspace.AddLightWeightPolyline(_av(flat))
             pline.Closed = closed
             _apply_entity_attrs(pline, layer, color, None)
+            _attach_xdata(pline, prepared)
             _regen()
             return _entity_info(pline)
 
@@ -5240,12 +5293,16 @@ class ComBackend(AutoCADBackend):
         rotation=0.0,
         layer=None,
         color=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             mspace = _msp()
             txt = mspace.AddText(text, _apoint(x, y), float(height))
             txt.Rotation = deg2rad(rotation)
             _apply_entity_attrs(txt, layer, color, None)
+            _attach_xdata(txt, prepared)
             _regen()
             return _entity_info(txt)
 
@@ -5388,7 +5445,10 @@ class ComBackend(AutoCADBackend):
         angle=0.0,
         layer=None,
         color=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             mspace = _msp()
             # acPatternTypePreDefined = 0
@@ -5406,6 +5466,7 @@ class ComBackend(AutoCADBackend):
             hatch.Evaluate()
             bnd_pline.Delete()
             _apply_entity_attrs(hatch, layer, color, None)
+            _attach_xdata(hatch, prepared)
             _regen()
             return _entity_info(hatch)
 
@@ -5828,7 +5889,48 @@ class ComBackend(AutoCADBackend):
             ent = doc.HandleToObject(handle)
             return _entity_info(ent)
 
-        return await self._run(_sync)
+        info = await self._run(_sync)
+        if info.type == "HATCH" or "DIMENSION" in info.type:
+            await self._detail_from_export(info)
+        return info
+
+    async def _detail_from_export(self, info: EntityInfo) -> None:
+        """A HATCH's loops and a DIMENSION's fields, read from the drawing's DXF export.
+
+        ActiveX has no loop reader that leaves a non-associative hatch
+        untouched and no defpoint reader for every dimension class, so the
+        drawing is exported once (``Document.Export``, measured on AutoCAD 2026 -
+        ``engineering/understand/snapshot.py``) and the record of this handle is
+        read with the same code the headless engine runs. One export per call,
+        never per ``entity_list`` row. A member of a block definition is not in
+        a layout of the export: it says ``detail_unavailable`` instead.
+        """
+        from backends.entity_fields import dimension_props, hatch_props
+        from engineering.understand import snapshot as snapshot_module
+
+        snap = await snapshot_module.take_snapshot(self)
+        wanted = str(info.handle).upper()
+        record = next((r for r in snap.records if r.handle.upper() == wanted), None)
+        if record is None:
+            info.properties["detail_unavailable"] = (
+                f"{info.handle} is not in a layout of the exported drawing (a block "
+                "definition's member is not read); no loops or defpoints are reported"
+            )
+            return
+        info.properties["detail_source"] = "dxf_export"
+        if record.tilted:
+            info.properties["tilted"] = True
+            return
+        if info.type == "HATCH":
+            if not record.hatch_loops:  # a hatch has a loop: none means "not read"
+                info.properties["detail_unavailable"] = (
+                    f"{info.handle}'s boundary loops could not be read from the export; "
+                    "no loops or area are reported"
+                )
+                return
+            info.properties.update(hatch_props(record.hatch_loops, record.hatch_style))
+        elif record.dimension is not None:
+            info.properties["dimension"] = dimension_props(record.dimension)
 
     async def entity_set_properties(
         self,

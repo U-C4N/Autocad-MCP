@@ -24,6 +24,26 @@ if TYPE_CHECKING:
     )
 
 
+#: Slack on a segment's parameter: an intersection computed at a drawn end
+#: lands within it.
+_ON_SEGMENT_TOL = 1e-9
+
+
+def _on_entity(kind: str, props: dict, point) -> bool:
+    """Does ``point`` - already on the infinite line, or on the circle - lie on
+    the drawn entity? A LINE checks the parameter along its segment."""
+    if kind != "LINE":
+        return True
+    x1, y1 = float(props["start"][0]), float(props["start"][1])
+    x2, y2 = float(props["end"][0]), float(props["end"][1])
+    dx, dy = x2 - x1, y2 - y1
+    length2 = dx * dx + dy * dy
+    if length2 == 0.0:
+        return math.dist((x1, y1), point) <= _ON_SEGMENT_TOL
+    t = ((point[0] - x1) * dx + (point[1] - y1) * dy) / length2
+    return -_ON_SEGMENT_TOL <= t <= 1.0 + _ON_SEGMENT_TOL
+
+
 class PremiumContract(ABC):
     # These are CONCRETE and backend-agnostic: they orchestrate the abstract
     # primitives above plus the shared EntityInfo.properties contract (start/
@@ -406,10 +426,30 @@ class PremiumContract(ABC):
         Supports LINE-LINE, LINE-CIRCLE, and CIRCLE-CIRCLE cases. When
         multiple intersections exist (e.g. two circles), ``ref_x``/``ref_y``
         selects the candidate nearest to that reference point. If omitted the
-        first candidate is returned.
+        first candidate is returned. ``point_intersection_detail`` also says
+        whether the point lies on both drawn entities.
 
         Raises RuntimeError when no real intersection exists or entity types
         are unsupported.
+        """
+        found = await self.point_intersection_detail(handle1, handle2, ref_x, ref_y)
+        return (found["x"], found["y"])
+
+    async def point_intersection_detail(
+        self,
+        handle1: str,
+        handle2: str,
+        ref_x: float | None = None,
+        ref_y: float | None = None,
+    ) -> dict:
+        """The intersection point and whether it lies on both drawn entities (v1.7.0, B18).
+
+        A LINE is intersected as the infinite line through it, so the point may
+        lie beyond a segment's ends: ``on_first`` / ``on_second`` say whether it
+        lies on each drawn segment (its parameter along the segment within
+        [0, 1], to 1e-9); a CIRCLE always holds its own intersection points.
+        Returns ``{"x", "y", "on_first", "on_second", "on_both", "candidates"}``.
+        Refusals are ``point_intersection``'s.
         """
         info1 = await self.entity_get(handle1)
         info2 = await self.entity_get(handle2)
@@ -477,14 +517,25 @@ class PremiumContract(ABC):
                 "Supported: LINE-LINE, LINE-CIRCLE, CIRCLE-CIRCLE."
             )
 
-        if len(candidates) == 1:
-            return candidates[0]
-        if ref_x is not None and ref_y is not None:
-            return min(
+        # a tangent touch solves to the same point twice: one intersection
+        candidates = list(dict.fromkeys(candidates))
+        if len(candidates) > 1 and ref_x is not None and ref_y is not None:
+            chosen = min(
                 candidates,
                 key=lambda p: (p[0] - float(ref_x)) ** 2 + (p[1] - float(ref_y)) ** 2,
             )
-        return candidates[0]
+        else:
+            chosen = candidates[0]
+        on_first = _on_entity(t1, props1, chosen)
+        on_second = _on_entity(t2, props2, chosen)
+        return {
+            "x": float(chosen[0]),
+            "y": float(chosen[1]),
+            "on_first": on_first,
+            "on_second": on_second,
+            "on_both": on_first and on_second,
+            "candidates": len(candidates),
+        }
 
     async def point_tangent(
         self,

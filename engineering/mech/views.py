@@ -46,6 +46,7 @@ from engineering.mech.primitives import (
     Text,
     bbox,
     translate,
+    with_feature,
 )
 from engineering.mech.primitives import scale as scale_prims
 
@@ -461,28 +462,24 @@ def _mirror_u(prims, axis: float) -> tuple[Prim, ...]:
     out: list[Prim] = []
     for prim in prims:
         if isinstance(prim, Line):
-            out.append(Line(flip(prim.p1), flip(prim.p2), prim.role))
+            out.append(prim._replace(p1=flip(prim.p1), p2=flip(prim.p2)))
         elif isinstance(prim, Arc):
             # reflection reverses the sweep, so the CCW arc runs from the
             # reflected end angle to the reflected start angle
             out.append(
-                Arc(
-                    flip(prim.center),
-                    prim.radius,
-                    (180.0 - prim.end_deg) % 360.0,
-                    (180.0 - prim.start_deg) % 360.0,
-                    prim.role,
+                prim._replace(
+                    center=flip(prim.center),
+                    start_deg=(180.0 - prim.end_deg) % 360.0,
+                    end_deg=(180.0 - prim.start_deg) % 360.0,
                 )
             )
         elif isinstance(prim, Circle):
-            out.append(Circle(flip(prim.center), prim.radius, prim.role))
+            out.append(prim._replace(center=flip(prim.center)))
         elif isinstance(prim, Poly):
-            out.append(Poly(tuple(flip(pt) for pt in prim.points), prim.closed, prim.role))
+            out.append(prim._replace(points=tuple(flip(pt) for pt in prim.points)))
         elif isinstance(prim, HatchArea):
             out.append(
-                HatchArea(
-                    tuple(tuple(flip(pt) for pt in loop) for loop in prim.loops), prim.material
-                )
+                prim._replace(loops=tuple(tuple(flip(pt) for pt in loop) for loop in prim.loops))
             )
         elif isinstance(prim, Text):
             out.append(prim._replace(at=flip(prim.at)))
@@ -571,6 +568,7 @@ def _feature_layer(
         own = tuple(prim for prim in own if not _profile_owned(feature, part, prim, kind, drawn))
         if own and kind == "front" and getattr(feature, "axisymmetric", False):
             own = tuple(own) + mirror_about_x(own)
+        own = tuple(with_feature(prim, feature.id) for prim in own)
         prims.extend(own)
         drawn.extend(own)
         dims.extend(feature.dims(part, kind, ctx))
@@ -1126,6 +1124,7 @@ def section_view(
             own = feature.cut_prims(part, plane, ctx)
             if own and getattr(feature, "axisymmetric", False):
                 own = tuple(own) + mirror_about_x(own)
+            own = tuple(with_feature(prim, feature.id) for prim in own)
             prims.extend(own)
             dims.extend(feature.dims(part, "front", ctx))
     elif isinstance(part, RevolvedPart):
@@ -1208,7 +1207,7 @@ def _clip_to_circle(prim, center: Pt, radius: float) -> tuple[Prim, ...]:
     """
     if isinstance(prim, Line):
         clipped = _clip_segment(prim.p1, prim.p2, center, radius)
-        return (Line(clipped[0], clipped[1], prim.role),) if clipped else ()
+        return (Line(clipped[0], clipped[1], prim.role, prim.feature),) if clipped else ()
     if isinstance(prim, Poly):
         points = list(prim.points)
         if prim.closed and points:
@@ -1217,7 +1216,7 @@ def _clip_to_circle(prim, center: Pt, radius: float) -> tuple[Prim, ...]:
         for index in range(len(points) - 1):
             clipped = _clip_segment(points[index], points[index + 1], center, radius)
             if clipped:
-                out.append(Line(clipped[0], clipped[1], prim.role))
+                out.append(Line(clipped[0], clipped[1], prim.role, prim.feature))
         return tuple(out)
     return (prim,) if _touches(prim, center, radius) else ()
 
