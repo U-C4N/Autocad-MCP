@@ -4,16 +4,23 @@ from __future__ import annotations
 
 import copy
 import logging
+import math
 from typing import TYPE_CHECKING, get_args
 
 import anyio
 
 import config
+from engineering.changes.preview import (
+    RevisionWatch,
+    check_preconditions,
+    make_preview,
+    parse_preconditions,
+)
 from engineering.plan_spec import LayerSetId, SheetSize
 from engineering.validation import SpecError, finite, non_negative, positive, within_budget
 
 from .critique import PID_FOCUSES, issues_for
-from .drawlines import draw_line
+from .drawlines import draw_line, existing_pid_lines
 from .graph import build_graph
 from .insert import FAIL_POSITIONS, place_symbol
 from .lines import AXIS, LINE_CLASSES, aim_points, count_crossings, route, snap_axis
@@ -414,6 +421,78 @@ def _plan_lines(norm: dict) -> list[dict]:
     return planned
 
 
+#: What ``crossings`` counts, on the dry run and the real run alike: each
+#: line against the spec's own earlier lines and every P&ID line already on the
+#: current layout (``existing_pid_lines``) - the scope ``draw_line`` counts in.
+#: The dry run counted the spec's lines only and did not say so (backlog
+#: W4-T17-08), so its total disagreed with the real run on any sheet that
+#: already carried a line.
+CROSSINGS_SCOPE = "spec_lines+current_space_pid_lines"
+
+
+async def _add_drawing_crossings(backend: AutoCADBackend, planned: list[dict]) -> None:
+    """Add each planned line's crossings with the P&ID lines already drawn."""
+    existing = await existing_pid_lines(backend)
+    if not existing:
+        return
+    others = [line["vertices"] for line in existing]
+    bulges = [line["bulges"] for line in existing]
+    for line in planned:
+        vertices = [(float(x), float(y)) for x, y in line["vertices"]]
+        line["crossings"] += count_crossings(vertices, others, bulges=bulges)
+
+
+def routing_region(norm: dict, planned: list[dict]) -> tuple[float, float, float, float] | None:
+    """The WCS box a spec draws in: every item's catalogue box (``SymbolSpec.bbox``)
+    placed at its insertion point, rotation and scale, and every planned line
+    vertex. None for a spec with neither. ``pid_from_spec``'s region
+    precondition fingerprints what lies in it."""
+    xs: list[float] = []
+    ys: list[float] = []
+    for section in _SECTIONS:
+        for item in norm[section]:
+            x0, y0, x1, y1 = _spec_for(section, item).bbox
+            angle = math.radians(float(item.get("rotation", 0.0)))
+            cos_a, sin_a = math.cos(angle), math.sin(angle)
+            scale = float(item.get("scale", 1.0))
+            for px, py in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)):
+                xs.append(item["x"] + scale * (px * cos_a - py * sin_a))
+                ys.append(item["y"] + scale * (px * sin_a + py * cos_a))
+    for line in planned:
+        for vx, vy in line["vertices"]:
+            xs.append(float(vx))
+            ys.append(float(vy))
+    if not xs:
+        return None
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _planned_rows(norm: dict, planned: list[dict]) -> list[dict]:
+    """The preview's planned edits: one row per item placed, one per line drawn."""
+    rows = [
+        {"where": f"{section}[{i}]", "id": item["id"]}
+        for section in _SECTIONS
+        for i, item in enumerate(norm[section])
+    ]
+    rows.extend(
+        {"where": line["where"], "from": line["from"], "to": line["to"], "class": line["class"]}
+        for line in planned
+    )
+    return rows
+
+
+def _match_region_rows(preconditions, region) -> None:
+    """A region precondition must name this spec's routing region: one taken
+    from another spec's preview would vouch for the wrong part of the sheet."""
+    for index, row in enumerate(parse_preconditions(preconditions)):
+        if "region" in row and (region is None or tuple(row["region"]) != tuple(region)):
+            raise SpecError(
+                f"preconditions[{index}].region: {row['region']} is not this spec's routing "
+                f"region {None if region is None else list(region)}; take the dry run of "
+                "this spec and apply its preview"
+            )
+
+
 async def _place(backend: AutoCADBackend, section: str, item: dict) -> dict:
     common = (
         item["x"],
@@ -450,19 +529,39 @@ async def _place(backend: AutoCADBackend, section: str, item: dict) -> dict:
     )
 
 
-async def run_spec(backend: AutoCADBackend, spec: dict, dry_run: bool = False) -> dict:
+async def run_spec(
+    backend: AutoCADBackend,
+    spec: dict,
+    dry_run: bool = False,
+    *,
+    expected_revision: int | None = None,
+    preconditions: list[dict] | None = None,
+) -> dict:
     """Validate, then place every item and draw every line inside one transaction.
 
-    ``dry_run`` routes from catalogue ports in memory and touches nothing.
+    ``dry_run`` routes from catalogue ports in memory and changes nothing; it
+    reads the P&ID lines already on the current layout (``crossings_scope``)
+    and returns a ChangePreview whose precondition is the fingerprint of the
+    routing region (``routing_region``). The real run given
+    ``expected_revision`` and/or ``preconditions`` (that preview) checks them
+    before anything is planned or placed and raises ``StaleRevisionError``
+    (kind ``stale_revision``) with nothing drawn when the document moved; its
+    result then carries ``revision``, the RevisionWatch report.
     """
     norm = validate_spec(spec)
     if dry_run:
         planned = _plan_lines(norm)
+        await _add_drawing_crossings(backend, planned)
+        region = routing_region(norm, planned)
+        preview = await make_preview(backend, region=region, planned=_planned_rows(norm, planned))
         return {
             "dry_run": True,
             "items": sum(len(norm[s]) for s in _SECTIONS),
             "lines": planned,
             "crossings_total": sum(p["crossings"] for p in planned),
+            "crossings_scope": CROSSINGS_SCOPE,
+            "region": None if region is None else list(region),
+            "preview": preview.to_dict(),
         }
     sheet = norm["sheet"]
     # Refused before drawing_plan writes anything: ezdxf would nest the
@@ -474,6 +573,13 @@ async def run_spec(backend: AutoCADBackend, spec: dict, dry_run: bool = False) -
             "pid_from_spec: a transaction is already open; nothing was drawn. Close it with "
             "transaction_commit or transaction_rollback and retry."
         )
+    watch: RevisionWatch | None = None
+    if expected_revision is not None or preconditions is not None:
+        _match_region_rows(preconditions, routing_region(norm, _plan_lines(norm)))
+        await check_preconditions(
+            backend, expected_revision=expected_revision, preconditions=preconditions
+        )
+        watch = await RevisionWatch.begin(backend)
     if backend.get_plan_spec() is None:
         await backend.drawing_plan(
             sheet.get("intent", "P&ID"),
@@ -489,10 +595,14 @@ async def run_spec(backend: AutoCADBackend, spec: dict, dry_run: bool = False) -
     try:
         for section in _SECTIONS:
             for i, item in enumerate(norm[section]):
+                if watch is not None:
+                    await watch.before(f"{section}[{i}]")
                 try:
                     placed = await _place(backend, section, item)
                 except ValueError as exc:
                     raise ValueError(f"{section}[{i}]: {exc}") from exc
+                if watch is not None:
+                    await watch.after()
                 handles[item["id"]] = placed["handle"]
 
         def ref(value: str) -> dict:
@@ -502,6 +612,8 @@ async def run_spec(backend: AutoCADBackend, spec: dict, dry_run: bool = False) -
             return {"handle": handles[item_id]}
 
         for where, line in _all_lines(norm):
+            if watch is not None:
+                await watch.before(where)
             try:
                 drawn = await draw_line(
                     backend,
@@ -521,6 +633,8 @@ async def run_spec(backend: AutoCADBackend, spec: dict, dry_run: bool = False) -
                 )
             except ValueError as exc:
                 raise ValueError(f"{where}: {exc}") from exc
+            if watch is not None:
+                await watch.after()
             crossings_total += drawn["crossings"]
     except BaseException as exc:
         # ``Exception`` alone let a client cancellation (``CancelledError`` is
@@ -567,9 +681,13 @@ async def run_spec(backend: AutoCADBackend, spec: dict, dry_run: bool = False) -
     await backend.transaction_commit()
     graph = await build_graph(backend)
     critique = [issue.to_dict() for focus in PID_FOCUSES for issue in issues_for(focus, graph)]
-    return {
+    result = {
         "handles": handles,
         "graph": graph,
         "critique": critique,
         "crossings_total": crossings_total,
+        "crossings_scope": CROSSINGS_SCOPE,
     }
+    if watch is not None:
+        result["revision"] = watch.report()
+    return result
