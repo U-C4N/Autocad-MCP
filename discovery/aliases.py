@@ -242,6 +242,10 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "sequence of operations",
             "one round trip",
             "macro",
+            "task recipe",
+            "run a recipe",
+            "workflow recipe",
+            "is akisi tarifi",
         ),
     ),
     # ── Blocks ──────────────────────────────────────────────────────────────

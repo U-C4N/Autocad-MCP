@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "id": "foreign_drawing_audit",
+  "version": "1.0.0",
+  "title": "Foreign drawing audit",
+  "summary": "Read a drawing somebody else made without changing it: declared against inferred units, robust extents and the outliers that stretch them, clusters, layer disciplines, topology defects and every drafting check, each claim with its evidence.",
+  "preconditions": {
+    "backends": ["ezdxf", "com"],
+    "capabilities": ["dxf"],
+    "packs": ["core"],
+    "profiles": ["full"],
+    "notes": [
+      "Every step reads; the revision checks prove the drawing was not modified. A disagreement between declared and inferred units is a finding with its numbers, never a correction.",
+      "On a live seat the readers snapshot the document through Document.Export, which never renames it.",
+      "drawing_topology_check is not a step: it checks the layers drawing_understand classifies as piping or electrical and refuses a drawing with none. Run it after the audit with the layers the understand report names."
+    ]
+  },
+  "inputs": {
+    "drawing": {"type": "string", "description": "The drawing to audit (DXF; a DWG only on a live seat)."}
+  },
+  "steps": [
+    {
+      "id": "open",
+      "tool": "drawing_open",
+      "args": {"path": "$inputs.drawing"},
+      "bind": "open",
+      "purpose": "Open the foreign drawing.",
+      "evidence": "The document key and path."
+    },
+    {
+      "id": "before",
+      "tool": "drawing_info",
+      "args": {},
+      "bind": "before",
+      "purpose": "Record the content revision before the audit.",
+      "evidence": "document_id, revision, saved, entity_count, units."
+    },
+    {
+      "id": "understand",
+      "tool": "drawing_understand",
+      "args": {},
+      "bind": "understand",
+      "purpose": "One report: units declared vs inferred, extents and outliers, clusters, layer disciplines, tags, rooms, languages, blocks, layouts, title block.",
+      "evidence": "units (with every evidence item), extents.outliers by handle, clusters, layers with their discipline and confidence, warnings."
+    },
+    {
+      "id": "critique",
+      "tool": "drawing_critique",
+      "args": {"focus": null},
+      "bind": "critique",
+      "purpose": "Every drafting check, every domain focus silent outside its domain; the three topo_* focuses report dangling ends, near misses and crossings on the layers no semantic focus covers.",
+      "evidence": "The issue list with severity, focus, message and handles."
+    },
+    {
+      "id": "after",
+      "tool": "drawing_info",
+      "args": {},
+      "bind": "after",
+      "purpose": "Record the revision after the audit.",
+      "evidence": "The same document_id and revision as before."
+    }
+  ],
+  "postconditions": [
+    {"id": "units_inferred", "ref": "$understand.units.inferred", "op": "exists", "says": "The unit the geometry implies is stated beside the declared one."},
+    {"id": "units_compared", "ref": "$understand.units.agree", "op": "exists", "says": "Whether the declared and the inferred unit agree is stated."},
+    {"id": "robust_extents", "ref": "$understand.extents.robust", "op": "exists", "says": "Robust extents are reported, with the outliers that stretch the declared ones."},
+    {"id": "critique_listed", "ref": "$critique.result", "op": "exists", "says": "The drafting checks ran and listed their findings."},
+    {"id": "same_document", "ref": "$after.document_id", "op": "eq", "value": "$before.document_id", "says": "The audit read the document that was opened."},
+    {"id": "drawing_untouched", "ref": "$after.revision", "op": "eq", "value": "$before.revision", "says": "The audit did not modify the drawing."},
+    {"id": "still_saved", "ref": "$after.saved", "op": "eq", "value": "$before.saved", "says": "The drawing's saved state is as it was opened."}
+  ]
+}

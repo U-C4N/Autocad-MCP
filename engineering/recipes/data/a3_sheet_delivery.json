@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "id": "a3_sheet_delivery",
+  "version": "1.0.0",
+  "title": "A3 sheet: frame, title block, page setup, plot, deliver",
+  "summary": "Put a model-space drawing on an ISO A3 paper layout with an ISO 5457 frame and an ISO 7200 title block, plot it, prove the PDF is A3 from its own MediaBox, and deliver the bundle.",
+  "preconditions": {
+    "backends": ["ezdxf", "com"],
+    "capabilities": ["paper_space", "viewport_render", "pdf", "delivery"],
+    "packs": ["core"],
+    "profiles": ["full"],
+    "notes": [
+      "The sheet is a new paper layout; the source file is never overwritten (the delivery exports a copy).",
+      "The viewport sits inside the A3 frame above the title block (paper mm); view_center is the model point it shows and scale its plot scale.",
+      "The headless engine renders the PDF through matplotlib (the pdf extra); a live seat plots through AutoCAD."
+    ]
+  },
+  "inputs": {
+    "drawing": {"type": "string", "description": "The drawing to put on the sheet (model space, millimetres)."},
+    "title": {"type": "string", "description": "The title-block title."},
+    "drawing_no": {"type": "string", "description": "The drawing number."},
+    "layout": {"type": "string", "description": "The new paper layout's name.", "required": false, "default": "A3-SHEET"},
+    "view_center_x": {"type": "number", "description": "Model X at the viewport's centre."},
+    "view_center_y": {"type": "number", "description": "Model Y at the viewport's centre."},
+    "scale": {"type": "number", "description": "Viewport scale (1.0 = 1:1, 0.5 = 1:2).", "required": false, "default": 1.0},
+    "scale_label": {"type": "string", "description": "The scale written in the title block.", "required": false, "default": "1:1"},
+    "plot_dir": {"type": "string", "description": "Folder for the plotted sheet PDF."},
+    "delivery_dir": {"type": "string", "description": "An empty or new folder for the delivery bundle."}
+  },
+  "steps": [
+    {
+      "id": "open",
+      "tool": "drawing_open",
+      "args": {"path": "$inputs.drawing"},
+      "bind": "open",
+      "purpose": "Open the drawing to be sheeted.",
+      "evidence": "The document key and path."
+    },
+    {
+      "id": "settings",
+      "tool": "drawing_settings",
+      "args": {"settings": {"units": "mm", "decimal_separator": "."}},
+      "bind": "settings",
+      "purpose": "Millimetres and the ISO 129 decimal point the drafting checks expect.",
+      "evidence": "applied/changed: each setting before and after."
+    },
+    {
+      "id": "layers",
+      "tool": "drawing_apply_iso_layers",
+      "args": {"standard": "mech"},
+      "bind": "layers",
+      "purpose": "The ISO 128 layer set and the standard linetypes the validator requires.",
+      "evidence": "Each layer reported created or already present."
+    },
+    {
+      "id": "sheet",
+      "tool": "layout_create",
+      "args": {"name": "$inputs.layout"},
+      "bind": "sheet",
+      "purpose": "A paper layout for the sheet.",
+      "evidence": "The layout name."
+    },
+    {
+      "id": "page",
+      "tool": "page_setup_apply",
+      "args": {"layout": "$inputs.layout", "paper": "ISO_A3", "orientation": "landscape", "scale": "1:1"},
+      "bind": "page",
+      "purpose": "ISO A3 landscape at 1:1 paper scale.",
+      "evidence": "applied: paper, size_mm, canonical media name, plot style, scale; changed: what moved."
+    },
+    {
+      "id": "titleblock",
+      "tool": "titleblock_apply",
+      "args": {"title": "$inputs.title", "drawing_no": "$inputs.drawing_no", "size": "A3", "orientation": "landscape", "scale": "$inputs.scale_label", "layout": "$inputs.layout"},
+      "bind": "titleblock",
+      "purpose": "The ISO 5457 frame and the ISO 7200 title block on the sheet.",
+      "evidence": "The frame and title-block handles and the metadata written."
+    },
+    {
+      "id": "viewport",
+      "tool": "viewport_create",
+      "args": {"layout": "$inputs.layout", "center_x": 215.0, "center_y": 180.0, "width": 380.0, "height": 190.0, "view_center_x": "$inputs.view_center_x", "view_center_y": "$inputs.view_center_y", "scale": "$inputs.scale"},
+      "bind": "viewport",
+      "purpose": "A viewport inside the frame, above the title block, showing the model.",
+      "evidence": "The viewport handle, its scale and view height."
+    },
+    {
+      "id": "critique",
+      "tool": "drawing_critique",
+      "args": {"focus": null},
+      "bind": "critique",
+      "purpose": "Every drafting check before plotting.",
+      "evidence": "The issue list; empty is the gate."
+    },
+    {
+      "id": "plot",
+      "tool": "batch_plot",
+      "args": {"output_dir": "$inputs.plot_dir", "layouts": ["$inputs.layout"]},
+      "bind": "plot",
+      "purpose": "Plot the sheet and read its size back from the PDF.",
+      "evidence": "One row per sheet: path, bytes, paper, and mediabox_mm parsed from the PDF's own /MediaBox."
+    },
+    {
+      "id": "delivery",
+      "tool": "drawing_deliver",
+      "args": {"output_dir": "$inputs.delivery_dir"},
+      "bind": "delivery",
+      "purpose": "Deliver: DXF, PDF and PNG with SHA-256, reopen parity over every space.",
+      "evidence": "status, artifacts with SHA-256, parity counts per space, the drafting score and manifest.json."
+    }
+  ],
+  "postconditions": [
+    {"id": "critique_clean", "ref": "$critique.result", "op": "len_eq", "value": 0, "says": "drawing_critique(focus=None) found nothing."},
+    {"id": "one_sheet", "ref": "$plot.sheets", "op": "len_eq", "value": 1, "says": "Exactly the sheet layout was plotted."},
+    {"id": "sheet_plotted", "ref": "$plot.sheets.0.ok", "op": "eq", "value": true, "says": "The sheet plotted."},
+    {"id": "pdf_on_disk", "ref": "$plot.sheets.0.path", "op": "file_exists", "says": "The sheet PDF is on disk."},
+    {"id": "pdf_is_a3", "ref": "$plot.sheets.0.mediabox_mm", "op": "approx", "value": [420.0, 297.0], "tol": 0.5, "says": "The PDF's own MediaBox is A3 landscape."},
+    {"id": "delivered", "ref": "$delivery.status", "op": "eq", "value": "success", "says": "The delivery passed its validator and parity gates."},
+    {"id": "parity", "ref": "$delivery.parity.ok", "op": "eq", "value": true, "says": "The delivered DXF reopens with every entity of every space unchanged."},
+    {"id": "manifest_written", "ref": "$delivery.manifest_path", "op": "file_exists", "says": "manifest.json is on disk."}
+  ]
+}

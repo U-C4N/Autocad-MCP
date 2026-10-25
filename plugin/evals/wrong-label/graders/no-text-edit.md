@@ -1,0 +1,5 @@
+---
+type: 'tool_used'
+tool: 'mcp__plugin_autocad-mcp-pro_autocad__entity_edit_text'
+max: 0
+---

@@ -12864,9 +12864,61 @@ async def resource_standards_coverage() -> str:
     return json.dumps(coverage_manifest(), indent=2)
 
 
+@mcp.resource(
+    "autocad://recipes/index",
+    name="Task Recipe Index",
+    description=(
+        "Versioned task recipes: preconditions (backends, capabilities, packs, profiles), "
+        "inputs, tools and how to run one through cad_batch"
+    ),
+    mime_type="application/json",
+    annotations={"readOnlyHint": True},
+    tags={"recipes", "workflow"},
+)
+async def resource_recipes_index() -> str:
+    from engineering.recipes import recipe_index
+
+    return json.dumps(recipe_index(), indent=2, ensure_ascii=False)
+
+
+@mcp.resource(
+    "autocad://recipes/{recipe_id}",
+    name="Task Recipe",
+    description=(
+        "One task recipe: steps in cad_batch's {tool, args, bind} shape, the evidence each "
+        "leaves and the postconditions to check; an unknown id is refused with the known ones"
+    ),
+    mime_type="application/json",
+    annotations={"readOnlyHint": True},
+    tags={"recipes", "workflow"},
+)
+async def resource_recipe(recipe_id: str) -> str:
+    from fastmcp.exceptions import ResourceError
+
+    from engineering.recipes import RecipeError, get_recipe
+
+    try:
+        return json.dumps(get_recipe(recipe_id), indent=2, ensure_ascii=False)
+    except RecipeError as exc:
+        raise ResourceError(str(exc)) from exc
+
+
 # ---------------------------------------------------------------------------
 # ── PROMPTS ──────────────────────────────────────────────────────────────────
 # ---------------------------------------------------------------------------
+
+
+def _plan_scale_denominator(scale: str) -> tuple[int, str | None]:
+    """``"1:100"`` / ``"100"`` -> 100; anything else -> 100 and the reason."""
+    text = str(scale).strip()
+    tail = text.split(":", 1)[1] if ":" in text else text
+    try:
+        value = float(tail)
+    except ValueError:
+        return 100, f"scale {scale!r} is not 1:N; 1:100 is used"
+    if not (math.isfinite(value) and value > 0) or value != int(value):
+        return 100, f"scale {scale!r} is not 1:N with a whole N; 1:100 is used"
+    return int(value), None
 
 
 @mcp.prompt(tags={"template", "architectural"})
@@ -12876,34 +12928,82 @@ def prompt_floor_plan(
     units: str = "mm",
 ) -> str:
     """Generate a prompt for creating a floor plan drawing."""
-    return f"""You are creating a floor plan for '{building_name}' at scale {scale} in {units}.
+    denominator, scale_note = _plan_scale_denominator(scale)
+    spec = {
+        "sheet": {
+            "intent": f"{building_name} floor plan",
+            "sheet_size": "A3",
+            "scale": denominator,
+        },
+        "lang": "en",
+        "walls": [
+            {
+                "id": "EXT",
+                "axis": [[0, 0], [9000, 0], [9000, 6000], [0, 6000]],
+                "thickness": 250,
+                "closed": True,
+                "material": "brick",
+            },
+            {"id": "INT", "axis": [[5000, 0], [5000, 6000]], "thickness": 100, "material": "aac"},
+        ],
+        "openings": [
+            {"id": "D1", "wall": "EXT", "kind": "door", "offset": 1000, "width": 1000, "tag": "D1"},
+            {
+                "id": "W1",
+                "wall": "EXT",
+                "kind": "window",
+                "offset": 11000,
+                "width": 1200,
+                "sill": 900,
+                "height": 1200,
+                "tag": "W1",
+            },
+        ],
+        "rooms": [
+            {"id": "R1", "name": "LIVING", "number": "01", "at": [2500, 3000]},
+            {"id": "R2", "name": "HALL", "number": "02", "at": [7000, 3000]},
+        ],
+        "chains": {"sides": ["bottom", "left"]},
+        "schedules": [{"kind": "rooms", "at": [10500, 6000]}],
+    }
+    notes = []
+    if scale_note:
+        notes.append(f"NOTE: {scale_note}.")
+    if units.strip().lower() != "mm":
+        notes.append(
+            f"NOTE: {units!r} was requested, but the plan model's lengths are millimetres: "
+            "convert every dimension to mm before writing the spec."
+        )
+    note_text = ("\n".join(notes) + "\n\n") if notes else ""
+    return f"""You are drawing the floor plan of '{building_name}' at 1:{denominator} with the plan model.
+{note_text}A wall is an axis, a thickness, a justification and a material; a door or window is hosted
+in its wall. Never draw walls, doors or windows from lines, rectangles and arcs: the plan engine
+resolves L / T / X junctions, cuts the openings, hatches the cut faces by material and lists in
+`omitted` whatever it could not place. Lengths are millimetres; text follows the plot scale
+(`scale` is a denominator: {denominator} means 1:{denominator}).
 
-LAYER SETUP (create these layers first):
-  - WALLS       color=7 (white)  linetype=Continuous  lineweight=50
-  - DOORS       color=3 (green)  linetype=Continuous  lineweight=25
-  - WINDOWS     color=4 (cyan)   linetype=Continuous  lineweight=25
-  - FURNITURE   color=8 (gray)   linetype=Continuous  lineweight=13
-  - DIMENSIONS  color=2 (yellow) linetype=Continuous  lineweight=13
-  - TEXT        color=7 (white)  linetype=Continuous  lineweight=13
-  - GRID        color=9          linetype=DASHED       lineweight=13
+WORKFLOW
+1. drawing_new() — then drawing_settings(settings={{"units": "mm"}}).
+2. arch_catalogue_list() when furniture or sanitary blocks are wanted (nominal sizes, not a code).
+3. arch_plan_from_spec(spec) — the whole plan in one transaction: walls, openings, stairs, room
+   labels whose areas are measured off the walls just drawn, the exterior dimension chains and the
+   schedules. Every item is validated first; a refusal names its path and draws nothing. A room
+   `area` is refused: areas are measured, never typed. A starting spec:
+{json.dumps(spec, indent=2)}
+   Stairs: "stairs": [{{"id", "start", "direction_deg", "width", "risers", "riser_height", "going"}}]
+   (the Blondel check 2R + G within 600–650 mm is reported as a design rule, not a building code).
+4. Read the result's `omitted` list and the arch_* critique it carries; fix the spec, not the lines.
+5. arch_rooms_detect() — read the rooms back from the drawn walls (confidence 1.0 for our walls).
+   Every labelled room's area must match its detected face; a gap or an unlabelled face is a finding.
+6. arch_schedule(kind="doors"|"windows"|"rooms", x, y, scale={denominator}) for any schedule the
+   spec did not place — a schedule is a read of the drawn records, drawn as a real table.
+7. arch_grid(...), arch_symbol(...), arch_catalogue_insert(...) for grids, north arrows and furniture.
+8. drawing_critique(focus=None) — must be clean (arch_room_unlabelled, arch_wall_gap and
+   arch_opening_clash run in it).
+9. drawing_finalize(save_path=...) — or drawing_deliver(output_dir=...) for a hashed bundle.
 
-WORKFLOW:
-1. drawing_new() → create new drawing
-2. layer_create() for each layer above
-3. entity_create_rectangle() on WALLS layer for outer boundary
-4. entity_create_polyline() on WALLS for interior walls (width ~200mm)
-5. entity_create_arc() on DOORS for door swings (radius=900mm)
-6. entity_create_rectangle() on WINDOWS for window openings
-7. dimension_aligned() on DIMENSIONS layer for key measurements
-8. entity_create_text() on TEXT layer for room labels
-9. view_zoom_and_screenshot() to verify layout
-
-CONVENTIONS:
-- Exterior walls: 300mm thick
-- Interior walls: 150mm thick
-- Door openings: 900mm wide
-- Window sills: 900mm from floor (not shown in plan)
-- Room labels: centered in each space, height=300mm at 1:100
+TURKISH SHEETS: "lang": "tr" in the spec (or lang="tr" on a tool) switches labels and schedules to
+Turkish with a decimal comma; any other language is refused with the list.
 """
 
 
@@ -12955,41 +13055,34 @@ def prompt_electrical_schematic(
     voltage: str = "400V/230V",
 ) -> str:
     """Generate a prompt for creating an electrical schematic diagram."""
-    return f"""You are creating an electrical schematic for '{circuit_name}' at {voltage}.
+    return f"""You are drafting an electrical schematic for '{circuit_name}' ({voltage}) with the tools this
+server has today.
 
-LAYER SETUP:
-  - POWER_LINES     color=7  lineweight=50
-  - CONTROL_LINES   color=3  lineweight=25
-  - COMPONENTS      color=2  lineweight=25
-  - TERMINALS       color=4  lineweight=25
-  - WIRE_NUMBERS    color=7  lineweight=13
-  - COMPONENT_TAGS  color=8  lineweight=13
-  - BORDER          color=7  lineweight=100
+WHAT IS NOT HERE YET: electrical schematics are a 1.9.0 item. There is no IEC 60617 symbol
+catalogue, no wire-numbering or ladder tool and no electrical critique, so nothing checks that
+the circuit is right. Label the result a DRAFT, say so in the title block, and keep every
+symbol a real block with attributes so the 1.9.0 tools can read it later.
 
-STANDARD IEC 60617 SYMBOLS:
-  - Circuit breaker: rectangle with diagonal line
-  - Contactor: circle with cross
-  - Relay coil: rectangle
-  - Motor: circle with 'M'
-  - Fuse: rectangle with horizontal line
-  - Switch NO: two points with gap
-  - Switch NC: two points with diagonal slash
-
-LADDER DIAGRAM CONVENTIONS:
-  - Power rails: vertical lines on left (L1/L2/L3) and right (N/PE)
-  - Rungs: horizontal lines connecting rails
-  - Load elements (coils, motors): always on right side of rung
-  - Contact elements: always to the left of loads
-  - Rung numbers: on left margin
-
-WORKFLOW:
-1. layer_create() for all layers
-2. entity_create_line() for power rails (vertical)
-3. entity_create_polyline() for each circuit rung
-4. Place component symbols with entity_create_*
-5. Add wire numbers as text entities
-6. Add component reference tags
-7. view_zoom_and_screenshot() to verify
+WORKFLOW
+1. drawing_new() — then drawing_settings(settings={{"units": "mm"}}).
+2. layer_create(name, color, linetype, lineweight) for POWER, CONTROL, SYMBOLS, WIRE_NUMBERS,
+   TAGS; lineweights from the ISO 128 series only (0.25 / 0.35 / 0.50 / 0.70 mm).
+3. block_define(name, entities, attdefs) — each symbol ONCE, from typed primitives (line, circle,
+   arc, polyline, text) in block-local mm, with TAG and DESIGNATION attribute definitions, e.g.
+     {{"name": "BREAKER_3P", "entities": [...], "attdefs": [{{"tag": "TAG", "x": 0, "y": -6, "height": 2.5}},
+      {{"tag": "DESIGNATION", "x": 0, "y": -10, "height": 2.5, "invisible": true}}]}}
+   Draw each symbol to the IEC 60617 sheet you are working from; the server has no catalogue
+   to check it against.
+4. block_insert(name, x, y, attributes={{"TAG": "-Q1", "DESIGNATION": "MCB 3P C16"}}) for every
+   device; keep the handles.
+5. entity_create_line(...) / entity_create_polyline(...) for the rails and the rungs, on POWER or
+   CONTROL; read the inserted blocks' positions with entity_get(handle) instead of guessing.
+6. entity_create_text(text, x, y, height=2.5, layer="WIRE_NUMBERS") for wire numbers.
+7. titleblock_apply(title="{circuit_name} - DRAFT", drawing_no=..., size="A3") — the ISO 7200 block.
+8. bom_extract() — the device list, read from each block's DESIGNATION attribute (a block
+   without one is skipped and counted, never guessed).
+9. drawing_critique(focus=None) — drafting checks only (layers, lineweights, text, overlaps).
+10. drawing_finalize(save_path=...).
 """
 
 

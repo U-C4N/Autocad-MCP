@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "id": "revision_takeoff_delta",
+  "version": "1.0.0",
+  "title": "Revision pair: pipe takeoff delta",
+  "summary": "Take the pipe quantities off two revisions of a P&ID against the same layout, compare the two revisions entity by entity, and report how the totals moved.",
+  "preconditions": {
+    "backends": ["ezdxf", "com"],
+    "capabilities": ["dxf"],
+    "packs": ["core", "plant"],
+    "profiles": ["full"],
+    "notes": [
+      "Both takeoffs read files and never the open drawing; each writes a workbook (XLSX with the office extra, CSV always) and never the drawing.",
+      "Lengths come from the layout unless drawing_scale_check calls the P&ID to scale; the delta is the difference of the two takeoffs' own totals, not a re-measurement.",
+      "drawing_diff matches the revisions by signature, then handle, then position, so a save that renumbered every handle still pairs the unchanged entities."
+    ]
+  },
+  "inputs": {
+    "old_pid": {"type": "string", "description": "The older P&ID revision (DXF)."},
+    "new_pid": {"type": "string", "description": "The newer P&ID revision (DXF)."},
+    "layout": {"type": "string", "description": "The layout both revisions are routed on (DXF)."},
+    "old_workbook": {"type": "string", "description": "The .xlsx path for the older revision's takeoff (CSV files are written beside it)."},
+    "new_workbook": {"type": "string", "description": "The .xlsx path for the newer revision's takeoff (CSV files are written beside it)."},
+    "lang": {
+      "type": "string",
+      "description": "Workbook language: en, tr or ru.",
+      "required": false,
+      "default": "en"
+    }
+  },
+  "steps": [
+    {
+      "id": "old_takeoff",
+      "tool": "pipe_takeoff",
+      "args": {"pid_path": "$inputs.old_pid", "layout_path": "$inputs.layout", "output": "$inputs.old_workbook", "lang": "$inputs.lang"},
+      "bind": "old_takeoff",
+      "purpose": "Pipe quantities of the older revision.",
+      "evidence": "runs with status A/B/C and their lengths, totals (net, allowance, total metres), the summary by service/diameter/room, the control list, and the workbook files."
+    },
+    {
+      "id": "new_takeoff",
+      "tool": "pipe_takeoff",
+      "args": {"pid_path": "$inputs.new_pid", "layout_path": "$inputs.layout", "output": "$inputs.new_workbook", "lang": "$inputs.lang"},
+      "bind": "new_takeoff",
+      "purpose": "Pipe quantities of the newer revision, on the same layout.",
+      "evidence": "The same fields for the newer revision."
+    },
+    {
+      "id": "diff",
+      "tool": "drawing_diff",
+      "args": {"old_path": "$inputs.old_pid", "new_path": "$inputs.new_pid"},
+      "bind": "diff",
+      "purpose": "What changed between the revisions, entity by entity, without marking either up.",
+      "evidence": "summary (unchanged, changed, added, removed), by_layer, by_type, and every change with its old and new handle."
+    }
+  ],
+  "postconditions": [
+    {"id": "old_csv", "ref": "$old_takeoff.files.csv.0", "op": "file_exists", "says": "The older revision's takeoff is on disk."},
+    {"id": "new_csv", "ref": "$new_takeoff.files.csv.0", "op": "file_exists", "says": "The newer revision's takeoff is on disk."},
+    {"id": "old_totals", "ref": "$old_takeoff.totals.total_m", "op": "exists", "says": "The older takeoff states its total."},
+    {"id": "new_totals", "ref": "$new_takeoff.totals.total_m", "op": "exists", "says": "The newer takeoff states its total."},
+    {"id": "same_allowance", "ref": "$new_takeoff.totals.allowance", "op": "eq", "value": "$old_takeoff.totals.allowance", "says": "Both takeoffs used the same allowance, so their totals compare."},
+    {"id": "diff_counted", "ref": "$diff.summary.old_entities", "op": "gt", "value": 0, "says": "The comparison read the older revision."}
+  ],
+  "outputs": [
+    {"name": "total_m_delta", "op": "sub", "of": ["$new_takeoff.totals.total_m", "$old_takeoff.totals.total_m"], "says": "Total metres (allowance included), newer minus older."},
+    {"name": "net_m_delta", "op": "sub", "of": ["$new_takeoff.totals.net_m", "$old_takeoff.totals.net_m"], "says": "Net metres, newer minus older."},
+    {"name": "flagged_runs_delta", "op": "sub", "of": ["$new_takeoff.totals.flagged_runs", "$old_takeoff.totals.flagged_runs"], "says": "Runs on the control list, newer minus older."},
+    {"name": "changes", "op": "ref", "of": ["$diff.summary"], "says": "The entity-level comparison of the two revisions."}
+  ]
+}

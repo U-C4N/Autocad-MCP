@@ -4,7 +4,7 @@
   "package_version": "1.6.0",
   "totals": {
     "tools": 248,
-    "resources": 9,
+    "resources": 11,
     "prompts": 5,
     "groups": 28
   },
@@ -3611,6 +3611,32 @@
       ],
       "templated": false,
       "parameters": []
+    },
+    {
+      "uri": "autocad://recipes/index",
+      "name": "Task Recipe Index",
+      "description": "Versioned task recipes: preconditions (backends, capabilities, packs, profiles), inputs, tools and how to run one through cad_batch",
+      "mime_type": "application/json",
+      "tags": [
+        "recipes",
+        "workflow"
+      ],
+      "templated": false,
+      "parameters": []
+    },
+    {
+      "uri": "autocad://recipes/{recipe_id}",
+      "name": "Task Recipe",
+      "description": "One task recipe: steps in cad_batch's {tool, args, bind} shape, the evidence each leaves and the postconditions to check; an unknown id is refused with the known ones",
+      "mime_type": "application/json",
+      "tags": [
+        "recipes",
+        "workflow"
+      ],
+      "templated": true,
+      "parameters": [
+        "recipe_id"
+      ]
     },
     {
       "uri": "autocad://standards/coverage",

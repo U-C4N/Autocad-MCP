@@ -295,7 +295,7 @@ def test_the_inventory_and_the_readme_count_the_new_resource():
     inventory = json.loads((root / "docs" / "tool-inventory.json").read_text(encoding="utf-8"))
     uris = {row["uri"] for row in inventory["resources"]}
     assert "autocad://standards/coverage" in uris
-    assert inventory["totals"]["resources"] == len(inventory["resources"]) == 9
+    assert inventory["totals"]["resources"] == len(inventory["resources"]) == 11
     readme = (root / "README.md").read_text(encoding="utf-8")
-    assert "· 9 resources ·" in readme
+    assert "· 11 resources ·" in readme
     assert "<code>standards/coverage</code>" in readme

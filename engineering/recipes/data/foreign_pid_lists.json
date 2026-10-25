@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "id": "foreign_pid_lists",
+  "version": "1.0.0",
+  "title": "Foreign P&ID: instrument index, line list, equipment list",
+  "summary": "Open a P&ID somebody else drew, read its connectivity graph with a confidence per node, and write the instrument index, the line list and the equipment list as CSV, without modifying the drawing.",
+  "preconditions": {
+    "backends": ["ezdxf", "com"],
+    "capabilities": ["dxf"],
+    "packs": ["core", "pid"],
+    "profiles": ["full"],
+    "notes": [
+      "A foreign drawing's nodes come from block names and TAG attributes (confidence 0.6) or from geometry alone (0.3): read graph.stats.confidence_min before trusting a list, and never present a heuristic row as catalogued.",
+      "The three lists read the drawing; only their CSV files are written. The revision checks prove the drawing was not touched."
+    ]
+  },
+  "inputs": {
+    "drawing": {"type": "string", "description": "The P&ID to read (DXF; a DWG only on a live seat)."},
+    "instrument_csv": {"type": "string", "description": "Where to write the instrument index CSV."},
+    "line_csv": {"type": "string", "description": "Where to write the line list CSV."},
+    "equipment_csv": {"type": "string", "description": "Where to write the equipment list CSV."},
+    "tolerance": {
+      "type": "number",
+      "description": "Snap distance in drawing units within which a line end meets a port.",
+      "required": false,
+      "default": 0.5
+    }
+  },
+  "steps": [
+    {
+      "id": "open",
+      "tool": "drawing_open",
+      "args": {"path": "$inputs.drawing"},
+      "bind": "open",
+      "purpose": "Open the foreign P&ID.",
+      "evidence": "The document key and path."
+    },
+    {
+      "id": "before",
+      "tool": "drawing_info",
+      "args": {},
+      "bind": "before",
+      "purpose": "Record the document's content revision before anything reads it.",
+      "evidence": "document_id, revision, saved, entity_count, units."
+    },
+    {
+      "id": "graph",
+      "tool": "pid_graph",
+      "args": {"tolerance": "$inputs.tolerance"},
+      "bind": "graph",
+      "purpose": "Read the connectivity graph: nodes with their source and confidence, edges, dangling ends.",
+      "evidence": "nodes, edges, dangling, unclassified, and stats.confidence_min."
+    },
+    {
+      "id": "instruments",
+      "tool": "pid_instrument_index",
+      "args": {"csv_path": "$inputs.instrument_csv", "tolerance": "$inputs.tolerance"},
+      "bind": "instruments",
+      "purpose": "The instrument index: tag, ISA-5.1 function and loop, what each is connected to.",
+      "evidence": "rows with tag, func, loop, description and confidence; the CSV at csv_path."
+    },
+    {
+      "id": "lines",
+      "tool": "pid_line_list",
+      "args": {"csv_path": "$inputs.line_csv", "tolerance": "$inputs.tolerance"},
+      "bind": "lines",
+      "purpose": "The line list: every line with what it runs from and to.",
+      "evidence": "rows with line number (when drawn), from/to tag and port, length; the CSV at csv_path."
+    },
+    {
+      "id": "equipment",
+      "tool": "pid_equipment_list",
+      "args": {"csv_path": "$inputs.equipment_csv", "tolerance": "$inputs.tolerance"},
+      "bind": "equipment",
+      "purpose": "The equipment list: tags, kinds, ports and connections.",
+      "evidence": "rows with tag, kind, ports, connected lines and confidence; the CSV at csv_path."
+    },
+    {
+      "id": "after",
+      "tool": "drawing_info",
+      "args": {},
+      "bind": "after",
+      "purpose": "Record the revision after the reads.",
+      "evidence": "The same document_id and revision as before."
+    }
+  ],
+  "postconditions": [
+    {"id": "graph_scanned", "ref": "$graph.stats.entities_scanned", "op": "gt", "value": 0, "says": "The graph read the drawing's entities."},
+    {"id": "confidence_reported", "ref": "$graph.stats.confidence_min", "op": "exists", "says": "The lowest node confidence is stated, so a reader knows how far to trust the lists."},
+    {"id": "instrument_csv", "ref": "$instruments.csv_path", "op": "file_exists", "says": "The instrument index is on disk."},
+    {"id": "line_csv", "ref": "$lines.csv_path", "op": "file_exists", "says": "The line list is on disk."},
+    {"id": "equipment_csv", "ref": "$equipment.csv_path", "op": "file_exists", "says": "The equipment list is on disk."},
+    {"id": "lines_found", "ref": "$lines.count", "op": "ge", "value": 1, "says": "At least one line was read."},
+    {"id": "same_document", "ref": "$after.document_id", "op": "eq", "value": "$before.document_id", "says": "The lists were read from the document that was opened."},
+    {"id": "drawing_untouched", "ref": "$after.revision", "op": "eq", "value": "$before.revision", "says": "Reading the lists did not modify the drawing."}
+  ]
+}
