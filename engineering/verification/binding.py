@@ -73,24 +73,12 @@ def wilson_interval(successes: int, trials: int, z: float = WILSON_Z) -> tuple[f
     return (max(0.0, centre - half), min(1.0, centre + half))
 
 
-def _numbers(value):
-    if isinstance(value, bool) or value is None:
-        return
-    if isinstance(value, (int, float)):
-        yield float(value)
-    elif isinstance(value, (tuple, list)):
-        for item in value:
-            yield from _numbers(item)
-
-
 def _epsilon_for(observed) -> float:
-    """Length epsilon in drawing units: 1e-9 of the largest coordinate, at least 1e-9."""
-    largest = 1.0
-    for feature in observed.features:
-        for _key, value in feature.geometry:
-            for x in _numbers(value):
-                largest = max(largest, abs(x))
-    return 1e-9 * largest
+    """The binder's epsilon is the evaluators' (``measure.default_epsilon``):
+    one rule, so a feature bound within epsilon is measured within the same."""
+    from engineering.verification.measure import default_epsilon
+
+    return default_epsilon(observed)
 
 
 def _tag(feature, app: str) -> dict:

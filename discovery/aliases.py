@@ -1502,6 +1502,8 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "where two lines cross",
             "crossing point",
             "meeting point",
+            "segment intersection",
+            "do the segments meet",
         ),
     ),
     "point_tangent": ToolAliases(

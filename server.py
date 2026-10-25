@@ -6774,10 +6774,18 @@ async def point_intersection(
 ) -> dict:
     """Compute the intersection of two geometry entities (LINE-LINE, LINE-CIRCLE,
     CIRCLE-CIRCLE). When two candidates exist, ref_x/ref_y selects the nearest.
-    Returns {x, y}.
+
+    Returns {x, y, on_first, on_second, on_both, candidates}. A LINE is
+    intersected as the infinite line through it, so the point can lie beyond
+    a drawn end: `on_first` / `on_second` say whether it lies on each drawn
+    segment (a CIRCLE always holds its own intersection points) and `on_both`
+    whether on both - check it before using the point as a corner.
+    `candidates` is how many intersections existed. Refused, with the case
+    named: parallel or coincident lines, a line that misses the circle,
+    concentric circles, circles that do not meet, any other entity pair.
     """
-    pt = await _backend(ctx).point_intersection(handle1, handle2, ref_x, ref_y)
-    return {"x": float(pt[0]), "y": float(pt[1])}
+    found = await _backend(ctx).point_intersection_detail(handle1, handle2, ref_x, ref_y)
+    return {key: found[key] for key in ("x", "y", "on_first", "on_second", "on_both", "candidates")}
 
 
 @cad_tool(summary="Find where a line from an outside point touches a circle.", cost="read")
