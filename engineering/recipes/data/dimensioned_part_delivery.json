@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "id": "dimensioned_part_delivery",
+  "version": "1.0.0",
+  "title": "Dimensioned part: draw, verify, deliver",
+  "summary": "A machine part drawn from its part model, every source requirement measured on the CAD geometry, then delivered with an acceptance report the delivery cannot pass without, and the delivered bundle re-hashed.",
+  "preconditions": {
+    "backends": ["ezdxf", "com"],
+    "capabilities": ["delivery", "dxf", "pdf", "png"],
+    "packs": ["core", "mech"],
+    "profiles": ["full"],
+    "notes": [
+      "The drawing declares millimetres before anything is drawn: verification holds a drawing to its declared $INSUNITS, and a new headless drawing otherwise declares metres.",
+      "Requirements name features by tag; a feature_tag selector needs the part id, which exists only after the part step, so write \"part\": \"$part.part_id\" inside the requirements input.",
+      "A requirement the drawing cannot measure is unknown or unsupported, never pass; a failed or incomplete acceptance blocks the delivery whatever the drafting score."
+    ]
+  },
+  "inputs": {
+    "spec": {
+      "type": "object",
+      "description": "The part model for mech_part_draw: a revolved segment list or a prismatic outline plus typed features, each feature with its own id."
+    },
+    "requirements": {
+      "type": "object",
+      "description": "The source requirements, {units, items: [...]}, as drawing_verify_requirements reads them; feature_tag selectors name \"part\": \"$part.part_id\" and the feature ids of the spec."
+    },
+    "output_dir": {
+      "type": "string",
+      "description": "An empty or new folder for the delivery bundle (drawing.dxf, drawing.pdf, preview.png, acceptance.json, manifest.json)."
+    },
+    "formats": {
+      "type": "array",
+      "description": "Delivery formats among dxf, pdf, png.",
+      "required": false,
+      "default": ["dxf", "pdf", "png"]
+    }
+  },
+  "steps": [
+    {
+      "id": "new",
+      "tool": "drawing_new",
+      "args": {},
+      "bind": "new",
+      "purpose": "Start a fresh drawing with the engineering layers and linetypes bootstrapped.",
+      "evidence": "The document key and the bootstrap report (layers and linetypes created)."
+    },
+    {
+      "id": "units",
+      "tool": "drawing_settings",
+      "args": {"settings": {"units": "mm"}},
+      "bind": "units",
+      "purpose": "Declare millimetres: the unit every length requirement is measured in.",
+      "evidence": "applied/changed: the INSUNITS code before and after."
+    },
+    {
+      "id": "layers",
+      "tool": "drawing_apply_iso_layers",
+      "args": {"standard": "mech"},
+      "bind": "layers",
+      "purpose": "ISO 128 lineweights on the mechanical layer set.",
+      "evidence": "Each layer reported created or already present."
+    },
+    {
+      "id": "part",
+      "tool": "mech_part_draw",
+      "args": {"spec": "$inputs.spec"},
+      "bind": "part",
+      "purpose": "Draw the part from its model with ISO 129 dimensions; every entity carries its feature tag.",
+      "evidence": "part_id, the views drawn, every handle, and omitted: [{feature, reason}] for anything that could not be projected."
+    },
+    {
+      "id": "critique",
+      "tool": "drawing_critique",
+      "args": {"focus": null},
+      "bind": "critique",
+      "purpose": "Every drafting check over the whole drawing before delivery.",
+      "evidence": "The issue list, each with its handles and focus; empty is the gate."
+    },
+    {
+      "id": "verify",
+      "tool": "drawing_verify_requirements",
+      "args": {"requirements": "$inputs.requirements"},
+      "bind": "verify",
+      "purpose": "Measure every requirement on the drawn geometry, bound by feature tag.",
+      "evidence": "The acceptance report: one row per requirement with target, measured value, delta, tolerance basis, status and handles, and the counts."
+    },
+    {
+      "id": "delivery",
+      "tool": "drawing_deliver",
+      "args": {
+        "output_dir": "$inputs.output_dir",
+        "formats": "$inputs.formats",
+        "requirements": "$inputs.requirements"
+      },
+      "bind": "delivery",
+      "purpose": "Deliver: export a copy, re-read it, re-measure the requirements on the saved file, hash every artifact.",
+      "evidence": "status, the artifacts with their SHA-256, parity over every space, geometry_acceptance, drafting_quality and manifest.json."
+    },
+    {
+      "id": "delivered",
+      "tool": "drawing_verify_requirements",
+      "args": {"manifest_path": "$delivery.manifest_path"},
+      "bind": "delivered",
+      "purpose": "Re-hash the delivered bundle against its manifest.",
+      "evidence": "ok, and stale: the artifacts whose bytes no longer match the manifest (none)."
+    }
+  ],
+  "postconditions": [
+    {"id": "nothing_omitted", "ref": "$part.omitted", "op": "len_eq", "value": 0, "says": "Every feature of the model was drawn."},
+    {"id": "critique_clean", "ref": "$critique.result", "op": "len_eq", "value": 0, "says": "drawing_critique(focus=None) found nothing."},
+    {"id": "requirements_pass", "ref": "$verify.status", "op": "eq", "value": "pass", "says": "Every requirement measured on the CAD geometry passes."},
+    {"id": "nothing_unmeasured", "ref": "$verify.coverage.ratio", "op": "eq", "value": 1.0, "says": "Every requirement was measured; none is unknown, unsupported or ambiguous."},
+    {"id": "delivered", "ref": "$delivery.status", "op": "eq", "value": "success", "says": "The delivery passed its validator, parity and acceptance gates."},
+    {"id": "accepted_on_the_saved_file", "ref": "$delivery.geometry_acceptance.accepted", "op": "eq", "value": true, "says": "The requirements pass again on the delivered file."},
+    {"id": "manifest_written", "ref": "$delivery.manifest_path", "op": "file_exists", "says": "manifest.json is on disk."},
+    {"id": "bundle_intact", "ref": "$delivered.ok", "op": "eq", "value": true, "says": "Every delivered artifact still hashes to its manifest entry."}
+  ]
+}

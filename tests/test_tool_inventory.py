@@ -179,9 +179,13 @@ def test_tool_rows_are_sorted_by_name():
 
 def test_the_resource_template_is_recorded_as_templated():
     """FastMCP files templates under a separate prefix; the merge must not lose that."""
-    templated = [row for row in _committed()["resources"] if row["templated"]]
-    assert [row["uri"] for row in templated] == ["autocad://entities/{layer_name}"]
-    assert templated[0]["parameters"] == ["layer_name"]
+    templated = {
+        row["uri"]: row["parameters"] for row in _committed()["resources"] if row["templated"]
+    }
+    assert templated == {
+        "autocad://entities/{layer_name}": ["layer_name"],
+        "autocad://recipes/{recipe_id}": ["recipe_id"],
+    }
 
 
 def test_prompt_rows_record_their_arguments():
