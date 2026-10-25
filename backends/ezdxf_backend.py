@@ -69,6 +69,7 @@ from .quarantine import (
     quarantine_refusal,
     real_call_name,
 )
+from .xdata_specs import prepare_xdata
 
 __all__ = [
     "DocumentQuarantineError",
@@ -5093,6 +5094,17 @@ class EzdxfBackend(AutoCADBackend):
             _ensure_linetype_loaded(self._require_doc(), linetype)
             entity.dxf.linetype = linetype
 
+    def _attach_xdata(self, entity, prepared) -> None:
+        """XDATA validated by ``prepare_xdata``, written inside the create call's
+        own worker job (v1.7.0, B17): one lock, one undo snapshot."""
+        if not prepared:
+            return
+        doc = self._require_doc()
+        for app, tags in prepared:
+            if app not in doc.appids:
+                doc.appids.add(app)
+            entity.set_xdata(app, tags)
+
     def _mark_dirty(self):
         self._dirty = True
         self._push_undo_snapshot()
@@ -5192,7 +5204,10 @@ class EzdxfBackend(AutoCADBackend):
         layer=None,
         color=None,
         linetype=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             msp = self._msp()
             ent = msp.add_line(
@@ -5200,6 +5215,7 @@ class EzdxfBackend(AutoCADBackend):
                 (float(x2), float(y2), float(z2)),
             )
             self._apply_attrs(ent, layer, color, linetype)
+            self._attach_xdata(ent, prepared)
             self._mark_dirty()
             return _entity_info_dxf(ent)
 
@@ -5212,11 +5228,15 @@ class EzdxfBackend(AutoCADBackend):
         radius,
         layer=None,
         color=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             msp = self._msp()
             ent = msp.add_circle((float(cx), float(cy)), float(radius))
             self._apply_attrs(ent, layer, color)
+            self._attach_xdata(ent, prepared)
             self._mark_dirty()
             return _entity_info_dxf(ent)
 
@@ -5231,7 +5251,10 @@ class EzdxfBackend(AutoCADBackend):
         end_angle,
         layer=None,
         color=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             msp = self._msp()
             ent = msp.add_arc(
@@ -5241,6 +5264,7 @@ class EzdxfBackend(AutoCADBackend):
                 float(end_angle),
             )
             self._apply_attrs(ent, layer, color)
+            self._attach_xdata(ent, prepared)
             self._mark_dirty()
             return _entity_info_dxf(ent)
 
@@ -5252,12 +5276,16 @@ class EzdxfBackend(AutoCADBackend):
         closed=False,
         layer=None,
         color=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             msp = self._msp()
             pts_2d = [(float(p[0]), float(p[1])) for p in points]
             ent = msp.add_lwpolyline(pts_2d, close=closed)
             self._apply_attrs(ent, layer, color)
+            self._attach_xdata(ent, prepared)
             self._mark_dirty()
             return _entity_info_dxf(ent)
 
@@ -5272,7 +5300,10 @@ class EzdxfBackend(AutoCADBackend):
         rotation=0.0,
         layer=None,
         color=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             msp = self._msp()
             ent = msp.add_text(
@@ -5285,6 +5316,7 @@ class EzdxfBackend(AutoCADBackend):
                 },
             )
             self._apply_attrs(ent, layer, color)
+            self._attach_xdata(ent, prepared)
             self._mark_dirty()
             return _entity_info_dxf(ent)
 
@@ -5499,7 +5531,10 @@ class EzdxfBackend(AutoCADBackend):
         angle=0.0,
         layer=None,
         color=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             msp = self._msp()
             hatch = msp.add_hatch()
@@ -5507,6 +5542,7 @@ class EzdxfBackend(AutoCADBackend):
             pts = [(float(p[0]), float(p[1])) for p in boundary_points]
             hatch.paths.add_polyline_path(pts, is_closed=True)
             self._apply_attrs(hatch, layer, color)
+            self._attach_xdata(hatch, prepared)
             self._mark_dirty()
             return _entity_info_dxf(hatch)
 

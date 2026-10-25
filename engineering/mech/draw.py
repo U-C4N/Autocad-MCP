@@ -84,6 +84,25 @@ def _xdata_payload(values) -> dict:
     return decode(values)
 
 
+def _feature_xdata(prim, feature_tag: Mapping[str, str] | None) -> dict | None:
+    """``{ACADMCP_MECH: chunks}`` for one primitive, or None without a tag."""
+    if feature_tag is None:
+        return None
+    payload = {
+        "v": PAYLOAD_VERSION,
+        "kind": "feature",
+        "part": str(feature_tag.get("part", "")),
+        "feature": str(getattr(prim, "feature", "") or ""),
+        "view": str(feature_tag.get("view", "")),
+    }
+    return {APP_ID: to_values(payload)}
+
+
+def _view_tag(view: View) -> str:
+    """The view a feature tag names: its kind, ``"<kind>:<label>"`` when labelled."""
+    return f"{view.kind}:{view.label}" if view.label else view.kind
+
+
 def _number(value, where: str, *, positive: bool = True) -> float:
     try:
         number = float(value)
@@ -150,6 +169,7 @@ async def draw_prims(
     rotation: float = 0.0,
     layer_prefix: str = "",
     role_layer: Mapping[str, str] | None = None,
+    feature_tag: Mapping[str, str] | None = None,
 ) -> dict:
     """Draw primitive descriptions, turned by ``rotation`` about their origin, then placed at ``at``.
 
@@ -157,6 +177,13 @@ async def draw_prims(
     ``ROLE_LAYER``. Every role and every hatch material is resolved - and every
     target layer ensured - before the first entity, so an unknown role or
     material refuses with nothing drawn.
+
+    ``feature_tag`` (``{"part", "view"}``, v1.7.0, B17) writes an
+    ``ACADMCP_MECH`` feature record - ``{"kind": "feature", "part", "feature",
+    "view"}``, the feature being the primitive's own ``feature`` - onto every
+    entity in its create call: no extra round trip per entity. A copy of the
+    entity carries the tag, which is how a binder sees two candidates for one
+    feature.
     """
     placed = tuple(prims)
     _refuse_islands_without_edge_paths(backend, placed)
@@ -174,9 +201,11 @@ async def draw_prims(
     counts: dict[str, int] = {}
 
     for prim, layer in zip(placed, targets, strict=True):
+        tag = _feature_xdata(prim, feature_tag)
+        extra = {"xdata": tag} if tag else {}
         if isinstance(prim, Line):
             info = await backend.entity_create_line(
-                prim.p1[0], prim.p1[1], prim.p2[0], prim.p2[1], layer=layer
+                prim.p1[0], prim.p1[1], prim.p2[0], prim.p2[1], layer=layer, **extra
             )
         elif isinstance(prim, Arc):
             info = await backend.entity_create_arc(
@@ -186,14 +215,15 @@ async def draw_prims(
                 prim.start_deg,
                 prim.end_deg,
                 layer=layer,
+                **extra,
             )
         elif isinstance(prim, Circle):
             info = await backend.entity_create_circle(
-                prim.center[0], prim.center[1], prim.radius, layer=layer
+                prim.center[0], prim.center[1], prim.radius, layer=layer, **extra
             )
         elif isinstance(prim, Poly):
             info = await backend.entity_create_polyline(
-                [[x, y] for x, y in prim.points], prim.closed, layer=layer
+                [[x, y] for x, y in prim.points], prim.closed, layer=layer, **extra
             )
         elif isinstance(prim, Text):
             info = await backend.entity_create_text(
@@ -203,6 +233,7 @@ async def draw_prims(
                 prim.height,
                 prim.rotation,
                 layer=layer,
+                **extra,
             )
         elif isinstance(prim, HatchArea):
             style = _hatch_style(prim.material, role_layer)
@@ -212,6 +243,7 @@ async def draw_prims(
                 style["scale"],
                 style["angle"],
                 layer=layer,
+                **extra,
             )
             for number, island in enumerate(prim.loops[1:], start=1):
                 points = list(island)
@@ -591,28 +623,39 @@ async def draw_part(
     parent: View | None = None
     parent_offset = (0.0, 0.0)
 
-    for index, kind in enumerate(kinds):
-        view = build_view(part, kind, projection=projection, scale=scale)
-        if index == 0:
-            offset = _offset_for(view, origin)
-        else:
-            lower_left = layout_origin(
-                _placed(parent, parent_offset),
-                kind,
-                projection=projection,
-                gap=DEFAULT_GAP,
-                child=view,
-            )
-            offset = _offset_for(view, lower_left)
-        drawn = await draw_prims(backend, _to_wcs(view.prims, offset, origin, turn))
-        handles.extend(drawn["handles"])
-        omitted.extend(view.omitted)
-        records.append(_view_record(view, offset, {"scale": scale}, origin, turn))
-        if index == 0:
-            parent, parent_offset = view, offset
-
+    # The anchor comes first: its handle is the part id every feature tag
+    # names (v1.7.0, B17). A failure while drawing takes it back out, so no
+    # anchor is left naming a part that was never drawn.
     await _ensure_layers(backend, [ANCHOR_LAYER])
     anchor = await backend.entity_create_point(origin[0], origin[1], layer=ANCHOR_LAYER)
+    try:
+        for index, kind in enumerate(kinds):
+            view = build_view(part, kind, projection=projection, scale=scale)
+            if index == 0:
+                offset = _offset_for(view, origin)
+            else:
+                lower_left = layout_origin(
+                    _placed(parent, parent_offset),
+                    kind,
+                    projection=projection,
+                    gap=DEFAULT_GAP,
+                    child=view,
+                )
+                offset = _offset_for(view, lower_left)
+            drawn = await draw_prims(
+                backend,
+                _to_wcs(view.prims, offset, origin, turn),
+                feature_tag={"part": anchor.handle, "view": _view_tag(view)},
+            )
+            handles.extend(drawn["handles"])
+            omitted.extend(view.omitted)
+            records.append(_view_record(view, offset, {"scale": scale}, origin, turn))
+            if index == 0:
+                parent, parent_offset = view, offset
+    except Exception:
+        await _discard(backend, anchor.handle)
+        raise
+
     payload = {
         "v": PAYLOAD_VERSION,
         "kind": "part",
@@ -767,12 +810,18 @@ async def add_view(backend, part_id: str, kind: str, **kw) -> dict:
     )
     offset = _offset_for(view, lower_left)
 
-    drawn = await draw_prims(backend, _to_wcs(view.prims, offset, origin, rotation))
+    drawn = await draw_prims(
+        backend,
+        _to_wcs(view.prims, offset, origin, rotation),
+        feature_tag={"part": part_id, "view": _view_tag(view)},
+    )
     marker_handles: list[str] = []
     if kind == "detail":
         marker = detail_marker_prims(detail or {})
         marker_drawn = await draw_prims(
-            backend, _to_wcs(marker, parent_record["offset"], origin, rotation)
+            backend,
+            _to_wcs(marker, parent_record["offset"], origin, rotation),
+            feature_tag={"part": part_id, "view": str(parent_record["kind"])},
         )
         marker_handles = marker_drawn["handles"]
 
@@ -1055,12 +1104,17 @@ async def draw_hole_pattern(
     prims: list[Any] = []
     for hole in expansion:
         radius = float(hole.diameter) / 2.0
-        prims.append(Circle((float(hole.x), float(hole.y)), radius, "visible"))
+        prims.append(Circle((float(hole.x), float(hole.y)), radius, "visible", "pattern"))
         if centre_marks:
             reach = radius + CENTRE_MARK_OVERRUN
-            prims.append(Line((hole.x - reach, hole.y), (hole.x + reach, hole.y), "center"))
-            prims.append(Line((hole.x, hole.y - reach), (hole.x, hole.y + reach), "center"))
-    drawn = await draw_prims(backend, prims)
+            prims.append(
+                Line((hole.x - reach, hole.y), (hole.x + reach, hole.y), "center", "pattern")
+            )
+            prims.append(
+                Line((hole.x, hole.y - reach), (hole.x, hole.y + reach), "center", "pattern")
+            )
+    # A standalone pattern has no part: its tag names the pattern alone.
+    drawn = await draw_prims(backend, prims, feature_tag={"part": "", "view": ""})
     await _ensure_layers(backend, [layer, ROLE_LAYER["dim"] if dimension else None])
     if layer:
         # the role map owns the layers; an explicit override moves the circles

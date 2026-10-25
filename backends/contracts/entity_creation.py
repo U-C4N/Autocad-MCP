@@ -17,6 +17,12 @@ if TYPE_CHECKING:
 
 
 class EntityCreationContract(ABC):
+    # ``xdata={app: values}`` (v1.7.0, B17): these six create members write
+    # XDATA in the create call itself - one lock, one undo step, no extra COM
+    # round trip per entity - validated by
+    # ``backends/xdata_specs.py::prepare_xdata`` before anything is created.
+    # The mechanical generators tag every entity they draw this way.
+
     @abstractmethod
     async def entity_create_line(
         self,
@@ -29,6 +35,7 @@ class EntityCreationContract(ABC):
         layer: str | None = None,
         color: int | None = None,
         linetype: str | None = None,
+        xdata: dict[str, list] | None = None,
     ) -> EntityInfo: ...
 
     @abstractmethod
@@ -39,6 +46,7 @@ class EntityCreationContract(ABC):
         radius: float,
         layer: str | None = None,
         color: int | None = None,
+        xdata: dict[str, list] | None = None,
     ) -> EntityInfo: ...
 
     @abstractmethod
@@ -51,6 +59,7 @@ class EntityCreationContract(ABC):
         end_angle: float,
         layer: str | None = None,
         color: int | None = None,
+        xdata: dict[str, list] | None = None,
     ) -> EntityInfo: ...
 
     @abstractmethod
@@ -60,6 +69,7 @@ class EntityCreationContract(ABC):
         closed: bool = False,
         layer: str | None = None,
         color: int | None = None,
+        xdata: dict[str, list] | None = None,
     ) -> EntityInfo: ...
 
     @abstractmethod
@@ -72,6 +82,7 @@ class EntityCreationContract(ABC):
         rotation: float = 0.0,
         layer: str | None = None,
         color: int | None = None,
+        xdata: dict[str, list] | None = None,
     ) -> EntityInfo: ...
 
     @abstractmethod
@@ -121,6 +132,7 @@ class EntityCreationContract(ABC):
         angle: float = 0.0,
         layer: str | None = None,
         color: int | None = None,
+        xdata: dict[str, list] | None = None,
     ) -> EntityInfo: ...
 
     @abstractmethod

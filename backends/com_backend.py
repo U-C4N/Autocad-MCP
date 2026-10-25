@@ -46,6 +46,7 @@ from .contracts.settings import SUMMARY_FIELDS, validate_drawing_properties
 from .document_guard import ActiveDocumentChangedError
 from .operations import CURRENT_OPERATION
 from .quarantine import DaemonExecutor, real_call_name
+from .xdata_specs import prepare_xdata
 
 log = logging.getLogger(__name__)
 
@@ -594,6 +595,26 @@ def _apply_entity_attrs(entity, layer: str | None, color: int | None, linetype: 
     if linetype is not None:
         _ensure_linetype_loaded(linetype)
         entity.Linetype = linetype
+
+
+def _attach_xdata(entity, prepared) -> None:
+    """XDATA validated by ``prepare_xdata``, written onto an entity this same COM
+    job just created (v1.7.0, B17) - no extra round trip per entity. The APPID
+    is registered first, exactly as ``entity_set_xdata`` does."""
+    if not prepared:
+        return
+    doc = _acad_doc()
+    for app, tags in prepared:
+        try:
+            doc.RegisteredApplications.Add(app)
+        except Exception as exc:  # already registered
+            log.debug("RegisteredApplications.Add(%s): %s", app, exc)
+        codes = [1001] + [code for code, _ in tags]
+        payload = [app] + [_apoint(*value) if code == 1010 else value for code, value in tags]
+        entity.SetXData(
+            _ai(codes),
+            win32com.client.VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_VARIANT, payload),
+        )
 
 
 def _regen():
@@ -5113,11 +5134,15 @@ class ComBackend(AutoCADBackend):
         layer=None,
         color=None,
         linetype=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             mspace = _msp()
             line = mspace.AddLine(_apoint(x1, y1, z1), _apoint(x2, y2, z2))
             _apply_entity_attrs(line, layer, color, linetype)
+            _attach_xdata(line, prepared)
             _regen()
             return _entity_info(line)
 
@@ -5130,11 +5155,15 @@ class ComBackend(AutoCADBackend):
         radius,
         layer=None,
         color=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             mspace = _msp()
             circle = mspace.AddCircle(_apoint(cx, cy), float(radius))
             _apply_entity_attrs(circle, layer, color, None)
+            _attach_xdata(circle, prepared)
             _regen()
             return _entity_info(circle)
 
@@ -5149,7 +5178,10 @@ class ComBackend(AutoCADBackend):
         end_angle,
         layer=None,
         color=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             mspace = _msp()
             arc = mspace.AddArc(
@@ -5159,6 +5191,7 @@ class ComBackend(AutoCADBackend):
                 deg2rad(end_angle),
             )
             _apply_entity_attrs(arc, layer, color, None)
+            _attach_xdata(arc, prepared)
             _regen()
             return _entity_info(arc)
 
@@ -5170,7 +5203,10 @@ class ComBackend(AutoCADBackend):
         closed=False,
         layer=None,
         color=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             mspace = _msp()
             flat = []
@@ -5179,6 +5215,7 @@ class ComBackend(AutoCADBackend):
             pline = mspace.AddLightWeightPolyline(_av(flat))
             pline.Closed = closed
             _apply_entity_attrs(pline, layer, color, None)
+            _attach_xdata(pline, prepared)
             _regen()
             return _entity_info(pline)
 
@@ -5193,12 +5230,16 @@ class ComBackend(AutoCADBackend):
         rotation=0.0,
         layer=None,
         color=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             mspace = _msp()
             txt = mspace.AddText(text, _apoint(x, y), float(height))
             txt.Rotation = deg2rad(rotation)
             _apply_entity_attrs(txt, layer, color, None)
+            _attach_xdata(txt, prepared)
             _regen()
             return _entity_info(txt)
 
@@ -5341,7 +5382,10 @@ class ComBackend(AutoCADBackend):
         angle=0.0,
         layer=None,
         color=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             mspace = _msp()
             # acPatternTypePreDefined = 0
@@ -5359,6 +5403,7 @@ class ComBackend(AutoCADBackend):
             hatch.Evaluate()
             bnd_pline.Delete()
             _apply_entity_attrs(hatch, layer, color, None)
+            _attach_xdata(hatch, prepared)
             _regen()
             return _entity_info(hatch)
 

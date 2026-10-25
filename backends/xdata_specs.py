@@ -161,6 +161,32 @@ def check_entity_budget(
     return total
 
 
+def prepare_xdata(xdata) -> list[tuple[str, list[Tag]]]:
+    """A create call's ``xdata={app_name: values}``, validated and typed before
+    anything is created (v1.7.0, B17).
+
+    Every app name is checked, every value list encoded, and the entity's whole
+    budget (16 KB across every application) checked against a NEW entity -
+    which holds nothing yet - so a refused tag creates nothing. An empty list
+    is refused: on a new entity there is nothing for it to remove.
+    """
+    if xdata is None:
+        return []
+    if not isinstance(xdata, Mapping):
+        raise TypeError("xdata: expected {app_name: [values]}")
+    prepared: list[tuple[str, list[Tag]]] = []
+    written: dict[str, list[Tag]] = {}
+    for app, values in xdata.items():
+        name = validate_app_name(app)
+        tags = encode_values(values)
+        if not tags:
+            raise ValueError(f"xdata: {name} has no values; a new entity has nothing to remove")
+        check_entity_budget(name, tags, written)
+        written[name] = tags
+        prepared.append((name, tags))
+    return prepared
+
+
 def decode_values(tags) -> list:
     """(group code, value) → JSON values. Skips the 1001 app marker and 1002 braces."""
     out: list = []

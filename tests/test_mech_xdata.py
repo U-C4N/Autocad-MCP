@@ -19,7 +19,7 @@ PART = {
 def test_app_id_version_and_kinds_are_the_pinned_ones():
     assert APP_ID == "ACADMCP_MECH"
     assert PAYLOAD_VERSION == 1
-    assert KINDS == ("part", "std_part", "balloon")
+    assert KINDS == ("part", "std_part", "balloon", "feature")
 
 
 def test_encode_opens_with_the_app_id_and_chunks_at_255():
