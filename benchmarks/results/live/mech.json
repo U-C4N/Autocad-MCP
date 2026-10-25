@@ -1,0 +1,152 @@
+{
+  "schema": "acadmcp-live-harness/1",
+  "smoke": "mech",
+  "status": "pass",
+  "exit_code": 0,
+  "reason": null,
+  "started_at": "2026-10-25T15:43:39+00:00",
+  "duration_s": 37.894,
+  "environment": {
+    "autocad": {
+      "name": "AutoCAD",
+      "version": "25.1s",
+      "build": "W.60.0.0 (UNICODE)",
+      "progid": "AutoCAD.Application"
+    },
+    "os": {
+      "platform": "Windows-11-10.0.26300-SP0",
+      "system": "Windows",
+      "release": "11",
+      "machine": "AMD64"
+    },
+    "python": {
+      "version": "3.13.15",
+      "implementation": "CPython"
+    },
+    "pywin32": "312",
+    "server": {
+      "version": "1.6.0",
+      "sha": "e212f1b13a8273eb76cc12966e2c797cad24ccd2",
+      "dirty": false
+    }
+  },
+  "summary": {
+    "checks": 10,
+    "passed": 10,
+    "failed": 0,
+    "errors": 0,
+    "rpc_retries": 0
+  },
+  "checks": [
+    {
+      "name": "the section view omitted nothing",
+      "status": "pass",
+      "expected": [],
+      "observed": [],
+      "stage": "checks"
+    },
+    {
+      "name": "the part was dimensioned",
+      "status": "pass",
+      "expected": null,
+      "observed": 12,
+      "stage": "checks"
+    },
+    {
+      "name": "the bolt carries ACADMCP_MECH XDATA",
+      "status": "pass",
+      "expected": ">= 1",
+      "observed": 1,
+      "stage": "checks"
+    },
+    {
+      "name": "the parts list read off the drawing is the bolt",
+      "status": "pass",
+      "expected": {
+        "rows": 1,
+        "handle": "2F6"
+      },
+      "observed": {
+        "rows": 1,
+        "handles": [
+          "2F6"
+        ]
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "the parts list drawn as a native TABLE",
+      "status": "pass",
+      "expected": "native",
+      "observed": "native",
+      "stage": "checks"
+    },
+    {
+      "name": "the balloon placed",
+      "status": "pass",
+      "expected": null,
+      "observed": "319",
+      "stage": "checks"
+    },
+    {
+      "name": "the xref listed once attached",
+      "status": "pass",
+      "expected": 1,
+      "observed": 1,
+      "stage": "checks"
+    },
+    {
+      "name": "the xref gone once detached",
+      "status": "pass",
+      "expected": 0,
+      "observed": 0,
+      "stage": "checks"
+    },
+    {
+      "name": "the DWG is on disk with the AC10 magic",
+      "status": "pass",
+      "expected": "AC10",
+      "observed": "AC1032",
+      "stage": "checks"
+    },
+    {
+      "name": "the critique found nothing",
+      "status": "pass",
+      "expected": 0,
+      "observed": [],
+      "stage": "checks"
+    }
+  ],
+  "documents": {
+    "opened": 2,
+    "closed": 2,
+    "left_open": [],
+    "kept": false
+  },
+  "report": {
+    "part_id": "F6",
+    "views": 2,
+    "section_omitted": [],
+    "dimensions": 12,
+    "bolt_handle": "2F6",
+    "xdata_chunks": 1,
+    "parts_list_rows": 1,
+    "parts_list_handles": [
+      "2F6"
+    ],
+    "parts_list_representation": "native",
+    "balloon": "319",
+    "xref_attached": "XREF_SOURCE",
+    "xref_listed": 1,
+    "xref_detached": true,
+    "xrefs_after_detach": 0,
+    "dwg": {
+      "name": "mech_smoke.dwg",
+      "exists": true,
+      "bytes": 32070,
+      "magic": "AC1032"
+    },
+    "critique_issues": 0,
+    "critique": []
+  }
+}

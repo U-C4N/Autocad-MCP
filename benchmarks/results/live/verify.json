@@ -1,0 +1,773 @@
+{
+  "schema": "acadmcp-live-harness/1",
+  "smoke": "verify",
+  "status": "pass",
+  "exit_code": 0,
+  "reason": null,
+  "started_at": "2026-10-25T15:44:24+00:00",
+  "duration_s": 3.942,
+  "environment": {
+    "autocad": {
+      "name": "AutoCAD",
+      "version": "25.1s",
+      "build": "W.60.0.0 (UNICODE)",
+      "progid": "AutoCAD.Application"
+    },
+    "os": {
+      "platform": "Windows-11-10.0.26300-SP0",
+      "system": "Windows",
+      "release": "11",
+      "machine": "AMD64"
+    },
+    "python": {
+      "version": "3.13.15",
+      "implementation": "CPython"
+    },
+    "pywin32": "312",
+    "server": {
+      "version": "1.6.0",
+      "sha": "e212f1b13a8273eb76cc12966e2c797cad24ccd2",
+      "dirty": false
+    }
+  },
+  "summary": {
+    "checks": 27,
+    "passed": 27,
+    "failed": 0,
+    "errors": 0,
+    "rpc_retries": 0
+  },
+  "checks": [
+    {
+      "name": "drawing_new binds the new document",
+      "status": "pass",
+      "expected": "Drawing49.dwg",
+      "observed": {
+        "document_id": "fec825c41a9d4be8b634ac6e320f974b",
+        "revision": 0,
+        "name": "Drawing49.dwg",
+        "path": null,
+        "backend": "com"
+      },
+      "stage": "bound document"
+    },
+    {
+      "name": "a write after the switch is refused as active_document_changed",
+      "status": "pass",
+      "expected": "active_document_changed",
+      "observed": {
+        "ok": false,
+        "kind": "active_document_changed",
+        "error": "AutoCAD's active document changed: this session is bound to 'Drawing49.dwg' but 'Drawing48.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing49.dwg', or call document_activate('Drawing48.dwg') to bind this session to it.",
+        "bound": {
+          "document_id": "fec825c41a9d4be8b634ac6e320f974b",
+          "name": "Drawing49.dwg",
+          "path": null
+        },
+        "active": {
+          "document_id": "de9e614932cc49ddb5d5bb947ca957a6",
+          "name": "Drawing48.dwg",
+          "path": null
+        }
+      },
+      "stage": "bound document"
+    },
+    {
+      "name": "the refusal names the bound and the active document",
+      "status": "pass",
+      "expected": {
+        "bound": "Drawing49.dwg",
+        "active": "Drawing48.dwg"
+      },
+      "observed": {
+        "ok": false,
+        "kind": "active_document_changed",
+        "error": "AutoCAD's active document changed: this session is bound to 'Drawing49.dwg' but 'Drawing48.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing49.dwg', or call document_activate('Drawing48.dwg') to bind this session to it.",
+        "bound": {
+          "document_id": "fec825c41a9d4be8b634ac6e320f974b",
+          "name": "Drawing49.dwg",
+          "path": null
+        },
+        "active": {
+          "document_id": "de9e614932cc49ddb5d5bb947ca957a6",
+          "name": "Drawing48.dwg",
+          "path": null
+        }
+      },
+      "stage": "bound document"
+    },
+    {
+      "name": "nothing landed in either document",
+      "status": "pass",
+      "expected": {
+        "Drawing48.dwg": 1,
+        "Drawing49.dwg": 0
+      },
+      "observed": {
+        "Drawing48.dwg": 1,
+        "Drawing49.dwg": 0
+      },
+      "stage": "bound document"
+    },
+    {
+      "name": "the refused write moved no revision",
+      "status": "pass",
+      "expected": 0,
+      "observed": 0,
+      "stage": "bound document"
+    },
+    {
+      "name": "document_activate binds the session again, under the same id",
+      "status": "pass",
+      "expected": "fec825c41a9d4be8b634ac6e320f974b",
+      "observed": "fec825c41a9d4be8b634ac6e320f974b",
+      "stage": "bound document"
+    },
+    {
+      "name": "the HATCH is read from the drawing's export",
+      "status": "pass",
+      "expected": "dxf_export",
+      "observed": "dxf_export",
+      "stage": "hatch and dimension read-back"
+    },
+    {
+      "name": "the HATCH reads two loops",
+      "status": "pass",
+      "expected": 2,
+      "observed": 2,
+      "stage": "hatch and dimension read-back"
+    },
+    {
+      "name": "the HATCH fills 6000 - 100 pi",
+      "status": "pass",
+      "expected": 5685.840735,
+      "observed": 5685.84073464102,
+      "stage": "hatch and dimension read-back"
+    },
+    {
+      "name": "the linear DIMENSION reads back its type",
+      "status": "pass",
+      "expected": "linear",
+      "observed": "linear",
+      "stage": "hatch and dimension read-back"
+    },
+    {
+      "name": "the linear DIMENSION reads back its measurement",
+      "status": "pass",
+      "expected": 100.0,
+      "observed": 100.0,
+      "stage": "hatch and dimension read-back"
+    },
+    {
+      "name": "the linear DIMENSION reads back its defpoints",
+      "status": "pass",
+      "expected": [
+        [
+          1,
+          [
+            0.0,
+            0.0
+          ]
+        ],
+        [
+          2,
+          [
+            100.0,
+            0.0
+          ]
+        ]
+      ],
+      "observed": [
+        [
+          100.0,
+          -15.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          100.0,
+          0.0
+        ],
+        null,
+        null
+      ],
+      "stage": "hatch and dimension read-back"
+    },
+    {
+      "name": "the diameter DIMENSION reads back its type",
+      "status": "pass",
+      "expected": "diameter",
+      "observed": "diameter",
+      "stage": "hatch and dimension read-back"
+    },
+    {
+      "name": "the diameter DIMENSION reads back its measurement",
+      "status": "pass",
+      "expected": 20.0,
+      "observed": 20.0,
+      "stage": "hatch and dimension read-back"
+    },
+    {
+      "name": "the diameter DIMENSION reads back its defpoints",
+      "status": "pass",
+      "expected": [
+        [
+          0,
+          [
+            40.0,
+            30.0
+          ]
+        ],
+        [
+          3,
+          [
+            20.0,
+            30.0
+          ]
+        ]
+      ],
+      "observed": [
+        [
+          40.0,
+          30.0
+        ],
+        null,
+        null,
+        [
+          20.0,
+          30.0
+        ],
+        null
+      ],
+      "stage": "hatch and dimension read-back"
+    },
+    {
+      "name": "Ø20 passes on the live document, measured on the circle",
+      "status": "pass",
+      "expected": {
+        "status": "pass",
+        "measured": 20.0
+      },
+      "observed": {
+        "status": "pass",
+        "measured": 20.0,
+        "handles": [
+          "85"
+        ],
+        "dimension_mismatch": null,
+        "dimension_measurement": null
+      },
+      "stage": "live verification"
+    },
+    {
+      "name": "Ø20 passes through its diameter DIMENSION, which agrees with the geometry",
+      "status": "pass",
+      "expected": {
+        "status": "pass",
+        "measured": 20.0,
+        "dimension_mismatch": false
+      },
+      "observed": {
+        "status": "pass",
+        "measured": 20.0,
+        "handles": [
+          "85"
+        ],
+        "dimension_mismatch": false,
+        "dimension_measurement": 20.0
+      },
+      "stage": "live verification"
+    },
+    {
+      "name": "the live report is accepted",
+      "status": "pass",
+      "expected": null,
+      "observed": "pass",
+      "stage": "live verification"
+    },
+    {
+      "name": "the delivery DXF is written through Document.Export",
+      "status": "pass",
+      "expected": {
+        "method": "Document.Export",
+        "repointed": false
+      },
+      "observed": {
+        "dxf_version": "AC1032",
+        "method": "Document.Export",
+        "repointed": false
+      },
+      "stage": "export delivery"
+    },
+    {
+      "name": "the open document is not re-pointed or saved",
+      "status": "pass",
+      "expected": {
+        "name": "Drawing49.dwg",
+        "full_name": "",
+        "saved": false
+      },
+      "observed": {
+        "name": "Drawing49.dwg",
+        "full_name": "",
+        "saved": false
+      },
+      "stage": "export delivery"
+    },
+    {
+      "name": "the delivered DXF is on disk as R2018",
+      "status": "pass",
+      "expected": "AC1032",
+      "observed": "AC1032",
+      "stage": "export delivery"
+    },
+    {
+      "name": "the reopen parity holds",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "ok": true,
+        "tolerance": 1e-06,
+        "move_tol": 1.370803254482568,
+        "handles_stable": true,
+        "summary": {
+          "old_entities": 4,
+          "new_entities": 4,
+          "unchanged": 4,
+          "changed": 0,
+          "added": 0,
+          "removed": 0
+        },
+        "counts": {
+          "source": {
+            "Model": 4
+          },
+          "reopened": {
+            "Model": 4
+          }
+        },
+        "blocks": {
+          "compared": true,
+          "added": [],
+          "removed": [],
+          "changed": []
+        },
+        "differences": []
+      },
+      "stage": "export delivery"
+    },
+    {
+      "name": "the requirements are accepted on the delivered file",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "status": "pass",
+        "accepted": true,
+        "stale": false,
+        "stale_reason": null,
+        "counts": {
+          "required": 2,
+          "pass": 2,
+          "fail": 0,
+          "unknown": 0,
+          "unsupported": 0,
+          "ambiguous": 0
+        },
+        "coverage": {
+          "required": 2,
+          "measured": 2,
+          "ratio": 1.0
+        },
+        "blocking": [],
+        "requirements_digest": "sha256:7c81494f1a34bb7e8e325fe3795943559d852c4e063c03feee2a900ebd1070fb",
+        "report_file": "acceptance.json"
+      },
+      "stage": "export delivery"
+    },
+    {
+      "name": "Ø20 passes again on the delivered DXF, by handle and by dimension",
+      "status": "pass",
+      "expected": {
+        "status": "pass",
+        "measured": 20.0
+      },
+      "observed": {
+        "R1": {
+          "status": "pass",
+          "measured": 20.0,
+          "handles": [
+            "85"
+          ],
+          "dimension_mismatch": null,
+          "dimension_measurement": null
+        },
+        "R2": {
+          "status": "pass",
+          "measured": 20.0,
+          "handles": [
+            "85"
+          ],
+          "dimension_mismatch": false,
+          "dimension_measurement": 20.0
+        }
+      },
+      "stage": "saved-artifact verification"
+    },
+    {
+      "name": "the before / after comparison shows no change",
+      "status": "pass",
+      "expected": null,
+      "observed": [
+        {
+          "id": "R1",
+          "before": {
+            "status": "pass",
+            "value": 20.0
+          },
+          "after": {
+            "status": "pass",
+            "value": 20.0
+          },
+          "changed": false
+        },
+        {
+          "id": "R2",
+          "before": {
+            "status": "pass",
+            "value": 20.0
+          },
+          "after": {
+            "status": "pass",
+            "value": 20.0
+          },
+          "changed": false
+        }
+      ],
+      "stage": "saved-artifact verification"
+    },
+    {
+      "name": "an artifact edited to Ø22 fails, measured on the file",
+      "status": "pass",
+      "expected": {
+        "status": "fail",
+        "measured": 22.0,
+        "accepted": false
+      },
+      "observed": {
+        "row": {
+          "status": "fail",
+          "measured": 22.0,
+          "handles": [
+            "85"
+          ],
+          "dimension_mismatch": null,
+          "dimension_measurement": null
+        },
+        "accepted": false
+      },
+      "stage": "saved-artifact verification"
+    },
+    {
+      "name": "Ø20 passes on the DWG, read through a private read-only copy",
+      "status": "pass",
+      "expected": {
+        "status": "pass",
+        "measured": 20.0
+      },
+      "observed": {
+        "rows": {
+          "R1": {
+            "status": "pass",
+            "measured": 20.0,
+            "handles": [
+              "85"
+            ],
+            "dimension_mismatch": null,
+            "dimension_measurement": null
+          },
+          "R2": {
+            "status": "pass",
+            "measured": 20.0,
+            "handles": [
+              "85"
+            ],
+            "dimension_mismatch": false,
+            "dimension_measurement": 20.0
+          }
+        },
+        "read": "private copy, Documents.Open read-only + Document.Export"
+      },
+      "stage": "saved-artifact verification"
+    }
+  ],
+  "documents": {
+    "opened": 2,
+    "closed": 2,
+    "left_open": [],
+    "kept": false
+  },
+  "report": {
+    "bound": {
+      "documents": [
+        "Drawing48.dwg",
+        "Drawing49.dwg"
+      ],
+      "refusal": {
+        "ok": false,
+        "kind": "active_document_changed",
+        "error": "AutoCAD's active document changed: this session is bound to 'Drawing49.dwg' but 'Drawing48.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing49.dwg', or call document_activate('Drawing48.dwg') to bind this session to it.",
+        "bound": {
+          "document_id": "fec825c41a9d4be8b634ac6e320f974b",
+          "name": "Drawing49.dwg",
+          "path": null
+        },
+        "active": {
+          "document_id": "de9e614932cc49ddb5d5bb947ca957a6",
+          "name": "Drawing48.dwg",
+          "path": null
+        }
+      },
+      "counts": {
+        "Drawing48.dwg": 1,
+        "Drawing49.dwg": 0
+      }
+    },
+    "read_back": {
+      "hatch": "81",
+      "circle": "85",
+      "linear": "86",
+      "diameter": "A7",
+      "hatch_area": 5685.84073464102,
+      "hatch_loops": 2,
+      "dimensions": {
+        "linear": {
+          "dimtype": "linear",
+          "dimtype_code": 0,
+          "defpoints": [
+            [
+              100.0,
+              -15.0
+            ],
+            [
+              0.0,
+              0.0
+            ],
+            [
+              100.0,
+              0.0
+            ],
+            null,
+            null
+          ],
+          "measurement": 100.0,
+          "text_override": null,
+          "dimstyle": "ISO-25",
+          "dimlfac": 1.0,
+          "angle": 0.0
+        },
+        "diameter": {
+          "dimtype": "diameter",
+          "dimtype_code": 3,
+          "defpoints": [
+            [
+              40.0,
+              30.0
+            ],
+            null,
+            null,
+            [
+              20.0,
+              30.0
+            ],
+            null
+          ],
+          "measurement": 20.0,
+          "text_override": null,
+          "dimstyle": "ISO-25",
+          "dimlfac": 1.0,
+          "angle": 0.0
+        }
+      }
+    },
+    "live": {
+      "rows": {
+        "R1": {
+          "status": "pass",
+          "measured": 20.0,
+          "handles": [
+            "85"
+          ],
+          "dimension_mismatch": null,
+          "dimension_measurement": null
+        },
+        "R2": {
+          "status": "pass",
+          "measured": 20.0,
+          "handles": [
+            "85"
+          ],
+          "dimension_mismatch": false,
+          "dimension_measurement": 20.0
+        }
+      },
+      "status": "pass",
+      "accepted": true
+    },
+    "delivery": {
+      "status": "failed_validation",
+      "blocking": [
+        "validator: 1 error(s)",
+        "score: 75.0 < min_score 95.0"
+      ],
+      "dxf_export": {
+        "dxf_version": "AC1032",
+        "method": "Document.Export",
+        "repointed": false
+      },
+      "parity_ok": true,
+      "acceptance": {
+        "status": "pass",
+        "accepted": true,
+        "stale": false,
+        "stale_reason": null,
+        "counts": {
+          "required": 2,
+          "pass": 2,
+          "fail": 0,
+          "unknown": 0,
+          "unsupported": 0,
+          "ambiguous": 0
+        },
+        "coverage": {
+          "required": 2,
+          "measured": 2,
+          "ratio": 1.0
+        },
+        "blocking": [],
+        "requirements_digest": "sha256:7c81494f1a34bb7e8e325fe3795943559d852c4e063c03feee2a900ebd1070fb",
+        "report_file": "acceptance.json"
+      }
+    },
+    "artifacts": {
+      "dxf": {
+        "rows": {
+          "R1": {
+            "status": "pass",
+            "measured": 20.0,
+            "handles": [
+              "85"
+            ],
+            "dimension_mismatch": null,
+            "dimension_measurement": null
+          },
+          "R2": {
+            "status": "pass",
+            "measured": 20.0,
+            "handles": [
+              "85"
+            ],
+            "dimension_mismatch": false,
+            "dimension_measurement": 20.0
+          }
+        },
+        "rebinding": {
+          "handles_stable": true,
+          "rows": [
+            {
+              "id": "R1",
+              "method": "handle",
+              "status": "bound",
+              "reason": "re-bound on the saved file by handle"
+            },
+            {
+              "id": "R2",
+              "method": "handle",
+              "status": "bound",
+              "reason": "re-bound on the saved file by handle"
+            }
+          ]
+        },
+        "comparison": [
+          {
+            "id": "R1",
+            "before": {
+              "status": "pass",
+              "value": 20.0
+            },
+            "after": {
+              "status": "pass",
+              "value": 20.0
+            },
+            "changed": false
+          },
+          {
+            "id": "R2",
+            "before": {
+              "status": "pass",
+              "value": 20.0
+            },
+            "after": {
+              "status": "pass",
+              "value": 20.0
+            },
+            "changed": false
+          }
+        ]
+      },
+      "edited": {
+        "row": {
+          "status": "fail",
+          "measured": 22.0,
+          "handles": [
+            "85"
+          ],
+          "dimension_mismatch": null,
+          "dimension_measurement": null
+        },
+        "accepted": false
+      },
+      "dwg": {
+        "rows": {
+          "R1": {
+            "status": "pass",
+            "measured": 20.0,
+            "handles": [
+              "85"
+            ],
+            "dimension_mismatch": null,
+            "dimension_measurement": null
+          },
+          "R2": {
+            "status": "pass",
+            "measured": 20.0,
+            "handles": [
+              "85"
+            ],
+            "dimension_mismatch": false,
+            "dimension_measurement": 20.0
+          }
+        },
+        "read": "private copy, Documents.Open read-only + Document.Export",
+        "rebinding": {
+          "handles_stable": true,
+          "rows": [
+            {
+              "id": "R1",
+              "method": "handle",
+              "status": "bound",
+              "reason": "re-bound on the saved file by handle"
+            },
+            {
+              "id": "R2",
+              "method": "handle",
+              "status": "bound",
+              "reason": "re-bound on the saved file by handle"
+            }
+          ]
+        }
+      }
+    }
+  }
+}
