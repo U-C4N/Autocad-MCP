@@ -7,6 +7,288 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-10-25
+
+1.6 taught the server to draw whole sheets and to read other people's
+drawings. 1.7.0 makes what it draws **provable** and what it runs **safe**: a
+source requirement ("Ø40 bore, six holes on a Ø120 circle") is bound to the
+real CAD feature, measured on the geometry - never on a label, a stored model
+or the numbers that were typed in - and measured again on the saved file
+after it is reopened, with a pass / fail / unknown verdict per requirement and
+the evidence behind it; and a cancelled call, a big drawing or a hostile text
+cell can no longer produce a silent wrong answer. 247 → 248 registered tools
+(one new: `drawing_verify_requirements`), 8 → 11 resources, 5 prompts; the
+correctness suite at 61 / 61 against v1.6.0's 48 / 61 with zero regressions;
+benchmark matrix v8 at 31 / 31; the live COM harness at 91 / 91 checks on
+AutoCAD 2026; and no workload slower than 1.6.0 (every v1.7.0 / v1.6.0
+ratio between 0.64 and 0.98 over 20 alternating rounds of
+`perf_compare.py`, `perf-v1.6.0-vs-v1.7.0.json`). Headless creation
+throughput against v1.4.0 is still not won back: **Not in 1.7.0**
+says where it went. Spec: `docs/superpowers/specs/2026-10-24-v1.7.0-design.md`.
+
+### Added
+
+- **Requirement verification - `drawing_verify_requirements` (SECTION 26,
+  4 → 5; pack `core`, in the lean profile).** One engine under
+  `engineering/verification/`:
+  - *Typed requirements* (`requirements.py`, `types.py`): id, quantity
+    (distance, radius, diameter, angle, concentric, coincident, parallel,
+    perpendicular, horizontal, vertical, tangent, count, absence), target with
+    its unit, feature selectors, provenance, source, datum, and a
+    manufacturing tolerance kept apart from the verification epsilon. Every
+    bad value is refused by its path; conflicting provenance and two targets
+    for one feature are kept and reported, never collapsed. A legacy
+    `dimensions` object is carried read-only and verifies nothing.
+  - *Observed geometry* (`observe.py`): INSERTs exploded with their
+    `block_path` (a circle under a non-uniform scale is an ellipse and says
+    so, a mirrored insert keeps an arc's true sweep, every MINSERT cell is
+    its own element), HATCH loops with their depth and filled area, DIMENSION
+    fields with the geometric measurement, the dimension's own measurement,
+    the displayed text and `DIMLFAC` kept apart. `entity_get` reports HATCH
+    loops and full DIMENSION fields on both engines (capability
+    `hatch_loops`).
+  - *Binding* (`binding.py`): by handle, feature tag, architectural element,
+    geometric predicate or DIMENSION. Every binding keeps its candidates and
+    its reason; two equal candidates are `ambiguous` with both listed, never a
+    pick. The mechanical generators tag each entity they draw with an
+    `ACADMCP_MECH` feature record in the create call itself
+    (`entity_create_line/circle/arc/polyline/text/hatch` take `xdata=` on
+    both engines). Held-out evidence on raw-ezdxf plates no fixture uses:
+    733 of 760 eligible bindings attempted, all 733 correct, the 27 that had
+    to abstain abstained.
+  - *Evaluators* (`measure.py`): every quantity measured from CAD-read
+    geometry with value, unit, method, residual and status; lengths
+    converted with exact factors in the drawing's declared unit (`$INSUNITS`;
+    an inferred unit is recorded beside it, never applied); splines and tilted
+    planes `unsupported`, degenerate cases `unknown` with the reason.
+  - *The acceptance report* (`report.py`): one row per requirement - target,
+    measured, delta, tolerance basis, status, handles, source - with
+    denominators that always add up, as JSON (schema 1) and Markdown. No
+    silent pass: unbound or unmeasured is `unknown`. A DIMENSION whose text or
+    `DIMLFAC` disagrees with the geometry is a blocking `dimension_mismatch`
+    finding beside the geometry row. Evidence turns stale when the document's
+    revision moves or an artifact's sha256 changes.
+  - *The saved file* (`artifact.py`): `verify_artifact` reads the saved DXF
+    fresh (a DWG on a live seat through a private read-only copy) and
+    re-binds every feature - by handle while handles are stable, then by
+    feature tag, then by geometry - with the before / after comparison; a
+    count or absence is counted afresh on the file.
+  - `drawing_plan(persist_requirements=True)` writes the set into the drawing
+    (an `ACADMCP_REQUIREMENTS` XRECORD, both engines), so a reopened file
+    carries it; `drawing_verify_requirements(use_stored=True)` reads it back.
+    `drawing_finalize(requirements=)` and `drawing_deliver(requirements=)`
+    add `geometry_acceptance`, `drafting_quality` (the unchanged score),
+    `artifact_integrity` and `coverage`: a requirement that does not pass
+    blocks them (`failed_acceptance`) whatever the drafting score.
+    `drawing_verify_requirements(manifest_path=)` re-hashes a delivery's
+    artifacts and lists the stale and missing ones.
+- **Document identity and revisions (B11).** Every open document has a
+  `document_id` and a content `revision` (`system_status`, `drawing_info`,
+  `document_list`). Headless, the revision moves on every mutation, undo,
+  redo and rollback, never on a save, export, finalize or delivery; live, on
+  each of the 98 content-changing `ComBackend` methods. The live engine binds
+  the document a call chose, and a call made after the operator switched
+  AutoCAD's active document is refused `active_document_changed` (naming the
+  bound and the active document) before anything is read or written;
+  `transaction_commit` / `transaction_rollback` address the bound document.
+- **Operation records and client ids (B12).** One record per call in a
+  bounded in-memory journal (operation id, tool, request hash, state,
+  document id, revision before and after, error kind); states `committed`,
+  `partial`, `failed`, `refused`, `quarantined`, `cancelled`,
+  `unknown_commit`. A client id (`cad_batch(operation_id=)`, or
+  `_meta.operation_id` on any tool) replays the recorded result for the same
+  request, refuses `operation_conflict` for a different one and
+  `requires_reconcile` after an `unknown_commit`. `system_status` lists the
+  recent operations.
+- **Change previews (B14 residue).** `cad_batch`, `drawing_refine`,
+  `text_find_replace` and `pid_from_spec` return an exact `preview` on a dry
+  run (entity and region fingerprints over the exported DXF tags); an apply
+  with `expected_revision` / `preconditions` runs only if nothing moved and is
+  refused `stale_revision` with nothing changed otherwise. The apply reports
+  `revision` {checked, after, interleaved}.
+- **Task recipes (B51).** Five versioned recipes under `engineering/recipes/`
+  - dimensioned part → verify → deliver, foreign P&ID → instrument index /
+  line list / equipment list, revision pair → takeoff delta, A3 sheet
+  delivery, foreign-drawing audit - each with preconditions, `cad_batch`-ready
+  steps, the evidence each step leaves and postconditions a script checks;
+  served as `autocad://recipes/index` and `autocad://recipes/{recipe_id}`, and
+  each run end to end on ezdxf in a test.
+- **Standards coverage manifest (B39).** Every registered table's standard,
+  edition, locator, unit, implemented sizes, coverage range and SOURCE, in
+  `std_part_list(...).coverage` and the resource `autocad://standards/coverage`.
+  A size outside a table is refused with the nearest transcribed sizes.
+- **`describe_tool` (B50).** `DISCOVERY_MODE=search` gains a third synthetic
+  tool: one tool's own input schema, description and annotations (equal to the
+  full-mode `list_tools` entry), its risk, cost, pack, AutoCAD commands and
+  synonyms, and only the examples its docstring writes itself.
+- **The premium skill, restored and packaged as a Claude Code plugin (B05,
+  B54, B55).** The canonical skill is `.claude/skills/autocad-mcp-premium/`
+  (a ~2.4k-token `SKILL.md` with a decision table by source type and the
+  workflow states inspect → requirements → plan → geometry → verified →
+  annotated → drafting-verified → saved → reopened → delivered, eleven
+  references, five examples whose numbers come from headless runs).
+  `plugin/` is the plugin: a generated copy of the skill
+  (`scripts/build_plugin.py --check`), an MCP server pinned to this release
+  (`autocad-mcp-pro[com,pdf,office]==1.7.0`, overridable with
+  `AUTOCAD_MCP_SOURCE`), and the repository-root marketplace. Install:
+  `claude plugin marketplace add U-C4N/Autocad-MCP`, then
+  `claude plugin install autocad-mcp-pro@autocad-mcp`. Twenty negative eval
+  cases under `plugin/evals/` for `claude plugin eval`, and
+  `benchmarks/skill_eval/check_artifacts.py` to re-measure a run's saved
+  drawings.
+- **The live COM release harness (B63).** `scripts/live/harness.py`: attach
+  with `GetActiveObject` only, its own documents closed with `Close(False)` on
+  every path, an active-document guard, one shared `RPC_E_CALL_REJECTED`
+  retry, a JSON result per smoke and exit codes. The five
+  `scripts/smoke_*_com.py` assert on it (the P&ID smoke no longer passes on
+  `dangling` alone), and `scripts/smoke_verify_com.py` covers the bound
+  document, HATCH and DIMENSION read-back, Export delivery and saved-file
+  verification. The results are committed under `benchmarks/results/live/`.
+- **Benchmark matrix v8 (B56).** v7 plus ten tasks: `requirements_roundtrip`,
+  `cancel_safety`, `qa_large_drawing`, `export_safety`, `stale_preview`, and
+  the rivals' ground (`revision_guarded_edit`, `pid_file_roundtrip`,
+  `foreign_edit_verified`, `damaged_dxf_refusal`, `dimension_binding`). A
+  rival lane whose environment is absent is `environment_blocked`, a task it
+  was never given `not_run`; neither enters a score. Every report carries a
+  run manifest (server SHA, dirty flag, fixture hashes, evaluator version,
+  dependencies). Nine correctness checks for the roadmap scenarios T05,
+  T09–T13, T18, T25, T36, and `compare_versions.py --fail-on-regression`
+  (exit 1 on any check that passed on the baseline and does not pass now).
+- **Release gates (B64).** CI validates the marketplace and the plugin with
+  `claude plugin validate --strict` (Claude Code pinned), runs
+  `build_plugin.py --check`, the inventory `--check` and the document numbers,
+  and checks the built wheel and sdist (`scripts/check_dist_contents.py`: the
+  wheel is the server and nothing else - no plugin, no skill - and the sdist
+  carries only what git tracks). The release workflow adds a headless lane
+  running the A/B suite against the previous tag with
+  `--fail-on-regression` before anything is built.
+  `tests/test_release_consistency.py` holds one version in all seven places a
+  release writes it.
+- `point_intersection` reports whether the point lies on both drawn segments
+  (`on_first`, `on_second`, `on_both`, `candidates`).
+- Environment variables `MAX_QA_ENTITIES` (default 2,000,000; a QA read of a
+  larger drawing is refused `scan_incomplete`), `SHUTDOWN_GRACE` (5 s),
+  `MAX_SPEC_ITEMS` (2,000) and `MAX_VESSEL_TRAYS` (500).
+
+### Fixed
+
+- **A cancelled call released the document while its worker still wrote
+  (B01).** The document lease now follows the worker thread: the next call
+  waits for it, with `EZDXF_CALL_TIMEOUT` on and off; a worker still alive at
+  the call's deadline is quarantined (`cancelled_then_deadline`). A read-only
+  overrun is never quarantined: it is detached, other calls on its document
+  are refused `busy` by name while `drawing_open` / `drawing_new` /
+  `drawing_close` / `document_activate` / `document_close` work at once, and
+  no restart is ever needed. A call's document is taken once it holds the
+  lock, not at entry. A cancelled `transaction_begin` no longer leaves its
+  checkpoint open, and a cancelled `cad_batch` checks its rollback's answer.
+  Workers run on daemon threads; `call_outcomes` are in `system_status`.
+- **QA scans stopped early and failed open (B02).** `drawing_critique`, the
+  validator, `drawing_finalize` and `drawing_deliver` read one snapshot of
+  every space and every entity (a construction line at position 5,001, a
+  duplicate after the 5,000th line or anything on a paper layout used to
+  read as clean). A check that raises is an error issue with `detail.code`
+  `check_failed`, an incomplete read `scan_incomplete`; `drawing_refine`
+  never hands either to a repair handler. `untrimmed_corner` and
+  `dim_overlap` run off the event loop on a grid (8.9 s at 5,000 lines, the
+  server answering nothing, before). `construction_clear` clears every space
+  with no cap, and `entity_delete` deletes from the entity's own layout.
+- **Exported text could become a spreadsheet formula (B03).** One cell
+  serializer for every CSV and XLSX the server writes: a text cell that
+  starts with `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading
+  `'` in CSV and is a string cell in XLSX; numbers stay numbers. The parts
+  list's item, quantity and mass are numeric XLSX cells. The P&ID list tools
+  write a file when given `csv_path`, so they are now `readOnlyHint: false`,
+  cost `safe`.
+- **Spec inputs (B07).** One set of guards (`engineering/validation.py`)
+  refuses NaN, infinite and out-of-range values by their path in the P&ID
+  vessels and spec, the P&ID XDATA payloads, the architectural plan spec,
+  the part model and `block_define`; `pid_from_spec`'s dry run refuses
+  exactly what the real run refuses.
+- **`drawing_export_dxf` re-pointed the open document on a live seat.** It now
+  writes a copy on both engines (live through `Document.Export`); the
+  document's name, path and saved flag are untouched. `drawing_save_as` keeps
+  re-pointing, as it should. Delivery parity compares every space and every
+  block definition against a fresh serialisation of the document, so a hole
+  moved inside the outline fails it; the manifest (schema 1.1) records the
+  document id and revision, the export method, the requirements hash and the
+  report hash.
+- `text_find_replace` on a live seat read a narrowed `IAcadEntity` without
+  `TextString` and raised; it also rewrote the measurement text inside a
+  DIMENSION's anonymous block on both engines. Anonymous blocks are skipped,
+  and the search covers `TEXT_SEARCH_SCOPE` on both engines.
+- The 74 backlog rows deferred to 1.7 were re-run first
+  (`docs/analysis/backlog-1.7.0-triage.json`): 72 still reproduced, one was
+  already fixed and one superseded. 68 are fixed in this release (P&ID tag
+  grammar, routing, catalogue and reader, packs, spec inputs, export cells),
+  each with a test; the four that need the XDATA rework move to 1.7.1 (B08).
+- Two 1.6.0 changelog claims (triage W4-T21-05 and W4-T21-08): a chord walk
+  over the tested semicircular jump is 10.25 % short, not 12.5 %; and
+  `drawing_preflight` reports `LAYER_SET_INTENT_MISMATCH`, while
+  `drawing_plan` only adds a warning.
+
+### Changed
+
+- **A live session no longer follows AutoCAD's active document.** Switching
+  tabs between two calls used to move the next write onto whatever drawing
+  was active; it is now refused `active_document_changed` until
+  `document_activate` (or `drawing_open` / `drawing_new`) chooses a document.
+- `drawing_deliver`'s reopen parity compares every space and block definition
+  (it compared counts, types, layers and extents of the current space).
+- The 1.7 error vocabulary: `active_document_changed`, `stale_revision`,
+  `operation_conflict`, `requires_reconcile`, `unknown_commit`,
+  `scan_incomplete`, `check_failed` (critique `detail.code`),
+  `ambiguous_binding`, `missing_requirement`, `unsupported_measurement`,
+  `busy`, beside `unsupported` / `quarantined` / `invalid_args` / `refused` /
+  `failed`. Every refusal and step error carries its `operation_id`.
+- `TOOL_PROFILE=lean` is 66 tools (56 with `TOOL_PACKS=core`): it gains
+  `drawing_verify_requirements`.
+- The `prompt_floor_plan` prompt is rewritten around `arch_plan_from_spec` /
+  `arch_rooms_detect` / `arch_schedule`; `prompt_electrical_schematic` uses
+  current tools only and says electrical schematics are 1.9.0.
+- `drawing_refine` previews also when the score already meets `min_score`.
+
+### Not in 1.7.0
+
+Recorded in the spec, not dropped:
+
+- **Headless throughput (B10) is 1.7.1.** 1.7.0 is not slower than 1.6.0
+  (ratios 0.64 to 0.98), but entity creation is still slower than v1.4.0
+  and roadmap criterion 7 stays open.
+- **`ezdxf.recover` on open (B09) is 1.7.1.** A damaged DXF is refused by name
+  (`damaged_dxf_refusal` in matrix v8), not recovered.
+- **The XDATA chunk / case / budget rework (B08) is 1.7.1**, with the four
+  triage rows that need it.
+- **A durable operation journal and cross-restart idempotency (B13) are
+  1.8.0.** The journal is in memory: a restart forgets every operation id.
+- **Parametric edit and rebuild (B24–B28), obstacle-aware P&ID routing,
+  cross-file P&ID projects and the native .NET worker are 1.8.0.**
+- **The DIN 471/472, DIN 509, DIN 332 and ISO 3601-2 rows (B40) are 1.8.0.**
+  1.7.0 ships their coverage manifest only; every size is refused by name.
+- **Electrical schematics are 1.9.0.** The AutoLISP allowlist (F08) is not in
+  this release; the command filter is still a denylist.
+- **Plant 3D is not planned.**
+- **The live revision counts this server's writes only.** AutoCAD's document
+  events left the seat refusing `Documents.Add()` when a sink was attached
+  (probed 2026-10-24), so an edit the operator makes by hand does not move
+  `revision`; live staleness rests on the preview's entity fingerprints.
+- **The skill's A/B evaluation ran one case once** (`saved-not-in-memory`:
+  the full plugin 1.0, no plugin 0.0, 0.36 USD). The budgeted run of all
+  twenty cases × three arms is the maintainer's, at release time.
+
+### Live COM smoke
+
+`scripts/live/harness.py` on AutoCAD 2026 (`25.1s`, build `W.60.0.0`), Windows 11, CPython 3.13.15, pywin32 312; server 1.6.0 at `e212f1b`, clean tree. 91 of 91 checks passed, 0 `RPC_E_CALL_REJECTED` retries; every smoke worked only in documents it added and closed them with `Close(False)`, and the operator's drawing was neither activated, written, saved nor closed. The JSON results are `benchmarks/results/live/*.json`.
+
+| Smoke | Checks | Time | What it covers |
+|---|---:|---:|---|
+| `smoke_pid_com.py` | 8 / 8 | 14.8 s | P&ID: placement, classification, node confidence, nodes and edges equal to the headless run of the same spec, the six `pid_*` focuses, the pump's XDATA |
+| `smoke_arch_com.py` | 6 / 6 | 87.0 s | architecture: the plan from its spec, both rooms read back within 0.1 % of label and hand-computed floor, the three schedules, zero critique issues |
+| `smoke_mech_com.py` | 10 / 10 | 37.9 s | mechanical: part, section, dimensions, an ISO 4014 block with its XDATA, the parts list read off the drawing as a native TABLE, a linked balloon, an xref attached and detached, a real `.dwg`, zero critique issues |
+| `smoke_settings_com.py` | 33 / 33 | 2.9 s | environment: styles, a template, the page setup read back from the plotted PDF's `/MediaBox`, layer states, named views, UCS, preferences, document properties |
+| `smoke_understand_com.py` | 7 / 7 | 2.6 s | understanding: `Document.Export` snapshots of a DWG pair, the P&ID read as schematic, every pipe run and cable row equal to the truth, a diff naming exactly the moved entity |
+| `smoke_verify_com.py` | 27 / 27 | 3.9 s | verification: the bound document and its refusal, HATCH loops and DIMENSION read-back, requirements on the live document, Export delivery (not re-pointed), the delivered DXF and a DWG re-measured, an edited copy failing at 22 |
+
 ## [1.6.0] — 2026-09-25
 
 The v1.6 roadmap, shipped as five tracks: 154 → 247 registered tools in 28
@@ -218,7 +500,7 @@ member. Spec: `docs/superpowers/specs/2026-09-24-v1.6-understand-design.md`.
     Each line end resolves to a port, a junction on another line, or
     `dangling` with the nearest connectable port as a hint, always within
     its own space (`scope="all"` never joins two layouts). Edge `length` is
-    the bulge-aware length the engine reports, not a chord walk (12.5 %
+    the bulge-aware length the engine reports, not a chord walk (10.25 %
     short on a semicircular jump).
   - `pid_instrument_index` / `pid_line_list` / `pid_equipment_list`: derived
     from the graph only, optionally written as CSV. An instrument tapping a
@@ -512,8 +794,9 @@ member. Spec: `docs/superpowers/specs/2026-09-24-v1.6-understand-design.md`.
   168 / 48,825 with `TOOL_PACKS=core`, 55 / 16,360 lean, 2 / 356 in
   discovery mode.
 - `PID_LAYERS` (`drawing_apply_iso_layers("pid")`) gains `PROCESS-LINE-TEXT`;
-  `drawing_plan` / `drawing_preflight` report `LAYER_SET_INTENT_MISMATCH`
-  when a P&ID intent is planned onto a non-`pid` layer set.
+  `drawing_preflight` reports `LAYER_SET_INTENT_MISMATCH` when a P&ID
+  intent is planned onto a non-`pid` layer set, and `drawing_plan` adds a
+  warning saying so (a message, without the code).
 - The `prompt_pid_diagram` prompt template is rewritten onto the tools (`pid_from_spec`,
   `pid_symbol_insert`, `pid_line_draw`, `pid_graph`) instead of describing
   primitives.

@@ -7,12 +7,12 @@
     "url": "https://github.com/U-C4N/Autocad-MCP",
     "source": "github"
   },
-  "version": "1.6.0",
+  "version": "1.7.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "autocad-mcp-pro",
-      "version": "1.6.0",
+      "version": "1.7.0",
       "transport": {
         "type": "stdio"
       },

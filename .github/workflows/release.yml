@@ -16,6 +16,8 @@ on:
 env:
   # Keep in step with ci.yml; both read the same uv.lock.
   LOCKED_UV_VERSION: "0.12.1"
+  # Keep in step with ci.yml: the CLI that validates the plugin.
+  CLAUDE_CODE_VERSION: "2.1.310"
 
 jobs:
   test:
@@ -55,8 +57,51 @@ jobs:
       - run: uv run --no-sync ruff format --check .
       - run: uv run --no-sync pytest -q
 
+  headless-gates:
+    # The release's headless lane. The correctness A/B suite runs against the
+    # previous release tag as a gate: `--fail-on-regression` exits 1 when any
+    # check that passed on that tag does not pass now (a fail, a miss, a crash
+    # or a timeout). compare_versions.py checks the tag out into a throwaway
+    # worktree, so the checkout needs the history and the tags. Then the
+    # generated-file and document-number gates, as in ci.yml.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: "3.11"
+      - run: pip install "uv==${{ env.LOCKED_UV_VERSION }}"
+      - run: uv sync --locked --all-extras --python "${{ steps.python.outputs.python-path }}"
+      - name: Correctness A/B against the previous release
+        env:
+          AUTOCAD_MCP_BACKEND: ezdxf
+        run: |
+          PREVIOUS=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^")
+          echo "baseline: $PREVIOUS"
+          uv run --no-sync python benchmarks/compare_versions.py "$PREVIOUS" --fail-on-regression
+      - run: uv run --no-sync python scripts/build_plugin.py --check
+      - run: uv run --no-sync python scripts/generate_tool_inventory.py --check
+      - name: Document numbers
+        env:
+          AUTOCAD_MCP_BACKEND: ezdxf
+        run: uv run --no-sync python scripts/check_doc_numbers.py
+
+  plugin-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install -g "@anthropic-ai/claude-code@${{ env.CLAUDE_CODE_VERSION }}"
+      - run: claude plugin validate --strict .
+      - run: claude plugin validate --strict ./plugin
+
   build:
-    needs: test
+    needs: [test, headless-gates, plugin-validate]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -77,6 +122,8 @@ jobs:
           pip install build twine
           python -m build
           twine check dist/*
+      - name: Check the distributions' contents
+        run: python scripts/check_dist_contents.py dist
       - uses: actions/upload-artifact@v4
         with:
           name: dist

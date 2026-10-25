@@ -232,6 +232,35 @@ python -m benchmarks.perf_suite --out benchmarks/results/published/perf-ezdxf.js
 python -m benchmarks.render_perf_chart
 ```
 
+### v1.6.0 against v1.7.0 (the spec §8.3 gate)
+
+1.7.0 must not be slower than 1.6.0. `perf_compare.py` builds a v1.6.0 worktree
+and measures both trees in alternating rounds (base, head, head, base, ...)
+with one interpreter, each tree importing its own packages and running this
+checkout's workloads: `perf_suite`'s four plus `server_create_lines_2k`, 2,000
+`entity_create_line` calls through an in-memory FastMCP client, so the
+middleware is measured too. `--aa` measures the base a second time in every
+round; the spread of those base / base ratios is the noise floor, and the
+bound is `1 + max(0.05, 2 × spread)`. Medians of 20 rounds after 5 warm-ups,
+from [`results/published/perf-v1.6.0-vs-v1.7.0.json`](results/published/perf-v1.6.0-vs-v1.7.0.json):
+
+| Workload | v1.6.0 | v1.7.0 | ratio |
+|---|---:|---:|---:|
+| 2,000 lines, one call each | 497.1 ms | 458.2 ms | 0.98 |
+| 10,000 lines: build, DXF export, reopen | 5,113.3 ms | 4,760.9 ms | 0.94 |
+| Region query over 10,000 entities | 1,284.5 ms | 1,020.5 ms | 0.83 |
+| Premium quality pass | 159.3 ms | 106.1 ms | 0.64 |
+| 2,000 `entity_create_line` calls through the MCP server | 11,900.1 ms | 11,577.2 ms | 0.92 |
+
+The A/A spread was 22.5 % (a busy machine; bound 1.45), so the ratios carry
+the result: none is above 1. The W2 phase gate on a quieter machine had a
+worst ratio of 1.049 against a bound of 1.12. 1.7.0 does not win back
+v1.4.0's creation throughput; that is B10, 1.7.1.
+
+```bash
+python -m benchmarks.perf_compare --base v1.6.0 --aa --out out/perf/compare.json
+```
+
 ### v1.4.0 against v1.6.0, and what the call-timeout guard costs
 
 The published v1.4 report was recorded on CPython 3.14 and the later ones on

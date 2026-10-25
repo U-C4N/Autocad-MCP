@@ -29,6 +29,10 @@ env:
   # Pinned for the same reason ruff is: the tool that reads the lockfile is part
   # of the reproducible environment. Bump this and re-run `uv lock` together.
   LOCKED_UV_VERSION: "0.12.1"
+  # The Claude Code CLI that validates the plugin and its marketplace. Pinned
+  # for the ruff reason: `--strict` turns warnings into failures, and a new CLI
+  # may warn about what the old one accepted. Bump it deliberately.
+  CLAUDE_CODE_VERSION: "2.1.310"
 
 jobs:
   lint:
@@ -46,6 +50,41 @@ jobs:
       - run: uv sync --locked --only-group dev
       - run: uv run --no-sync ruff check .
       - run: uv run --no-sync ruff format --check .
+
+  generated-files:
+    # Every file the repository generates, and every number its documents
+    # quote, against the tree that produces them: the plugin's skill copy
+    # (byte-equal to .claude/skills/autocad-mcp-premium), the tool inventory
+    # (equal to the live registry) and the document numbers (README, CLAUDE.md,
+    # benchmarks/README against the inventory, the A/B report and the suite).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: "3.11"
+      - run: pip install "uv==${{ env.LOCKED_UV_VERSION }}"
+      - run: uv sync --locked --all-extras --python "${{ steps.python.outputs.python-path }}"
+      - run: uv run --no-sync python scripts/build_plugin.py --check
+      - run: uv run --no-sync python scripts/generate_tool_inventory.py --check
+      - name: Document numbers
+        env:
+          AUTOCAD_MCP_BACKEND: ezdxf
+        run: uv run --no-sync python scripts/check_doc_numbers.py
+
+  plugin-validate:
+    # The marketplace (repository root) and the plugin, through Claude Code's
+    # own validator - the manifests the runtime reads, read by the runtime.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install -g "@anthropic-ai/claude-code@${{ env.CLAUDE_CODE_VERSION }}"
+      - run: claude plugin validate --strict .
+      - run: claude plugin validate --strict ./plugin
 
   test-linux:
     runs-on: ubuntu-latest
@@ -102,6 +141,10 @@ jobs:
           pip install build twine
           python -m build
           twine check dist/*
+      # The wheel is the server and nothing else (the plugin and the skill are
+      # not in it); the sdist carries only what git tracks.
+      - name: Check the distributions' contents
+        run: python scripts/check_dist_contents.py dist
       # Unlocked on purpose: this resolves the published dependency ranges the
       # way a user's `pip install autocad-mcp-pro` does. Locking it would mean
       # nothing in CI ever proves those ranges are installable.

@@ -12,7 +12,7 @@
       "name": "autocad-mcp-pro",
       "source": "./plugin",
       "description": "AutoCAD for AI agents, live or headless: the AutoCAD MCP Pro server plus the premium drafting skill (plan, draw, critique, finalize).",
-      "version": "1.6.0",
+      "version": "1.7.0",
       "author": {
         "name": "U-C4N",
         "url": "https://github.com/U-C4N"

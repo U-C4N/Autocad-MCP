@@ -157,7 +157,7 @@ class _Edge:
             "to": self.to_ref,
             # Both engines measure the real geometry (ezdxf via the shared
             # bulge-aware maths, COM via ActiveX `Length`); a chord walk over
-            # the vertices is 12.5% short on a semicircular jump and says
+            # the vertices is 10.25 % short on a semicircular jump and says
             # nothing. The chord sum is kept only for an engine that reports
             # no length at all, and then the approximation is named.
             "length": round(self.length, 6) if self.length is not None else self.chord_length(),

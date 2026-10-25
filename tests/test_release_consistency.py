@@ -333,3 +333,241 @@ def test_the_release_gate_covers_the_platforms_ci_covers() -> None:
     assert "windows-latest" in gate, "the release test gate never runs on Windows"
     assert "3.12" in gate, "the release test gate never runs on Python 3.12"
     assert "uv sync --locked" in gate, "the release gate must install from the lockfile"
+
+
+# ── 1.7.0 release gate (spec §6 Task 23, B64) ────────────────────────────────
+#
+# One version in every artifact a release writes, the CI and release workflows
+# running the gates the release depends on, the built distributions held to
+# what they may carry, and two 1.6.0 changelog claims (triage W4-T21-05 and
+# W4-T21-08) corrected to what the code and its tests show.
+
+
+def _json_file(relative: str) -> dict:
+    return json.loads((ROOT / relative).read_text(encoding="utf-8"))
+
+
+def _release_versions() -> dict[str, str]:
+    """Every version string a release writes, by where it is written."""
+    import version as version_module
+
+    found: dict[str, str] = {"version.py": version_module.package_version()}
+    server = _json_file("server.json")
+    found["server.json version"] = server["version"]
+    for package in server["packages"]:
+        found[f"server.json package {package['identifier']}"] = package["version"]
+
+    lock = (ROOT / "uv.lock").read_text(encoding="utf-8")
+    name = _pyproject()["project"]["name"]
+    own = re.search(
+        rf'^\[\[package\]\]\nname = "{re.escape(name)}"\nversion = "([^"]+)"', lock, re.MULTILINE
+    )
+    found["uv.lock"] = own.group(1) if own else "<missing>"
+
+    plugin = _json_file("plugin/.claude-plugin/plugin.json")
+    found["plugin/.claude-plugin/plugin.json"] = plugin["version"]
+    for entry in _json_file(".claude-plugin/marketplace.json")["plugins"]:
+        found[f"marketplace entry {entry['name']}"] = entry["version"]
+
+    servers = _json_file("plugin/.mcp.json")["mcpServers"]
+    pins = [
+        pin
+        for server_entry in servers.values()
+        for arg in server_entry.get("args", [])
+        for pin in re.findall(r"==(\d+\.\d+\.\d+)", arg)
+    ]
+    found["plugin/.mcp.json pin"] = pins[0] if len(pins) == 1 else f"<{len(pins)} pins>"
+    return found
+
+
+def test_every_release_artifact_carries_the_pyproject_version() -> None:
+    """pyproject, version.py, server.json, uv.lock, the plugin, its marketplace
+    entry and the MCP pin are seven places one release number is written; a
+    release that moves six of them installs the previous server from the
+    plugin (the pin) or fails every locked CI lane (the lock)."""
+    expected = _pyproject_version()
+    disagree = {where: got for where, got in _release_versions().items() if got != expected}
+    assert not disagree, f"pyproject says {expected}; these disagree: {disagree}"
+
+
+def _workflow(name: str) -> dict:
+    import yaml
+
+    return yaml.safe_load((ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8"))
+
+
+def _runs(job: dict) -> str:
+    return "\n".join(str(step.get("run", "")) for step in job.get("steps", []))
+
+
+def _jobs_running(workflow: dict, needle: str) -> list[str]:
+    return [name for name, job in workflow["jobs"].items() if needle in _runs(job)]
+
+
+def _needs(job: dict) -> set[str]:
+    needs = job.get("needs", [])
+    return {needs} if isinstance(needs, str) else set(needs)
+
+
+@pytest.mark.parametrize("name", ["ci.yml", "release.yml"])
+def test_the_plugin_and_marketplace_are_validated_with_a_pinned_claude_code(name: str) -> None:
+    """`claude plugin validate --strict` is the only check of the manifests the
+    runtime itself reads; a floating CLI version would move the verdict on a
+    release nobody chose (the ruff lesson)."""
+    workflow = _workflow(name)
+    version = str(workflow.get("env", {}).get("CLAUDE_CODE_VERSION", ""))
+    assert SEMVER_RE.match(version), f"{name}: CLAUDE_CODE_VERSION {version!r} is not exact"
+    jobs = _jobs_running(workflow, "claude plugin validate")
+    assert jobs, f"{name}: no job runs `claude plugin validate`"
+    runs = "\n".join(_runs(workflow["jobs"][job]) for job in jobs)
+    assert "@anthropic-ai/claude-code@${{ env.CLAUDE_CODE_VERSION }}" in runs, (
+        f"{name}: the Claude Code CLI is not installed at the pinned version"
+    )
+    assert re.search(r"claude plugin validate --strict \.(\s|$)", runs), (
+        f"{name}: the marketplace (repository root) is not validated with --strict"
+    )
+    assert "claude plugin validate --strict ./plugin" in runs, (
+        f"{name}: the plugin is not validated with --strict"
+    )
+
+
+GENERATED_FILE_GATES = (
+    "scripts/build_plugin.py --check",
+    "scripts/generate_tool_inventory.py --check",
+    "scripts/check_doc_numbers.py",
+)
+
+
+@pytest.mark.parametrize("name", ["ci.yml", "release.yml"])
+def test_the_generated_file_and_document_gates_run_in_ci_and_release(name: str) -> None:
+    runs = "\n".join(_runs(job) for job in _workflow(name)["jobs"].values())
+    missing = [gate for gate in GENERATED_FILE_GATES if gate not in runs]
+    assert not missing, f"{name} never runs {missing}"
+
+
+def test_the_release_is_gated_on_no_correctness_regression_in_a_headless_lane() -> None:
+    """The A/B suite against the previous tag, as a gate (exit 1 on any check
+    that passed there and does not pass now), on the headless engine, before
+    anything is built - and with the history the baseline worktree needs."""
+    release = _workflow("release.yml")
+    jobs = [
+        name
+        for name in _jobs_running(release, "benchmarks/compare_versions.py")
+        if "--fail-on-regression" in _runs(release["jobs"][name])
+    ]
+    assert jobs, "release.yml never runs compare_versions.py --fail-on-regression"
+    for name in jobs:
+        job = release["jobs"][name]
+        assert "ubuntu" in job["runs-on"], f"{name}: the A/B lane is not the headless one"
+        env = {**release.get("env", {}), **job.get("env", {})}
+        for step in job["steps"]:
+            if "compare_versions" in str(step.get("run", "")):
+                env.update(step.get("env", {}))
+        assert env.get("AUTOCAD_MCP_BACKEND") == "ezdxf", f"{name}: backend not pinned to ezdxf"
+        checkout = next(
+            s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/checkout")
+        )
+        assert checkout.get("with", {}).get("fetch-depth") == 0, (
+            f"{name}: a shallow checkout has no previous tag to build the baseline worktree from"
+        )
+        assert "uv sync --locked" in _runs(job), f"{name}: the A/B lane is not installed locked"
+    build_needs = _needs(release["jobs"]["build"])
+    assert set(jobs) <= build_needs, f"build does not wait for the A/B lane {jobs}"
+    validate = _jobs_running(release, "claude plugin validate")
+    assert set(validate) <= build_needs, f"build does not wait for plugin validation {validate}"
+
+
+@pytest.mark.parametrize(("name", "job"), [("ci.yml", "package"), ("release.yml", "build")])
+def test_built_distributions_are_checked_before_they_leave(name: str, job: str) -> None:
+    runs = _runs(_workflow(name)["jobs"][job])
+    assert "python -m build" in runs
+    assert "scripts/check_dist_contents.py dist" in runs, (
+        f"{name} {job}: the wheel and sdist are built but their contents are never checked"
+    )
+    assert runs.index("python -m build") < runs.index("scripts/check_dist_contents.py")
+
+
+def _changelog_section(version: str) -> str:
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    start = changelog.index(f"## [{version}]")
+    end = changelog.find("\n## [", start + 1)
+    return changelog[start : end if end != -1 else len(changelog)]
+
+
+def test_the_top_release_says_what_it_does_not_ship() -> None:
+    version = _pyproject_version()
+    major_minor = ".".join(version.split(".")[:2])
+    section = _changelog_section(version)
+    assert re.search(rf"^### Not in {re.escape(major_minor)}(\.\d+)?\s*$", section, re.M), (
+        f"CHANGELOG [{version}] has no '### Not in {major_minor}' section"
+    )
+
+
+def test_the_chord_walk_shortfall_quoted_for_a_semicircular_jump_is_the_tested_one() -> None:
+    """Triage W4-T21-05. The jump tests/test_pid_graph.py measures is a
+    polyline (-20,0) -> (0,0) -bulge 1-> (10,0) -> (30,0): 40 + 5 pi long, and
+    the chord walk over its vertices reads 50. "12.5 %" was the v1.5 figure for
+    a square's perimeter with a semicircular edge, not this geometry."""
+    import math
+
+    true_length = 40 + 5 * math.pi
+    chord_walk = 20 + 10 + 20
+    quoted = f"{100 * (true_length - chord_walk) / true_length:.2f} %"
+    assert quoted == "10.25 %"
+    graph = (ROOT / "engineering" / "pid" / "graph.py").read_text(encoding="utf-8")
+    flat = re.sub(r"\s*\n\s*#?\s*", " ", graph)
+    assert f"{quoted} short on a semicircular jump" in flat
+    assert "12.5% short" not in flat and "12.5 % short" not in flat
+    section = re.sub(r"\s*\n\s*", " ", _changelog_section("1.6.0"))
+    assert f"({quoted} short on a semicircular jump)" in section
+    assert "(12.5 % short" not in section
+
+
+def test_the_changelog_credits_layer_set_intent_mismatch_to_preflight_only() -> None:
+    """Triage W4-T21-08. `drawing_preflight` reports the conflict code;
+    `drawing_plan` only appends a warning string, which carries no code."""
+    from engineering.preflight import pid_plan_warnings, preflight_drawing
+
+    requirements = {"units": "mm", "part_type": "pid", "dimensions": {}, "tolerance_policy": "none"}
+    preflight = preflight_drawing("P&ID for the feed section", requirements, layer_set_id="mech")
+    assert "LAYER_SET_INTENT_MISMATCH" in [c.code for c in preflight.conflicts]
+    warnings = pid_plan_warnings("P&ID for the feed section", "mech")
+    assert warnings and not any("LAYER_SET_INTENT_MISMATCH" in w for w in warnings)
+
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    bullets = [
+        re.sub(r"\s*\n\s*", " ", bullet)
+        for bullet in re.split(r"\n(?=- |\n)", changelog)
+        if "LAYER_SET_INTENT_MISMATCH" in bullet
+    ]
+    assert bullets, "the changelog no longer mentions LAYER_SET_INTENT_MISMATCH"
+    for bullet in bullets:
+        assert not re.search(
+            r"`drawing_plan`[^.]*\breports?\b[^.]*LAYER_SET_INTENT_MISMATCH", bullet
+        ), f"credits drawing_plan with the code: {bullet[:200]}"
+        assert "`drawing_preflight` reports `LAYER_SET_INTENT_MISMATCH`" in bullet
+
+
+def _slug(heading: str) -> str:
+    """GitHub's heading anchor: lower-case, punctuation dropped, spaces to '-'."""
+    text = re.sub(r"[`*]", "", heading.strip().lower())
+    text = re.sub(r"[^\w\- ]", "", text)
+    return text.replace(" ", "-")
+
+
+def test_every_in_page_link_in_the_readme_lands_on_a_heading() -> None:
+    """The nav row links `#whats-new-in-<release>`; renaming the section for a
+    release without the link leaves a dead anchor, on PyPI's page too."""
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    slugs = {_slug(h) for h in re.findall(r"^#{1,6} (.+)$", readme, re.M)}
+    anchors = set(re.findall(r"\]\(#([\w\-]+)\)", readme))
+    assert anchors, "README has no in-page links"
+    assert not sorted(anchors - slugs), f"dead README anchors: {sorted(anchors - slugs)}"
+
+
+def test_the_readme_install_names_the_marketplace_and_plugin_the_manifests_define() -> None:
+    marketplace = _json_file(".claude-plugin/marketplace.json")
+    plugin = _json_file("plugin/.claude-plugin/plugin.json")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "claude plugin marketplace add U-C4N/Autocad-MCP" in readme
+    assert f"claude plugin install {plugin['name']}@{marketplace['name']}" in readme
