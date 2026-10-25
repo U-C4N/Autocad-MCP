@@ -49,7 +49,47 @@ def test_correctness_suite_has_the_settings_checks():
     ):
         assert CHECKS[name][1] == "Settings"
     # v4 left the suite at 32; tracks B + G grew it to 39 (tests/test_benchmark_v5.py).
-    assert len(CHECKS) == 52
+    assert len(CHECKS) == 61
+
+
+async def _pid_roundtrip(tmp_path):
+    from benchmarks.adapters.autocad_mcp_pro import AutoCADMCPProAdapter
+
+    adapter = AutoCADMCPProAdapter(backend="ezdxf")
+    await adapter.setup(tmp_path)
+    try:
+        await adapter._reset()
+        return await adapter._task_pid_roundtrip()
+    finally:
+        await adapter.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_pid_roundtrip_passes_headlessly(tmp_path):
+    """Backlog W4-T20-04: the task ran only by hand. Five symbols, four lines,
+    nothing dangling, FIC-101's index row and the authored line numbers kept."""
+    passed, metrics, _artifacts = await _pid_roundtrip(tmp_path)
+    assert passed, metrics
+    assert (metrics["nodes"], metrics["edges"], metrics["dangling"]) == (5, 4, 0)
+    assert metrics["instrument_index_rows"] == 1 and metrics["line_list_rows"] == 4
+    assert metrics["authored_line_numbers_kept"] and metrics["unnumbered_lines_sequenced"]
+
+
+@pytest.mark.asyncio
+async def test_pid_roundtrip_fails_loudly_without_its_signal_line(tmp_path, monkeypatch):
+    """The spec loses FIC-101's signal line: four edges become three, the
+    instrument is no longer connected, and the gate says so."""
+    import copy
+
+    from engineering.pid import spec as pid_spec
+
+    broken = copy.deepcopy(pid_spec.EXAMPLE_SPEC)
+    broken["lines"] = [line for line in broken["lines"] if line.get("class") != "electric"]
+    monkeypatch.setattr(pid_spec, "EXAMPLE_SPEC", broken)
+    passed, metrics, _artifacts = await _pid_roundtrip(tmp_path)
+    assert passed is False
+    assert metrics["edges"] == 3
+    assert metrics["unnumbered_lines_sequenced"] is False
 
 
 @pytest.mark.asyncio  # asyncio_mode is strict; the four tests above are sync

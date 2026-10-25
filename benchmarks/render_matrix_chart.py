@@ -13,7 +13,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from benchmarks.tasks_v7 import TASKS_V7
+from benchmarks.tasks_v8 import TASKS_V8
+
+#: The rows of the chart: the current matrix.
+CURRENT_TASKS = TASKS_V8
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INPUT_DIR = ROOT / "benchmarks" / "results" / "published"
@@ -26,6 +29,7 @@ STATUS_COLORS = {
     "timeout": "#a40e26",
     "unsupported": "#30363d",
     "not_run": "#161b22",
+    "environment_blocked": "#3d2f00",
 }
 
 STATUS_GLYPHS = {
@@ -35,6 +39,7 @@ STATUS_GLYPHS = {
     "timeout": "T",
     "unsupported": "-",
     "not_run": "?",
+    "environment_blocked": "E",
 }
 
 
@@ -66,8 +71,8 @@ def render_chart(reports: list[dict[str, Any]], output: Path) -> None:
 
     matplotlib.rcParams["svg.hashsalt"] = "autocad-mcp-taskmatrix-v1"
 
-    task_ids = [task.task_id for task in TASKS_V7]
-    task_labels = [f"{task.task_id}  ({task.category})" for task in TASKS_V7]
+    task_ids = [task.task_id for task in CURRENT_TASKS]
+    task_labels = [f"{task.task_id}  ({task.category})" for task in CURRENT_TASKS]
     servers = [report["adapter"] for report in reports]
     status_by_server = {
         report["adapter"]: {item["task_id"]: item["status"] for item in report["results"]}
@@ -138,6 +143,11 @@ def render_chart(reports: list[dict[str, Any]], output: Path) -> None:
         # measured one, so they stay blank and say why.
         Patch(facecolor=STATUS_COLORS["not_run"], edgecolor="#30363d", label="not run"),
     ]
+    if any("environment_blocked" in statuses.values() for statuses in status_by_server.values()):
+        # a lane that could not start (v8): named, never folded into "fail"
+        legend_handles.append(
+            Patch(facecolor=STATUS_COLORS["environment_blocked"], label="environment blocked")
+        )
     ax.legend(
         handles=legend_handles,
         loc="upper left",

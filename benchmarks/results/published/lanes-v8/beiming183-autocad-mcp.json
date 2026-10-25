@@ -1,0 +1,406 @@
+{
+  "adapter": "beiming183-autocad-mcp",
+  "adapter_metadata": {
+    "environment_blocked": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)"
+  },
+  "environment": {
+    "implementation": "CPython",
+    "machine": "AMD64",
+    "platform": "Windows-11-10.0.26300-SP0",
+    "python": "3.13.15"
+  },
+  "generated_at": "2026-10-25T15:47:41.697435+00:00",
+  "git_sha": "bb63e8e6be1787a846ee68fc5ed4d0d3d1da9363",
+  "manifest": {
+    "dependencies": {
+      "ezdxf": "1.4.4",
+      "fastmcp": "3.4.5",
+      "matplotlib": "3.11.1",
+      "mcp": "1.29.0",
+      "numpy": "2.5.1",
+      "openpyxl": "3.1.5",
+      "pywin32": "312"
+    },
+    "dirty": false,
+    "evaluator_version": "v8.1",
+    "fixtures": [
+      {
+        "path": "benchmarks/adapters/autocad_mcp_pro.py",
+        "sha256": "1a3c488b80d145ba3fee0bd826440973dc2266f44d21680bd55d73453c1f4c48",
+        "size_bytes": 86223
+      },
+      {
+        "path": "engineering/arch/spec.py",
+        "sha256": "c273533e4df3a28ff0e08a0886a00aa2c69290d5a03cf0044438c37d23d78248",
+        "size_bytes": 14859
+      },
+      {
+        "path": "engineering/pid/spec.py",
+        "sha256": "efdb92d0cd4a8c5f0b7577c40fe7948c4160c431d31e9b6c48fbbbbd06e61850",
+        "size_bytes": 28426
+      },
+      {
+        "path": "tests/fixtures/plant_pair.py",
+        "sha256": "c683b62b24332670e8323e54519d17cd48ae8ae921d36b744a2e302ebce04248",
+        "size_bytes": 25419
+      }
+    ],
+    "server_sha": "bb63e8e6be1787a846ee68fc5ed4d0d3d1da9363"
+  },
+  "matrix": "v8",
+  "results": [
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "core_geometry"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "modify_query"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "layers_linetypes"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "dimensions"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "table_mleader"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "transactions"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "preflight"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "quality_refiner"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "dxf_roundtrip"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "auditable_delivery"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "tool_discovery"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "token_budget"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "hatch_islands"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "selection_filter"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "measure_from_handle"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "pid_roundtrip"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "page_setup_truth"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "mech_assembly"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "arch_roundtrip"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "takeoff_roundtrip"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "understand_foreign"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "requirements_roundtrip"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "cancel_safety"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "qa_large_drawing"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "export_safety"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "stale_preview"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "revision_guarded_edit"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "pid_file_roundtrip"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "foreign_edit_verified"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "damaged_dxf_refusal"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 0.0,
+      "message": "beiming183-autocad-mcp: environment absent and fetching is off (no checkout at benchmarks/.competitors/beiming183-autocad-mcp/repo)",
+      "metrics": {},
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "dimension_binding"
+    }
+  ],
+  "schema_version": "2.0",
+  "summary": {
+    "attempted": 0,
+    "coverage_percent": null,
+    "environment_blocked": 31,
+    "not_run": 0,
+    "passed": 0,
+    "score": null,
+    "supported": 0,
+    "unsupported": 0
+  },
+  "timeout_seconds": 30.0
+}

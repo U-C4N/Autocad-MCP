@@ -10,7 +10,25 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from benchmarks.tasks_v2 import TaskSpec
 
-TaskStatus = Literal["pass", "partial", "unsupported", "fail", "timeout", "not_run"]
+TaskStatus = Literal[
+    "pass", "partial", "unsupported", "fail", "timeout", "not_run", "environment_blocked"
+]
+
+#: Statuses that say a task was not attempted at all. They never enter a score:
+#: a zero would claim the server was asked and failed. ``not_run``: nobody asked
+#: this server the task (no playbook, a published run that predates it, a lane
+#: with no adapter). ``environment_blocked``: the lane could not start - the
+#: competitor's sources or venv are absent and fetching is off, or the live
+#: engine is not reachable.
+NOT_ATTEMPTED: frozenset[str] = frozenset({"not_run", "environment_blocked"})
+
+
+class EnvironmentBlocked(RuntimeError):
+    """An adapter's environment is absent, so none of its tasks can run.
+
+    Raised by ``setup``; ``run_tasks`` reports every task ``environment_blocked``
+    with this message instead of letting the lane crash or score zero.
+    """
 
 
 @dataclass
@@ -43,6 +61,10 @@ class BenchmarkAdapter(ABC):
     """Minimum interface every competing MCP adapter must implement."""
 
     name: str
+    #: May ``setup`` download what it needs (a competitor's sources, a venv)?
+    #: ``run_competitors --no-fetch`` turns it off; an absent environment is
+    #: then ``environment_blocked`` instead of a download.
+    fetch: bool = True
 
     def metadata(self) -> dict:
         """Runtime/backend claims captured alongside every benchmark report."""

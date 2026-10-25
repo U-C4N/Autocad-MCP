@@ -218,20 +218,20 @@ A fixed 100-point rubric applied to nine public AutoCAD MCP servers ([`source_re
 > [!NOTE]
 > Read this as a documented self-assessment, not an independent review: this repository applies the rubric to itself and to the others. The competitor rows are their July 2026 snapshots and were not re-reviewed for this release, and the best of them, varavista/autocad-mcp, scored 84. 1.4.0 was given one overall 95. This review is stricter and scores each category apart.
 
-A second lane runs tasks instead of reading source. Every task in the fixed-task matrix can fail, and its artifacts are verified by re-opening the DXF, never by trusting a response. The reference adapter passes **21 / 21** of matrix v7. The two competitors with adapters, pinned at their July 2026 commits, passed 5 / 10 and 4 / 10 of the ten v2 tasks they were run on. The eleven tasks added since then were never put to them, so they show as *not run*, not as zero:
+A second lane runs tasks instead of reading source. Every task in the fixed-task matrix can fail, and its artifacts are verified by re-opening the DXF, never by trusting a response. The reference adapter passes **31 / 31** of matrix v8. The two competitors with adapters, pinned at their July 2026 commits, passed 5 / 10 and 4 / 10 of the ten v2 tasks they were run on. The twenty-one tasks added since then were never put to them, so they show as *not run*, not as zero (in 1.7.0 their lanes record the v8 tasks as `not_run` or `environment_blocked`, never as a score):
 
-<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/autocad-mcp-taskmatrix.svg" alt="Task matrix: autocad-mcp-pro passes all 21 tasks; beiming183 and puran-water were run on the first ten, with the later eleven not run" width="800">
+<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/autocad-mcp-taskmatrix.svg" alt="Task matrix: autocad-mcp-pro passes all 31 tasks; beiming183 and puran-water were run on the first ten, with the later twenty-one not run" width="800">
 
 ### Correctness — every release re-proves itself
 
-52 deterministic headless checks against the previous tag and the current tree. Each runs in its own subprocess, so a hard crash counts as a miss rather than killing the run.
+61 deterministic headless checks against the previous tag and the current tree. Each runs in its own subprocess, so a hard crash counts as a miss rather than killing the run.
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---|---:|---:|---:|---:|
-| v1.6.0 *(baseline)* | 48 / 52 | 92.3 % | — | — |
-| **v1.7.0** *(this release)* | **52 / 52** | **100 %** | 4 | **0** |
+| v1.6.0 *(baseline)* | 48 / 61 | 78.7 % | — | — |
+| **v1.7.0** *(this release)* | **61 / 61** | **100 %** | 13 | **0** |
 
-The 48 checks v1.6.0 was released on all still pass. The four fixed rows are reliability defects 1.6.0 shipped with, each reproduced on v1.6.0 (`fail → pass`) and fixed in 1.7.0:
+The 48 checks v1.6.0 was released on all still pass. Thirteen rows are fixed. Four are reliability defects 1.6.0 shipped with, each reproduced on v1.6.0 (`fail → pass`) and fixed in 1.7.0; the other nine are the roadmap's acceptance scenarios, which 1.6.0 could not even attempt (`miss → pass`: the verification engine they call is new in 1.7.0):
 
 | Check | Verified against |
 |---|---|
@@ -239,6 +239,15 @@ The 48 checks v1.6.0 was released on all still pass. The four fixed rows are rel
 | `qa_scan_finds_entity_5001` | a construction line placed as the 5,001st entity is found by `drawing_critique`; the scan used to stop at 5,000 |
 | `export_text_never_formula` | `=1+1`, `@x` and a leading tab come back from the parts-list CSV with a leading `'` and from the XLSX as string cells; a `-12.5` mass stays a number |
 | `spec_refuses_non_finite` | a NaN vessel width, an infinite height and a NaN symbol scale in a `pid_from_spec` dry run are each refused by their path |
+| `verify_t05_stale_preview_no_silent_mutation` | T05: after a `cad_batch` preview the operator moves the line in CAD; the apply is refused `stale_revision` and the line keeps the operator's (3, 3), not (8, 3); a server edit is refused too, an undisturbed preview applies |
+| `verify_t09_diameter_under_its_label` | T09: a Ø39.8 circle under a dimension reading "Ø40" fails its Ø40 requirement with delta −0.2; the label is a `dimension_mismatch` finding, never the measurement |
+| `verify_t10_moved_circle_against_its_model` | T10: a hole moved 2 mm after `draw_part`; the stored part model still says x = 60, the requirement measured on the circles says 22, not 20, and fails |
+| `verify_t11_inner_hole_moved_caught_on_reopen` | T11: an inner hole moved inside the saved file's outline (same counts, same extents) fails its 20 mm pitch with 22 on the file, re-bound and opened alone |
+| `verify_t12_equal_holes_ambiguous` | T12: "the Ø10 hole" among two equal ones is `ambiguous` with both as candidates and no handle chosen; naming it by feature tag binds one |
+| `verify_t13_hole_count_cardinality` | T13: exactly six Ø8 holes on a Ø100 PCD passes; five and seven fail, every diameter right in all three |
+| `verify_t18_dimension_override_and_dimlfac_visible` | T18: a "42" override over 40 and a DIMLFAC 2 over 21 leave the geometry rows passing and are two blocking `dimension_mismatch` findings; honest dimensions are accepted |
+| `verify_t25_handle_renumber_rebinds` | T25: a save that gave the bore's handle to the pin is re-bound by geometry (Ø40 passes on the bore); a copied feature tag is `unknown`, never a pick |
+| `verify_t36_report_stale_after_file_change` | T36: a line appended to the delivered DXF after delivery: `verify_manifest` names it stale and the acceptance report turns stale and unaccepted |
 
 The twenty-two checks 1.6 added against v1.5.1 (`miss → pass`) each pin a number computed by hand, not read back from the code that drew it:
 
