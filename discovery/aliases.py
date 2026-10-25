@@ -2544,6 +2544,24 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "kopuk hatlar",
         ),
     ),
+    # SECTION 26 (1.7.0, B22): requirements measured on the geometry. No AutoCAD
+    # command verifies a drawing against its source, so `acad` stays empty.
+    "drawing_verify_requirements": ToolAliases(
+        acad=(),
+        synonyms=(
+            "verify requirements",
+            "check the drawing against the requirements",
+            "are the dimensions right",
+            "measured against the source",
+            "acceptance report",
+            "pass fail per dimension",
+            "did the hole end up where it should",
+            "ölçüleri doğrula",
+            "olculeri dogrula",
+            "gereksinim kontrolü",
+            "gereksinim kontrolu",
+        ),
+    ),
     "pipe_takeoff": ToolAliases(
         acad=(),
         synonyms=(

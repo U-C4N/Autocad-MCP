@@ -23,6 +23,9 @@ readers join later. SECTION 26's four readers (`drawing_understand`,
 `drawing_scale_check`, `drawing_diff`, `drawing_topology_check`) stay in
 `core`: understanding, comparing and checking a drawing is not a vertical.
 Lean gains `drawing_understand` and reaches 65.
+
+v1.7.0 adds `drawing_verify_requirements` to SECTION 26 (core) and to lean,
+which reaches 66 (56 with TOOL_PACKS=core).
 """
 
 from __future__ import annotations
@@ -145,6 +148,7 @@ UNDERSTAND_TOOLS = {
     "drawing_scale_check",
     "drawing_diff",
     "drawing_topology_check",
+    "drawing_verify_requirements",
 }
 
 PLANT_TOOLS = {
@@ -152,7 +156,7 @@ PLANT_TOOLS = {
     "cable_takeoff",
 }
 
-LEAN_UNDERSTAND_ESSENTIALS = {"drawing_understand"}
+LEAN_UNDERSTAND_ESSENTIALS = {"drawing_understand", "drawing_verify_requirements"}
 
 LEAN_ARCH_ESSENTIALS = {
     "arch_wall",
@@ -300,8 +304,9 @@ async def test_lean_intersects_with_packs(monkeypatch):
 async def test_lean_carries_the_five_settings_essentials_and_nothing_from_the_settings_pack(
     monkeypatch,
 ):
-    """Spec §8.2: lean = 65 (55 + the five mechanical/sheet essentials + track
-    F's four architectural ones + track H's `drawing_understand`). The five
+    """Spec §8.2: lean = 66 (55 + the five mechanical/sheet essentials + track
+    F's four architectural ones + track H's `drawing_understand` + 1.7.0's
+    `drawing_verify_requirements`). The five
     settings essentials and `drawing_understand` are core-pack tools, so
     `TOOL_PACKS=core` leaves them on a lean surface; no environment tool and no
     takeoff is lean."""
@@ -312,14 +317,14 @@ async def test_lean_carries_the_five_settings_essentials_and_nothing_from_the_se
     assert server.LEAN_TOOL_NAMES & UNDERSTAND_TOOLS == LEAN_UNDERSTAND_ESSENTIALS
     assert not (PLANT_TOOLS & server.LEAN_TOOL_NAMES)
     assert not (SETTINGS_TOOLS & server.LEAN_TOOL_NAMES)
-    assert len(server.LEAN_TOOL_NAMES) == 65
+    assert len(server.LEAN_TOOL_NAMES) == 66
     monkeypatch.setattr(config.settings, "tool_packs", "core")
     info = await server._apply_tool_profile("lean")
     disabled = set(info["disabled_tools"])
     assert not (LEAN_SETTINGS_ESSENTIALS & disabled)
     assert not ({"sheet_frame", "titleblock_apply"} & disabled), "sheet tools are core"
     assert "drawing_understand" not in disabled, "the one-call report is core"
-    assert info["enabled_count"] == 65 - 10, (
+    assert info["enabled_count"] == 66 - 10, (
         "lean minus the three pid, three mech and four arch tools"
     )
 

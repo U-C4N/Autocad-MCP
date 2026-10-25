@@ -19,8 +19,8 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 
 </div>
 
-> **v1.6 release snapshot:** 247 tools · 9 resources · 5 prompt templates · 5439 collected tests.
-> 247 is the **registered** count; a default install advertises 242 over `tools/list`,
+> **v1.6 release snapshot:** 248 tools · 9 resources · 5 prompt templates · 5439 collected tests.
+> 248 is the **registered** count; a default install advertises 243 over `tools/list`,
 > because `ENABLE_3D` is unset. `system_about` is the runtime authority.
 
 ## What's new in 1.6
@@ -153,7 +153,7 @@ It works with Claude Desktop, Cursor, or any stdio MCP host. For HTTP, run `auto
 | Quality loop | `drawing_preflight` → `drawing_plan` → `drawing_critique` → `drawing_refine` → `drawing_finalize` (0–100 score); 18 domain critique focuses (P&ID 6, mechanical 6, architecture 3, topology 3), each silent on a drawing outside its domain |
 | Delivery | `drawing_deliver`: DXF/PDF/PNG + SHA-256 manifest + reopen-parity checks |
 
-<sub>247 tools in 28 groups. <code>TOOL_PACKS=core</code> hides these from a client that needs none of them: the nine <code>pid_*</code> tools, the 22 environment tools, the 14 mechanical tools, the 12 architectural tools and the two plant takeoffs. <code>TOOL_PACKS=core,mech</code> keeps the mechanical ones, <code>TOOL_PACKS=core,arch</code> the architectural ones, and <code>TOOL_PACKS=core,plant</code> the takeoffs. There are also 9 resources that cost nothing in the tool budget (<code>autocad://drawing/info</code>, <code>layers</code>, <code>blocks</code>, <code>entities/stats</code>, <code>entities/{layer_name}</code>, <code>system/status</code>, <code>pid/symbols</code>, <code>standards/isa51</code>, <code>standards/coverage</code>) and 5 prompt templates.</sub>
+<sub>248 tools in 28 groups. <code>TOOL_PACKS=core</code> hides these from a client that needs none of them: the nine <code>pid_*</code> tools, the 22 environment tools, the 14 mechanical tools, the 12 architectural tools and the two plant takeoffs. <code>TOOL_PACKS=core,mech</code> keeps the mechanical ones, <code>TOOL_PACKS=core,arch</code> the architectural ones, and <code>TOOL_PACKS=core,plant</code> the takeoffs. There are also 9 resources that cost nothing in the tool budget (<code>autocad://drawing/info</code>, <code>layers</code>, <code>blocks</code>, <code>entities/stats</code>, <code>entities/{layer_name}</code>, <code>system/status</code>, <code>pid/symbols</code>, <code>standards/isa51</code>, <code>standards/coverage</code>) and 5 prompt templates.</sub>
 
 **Two rules worth knowing.**
 
@@ -379,7 +379,7 @@ Nothing loads a `.env` file — export these, or set them in your MCP client's `
 |---|---|---|
 | `AUTOCAD_MCP_BACKEND` | `auto` | `auto`, `com`, or `ezdxf` |
 | `CAD_PROGID` | `AutoCAD.Application` | COM ProgID the live backend attaches to |
-| `TOOL_PROFILE` | `full` | `lean` (65 curated tools, 55 with `TOOL_PACKS=core`) or `full` |
+| `TOOL_PROFILE` | `full` | `lean` (66 curated tools, 56 with `TOOL_PACKS=core`) or `full` |
 | `TOOL_PACKS` | `all` | Vertical packs to advertise: `core,pid,settings,mech,arch,plant` (`core` always on) |
 | `DISCOVERY_MODE` | `off` | `search` replaces the catalog with `search_tools` + `call_tool` + `describe_tool` |
 | `ENABLE_3D` | `false` | Expose the opt-in `solid_*` tools (COM) |

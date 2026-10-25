@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.6.0",
   "totals": {
-    "tools": 247,
+    "tools": 248,
     "resources": 9,
     "prompts": 5,
     "groups": 28
@@ -34,7 +34,7 @@
     "system": 7,
     "templates": 2,
     "transactions": 3,
-    "understanding": 4,
+    "understanding": 5,
     "validation": 1,
     "view": 4
   },
@@ -1251,6 +1251,22 @@
         "title": "Undo",
         "destructiveHint": false,
         "idempotentHint": false
+      }
+    },
+    {
+      "name": "drawing_verify_requirements",
+      "group": "understanding",
+      "cost": "safe",
+      "summary": "Verify source requirements on the CAD geometry: pass/fail/unknown each, with evidence.",
+      "tags": [
+        "analysis",
+        "understand",
+        "validation"
+      ],
+      "annotations": {
+        "title": "Understand: Verify Requirements",
+        "readOnlyHint": false,
+        "destructiveHint": false
       }
     },
     {

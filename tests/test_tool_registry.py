@@ -495,7 +495,7 @@ async def test_tool_groups_is_byte_identical_to_the_source_declared_grouping():
 
 
 async def test_tool_group_sizes_are_unchanged():
-    """Frozen snapshot of the surface (247 tools, 28 groups).
+    """Frozen snapshot of the surface (248 tools, 28 groups).
 
     Taken before @cad_tool landed at 131 tools; `batch` moved 2 -> 3 when
     v1.5.0's `cad_batch` joined `entity_batch_create`/`entity_batch_modify`, and
@@ -601,6 +601,11 @@ async def test_tool_group_sizes_are_unchanged():
     alone, so `analysis` grew 12 -> 18 on them; the integration tagged
     SECTION 26 `understand` and ranked `understand` and `plant` directly
     after `arch` in `_GROUP_TAG_PRIORITY`, and `analysis` returned to 12.
+
+    `understanding` moved 4 -> 5 when v1.7.0's `drawing_verify_requirements`
+    (B22: requirements measured on the CAD geometry, pass / fail / unknown with
+    the evidence) joined SECTION 26. It is tagged `understand` first, which
+    outranks its `analysis` and `validation` tags, so it files there.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
@@ -629,8 +634,8 @@ async def test_tool_group_sizes_are_unchanged():
         "system": 7,
         "templates": 2,
         "transactions": 3,
-        "understanding": 4,
+        "understanding": 5,
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 247
+    assert sum(sizes.values()) == 248

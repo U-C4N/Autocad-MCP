@@ -1180,7 +1180,7 @@ def cad_tool(*, summary: str, cost: str):
 # Some MCP clients degrade (or hard-cap) when a server exposes 100+ tools.
 # TOOL_PROFILE selects how much of the surface is advertised:
 #   full — everything (default, backwards compatible)
-#   lean — a curated 65-tool drafting/inspection core (LEAN_TOOL_NAMES)
+#   lean — a curated 66-tool drafting/inspection core (LEAN_TOOL_NAMES)
 # Disabled tools stay registered (system_about still reports the full
 # inventory) but are hidden from MCP list_tools and rejected if called.
 
@@ -1302,6 +1302,11 @@ LEAN_TOOL_NAMES = frozenset(
         # tool, so TOOL_PACKS=core keeps it; with the four architectural ones
         # above, lean is 65. The takeoffs are `plant`-pack, full-profile work.
         "drawing_understand",
+        # Verification (1.7.0, B22) - the one call that says whether the
+        # drawing meets its requirements, measured on the geometry. A
+        # core-pack tool, so TOOL_PACKS=core keeps it; lean is 66 (56 with
+        # TOOL_PACKS=core).
+        "drawing_verify_requirements",
     }
 )
 
@@ -6571,6 +6576,15 @@ async def drawing_finalize(
             "construction geometry) fail; warnings are surfaced in the payload.",
         ),
     ] = False,
+    requirements: Annotated[
+        dict | list | None,
+        Field(
+            default=None,
+            description="Source requirements to verify on the CAD geometry (the "
+            "drawing_verify_requirements shape). A requirement that does not pass fails the "
+            "gate (failed_acceptance), whatever the drafting score.",
+        ),
+    ] = None,
     ctx: Context = None,
 ) -> dict:
     """Premium completion gate: runs BOTH the 8-step validator AND the premium critique focuses
@@ -6598,8 +6612,25 @@ async def drawing_finalize(
     'error' (or, with strict_critique=True, any critique issue). Critique warnings are surfaced
     under payload['critique'] without failing the gate by default. A quarantined document
     is refused.
+
+    With `requirements` (the drawing_verify_requirements shape) every requirement is
+    measured on the CAD geometry after the save: the payload adds `geometry_acceptance`
+    (the full report), `drafting_quality` (the score, unchanged), `artifact_integrity`
+    (the saved file's sha256) and `coverage`, and a requirement that does not pass,
+    stale evidence or a dimension that disagrees with its geometry raises
+    `failed_acceptance` - a high drafting score never offsets it. Requirements that do
+    not parse are refused before anything is saved (invalid_args).
     """
     from engineering import DrawingValidator
+
+    rs = None
+    if requirements is not None:
+        from engineering.verification.requirements import parse_requirements
+
+        try:
+            rs = parse_requirements(requirements)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ToolError(f"invalid_args: requirements: {exc}") from exc
 
     backend = _backend(ctx)
 
@@ -6646,6 +6677,23 @@ async def drawing_finalize(
     info = await backend.drawing_info()
     payload["dwg_path"] = getattr(info, "full_path", "")
 
+    if rs is not None:
+        from pathlib import Path as _P
+
+        from engineering.verification.report import sha256_file, verify_requirements
+
+        saved_path = str(validated) if save_path else None
+        report = await verify_requirements(backend, rs)
+        payload["geometry_acceptance"] = report
+        payload["drafting_quality"] = dict(payload["score"])
+        payload["artifact_integrity"] = {
+            "saved_path": saved_path,
+            "sha256": sha256_file(saved_path)
+            if saved_path is not None and _P(saved_path).is_file()
+            else None,
+        }
+        payload["coverage"] = dict(report["coverage"])
+
     if ctx is not None:
         for issue in critique_issues:
             if issue.severity == "warning":
@@ -6667,6 +6715,14 @@ async def drawing_finalize(
         raise ToolError(
             f"drawing_finalize: critique gate failed with {len(gate_failures)} blocking issue(s). "
             f"First: {first.focus}: {first.message}"
+        )
+    if rs is not None and not payload["geometry_acceptance"]["accepted"]:
+        report = payload["geometry_acceptance"]
+        raise ToolError(
+            "drawing_finalize: failed_acceptance - "
+            + "; ".join(report["blocking"][:5])
+            + f" ({report['counts']['pass']} of {report['counts']['required']} requirement(s) "
+            "pass; drawing_verify_requirements returns the full report)"
         )
     return payload
 
@@ -6703,15 +6759,42 @@ async def drawing_deliver(
         dict | None,
         Field(default=None, description="Optional validator expectations for the drawing."),
     ] = None,
+    requirements: Annotated[
+        dict | list | None,
+        Field(
+            default=None,
+            description="Source requirements to verify (the drawing_verify_requirements "
+            "shape). A requirement that does not pass makes the status failed_acceptance, "
+            "whatever the drafting score.",
+        ),
+    ] = None,
     ctx: Context = None,
 ) -> dict:
     """Create a hashed, validated delivery bundle and verify DXF save/reopen parity.
 
-    The result status is ``success``, ``failed_validation`` or ``failed_export``.
-    Failure intentionally keeps all generated artifacts for diagnosis.
+    The result status is ``success``, ``failed_validation``, ``failed_export`` or
+    ``failed_acceptance``. Failure intentionally keeps all generated artifacts for
+    diagnosis.
+
+    With ``requirements`` every requirement is measured on the CAD geometry
+    (drawing_verify_requirements' engine); the bundle gains ``acceptance.json`` and
+    ``acceptance.md``, the result ``geometry_acceptance``, ``drafting_quality`` (the
+    unchanged score), ``artifact_integrity``, ``coverage`` and ``blocking``, and a
+    requirement that does not pass, stale evidence or a dimension that disagrees
+    with its geometry makes the status ``failed_acceptance`` whatever the score
+    (``failed_export`` and ``failed_validation`` are reported first). Refused before
+    any work: requirements that do not parse (invalid_args).
     """
     from engineering import deliver_drawing
 
+    rs = None
+    if requirements is not None:
+        from engineering.verification.requirements import parse_requirements
+
+        try:
+            rs = parse_requirements(requirements)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ToolError(f"invalid_args: requirements: {exc}") from exc
     destination = validate_path(output_dir, allow_write=True)
     result = await deliver_drawing(
         _backend(ctx),
@@ -6720,6 +6803,7 @@ async def drawing_deliver(
         min_score=min_score,
         strict_critique=strict_critique,
         expected=expected,
+        requirements=rs,
     )
     return result.to_dict()
 
@@ -11609,7 +11693,7 @@ async def arch_plan_from_spec(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 26: Understanding & QA (4 tools) ────────────────────────────────
+# ── SECTION 26: Understanding & QA (5 tools) ────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -12075,6 +12159,202 @@ async def drawing_topology_check(
     report = cap_findings(findings, limit)
     report["source"] = snap.source
     report["classification"] = [row for row in classification if row["layer"] in set(chosen)]
+    return report
+
+
+@cad_tool(
+    summary="Verify source requirements on the CAD geometry: pass/fail/unknown each, with evidence.",
+    cost="safe",
+)
+@mcp.tool(
+    annotations={
+        "title": "Understand: Verify Requirements",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+    },
+    tags={"understand", "analysis", "validation"},
+)
+async def drawing_verify_requirements(
+    requirements: Annotated[
+        dict | list | None,
+        Field(
+            default=None,
+            description="Typed requirements ({units, items: [{id, quantity, target, "
+            "features, provenance, source, ...}]}) or a legacy {dimensions: {...}} carried "
+            "read-only.",
+        ),
+    ] = None,
+    use_stored: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="Verify the set drawing_plan(persist_requirements=True) stored in the "
+            "drawing.",
+        ),
+    ] = False,
+    binding_policy: Annotated[
+        str,
+        Field(
+            default="strict",
+            description="strict or lenient: how a requirement is bound to its feature. Two "
+            "equal candidates are ambiguous under both.",
+        ),
+    ] = "strict",
+    artifact_path: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="A saved file of this drawing (.dxf; a .dwg only on a live seat) to "
+            "measure instead of the open document - read fresh, never the model in memory.",
+        ),
+    ] = None,
+    manifest_path: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="A drawing_deliver manifest.json: re-hash its artifacts and list the "
+            "stale and missing ones. Its own mode.",
+        ),
+    ] = None,
+    report_path: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Also write the report here: .json, or .md (Markdown; not in manifest "
+            "mode).",
+        ),
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """Measure source requirements on the CAD geometry and say, per requirement,
+    pass / fail / unknown / unsupported / ambiguous - with the evidence.
+
+    Each requirement is bound to the real feature (by handle, feature tag, arch
+    element, geometric predicate or DIMENSION; two equal candidates are
+    `ambiguous`, never a pick) and measured on the geometry read from the drawing
+    - never on a label, a stored model or the numbers that were typed in. A row
+    gives target, measured, delta, tolerance basis, status, handles and source;
+    `counts` gives the denominators (required = pass + fail + unknown +
+    unsupported + ambiguous). `status` is `pass` only when every requirement
+    passes; `accepted` also needs fresh evidence and no `dimension_mismatch`
+    finding (a DIMENSION whose text or DIMLFAC disagrees with the geometry).
+
+    Modes:
+    - `requirements` ({"units": ..., "items": [typed requirements]}, or a
+      legacy {"dimensions": {...}} that is carried read-only and verifies
+      nothing) or `use_stored=True`: measured on
+      the current document. `evidence` records its id and content revision; a
+      later revision makes the report stale.
+    - `artifact_path`: measured on that saved file, read fresh.
+    - `manifest_path`: re-hashes a drawing_deliver bundle and lists every
+      artifact whose sha256 no longer matches (`stale`) or that is gone
+      (`missing`).
+
+    `report_path` writes the report as JSON (.json) or Markdown (.md); nothing
+    else is written, and the drawing never is.
+
+    Refused before any work: `requirements` together with `use_stored`
+    (invalid_args); neither of them without `manifest_path`
+    (missing_requirement); `use_stored` on a drawing that stores no
+    requirements (missing_requirement); requirements that do not parse
+    (invalid_args, the offending path named); a `binding_policy` other than
+    strict / lenient; `manifest_path` together with `requirements`, `use_stored`
+    or `artifact_path`; an `artifact_path` or `manifest_path` that does not
+    exist; a manifest that is not a delivery manifest; a `report_path` not
+    ending in .json or .md (only .json in manifest mode); a DWG artifact on the
+    headless engine (capability `dwg`). A quarantined document is refused.
+    """
+    from engineering.delivery import verify_manifest
+    from engineering.verification.report import (
+        BINDING_POLICIES,
+        render_markdown,
+        verify_requirements,
+    )
+    from engineering.verification.requirements import load_requirements, parse_requirements
+
+    report_target = None
+    if report_path is not None:
+        report_target = validate_path(report_path, allow_write=True)
+        allowed = (".json",) if manifest_path is not None else (".json", ".md")
+        if report_target.suffix.lower() not in allowed:
+            raise ToolError(
+                "invalid_args: report_path must end in .json or .md (only .json in manifest "
+                f"mode); got {report_target.name!r}"
+            )
+    if binding_policy not in BINDING_POLICIES:
+        raise ToolError(
+            f"invalid_args: binding_policy must be one of {', '.join(BINDING_POLICIES)}; "
+            f"got {binding_policy!r}"
+        )
+    backend = _backend(ctx)
+
+    if manifest_path is not None:
+        if requirements is not None or use_stored or artifact_path is not None:
+            raise ToolError(
+                "invalid_args: manifest_path is its own mode - it re-hashes a delivery's "
+                "artifacts. Verify requirements in a separate call (requirements= or "
+                "use_stored=True, optionally artifact_path=)."
+            )
+        manifest = validate_path(manifest_path)
+        if not manifest.is_file():
+            raise ToolError(f"manifest_path: no such file {str(manifest)!r}")
+        try:
+            result = await asyncio.to_thread(verify_manifest, str(manifest))
+        except ValueError as exc:
+            raise ToolError(f"invalid_args: {exc}") from exc
+        result = {"mode": "manifest", **result}
+        if report_target is not None:
+            report_target.write_text(
+                json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+            )
+            result["report_path"] = str(report_target)
+        return result
+
+    if requirements is not None and use_stored:
+        raise ToolError("invalid_args: pass requirements or use_stored=True, not both")
+    if requirements is None and not use_stored:
+        raise ToolError(
+            "missing_requirement: nothing to verify - pass requirements, use_stored=True "
+            "(the set drawing_plan(persist_requirements=True) stored) or manifest_path"
+        )
+    if use_stored:
+        rs = await load_requirements(backend)
+        if rs is None:
+            raise ToolError(
+                "missing_requirement: this drawing stores no requirements - persist them with "
+                "drawing_plan(..., persist_requirements=True) or pass requirements"
+            )
+    else:
+        try:
+            rs = parse_requirements(requirements)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ToolError(f"invalid_args: requirements: {exc}") from exc
+    artifact = None
+    if artifact_path is not None:
+        artifact = validate_path(artifact_path)
+        if not artifact.is_file():
+            raise ToolError(f"artifact_path: no such file {str(artifact)!r}")
+    await ctx.info(
+        f"drawing_verify_requirements: {len(rs.requirements)} requirement(s) on "
+        f"{artifact or 'the current document'}"
+    )
+    try:
+        report = await verify_requirements(
+            backend,
+            rs,
+            binding_policy=binding_policy,
+            artifact_path=str(artifact) if artifact is not None else None,
+        )
+    except (ValueError, OSError) as exc:
+        raise ToolError(str(exc)) from exc
+    report["mode"] = "artifact" if artifact is not None else "document"
+    if report_target is not None:
+        if report_target.suffix.lower() == ".md":
+            text = render_markdown(report)
+        else:
+            text = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)
+        report_target.write_text(text, encoding="utf-8")
+        report["report_path"] = str(report_target)
     return report
 
 

@@ -19,6 +19,7 @@ from .validator import DrawingValidator
 
 if TYPE_CHECKING:
     from backends.base import AutoCADBackend
+    from engineering.verification.types import RequirementSet
 
 
 _FORMAT_FILENAMES = {
@@ -36,9 +37,16 @@ class DeliveryResult:
     artifacts: list[dict]
     score: dict
     parity: dict
+    #: Set only when the delivery verified requirements (B22); a delivery
+    #: without them returns exactly the six fields above.
+    geometry_acceptance: dict | None = None
+    drafting_quality: dict | None = None
+    artifact_integrity: dict | None = None
+    coverage: dict | None = None
+    blocking: list[str] | None = None
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "status": self.status,
             "output_dir": self.output_dir,
             "manifest_path": self.manifest_path,
@@ -46,6 +54,13 @@ class DeliveryResult:
             "score": dict(self.score),
             "parity": dict(self.parity),
         }
+        if self.geometry_acceptance is not None:
+            data["geometry_acceptance"] = dict(self.geometry_acceptance)
+            data["drafting_quality"] = dict(self.drafting_quality or {})
+            data["artifact_integrity"] = dict(self.artifact_integrity or {})
+            data["coverage"] = dict(self.coverage or {})
+            data["blocking"] = list(self.blocking or [])
+        return data
 
 
 def _sha256(path: Path) -> str:
@@ -140,6 +155,99 @@ def _artifact_record(fmt: str, path: Path, *, status: str, error: str | None = N
     return record
 
 
+def _manifest_records(manifest: dict) -> list[dict]:
+    """Every file record a manifest hashed: artifacts, validation, acceptance report."""
+    records = [dict(item) for item in manifest.get("artifacts") or []]
+    if manifest.get("validation_artifact"):
+        records.append(dict(manifest["validation_artifact"]))
+    acceptance = manifest.get("acceptance") or {}
+    for key in ("report", "markdown"):
+        if acceptance.get(key):
+            records.append(dict(acceptance[key]))
+    return records
+
+
+def verify_manifest(path: str) -> dict:
+    """Recompute every hash a delivery manifest recorded (B23 made observable).
+
+    ``stale``: a file whose sha256 no longer matches (it was edited after the
+    manifest was written). ``missing``: a recorded file that is gone.
+    ``skipped``: a record that was never created (an unsupported format).
+    ``inconsistent``: a record that cannot be trusted - a file name that is
+    not a plain name inside the bundle is never read. ``ok`` only when all
+    three of stale / missing / inconsistent are empty. Refuses (ValueError) a
+    file that is not JSON or holds no ``artifacts`` list.
+    """
+    manifest_path = Path(path)
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{path}: not a readable delivery manifest ({exc})") from exc
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("artifacts"), list):
+        raise ValueError(f"{path}: not a delivery manifest (no artifacts list)")
+    base = manifest_path.parent
+    checked: list[dict] = []
+    stale: list[dict] = []
+    missing: list[dict] = []
+    skipped: list[dict] = []
+    inconsistent: list[dict] = []
+    for record in _manifest_records(manifest):
+        filename = str(record.get("filename") or "")
+        recorded = record.get("sha256")
+        row = {"filename": filename, "format": record.get("format")}
+        if not filename or recorded is None:
+            skipped.append({**row, "status": record.get("status")})
+            continue
+        if Path(filename).name != filename or filename in (".", ".."):
+            inconsistent.append(
+                {**row, "field": "filename", "reason": "not a plain file name inside the bundle"}
+            )
+            continue
+        target = base / filename
+        if not target.is_file():
+            missing.append(row)
+            continue
+        row = {**row, "recorded_sha256": recorded, "sha256": _sha256(target)}
+        checked.append(row)
+        if row["sha256"] != recorded:
+            stale.append(row)
+    return {
+        "ok": not (stale or missing or inconsistent),
+        "manifest": str(manifest_path),
+        "status": manifest.get("status"),
+        "checked": checked,
+        "stale": stale,
+        "missing": missing,
+        "skipped": skipped,
+        "inconsistent": inconsistent,
+    }
+
+
+async def _acceptance(
+    backend: AutoCADBackend,
+    requirements: RequirementSet,
+    destination: Path,
+    identity_at_start: dict | None,
+) -> dict:
+    """Measure ``requirements``, write acceptance.json / acceptance.md, hash both."""
+    from engineering.verification.report import mark_stale, render_markdown, verify_requirements
+
+    report = await verify_requirements(backend, requirements)
+    if identity_at_start is not None:
+        report = mark_stale(report, identity_at_start)
+    json_path = destination / "acceptance.json"
+    md_path = destination / "acceptance.md"
+    json_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    md_path.write_text(render_markdown(report), encoding="utf-8")
+    return {
+        "report": report,
+        "json": _artifact_record("json", json_path, status="created"),
+        "markdown": _artifact_record("md", md_path, status="created"),
+    }
+
+
 async def _reopen_parity(source: dict, dxf_path: Path) -> dict:
     from backends.ezdxf_backend import EzdxfBackend
 
@@ -161,8 +269,16 @@ async def deliver_drawing(
     min_score: float = 95.0,
     strict_critique: bool = True,
     expected: dict | None = None,
+    requirements: RequirementSet | None = None,
 ) -> DeliveryResult:
-    """Export, validate, hash and re-open a release-ready drawing bundle."""
+    """Export, validate, hash and re-open a release-ready drawing bundle.
+
+    With ``requirements`` every requirement is measured on the CAD geometry
+    (``engineering.verification.report``); a requirement that does not pass,
+    stale evidence or a dimension that disagrees with its geometry makes the
+    status ``failed_acceptance`` - after ``failed_export`` and
+    ``failed_validation``, whatever the score. ``blocking`` lists every reason.
+    """
     requested = list(
         dict.fromkeys(item.lower().strip() for item in (formats or ["dxf", "pdf", "png"]))
     )
@@ -182,6 +298,11 @@ async def deliver_drawing(
     artifacts: list[dict] = []
     capabilities = backend.capabilities().to_dict()
     feature_caps = capabilities["features"]
+    identity_at_start = None
+    if requirements is not None:
+        from engineering.verification.report import document_identity_of
+
+        identity_at_start = await document_identity_of(backend)
     source = await drawing_snapshot(backend)
 
     # DXF is always emitted: it is the canonical, re-openable parity artifact.
@@ -253,21 +374,52 @@ async def deliver_drawing(
     )
     timings["validation_ms"] = round((time.perf_counter() - validation_started) * 1000, 2)
 
+    acceptance = None
+    if requirements is not None:
+        acceptance_started = time.perf_counter()
+        acceptance = await _acceptance(backend, requirements, destination, identity_at_start)
+        timings["acceptance_ms"] = round((time.perf_counter() - acceptance_started) * 1000, 2)
+
     failed_export = any(item["status"] != "created" for item in artifacts)
-    critique_blocked = any(
-        issue.severity == "error" or (strict_critique and issue.severity != "info")
+    blocking_issues = [
+        issue
         for issue in critique_issues
-    )
+        if issue.severity == "error" or (strict_critique and issue.severity != "info")
+    ]
+    critique_blocked = bool(blocking_issues)
     validation_blocked = (
         not validation.ok
         or not parity["ok"]
         or score["score"] < float(min_score)
         or critique_blocked
     )
+    blocking: list[str] = []
+    if failed_export:
+        blocking.append(
+            "export: "
+            + ", ".join(
+                f"{item['format']} {item['status']}"
+                for item in artifacts
+                if item["status"] != "created"
+            )
+        )
+    if not validation.ok:
+        blocking.append(f"validator: {validation.summary['error']} error(s)")
+    if not parity["ok"]:
+        blocking.append("parity: the reopened DXF differs from the source")
+    if score["score"] < float(min_score):
+        blocking.append(f"score: {score['score']} < min_score {float(min_score)}")
+    if critique_blocked:
+        blocking.append(f"critique: {len(blocking_issues)} blocking issue(s)")
+    acceptance_blocked = acceptance is not None and not acceptance["report"]["accepted"]
+    if acceptance is not None:
+        blocking.extend(acceptance["report"]["blocking"])
     if failed_export:
         status = "failed_export"
     elif validation_blocked:
         status = "failed_validation"
+    elif acceptance_blocked:
+        status = "failed_acceptance"
     else:
         status = "success"
 
@@ -307,12 +459,21 @@ async def deliver_drawing(
         "validation_artifact": _artifact_record("json", validation_path, status="created"),
         "timings_ms": timings,
     }
+    if acceptance is not None:
+        from engineering.verification.report import summarize
+
+        manifest["acceptance"] = {
+            **summarize(acceptance["report"]),
+            "report": acceptance["json"],
+            "markdown": acceptance["markdown"],
+        }
+        manifest["blocking"] = blocking
     manifest_path = destination / "manifest.json"
     manifest_path.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
-    return DeliveryResult(
+    result = DeliveryResult(
         status=status,
         output_dir=str(destination),
         manifest_path=str(manifest_path),
@@ -320,3 +481,26 @@ async def deliver_drawing(
         score=score,
         parity=parity,
     )
+    if acceptance is not None:
+        report = acceptance["report"]
+        result.geometry_acceptance = {
+            **summarize(report),
+            "report_file": acceptance["json"]["filename"],
+        }
+        result.drafting_quality = dict(score)
+        result.artifact_integrity = {
+            "ok": not failed_export and parity["ok"],
+            "parity_ok": parity["ok"],
+            "artifacts": [
+                {
+                    "format": item["format"],
+                    "filename": item["filename"],
+                    "status": item["status"],
+                    "sha256": item["sha256"],
+                }
+                for item in artifacts
+            ],
+        }
+        result.coverage = dict(report["coverage"])
+        result.blocking = list(blocking)
+    return result
