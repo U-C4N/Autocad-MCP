@@ -14,8 +14,11 @@ if TYPE_CHECKING:
     from backends.base import EntityInfo
 
 #: Where ``text_find_replace`` looks, on both engines: model space, every paper
-#: layout, every block definition that is neither a layout block nor an xref,
-#: and the ATTRIBs of every block reference found in any of them. Reported on
+#: layout, every block definition that is neither a layout block, an xref nor
+#: anonymous (``*D`` / ``*T`` / ``*U`` / ``*X``: renderings regenerated from a
+#: dimension, a table, a dynamic block or a hatch, so "block_definitions" means
+#: the named ones), and the ATTRIBs of every block reference found in any of
+#: them. Reported on
 #: every answer as ``searched_scope`` (spec section 5, Task 12).
 TEXT_SEARCH_SCOPE = ("model_space", "paper_layouts", "block_definitions", "block_attributes")
 

@@ -6451,8 +6451,9 @@ class EzdxfBackend(AutoCADBackend):
     _DIMENSION_NOTE = (
         "DIMENSION text is not searched: its text field holds the '<>' override "
         "placeholder rather than the measured value, so editing it would either do "
-        "nothing or detach the dimension from what it measures. Use "
-        "dimension_* text_override for that."
+        "nothing or detach the dimension from what it measures; nor is any "
+        "anonymous block ('*D' holds a dimension's rendered measurement, '*T' a "
+        "table's). Use dimension_* text_override for that."
     )
 
     async def text_set_background(
@@ -6524,13 +6525,21 @@ class EzdxfBackend(AutoCADBackend):
                 # Block *definitions* carry ATTDEF and any text drawn inside the
                 # block; a search that only walks layouts silently misses them.
                 # Layout blocks are the layouts already walked; an xref's block
-                # holds another file's content, never this drawing's.
+                # holds another file's content, never this drawing's. An
+                # anonymous block ("*D", "*T", "*U", "*X" ...) is a rendering
+                # regenerated from its owner: a DIMENSION's "*D" block holds
+                # the displayed measurement as MTEXT, and rewriting it showed
+                # a number the dimension does not measure. Same rule live.
                 yield doc.modelspace()
                 for layout_name in doc.layouts.names():
                     if layout_name != "Model":
                         yield doc.layouts.get(layout_name)
                 for block in doc.blocks:
-                    if block.is_any_layout or block.block_record.is_xref:
+                    if (
+                        block.is_any_layout
+                        or block.block_record.is_xref
+                        or block.name.startswith("*")
+                    ):
                         continue
                     yield block
 

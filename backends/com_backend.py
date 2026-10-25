@@ -425,6 +425,19 @@ def _com_text_candidates(doc):
     a title-block field or a block definition's ATTDEF default was never found
     on the live engine while the headless one replaced it.
 
+    An anonymous block (``Name`` starting with ``*``) is not searched: a
+    dimension's ``*D`` block, a table's ``*T`` and a dynamic or hatch ``*U`` /
+    ``*X`` hold a rendering AutoCAD regenerates from the owning object, so a
+    match there rewrote a dimension's displayed measurement while the
+    dimension still measured the old value (measured on AutoCAD 2026: an
+    ``AddDimAligned`` of 50 mm owns ``*D1`` and its MText ``50`` was matched).
+    The headless engine skips the same blocks by the same rule.
+
+    Every item is yielded through ``_com_concrete_entity``: with a makepy cache
+    ``Block.Item(i)`` is the gen_py ``IAcadEntity`` wrapper, which has no
+    ``TextString`` (measured on AutoCAD 2026: ``hasattr(item, "TextString")``
+    is False on a TEXT, and the walk raised ``AttributeError``).
+
     Members measured on AutoCAD 2026 by Task 12's probe (a scratch
     ``Documents.Add()`` document closed with ``Close(False)``).
     """
@@ -437,15 +450,16 @@ def _com_text_candidates(doc):
     blocks = doc.Blocks
     for index in range(int(blocks.Count)):
         block = blocks.Item(index)
-        if bool(block.IsLayout) or bool(block.IsXRef):
+        if bool(block.IsLayout) or bool(block.IsXRef) or str(block.Name).startswith("*"):
             continue
         containers.append(block)
     for container in containers:
         for index in range(int(container.Count)):
-            entity = container.Item(index)
+            entity = _com_concrete_entity(container.Item(index))
             yield entity
             if str(entity.ObjectName) in _COM_REFERENCE_OBJECTS:
-                yield from entity.GetAttributes()
+                for attribute in entity.GetAttributes():
+                    yield _com_concrete_entity(attribute)
 
 
 def _com_text_find_replace(doc, pattern, replace: str, layer: str | None, dry_run: bool) -> list:
@@ -4379,7 +4393,8 @@ class ComBackend(AutoCADBackend):
                 "searched_scope": list(TEXT_SEARCH_SCOPE),
                 "note": (
                     "DIMENSION text is not searched: its TextOverride holds the '<>' "
-                    "placeholder rather than the measured value."
+                    "placeholder rather than the measured value; nor is any anonymous "
+                    "block ('*D' holds a dimension's rendered measurement, '*T' a table's)."
                 ),
                 "dry_run": bool(dry_run),
             }

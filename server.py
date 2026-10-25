@@ -3021,13 +3021,15 @@ async def text_find_replace(
     """Replace text in TEXT, MTEXT and block attributes (ATTRIB and ATTDEF).
 
     Both engines search the same places (`searched_scope`): model space, every
-    paper layout, every block definition - so the next insert does not
+    paper layout, every named block definition - so the next insert does not
     reintroduce the old text - and the attributes of every block reference in
     any of them; an xref's block holds another file's text and is not searched.
     `searched_types` is on the response because "no matches" and "that type was
     never searched" are different answers. DIMENSION text is out of
     scope: its text field holds the `<>` override placeholder rather than the
-    measurement, so editing it would break the association. A multi-line
+    measurement, so editing it would break the association. Anonymous blocks
+    (`*D` - a dimension's rendered measurement - `*T`, `*U`, `*X`) are
+    renderings regenerated from their owner and are not searched either. A multi-line
     attribute is matched and rewritten as the whole value (`Line1\\PLine2`),
     the same value `block_get_attributes` reports and `block_explode` bursts.
 
