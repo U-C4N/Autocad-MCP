@@ -6509,7 +6509,10 @@ async def drawing_preflight(
     intent: Annotated[str, "One-line description of what this drawing represents."],
     requirements: Annotated[
         dict | None,
-        "Units, part_type, dimensions, tolerance_policy and optional constraints.",
+        "Units, part_type, tolerance_policy and the requirements themselves: typed `items` "
+        "(each {id, quantity, target, features, provenance, source?, datum?, "
+        "manufacturing_tolerance?, verification_epsilon?}) and/or a legacy `dimensions` "
+        "object, kept read-only; optional constraints.",
     ] = None,
     sheet_size: Annotated[str, Field(default="A3", description="A4 / A3 / A2 / A1 / A0.")] = "A3",
     scale: Annotated[float, Field(default=1.0, gt=0)] = 1.0,
@@ -6525,7 +6528,20 @@ async def drawing_preflight(
     ] = False,
     ctx: Context = None,
 ) -> dict:
-    """Validate and normalize requirements before committing a drawing plan."""
+    """Validate and normalize requirements before committing a drawing plan.
+
+    Typed requirements go under `requirements.items`: each is checked with its
+    path (`items[2].target.nominal: must be greater than zero, got -1.0.` comes
+    back as an INVALID_REQUIREMENT conflict) and its canonical form replaces
+    the input in `normalized_spec`, so `spec_hash` covers what will be
+    verified; `requirement_set` carries the canonical set and its digest. A
+    legacy `dimensions` object is still accepted, kept as given and listed
+    under `legacy` - it is never measured. Conflicting provenance is kept and
+    reported (CONFLICTING_PROVENANCE, CONFLICTING_REQUIREMENT), never
+    collapsed to one value. Typed items are validated once `units` is known
+    (a MISSING_UNITS question asks for it). Nothing is refused: every problem
+    is a question or a conflict, and `ready` stays False until none is left.
+    """
     result = await _backend(ctx).drawing_preflight(
         intent,
         requirements,
@@ -6567,15 +6583,37 @@ async def drawing_plan(
         ),
     ] = "chain",
     notes: Annotated[list[str] | None, "Free-form constraint notes."] = None,
-    requirements: Annotated[dict | None, "Normalized preflight requirements."] = None,
+    requirements: Annotated[
+        dict | None,
+        "Normalized preflight requirements (typed `items` and/or a legacy `dimensions`).",
+    ] = None,
     spec_hash: Annotated[str | None, "Hash returned by the latest ready drawing_preflight."] = None,
+    persist_requirements: Annotated[
+        bool,
+        Field(
+            default=False,
+            description=(
+                "Also write the requirement set into the drawing (an ACADMCP_REQUIREMENTS "
+                "record that travels with the saved file), so a reopened file carries it."
+            ),
+        ),
+    ] = False,
     ctx: Context = None,
 ) -> dict:
     """Commit a PlanSpec before any geometry is created.
 
     The PlanSpec is stored on the backend and surfaced for reference during
     the workflow (it is not replayed as a critique). Always call this FIRST
-    in a premium workflow.
+    in a premium workflow. With typed `requirements.items` the plan carries
+    `requirement_digest`; `persist_requirements=True` also writes the set into
+    the drawing (`requirements_persisted: true`) - the server's own XRECORD,
+    shown nowhere in AutoCAD.
+
+    Refused: a `spec_hash` that does not match the latest ready preflight; a
+    malformed typed item, by its path (`items[2].target.nominal: must be
+    greater than zero, got -1.0.`); `persist_requirements=True` with neither
+    typed `items` nor a legacy `dimensions` object ("nothing to read"). A
+    refusal stores nothing and commits no plan.
     """
     plan = await _backend(ctx).drawing_plan(
         intent,
@@ -6587,6 +6625,7 @@ async def drawing_plan(
         notes,
         requirements,
         spec_hash,
+        persist_requirements,
     )
     from engineering.preflight import pid_plan_warnings
 

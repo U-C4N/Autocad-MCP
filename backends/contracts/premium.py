@@ -92,12 +92,21 @@ class PremiumContract(ABC):
         notes: list[str] | None = None,
         requirements: dict | None = None,
         spec_hash: str | None = None,
+        persist_requirements: bool = False,
     ) -> PlanSpec:
         """Commit a drawing intent before any geometry is created.
         Returns a PlanSpec and stores it on the backend; read it back with
         `get_plan_spec()`. (N8: the previous claim that `drawing_critique`
         replays this plan was untrue — critique runs geometric checks, not a
-        plan diff.)"""
+        plan diff.)
+
+        v1.7.0 (B15 residue): typed ``requirements["items"]`` are parsed (a
+        malformed item raises with its path) and the plan carries their
+        digest. ``persist_requirements=True`` also writes the set - typed
+        items and any legacy ``dimensions`` - into the drawing as the
+        ACADMCP_REQUIREMENTS record, so a reopened file carries it; with
+        neither it is refused ("nothing to read"). When parsing or storing
+        fails, nothing is stored and no plan is committed."""
         from engineering.plan_spec import PlanSpec
 
         await self._ensure_document_state()
@@ -140,6 +149,18 @@ class PremiumContract(ABC):
             dim_style = normalized_plan["dim_style"]
             requirements = normalized_plan["requirements"]
 
+        typed = None
+        if persist_requirements or "items" in (requirements or {}):
+            from engineering.verification.requirements import parse_requirements
+
+            typed = parse_requirements(dict(requirements or {}))
+        persisted = False
+        if persist_requirements:
+            from engineering.verification.requirements import store_requirements
+
+            await store_requirements(self, typed)
+            persisted = True
+
         plan = PlanSpec(
             intent=str(intent),
             sheet_size=sheet_size,
@@ -151,6 +172,8 @@ class PremiumContract(ABC):
             requirements=dict(requirements or {}),
             spec_hash=spec_hash,
             preflight_status=preflight_status,
+            requirement_digest=None if typed is None else typed.digest(),
+            requirements_persisted=persisted,
         )
         self._plan_spec = plan
         return plan

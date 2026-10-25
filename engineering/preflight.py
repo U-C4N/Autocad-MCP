@@ -67,6 +67,10 @@ class PreflightResult:
     conflicts: list[PreflightConflict]
     assumptions: list[dict]
     spec_hash: str
+    # v1.7.0 (B15 residue): the canonical typed set and its digest when typed
+    # items were given and parsed; the legacy fields that were kept read-only.
+    requirement_set: dict | None = None
+    legacy: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -76,6 +80,8 @@ class PreflightResult:
             "conflicts": [item.to_dict() for item in self.conflicts],
             "assumptions": list(self.assumptions),
             "spec_hash": self.spec_hash,
+            "requirement_set": self.requirement_set,
+            "legacy": list(self.legacy),
         }
 
 
@@ -107,8 +113,22 @@ def preflight_drawing(
     *,
     allow_assumptions: bool = False,
 ) -> PreflightResult:
-    """Normalize a drawing request and surface missing or conflicting facts."""
-    req = _normalize(dict(requirements or {}))
+    """Normalize a drawing request and surface missing or conflicting facts.
+
+    Typed requirements arrive as ``requirements["items"]`` (see
+    ``engineering.verification.requirements``): each is validated with its
+    path once ``units`` is known, and the canonical form replaces the input in
+    ``normalized_spec`` so the spec hash covers what will be verified. A
+    legacy ``dimensions`` object is still accepted, kept as given and reported
+    under ``legacy`` - never measured. Conflicting provenance is kept and
+    reported as a conflict, never collapsed to one value. Without ``items``
+    the normalized spec and its hash are exactly what 1.6 produced.
+    """
+    raw = dict(requirements or {})
+    # B15 residue: typed items have their own parser (below); the rest is
+    # normalized as in 1.6, so a legacy spec and its hash do not move.
+    typed_items = raw.pop("items", None)
+    req = _normalize(raw)
     assumptions: list[dict] = []
 
     if allow_assumptions and not req.get("units"):
@@ -141,6 +161,8 @@ def preflight_drawing(
         ),
     )
     for field_name, code, question, choices in required:
+        if field_name == "dimensions" and typed_items:
+            continue  # typed requirements are the production dimensions
         value = req.get(field_name)
         if value is None or value == "" or value == {} or value == []:
             questions.append(PreflightQuestion(code, field_name, question, choices))
@@ -165,6 +187,46 @@ def preflight_drawing(
             )
         else:
             seen_constraints[field_name] = value
+
+    requirement_set = None
+    legacy: list[dict] = []
+    if req.get("dimensions") not in (None, "", {}, []):
+        legacy.append(
+            {
+                "field": "dimensions",
+                "status": "read_only",
+                "message": (
+                    "a legacy 'dimensions' object is kept as given and never measured; typed "
+                    "'items' are what gets bound to the drawing and verified"
+                ),
+            }
+        )
+    if typed_items is not None:
+        from engineering.validation import SpecError
+        from engineering.verification.requirements import (
+            parse_requirements,
+            requirement_conflicts,
+        )
+
+        req["items"] = typed_items
+        if req.get("units"):  # without units a MISSING_UNITS question already blocks
+            try:
+                typed = parse_requirements({"units": req["units"], "items": typed_items})
+            except SpecError as exc:
+                message = str(exc)
+                conflicts.append(
+                    PreflightConflict("INVALID_REQUIREMENT", message.split(":", 1)[0], [], message)
+                )
+            else:
+                canonical = typed.to_dict()
+                req["items"] = canonical["items"]
+                requirement_set = {**canonical, "digest": typed.digest()}
+                for found in requirement_conflicts(typed):
+                    conflicts.append(
+                        PreflightConflict(
+                            found["code"], found["field"], found["values"], found["message"]
+                        )
+                    )
 
     normalized_sheet = str(sheet_size).strip().upper()
     normalized_layer_set = str(layer_set_id).strip().lower()
@@ -241,4 +303,6 @@ def preflight_drawing(
         conflicts=conflicts,
         assumptions=assumptions,
         spec_hash=_spec_hash(normalized_spec),
+        requirement_set=requirement_set,
+        legacy=legacy,
     )

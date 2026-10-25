@@ -89,6 +89,10 @@ class PlanSpec:
     requirements: dict = field(default_factory=dict)
     spec_hash: str | None = None
     preflight_status: Literal["ready", "skipped"] = "skipped"
+    # v1.7.0 (B15 residue): the digest of the typed set the plan carries, and
+    # whether drawing_plan(persist_requirements=True) wrote it into the drawing.
+    requirement_digest: str | None = None
+    requirements_persisted: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -102,6 +106,8 @@ class PlanSpec:
             "requirements": dict(self.requirements),
             "spec_hash": self.spec_hash,
             "preflight_status": self.preflight_status,
+            "requirement_digest": self.requirement_digest,
+            "requirements_persisted": self.requirements_persisted,
         }
 
 
