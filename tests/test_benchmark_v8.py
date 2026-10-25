@@ -422,7 +422,9 @@ async def test_a_rival_with_no_checkout_and_no_fetch_is_blocked_not_cloned(tmp_p
     adapter.cache_root = tmp_path / "cache"
     report = await run_tasks(adapter, list(TASKS_V8[:2]), tmp_path / "out", matrix="v8")
     assert {item["status"] for item in report["results"]} == {"environment_blocked"}
-    assert "puran-water-autocad-mcp" in report["results"][0]["message"]
+    message = report["results"][0]["message"]
+    assert "puran-water-autocad-mcp" in message and "no checkout" in message
+    assert str(tmp_path) not in message, "a published report carries no machine layout"
     assert not (tmp_path / "cache").exists(), "nothing was cloned"
 
 

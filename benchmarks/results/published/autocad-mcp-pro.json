@@ -75,6 +75,11 @@
           "reason": null,
           "supported": true
         },
+        "hatch_loops": {
+          "mode": "native",
+          "reason": "entity_get_reports_wcs_loops;ellipse_and_spline_edges_sampled_not_exact",
+          "supported": true
+        },
         "interactive_prompt": {
           "mode": null,
           "reason": "no_operator_to_prompt_headlessly",
@@ -117,7 +122,7 @@
         },
         "ocs_normalized": {
           "mode": "wcs",
-          "reason": "reported_xy_is_wcs;z_component_not_reported;text_rotation_stays_in_entity_frame;hatch_boundaries_not_reported",
+          "reason": "reported_xy_is_wcs;z_component_not_reported;text_rotation_stays_in_entity_frame;hatch_loops_reported_in_wcs",
           "supported": true
         },
         "ocs_tilted_plane": {
@@ -216,16 +221,52 @@
   "environment": {
     "implementation": "CPython",
     "machine": "AMD64",
-    "platform": "Windows-10-10.0.26200-SP0",
-    "python": "3.11.15"
+    "platform": "Windows-11-10.0.26300-SP0",
+    "python": "3.13.15"
   },
-  "generated_at": "2026-09-24T20:58:06.608758+00:00",
-  "git_sha": "554daff8d08c7d891974e55db046e7c70c15e185",
-  "matrix": "v7",
+  "generated_at": "2026-10-25T15:46:56.058698+00:00",
+  "git_sha": "ca6ea4371ed4363e387f5758448f2612d306ed4e",
+  "manifest": {
+    "dependencies": {
+      "ezdxf": "1.4.4",
+      "fastmcp": "3.4.5",
+      "matplotlib": "3.11.1",
+      "mcp": "1.29.0",
+      "numpy": "2.5.1",
+      "openpyxl": "3.1.5",
+      "pywin32": "312"
+    },
+    "dirty": false,
+    "evaluator_version": "v8.1",
+    "fixtures": [
+      {
+        "path": "benchmarks/adapters/autocad_mcp_pro.py",
+        "sha256": "1a3c488b80d145ba3fee0bd826440973dc2266f44d21680bd55d73453c1f4c48",
+        "size_bytes": 86223
+      },
+      {
+        "path": "engineering/arch/spec.py",
+        "sha256": "c273533e4df3a28ff0e08a0886a00aa2c69290d5a03cf0044438c37d23d78248",
+        "size_bytes": 14859
+      },
+      {
+        "path": "engineering/pid/spec.py",
+        "sha256": "efdb92d0cd4a8c5f0b7577c40fe7948c4160c431d31e9b6c48fbbbbd06e61850",
+        "size_bytes": 28426
+      },
+      {
+        "path": "tests/fixtures/plant_pair.py",
+        "sha256": "c683b62b24332670e8323e54519d17cd48ae8ae921d36b744a2e302ebce04248",
+        "size_bytes": 25419
+      }
+    ],
+    "server_sha": "ca6ea4371ed4363e387f5758448f2612d306ed4e"
+  },
+  "matrix": "v8",
   "results": [
     {
       "artifacts": [],
-      "duration_ms": 2.71,
+      "duration_ms": 2.5,
       "message": "",
       "metrics": {
         "line_length": 5.0
@@ -238,7 +279,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 1.92,
+      "duration_ms": 1.5,
       "message": "",
       "metrics": {},
       "score": 100.0,
@@ -249,7 +290,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 3.38,
+      "duration_ms": 4.06,
       "message": "",
       "metrics": {},
       "score": 100.0,
@@ -260,7 +301,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 24.95,
+      "duration_ms": 26.41,
       "message": "",
       "metrics": {
         "entity_type": "DIMENSION"
@@ -273,7 +314,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 3.64,
+      "duration_ms": 4.69,
       "message": "",
       "metrics": {
         "representations": [
@@ -302,7 +343,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 0.85,
+      "duration_ms": 0.81,
       "message": "",
       "metrics": {},
       "score": 100.0,
@@ -313,7 +354,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 17.45,
+      "duration_ms": 10.02,
       "message": "",
       "metrics": {
         "final_score": 100.0,
@@ -327,7 +368,7 @@
                   "deleted_handle": "3E",
                   "kept_handle": "3D"
                 },
-                "fingerprint": "c1b87eac3cfdf11312c9b18ccf4c062e672791f7a9a6dfa3c45b6db7f9e5835e",
+                "fingerprint": "e0aa625bccfb9c3a3f88bd5f5020c66c4d34fee481e166ef51cdaadee76dab38",
                 "focus": "duplicate_entities",
                 "handles": [
                   "3D",
@@ -356,11 +397,11 @@
       "artifacts": [
         {
           "filename": "roundtrip.dxf",
-          "sha256": "28a18050aea00646f9ff7a5fdf8fe3b8783cd4cb77d71108b3834c746e7259c5",
-          "size_bytes": 18446
+          "sha256": "0606123ece5fc2898956b0f62ead9d1e75136aafad6c1c348d4beeec5fbcc2e6",
+          "size_bytes": 18436
         }
       ],
-      "duration_ms": 7.21,
+      "duration_ms": 7.32,
       "message": "",
       "metrics": {
         "entity_count": 1
@@ -375,11 +416,11 @@
       "artifacts": [
         {
           "filename": "manifest.json",
-          "sha256": "7178055a030b533e83c4a914466c7474350e7728657cd624c9ebc01c753d9e13",
-          "size_bytes": 7929
+          "sha256": "d13e1c7cfd697027d5014533648da56d83a59ad1200a30c017d3e7f871446162",
+          "size_bytes": 8456
         }
       ],
-      "duration_ms": 274.87,
+      "duration_ms": 375.92,
       "message": "",
       "metrics": {
         "score": {
@@ -399,7 +440,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 699.92,
+      "duration_ms": 722.33,
       "message": "",
       "metrics": {
         "ranks": {
@@ -420,15 +461,15 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 86.79,
+      "duration_ms": 46.52,
       "message": "",
       "metrics": {
-        "advertised_tools": 2,
-        "catalog_tokens": 83921,
-        "catalog_tools": 242,
+        "advertised_tools": 3,
+        "catalog_tokens": 89210,
+        "catalog_tools": 243,
         "ceiling": 2000,
-        "discovery_tokens": 356,
-        "reduction_x": 235.7,
+        "discovery_tokens": 503,
+        "reduction_x": 177.4,
         "tokenizer": "ratio/v1 (estimate)"
       },
       "score": 100.0,
@@ -456,7 +497,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 26.1,
+      "duration_ms": 6.83,
       "message": "",
       "metrics": {
         "bounding_box": 3,
@@ -473,7 +514,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 5.83,
+      "duration_ms": 4.98,
       "message": "",
       "metrics": {
         "boundary_agrees": true,
@@ -490,7 +531,7 @@
     },
     {
       "artifacts": [],
-      "duration_ms": 58.19,
+      "duration_ms": 71.78,
       "message": "",
       "metrics": {
         "authored_line_numbers_kept": true,
@@ -513,16 +554,16 @@
       "artifacts": [
         {
           "filename": "untitled-Layout1-ansi_b.pdf",
-          "sha256": "af3c19d4d8b14fbc116ab807bb6feee9fc900fc114e57cd6feb658a6c0dabffb",
+          "sha256": "e21e723e534704c78e5445b2e3b95979616378f357a20956c5260ef98c91c4ea",
           "size_bytes": 1287
         },
         {
           "filename": "untitled-Layout1-iso_a3.pdf",
-          "sha256": "8d1d1ed505903b6f692ed6e91e9f52577c2c78db3bc2942b949ea4a3d73c9b01",
+          "sha256": "67ed2be5e752a2e6511230e805547df7e0e262953475b2688d86ec36c0772e3a",
           "size_bytes": 1287
         }
       ],
-      "duration_ms": 65.46,
+      "duration_ms": 71.01,
       "message": "",
       "metrics": {
         "mediabox_mm": [
@@ -562,11 +603,11 @@
       "artifacts": [
         {
           "filename": "mech_assembly.dxf",
-          "sha256": "407dcbed3eb17be7f9d72dda2c1951e8f97fa3fb6090713440404a3f1497d1b2",
-          "size_bytes": 101158
+          "sha256": "08db01131831c4f7a43a6b8a415732b76ea4de81dc7817ef13df5f9690581cfe",
+          "size_bytes": 107970
         }
       ],
-      "duration_ms": 487.19,
+      "duration_ms": 526.78,
       "message": "",
       "metrics": {
         "critique_focuses": [],
@@ -588,11 +629,11 @@
       "artifacts": [
         {
           "filename": "arch_roundtrip.dxf",
-          "sha256": "ebec378ef28670e091e651b4130a6eac5a0d2fb480d60f9335b37de28ea713c7",
-          "size_bytes": 82829
+          "sha256": "47f12bd2308524495431cef85a0d7ab622a87d0cfe570a711e3411f1fd6d3429",
+          "size_bytes": 82828
         }
       ],
-      "duration_ms": 982.07,
+      "duration_ms": 925.12,
       "message": "",
       "metrics": {
         "confidence_min": 1.0,
@@ -637,16 +678,16 @@
       "artifacts": [
         {
           "filename": "pid.dxf",
-          "sha256": "94dbdc026878927560a6c81e2283a7d2a26fbe6a398475d415c6383728c46672",
+          "sha256": "305c57f8a6e463f1a28c05da66c4fb27a84fe684632fb488611be1ee2b6442ad",
           "size_bytes": 33795
         },
         {
           "filename": "layout.dxf",
-          "sha256": "37963e237f27f9f495b30d7c0b3bf7f4eff54ff4fec9665f34ab50ddc3f3c7a7",
+          "sha256": "1aa4a2d5b3184869d39fc8b18f256f974e161ba46d4566d576ca0f4d01469428",
           "size_bytes": 40503
         }
       ],
-      "duration_ms": 614.2,
+      "duration_ms": 359.3,
       "message": "",
       "metrics": {
         "cable_mismatch": [],
@@ -667,16 +708,16 @@
       "artifacts": [
         {
           "filename": "layout.dxf",
-          "sha256": "ff728965a5698cf9ddf9d9a01cfa244102d183065a149488d4d29dbcee404e85",
+          "sha256": "01c71f4a0d0933dcdf96a402638f5f064c884a8b9fbbafa6da97feae2b2478ae",
           "size_bytes": 40503
         },
         {
           "filename": "pid.dxf",
-          "sha256": "de4f1ab4102d220efa7167b192b8fdaf9d57cbf300241e945c16967770401cd8",
+          "sha256": "42296b353e6ef13ae80deb4b41fb5d8542e329507272f62ed255ae18d23bd99c",
           "size_bytes": 33795
         }
       ],
-      "duration_ms": 311.97,
+      "duration_ms": 172.77,
       "message": "",
       "metrics": {
         "clusters": 2,
@@ -801,16 +842,399 @@
       "stderr_summary": "",
       "stdout_summary": "",
       "task_id": "understand_foreign"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "requirements_roundtrip.dxf",
+          "sha256": "dbdc2edc81f141d9c376664d857c11689105775478070bf6a9093d5e0b714535",
+          "size_bytes": 26880
+        }
+      ],
+      "duration_ms": 117.39,
+      "message": "",
+      "metrics": {
+        "artifact": {
+          "counts": {
+            "ambiguous": 0,
+            "fail": 1,
+            "pass": 3,
+            "required": 4,
+            "unknown": 0,
+            "unsupported": 0
+          },
+          "failed": [
+            "R3"
+          ],
+          "handles_stable": true,
+          "measured": {
+            "R1": 20.0,
+            "R2": 90.0,
+            "R3": 54.120236510939236,
+            "R4": 4.0
+          },
+          "status": "fail"
+        },
+        "bores_moved": 1,
+        "document": {
+          "counts": {
+            "ambiguous": 0,
+            "fail": 0,
+            "pass": 4,
+            "required": 4,
+            "unknown": 0,
+            "unsupported": 0
+          },
+          "status": "pass"
+        },
+        "moved_mm": 3.0,
+        "parity_blind": true,
+        "reopened": {
+          "failed": [
+            "R3"
+          ],
+          "status": "fail"
+        }
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "requirements_roundtrip"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 318.24,
+      "message": "",
+      "metrics": {
+        "entity_count_after": 1,
+        "line": "2F",
+        "overlapped": false,
+        "trace": [
+          "A:end",
+          "B:run"
+        ]
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "cancel_safety"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 1060.52,
+      "message": "",
+      "metrics": {
+        "construction": {
+          "after_10000": "274D",
+          "at_5001": "13C5",
+          "paper": "274E"
+        },
+        "duplicate": [
+          "274F",
+          "2750"
+        ],
+        "elapsed_ms": 830.4,
+        "entities": 10004,
+        "incomplete": [],
+        "max_loop_stall_ms": 201.8,
+        "missing": []
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "qa_large_drawing"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "lines.csv",
+          "sha256": "e82c7cfc2d800fd9630afd3c0377905a2ebb3f16333b982ea1d585a7f79c10e0",
+          "size_bytes": 363
+        },
+        {
+          "filename": "bom.csv",
+          "sha256": "9fa6874359e3d12f20ea61e35b0eb56e08fe59b3c8209e92f0e99c9f499bea51",
+          "size_bytes": 167
+        },
+        {
+          "filename": "bom.xlsx",
+          "sha256": "3a447afd6009d12cb0f14ece81ad176f10228a909dcc9bfb0b88da623ebb1809",
+          "size_bytes": 5086
+        }
+      ],
+      "duration_ms": 367.83,
+      "message": "",
+      "metrics": {
+        "bom_csv": {
+          "masses": [
+            "",
+            "",
+            "-12.5",
+            ""
+          ],
+          "ok": true,
+          "rows": 4
+        },
+        "bom_xlsx": {
+          "formula_cells": [],
+          "mass": -12.5,
+          "ok": true,
+          "texts_missing": []
+        },
+        "formula_cells": [],
+        "pid_csv": {
+          "line_numbers": [
+            "3",
+            "'=1+1",
+            "'=1+1",
+            ""
+          ],
+          "ok": true
+        }
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "export_safety"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 528.45,
+      "message": "",
+      "metrics": {
+        "changed_handles": [
+          "2F"
+        ],
+        "final_start": [
+          5.0,
+          0.0
+        ],
+        "fresh_apply_ok": true,
+        "moved_over_a_stale_preview": false,
+        "refused_kind": "stale_revision",
+        "start_after_the_refused_apply": [
+          0.0,
+          0.0
+        ]
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "stale_preview"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 463.42,
+      "message": "",
+      "metrics": {
+        "edits_applied": [
+          true,
+          true
+        ],
+        "refusal": {
+          "actual_revision": 3,
+          "expected_revision": 1,
+          "kind": "stale_revision"
+        },
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "stale_refused": true,
+        "start_after_edits": [
+          2.0,
+          0.0
+        ],
+        "unchanged_after_refusal": true
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "revision_guarded_edit"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "pid_file_roundtrip.dxf",
+          "sha256": "b2e0e764da2667b81c616093ac1a9d7a84813ea15cf824f572e31c7de9e899dd",
+          "size_bytes": 39239
+        }
+      ],
+      "duration_ms": 216.1,
+      "message": "",
+      "metrics": {
+        "dangling": 0,
+        "edges": 4,
+        "edges_equal": true,
+        "equipment_equal": true,
+        "index_equal": true,
+        "line_numbers_equal": true,
+        "nodes": 5,
+        "tags_equal": true
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "pid_file_roundtrip"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "foreign_plate.dxf",
+          "sha256": "22e097ada7dedc718124ab013536d7685cf45abae51cf1f6f151ca277a7a341e",
+          "size_bytes": 19129
+        },
+        {
+          "filename": "foreign_plate_repaired.dxf",
+          "sha256": "3f2add6280b2dc7be6aba2ae50165ac8885d68409085c32b8def56e74df914ff",
+          "size_bytes": 19129
+        }
+      ],
+      "duration_ms": 110.33,
+      "message": "",
+      "metrics": {
+        "after": {
+          "failed": [],
+          "measured": {
+            "H1": 10.0,
+            "H2": 10.0,
+            "H3": 10.0,
+            "H4": 10.0,
+            "N": 4.0,
+            "P": 60.0
+          },
+          "status": "pass"
+        },
+        "before": {
+          "failed": [
+            "H3"
+          ],
+          "status": "fail"
+        },
+        "diff": {
+          "added": 0,
+          "changed": 1,
+          "removed": 0
+        },
+        "precondition_held": true,
+        "repaired_handle": "32"
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "foreign_edit_verified"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "truncated.dxf",
+          "sha256": "5b135b50bca6507580967d4a6d1d080e61e0f7a6095a7ba0410e06db73ba304b",
+          "size_bytes": 12445
+        },
+        {
+          "filename": "not_a_drawing.dxf",
+          "sha256": "6d800db0cf8c6f288f522e9a9f424b91ad2e9eccebe628de8e15462950db0955",
+          "size_bytes": 176
+        }
+      ],
+      "duration_ms": 19.84,
+      "message": "",
+      "metrics": {
+        "cases": {
+          "not_dxf": {
+            "error": "OSError: File 'C:\\Users\\VECTOR\\Documents\\GitHub\\Autocad-MCP\\.claude\\worktrees\\wf_943572c7-c92-2\\out\\bench-v8\\not_a_drawing.dxf' is not a DXF file.",
+            "named": true,
+            "refused": true
+          },
+          "truncated": {
+            "error": "DXFStructureError: DXFStructureError: missing ENDSEC tag.",
+            "named": true,
+            "refused": true
+          }
+        },
+        "document_kept": true,
+        "entity_count_after": 1,
+        "recover": "not in 1.7.0 (B09, 1.7.1)"
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "damaged_dxf_refusal"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "dimension_binding.dxf",
+          "sha256": "c52898feac2640e22785f0be33e776022cfbd516025a7b80d8aa723756061a48",
+          "size_bytes": 51223
+        }
+      ],
+      "duration_ms": 418.32,
+      "message": "",
+      "metrics": {
+        "accepted": false,
+        "findings": {
+          "D2": "dimension_mismatch",
+          "D3": "dimension_mismatch"
+        },
+        "rows": {
+          "D1": {
+            "dimension_findings": [],
+            "displayed": 42.0,
+            "measured": 42.0,
+            "status": "pass"
+          },
+          "D2": {
+            "dimension_findings": [
+              "text_override_disagrees_with_geometry"
+            ],
+            "displayed": 42.0,
+            "measured": 40.0,
+            "status": "pass"
+          },
+          "D3": {
+            "dimension_findings": [
+              "dimlfac_scales_the_displayed_value"
+            ],
+            "displayed": 42.0,
+            "measured": 21.0,
+            "status": "pass"
+          },
+          "D4": {
+            "dimension_findings": [],
+            "displayed": 40.0,
+            "measured": 40.0,
+            "status": "pass"
+          }
+        }
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "dimension_binding"
     }
   ],
   "schema_version": "2.0",
   "summary": {
-    "attempted": 21,
+    "attempted": 31,
     "coverage_percent": 100.0,
-    "passed": 21,
+    "environment_blocked": 0,
+    "not_run": 0,
+    "passed": 31,
     "score": 100.0,
-    "supported": 21,
+    "supported": 31,
     "unsupported": 0
   },
-  "timeout_seconds": 30.0
+  "timeout_seconds": 180.0
 }

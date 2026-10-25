@@ -105,11 +105,20 @@ def _resolve_entry(spec: CompetitorSpec, repo_dir: Path) -> tuple[str, ...]:
     )
 
 
+def _shown(path: Path) -> str:
+    """A path as a report may print it: relative to this repository when it is
+    inside it, so a published report carries no machine's directory layout."""
+    try:
+        return path.resolve().relative_to(CACHE_ROOT.parents[1]).as_posix()
+    except ValueError:
+        return path.name
+
+
 def _prepared(spec: CompetitorSpec, root: Path) -> str | None:
     """Why the cached environment is not ready to launch, or None when it is."""
     repo_dir = root / "repo"
     if not (repo_dir / ".git").exists():
-        return f"no checkout at {repo_dir}"
+        return f"no checkout at {_shown(repo_dir)}"
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repo_dir, capture_output=True, text=True
     ).stdout.strip()
@@ -118,9 +127,9 @@ def _prepared(spec: CompetitorSpec, root: Path) -> str | None:
     venv_dir = root / "venv"
     marker = venv_dir / ".installed-sha"
     if not _venv_python(venv_dir).exists() or not marker.exists():
-        return f"no installed venv at {venv_dir}"
+        return f"no installed venv at {_shown(venv_dir)}"
     if marker.read_text().strip() != spec.pinned_sha:
-        return f"the venv at {venv_dir} was installed for another commit"
+        return f"the venv at {_shown(venv_dir)} was installed for another commit"
     return None
 
 
