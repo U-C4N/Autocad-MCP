@@ -279,6 +279,8 @@ def _drop_app() -> None:
     """Forget the cached Application proxy (and the identity read from it)."""
     _COM_STATE.pop("app", None)
     _COM_STATE.pop("app_identity", None)
+    _COM_STATE.pop("vl", None)
+    _COM_STATE.pop("vl_docs", None)
 
 
 def _app_identity(app) -> tuple:
@@ -312,6 +314,126 @@ def _app_identity(app) -> tuple:
         identity = ("hwnd", hwnd, pid)
     _COM_STATE["app_identity"] = (app, identity)
     return identity
+
+
+# ---------------------------------------------------------------------------
+# The operator-edit counter (v1.7.0, B11)
+# ---------------------------------------------------------------------------
+#
+# A transient AutoLISP database reactor in the bound document's own namespace
+# counts every object appended, modified, erased or unerased in that
+# document's database; the server evaluates two fixed forms through
+# ``VL.Application.16`` - no COM event sink, no SendCommand. Measured on
+# AutoCAD 2026 (25.1) on 2026-10-26 on scratch Documents.Add() documents
+# (scripts/smoke_operator_edits_com.py): see ``ComBackend._edit_counter_start``.
+
+#: Installs the reactor (once: ``vlr-added-p`` guards a second one), tags the
+#: namespace with the document id and answers ``"<id>:<count>"``. Not
+#: ``vlr-pers``: the reactor lives in the session and is never saved.
+#: ``all-documents`` keeps it counting while another drawing is active.
+_EDIT_COUNTER_INSTALL = (
+    "(progn (vl-load-com)"
+    " (if (null acadmcp:edit-n) (setq acadmcp:edit-n 0))"
+    " (defun acadmcp:edit-bump (r a) (setq acadmcp:edit-n (1+ acadmcp:edit-n)))"
+    " (if (not (and acadmcp:edit-r (vlr-added-p acadmcp:edit-r)))"
+    " (progn (setq acadmcp:edit-r (vlr-acdb-reactor nil '("
+    "(:vlr-objectAppended . acadmcp:edit-bump) (:vlr-objectModified . acadmcp:edit-bump)"
+    " (:vlr-objectErased . acadmcp:edit-bump) (:vlr-objectUnErased . acadmcp:edit-bump))))"
+    " (vlr-set-notification acadmcp:edit-r 'all-documents)))"
+    ' (setq acadmcp:edit-id "{document_id}")'
+    ' (strcat acadmcp:edit-id ":" (itoa acadmcp:edit-n)))'
+)
+
+#: ``"<id>:<count>"``, or nil when no reactor is installed (a namespace the
+#: server never installed into) or it was removed (``vlr-remove-all``).
+_EDIT_COUNTER_READ = (
+    "(if (and acadmcp:edit-r (vlr-added-p acadmcp:edit-r) acadmcp:edit-id)"
+    ' (strcat acadmcp:edit-id ":" (itoa acadmcp:edit-n)))'
+)
+
+_VL_PROGID = "VL.Application.16"
+
+
+def _dispatch(obj):
+    """The raw ``PyIDispatch`` behind ``obj``, or None for a plain Python object."""
+    ole = getattr(obj, "_oleobj_", None)
+    if ole is not None:
+        return ole
+    if hasattr(obj, "GetIDsOfNames") and hasattr(obj, "Invoke"):
+        return obj
+    return None
+
+
+def _vl_get(obj, name: str):
+    """Property ``name`` of a VL object.
+
+    The ``VL.Application.16`` proxy has type info (``DVlApplication``: Name,
+    Documents, ActiveDocument) but win32com's dynamic dispatch raised
+    ``AttributeError`` for ``ActiveDocument`` on AutoCAD 2026 (measured), so
+    the member is invoked by its DISPID.
+    """
+    ole = _dispatch(obj)
+    if ole is None:
+        return getattr(obj, name)
+    return ole.Invoke(ole.GetIDsOfNames(name), 0, pythoncom.DISPATCH_PROPERTYGET, 1)
+
+
+def _vl_call(obj, name: str, *args):
+    ole = _dispatch(obj)
+    if ole is None:
+        return getattr(obj, name)(*args)
+    flags = pythoncom.DISPATCH_METHOD | pythoncom.DISPATCH_PROPERTYGET
+    return ole.Invoke(ole.GetIDsOfNames(name), 0, flags, 1, *args)
+
+
+def _vl_application(app):
+    """``app``'s VL application, cached beside the proxy; raises when it has none."""
+    cached = _COM_STATE.get("vl")
+    if cached is not None and cached[0] is app:
+        if isinstance(cached[1], BaseException):
+            raise cached[1]
+        return cached[1]
+    try:
+        vl = app.GetInterfaceObject(_VL_PROGID)
+    except Exception as exc:  # noqa: BLE001 - no Visual LISP: the counter is off
+        _COM_STATE["vl"] = (app, exc)
+        _COM_STATE.pop("vl_docs", None)
+        raise
+    _COM_STATE["vl"] = (app, vl)
+    _COM_STATE["vl_docs"] = {}
+    return vl
+
+
+def _vl_document_forms(app, document_id: str, *, fresh: bool):
+    """``(eval, parsed read form)`` for the namespace of the document active NOW.
+
+    Cached per document id: fetching ``ActiveDocument.Functions`` and the two
+    function objects cost ~6.6 ms live, one ``eval`` of a parsed form ~1 ms.
+    ``fresh`` re-fetches - the cached objects may belong to a closed namespace.
+    """
+    vl = _vl_application(app)
+    docs = _COM_STATE.setdefault("vl_docs", {})
+    if not fresh and document_id in docs:
+        return docs[document_id]
+    functions = _vl_get(_vl_get(vl, "ActiveDocument"), "Functions")
+    reader = _vl_call(functions, "Item", "read")
+    evaluator = _vl_call(functions, "Item", "eval")
+    forms = (reader, evaluator, _vl_call(reader, "funcall", _EDIT_COUNTER_READ))
+    docs[document_id] = forms
+    return forms
+
+
+def _parse_edit_count(value, document_id: str) -> int | None:
+    """The count from ``"<id>:<count>"`` when it is this document's, else None."""
+    if not isinstance(value, str):
+        return None
+    tag, _, count = value.partition(":")
+    if tag != document_id:
+        return None
+    try:
+        return int(count)
+    except ValueError:
+        return None
 
 
 #: ``AcSaveAsType`` template constants, newest first: ac2018_Template,
@@ -1940,6 +2062,12 @@ class ComBackend(AutoCADBackend):
         # AutoCAD's documents are new documents whatever their names.
         self._bound: dict | None = None
         self._known_documents: dict[tuple, dict] = {}
+        # B11: how operator edits reach the revision (``operator_edits_status``).
+        self._edit_counter: dict = {
+            "counted": None,
+            "method": "lisp_database_reactor",
+            "reason": "no call has touched a document yet",
+        }
 
     @property
     def name(self) -> str:
@@ -1954,10 +2082,11 @@ class ComBackend(AutoCADBackend):
 
         ``revision`` counts this server's own content-changing calls on the
         document (``_mutating``: on success and on failure, never on a refusal
-        or a save). Edits the operator makes in AutoCAD are not counted - see
-        backends/document_guard.py for the measurement - so staleness on the
-        live engine rests on the change-preview fingerprints (Task 12). All
-        None until a document is bound.
+        or a save) plus one for every gap between two server calls in which
+        the operator's edit counter moved (``_edit_counter_start``; what it
+        catches and misses is in backends/document_guard.py). Answered from
+        memory: ``refresh_document_identity`` folds in a hand edit made since
+        the last call. All None until a document is bound.
         """
         bound = self._bound
         if bound is None:
@@ -1976,6 +2105,24 @@ class ComBackend(AutoCADBackend):
             "path": bound["full_name"] or None,
             "backend": "com",
         }
+
+    async def refresh_document_identity(self) -> None:
+        """Fold an operator edit made since the last call into the revision now.
+
+        ``document_identity()`` answers from memory; the edit counter is read
+        inside a guarded job. A preview and a precondition check await this
+        before they read the revision (engineering/changes/preview.py), so a
+        hand edit with no server call after it still moves the revision they
+        compare. One job (two ~1 ms counter reads); unbound, or refused because
+        another document is active, it changes nothing - the next guarded call
+        refuses that switch by itself.
+        """
+        if self._bound is None or self._executor is None:
+            return
+        try:
+            await self._run(self._check_bound_sync)
+        except Exception as exc:  # noqa: BLE001 - an identity read never fails a call
+            log.debug("refresh_document_identity: %s", exc)
 
     def capabilities(self) -> CapabilityMap:
         return CapabilityMap(
@@ -2190,6 +2337,7 @@ class ComBackend(AutoCADBackend):
                     "No drawing is open in AutoCAD. Open or create a .dwg file first."
                 )
             self._bind_key(key, application)
+            self._edit_counter_start(app)
             return doc
         restarted = self._bound["app"] != application
         if restarted or key != (self._bound["name"], self._bound["full_name"]):
@@ -2198,7 +2346,115 @@ class ComBackend(AutoCADBackend):
                 self._view_of(key, application),
                 application_changed=restarted,
             )
+        self._edit_counter_start(app)
         return doc
+
+    # -- operator edits (B11) ---------------------------------------------------
+
+    def operator_edits_status(self) -> dict:
+        """Whether the live revision counts the operator's own edits, and how.
+
+        ``{"counted": True, "method": "lisp_database_reactor", "reason": None}``
+        once the counter answered; ``counted: False`` with the error when
+        ``VL.Application.16`` is missing or failed (the revision then counts
+        this server's writes only, as before); ``counted: None`` until a call
+        has touched a document.
+        """
+        return dict(self._edit_counter)
+
+    def _edit_counter_start(self, app) -> None:
+        """Fold an edit made outside this server into the revision (COM thread).
+
+        Runs inside the guard, after it found the bound document active - so
+        the active namespace is the bound document's. The count is compared
+        with the one the previous job left (``_edit_counter_end``): a
+        difference is one more revision, however many objects changed. A
+        reactor that was watching and is gone (``vlr-remove-all``, a document
+        reopened under the same key) is an unwatched gap and counts too; it is
+        installed again. The first install sets the baseline and moves nothing.
+        What is and is not counted is in backends/document_guard.py. Any
+        failure turns the counter off for this attach and leaves the revision
+        counting the server's own writes; the next working read counts the
+        gap once.
+        """
+        entry = self._known_documents.get(self._bound_entry_key())
+        if entry is None:
+            return
+        document_id = entry["document_id"]
+        try:
+            count = self._read_edit_count(app, document_id)
+            gap = False
+            if count is None:
+                gap = "edits" in entry  # it was watching; something removed it
+                count = self._install_edit_counter(app, document_id)
+        except Exception as exc:  # noqa: BLE001 - the counter is evidence, never a failure
+            self._edit_counter = {
+                "counted": False,
+                "method": "lisp_database_reactor",
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+            if "edits" in entry:
+                entry["edits"] = None  # unknown: the next working read counts the gap
+            log.debug("operator-edit counter unavailable: %s", exc)
+            return
+        if gap or ("edits" in entry and entry["edits"] != count):
+            entry["revision"] += 1
+            log.info(
+                "document %s changed outside this server (edit counter %s -> %s)",
+                document_id,
+                entry.get("edits"),
+                count,
+            )
+        entry["edits"] = count
+        self._edit_counter = {"counted": True, "method": "lisp_database_reactor", "reason": None}
+
+    def _edit_counter_end(self, app) -> None:
+        """Remember the count this job leaves, so its own writes are not the operator's.
+
+        COM thread, at the end of a job whose guard passed. Read through the
+        cached forms only; a failure or another document's answer keeps the
+        previous count, so the next job counts this one's writes as an outside
+        edit - one revision too many, never one too few.
+        """
+        entry = self._known_documents.get(self._bound_entry_key())
+        if entry is None or entry.get("edits") is None:
+            return
+        try:
+            count = self._read_edit_count(app, entry["document_id"], refetch=False)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("operator-edit counter: end-of-job read failed: %s", exc)
+            return
+        if count is not None:
+            entry["edits"] = count
+
+    def _read_edit_count(self, app, document_id: str, *, refetch: bool = True) -> int | None:
+        """The bound namespace's count, or None when no reactor of ours answers there."""
+
+        def _once(fresh: bool):
+            _reader, evaluator, form = _vl_document_forms(app, document_id, fresh=fresh)
+            value = self._wait_out_rejected_call(lambda: _vl_call(evaluator, "funcall", form))
+            return _parse_edit_count(value, document_id)
+
+        try:
+            count = _once(False)
+        except Exception:
+            if not refetch:
+                raise
+            count = None
+        if count is None and refetch:
+            count = _once(True)  # the cached objects may belong to a closed namespace
+        return count
+
+    def _install_edit_counter(self, app, document_id: str) -> int:
+        reader, evaluator, _form = _vl_document_forms(app, document_id, fresh=True)
+        source = _EDIT_COUNTER_INSTALL.format(document_id=document_id)
+        value = self._wait_out_rejected_call(
+            lambda: _vl_call(evaluator, "funcall", _vl_call(reader, "funcall", source))
+        )
+        count = _parse_edit_count(value, document_id)
+        if count is None:
+            raise RuntimeError(f"the edit counter did not install (answered {value!r})")
+        return count
 
     def _bind_key(self, key: tuple[str, str], application: tuple | None = None) -> bool:
         """Bind ``key`` in ``application``; True when that is another document than before."""
@@ -2392,6 +2648,11 @@ class ComBackend(AutoCADBackend):
             try:
                 return func(*args, **kwargs)
             finally:
+                if guard.doc is not None:
+                    try:
+                        self._edit_counter_end(_acad_app())
+                    except Exception as exc:  # noqa: BLE001 - never mask the job's outcome
+                        log.debug("operator-edit counter: %s", exc)
                 _JOB_STATE.guard = None
                 guard.doc = None
                 CURRENT_OPERATION.reset(token)
@@ -7724,6 +7985,7 @@ class ComBackend(AutoCADBackend):
         identity = self.document_identity()
         status["document_id"] = identity["document_id"]
         status["revision"] = identity["revision"]
+        status["operator_edits"] = self.operator_edits_status()
         status["call_outcomes"] = [dict(row) for row in self.call_outcomes][
             -self._STATUS_CALL_OUTCOMES :
         ]

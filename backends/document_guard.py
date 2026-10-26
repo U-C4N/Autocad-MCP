@@ -8,8 +8,7 @@ creates, opens, activates or closes one (and at the first call that touches a
 document), and every executor job checks AutoCAD's active document against it
 before any document work. A mismatch is this refusal; nothing was written.
 
-Operator edits are not counted in the revision. The document events that
-could count them (``ObjectAdded`` / ``ObjectModified`` / ``ObjectErased``
+**Operator edits.** The document events that could count them (``ObjectAdded`` / ``ObjectModified`` / ``ObjectErased``
 through ``win32com.client.WithEvents``) were probed on AutoCAD 2026 on
 2026-10-24 on a scratch ``Documents.Add()`` document: once subscribed, the very
 next ``ModelSpace.AddLine`` from the subscribing STA thread raised
@@ -17,9 +16,44 @@ next ``ModelSpace.AddLine`` from the subscribing STA thread raised
 later ``Documents.Add`` the probe tried on that seat was refused with "Filer
 error" - still so on 2026-10-25 (with an explicit ``acadiso.dwt`` too), when
 ``Documents.Open`` of a freshly written DXF was refused with "Invalid
-execution context". They are not used: the live revision moves on this server's own writes
-only, and staleness on the live engine rests on the entity fingerprints of the
-change-preview contract (Task 12).
+execution context". No COM event sink is used.
+
+Instead a transient AutoLISP database reactor (``vlr-acdb-reactor`` on
+``:vlr-objectAppended`` / ``Modified`` / ``Erased`` / ``UnErased``, notification
+``all-documents``, never ``vlr-pers``) counts object changes in the bound
+document's own LISP namespace, and the server evaluates two fixed forms
+through ``VL.Application.16`` (``GetInterfaceObject``; its members are invoked
+by DISPID) - no ``SendCommand``, nothing written into the drawing. The guard
+reads the count at the start of every guarded job and compares it with the
+count the previous job left; a difference is one more revision
+(``ComBackend._edit_counter_start``), and ``refresh_document_identity`` lets a
+preview or a precondition check see a hand edit with no server call after it.
+
+Measured on AutoCAD 2026 (25.1) on 2026-10-26 on the run's own
+``Documents.Add()`` documents (scripts/smoke_operator_edits_com.py, result
+``benchmarks/results/live/operator_edits.json``): an entity added, moved, a
+property changed, deleted, a layer added and a layer property changed - each
+through COM, behind the server's back - move the revision by exactly one; a
+server write moves it by one, not two; a hand edit after a preview is refused by the revision
+itself; installing the reactor leaves DBMOD 0; an edit to another document
+does not move the bound one, and that document's own count catches it once
+it is bound again; a removed reactor (``vlr-remove``) is counted as an
+unwatched gap and installed again. One counter read costs ~1.2 ms, two per
+guarded job. Typed commands need the command line, which the smoke harness
+never drives; a raw probe on the same seat and day, on its own document,
+measured the reactor's count moving for the ERASE, LINE and MOVE commands and
+for U, and not for ZOOM.
+
+What it does **not** count: a view change (ZOOM) and a system variable
+written with ``SetVariable`` (measured, the probe and the smoke: neither
+moves the count - neither is a database object); an edit made while one of this server's own calls
+runs (folded into that call); and anything at all when Visual LISP is
+unavailable or a counter read fails - the revision then counts this
+server's writes only and ``system_status.operator_edits`` says
+``counted: false`` with the reason. While the operator leaves a command
+waiting for input AutoCAD refuses every COM call (``RPC_E_CALL_REJECTED``,
+measured), so no read of any kind happens then. The entity fingerprints of
+the change-preview contract (Task 12) still back every apply.
 
 The guard itself was measured on AutoCAD 2026 (25.1) on 2026-10-26, once the
 seat accepted ``Documents.Add()`` again, by ``scripts/smoke_document_com.py``

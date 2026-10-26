@@ -28,8 +28,10 @@ box meets the region (closed intervals). An entity with no finite box (XLINE,
 RAY, a reference to an empty block) is not in it.
 
 **Revision** is ``document_identity()["revision"]`` (Task 9): it moves when
-content changes through the server. A direct edit of the document that does not
-pass through the server leaves it where it was; the fingerprints catch that.
+content changes through the server. Headless, a direct edit of the file that
+does not pass through the server leaves it where it was; live, the operator's
+edits to database objects move it too (backends/document_guard.py names what
+that counter misses). The fingerprints catch a direct edit either way.
 
 **Interleaving.** An apply made of several locked calls (``cad_batch`` steps,
 ``drawing_refine`` repairs, ``pid_from_spec`` items) lets other calls run
@@ -190,10 +192,16 @@ async def region_fingerprint(backend, bbox: tuple[float, float, float, float]) -
 
 
 async def read_identity(backend) -> dict:
-    """``backend.document_identity()``, awaited when the engine made it a coroutine."""
+    """``backend.document_identity()``, awaited when the engine made it a coroutine.
+
+    An engine that counts outside edits lazily (the live one's
+    ``refresh_document_identity``) folds them in first."""
     reader = getattr(backend, "document_identity", None)
     if reader is None:
         return {"document_id": None, "revision": None}
+    refresh = getattr(backend, "refresh_document_identity", None)
+    if refresh is not None:
+        await refresh()
     value = reader()
     if inspect.isawaitable(value):
         value = await value

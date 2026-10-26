@@ -98,6 +98,14 @@ says where it went. Spec: `docs/superpowers/specs/2026-10-24-v1.7.0-design.md`.
   `transaction_commit` / `transaction_rollback` address the bound document.
   A document belongs to one running AutoCAD: after a restart even an unsaved
   `Drawing1.dwg` is a new document with a new id (`application_changed`).
+  The live revision also moves, once per gap between two server calls, when
+  the operator edited database objects of the bound document by hand: a
+  transient AutoLISP database reactor counts them in the document's own
+  namespace and the server reads it through `VL.Application.16` - no COM
+  event sink, no `SendCommand`, nothing saved into the drawing, ~1.2 ms per
+  read and two reads per guarded call. A preview or precondition check reads
+  it first, so a stale `expected_revision` is refused by the revision itself;
+  `system_status.operator_edits` reports whether it is counting.
 - **Operation records and client ids (B12).** One record per call in a
   bounded in-memory journal (operation id, tool, request hash, state,
   document id, revision before and after, error kind); states `committed`,
@@ -153,7 +161,9 @@ says where it went. Spec: `docs/superpowers/specs/2026-10-24-v1.7.0-design.md`.
   verification. `scripts/smoke_document_com.py` measures the bound-document
   guard itself on two unsaved documents of its own (the refusal, the
   screenshot refusal, the hand-back after a snapshot, re-binding, the
-  application identity). The results are committed under
+  application identity), and `scripts/smoke_operator_edits_com.py` measures
+  which operator edits move the live revision and what the counter costs.
+  The results are committed under
   `benchmarks/results/live/`.
 - **Benchmark matrix v8 (B56).** v7 plus ten tasks: `requirements_roundtrip`,
   `cancel_safety`, `qa_large_drawing`, `export_safety`, `stale_preview`, and
@@ -288,10 +298,12 @@ Recorded in the spec, not dropped:
 - **Electrical schematics are 1.9.0.** The AutoLISP allowlist (F08) is not in
   this release; the command filter is still a denylist.
 - **Plant 3D is not planned.**
-- **The live revision counts this server's writes only.** AutoCAD's document
-  events left the seat refusing `Documents.Add()` when a sink was attached
-  (probed 2026-10-24), so an edit the operator makes by hand does not move
-  `revision`; live staleness rests on the preview's entity fingerprints.
+- **The live revision sees object edits only.** No COM event sink (one left
+  the seat refusing `Documents.Add()`, probed 2026-10-24): a transient
+  AutoLISP database reactor read through `VL.Application.16` counts the
+  operator's edits to database objects. A view change, a `SetVariable` and an
+  edit made during a server call do not move `revision`, and without Visual
+  LISP it counts this server's writes only (`system_status.operator_edits`).
 - **The skill's A/B evaluation ran one case once** (`saved-not-in-memory`:
   the full plugin 1.0, no plugin 0.0, 0.36 USD). The budgeted run of all
   twenty cases × three arms is the maintainer's, at release time.
