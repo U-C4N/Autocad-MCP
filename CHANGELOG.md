@@ -179,11 +179,15 @@ says where it went. Spec: `docs/superpowers/specs/2026-10-24-v1.7.0-design.md`.
   the call's deadline is quarantined (`cancelled_then_deadline`). A read-only
   overrun is never quarantined: it is detached, other calls on its document
   are refused `busy` by name while `drawing_open` / `drawing_new` /
-  `drawing_close` / `document_activate` / `document_close` work at once, and
-  no restart is ever needed. A call's document is taken once it holds the
-  lock, not at entry. A cancelled `transaction_begin` no longer leaves its
-  checkpoint open, and a cancelled `cad_batch` checks its rollback's answer.
-  Workers run on daemon threads; `call_outcomes` are in `system_status`.
+  `drawing_close` / `document_activate` / `document_close` and `document_list`
+  go through without waiting for it, and no restart is needed (with
+  `EZDXF_CALL_TIMEOUT=0` nothing is detached: a runaway call holds every
+  call until it ends). A read that computes holds the GIL, so answers stay
+  slow until it ends - measured in the README. A call's document is taken
+  once it holds the lock, not at entry. A cancelled `transaction_begin` no
+  longer leaves its checkpoint open, and a cancelled `cad_batch` checks its
+  rollback's answer and fingerprint and closes any checkpoint a step opened
+  above its own. Workers run on daemon threads; `call_outcomes` are in `system_status`.
 - **QA scans stopped early and failed open (B02).** `drawing_critique`, the
   validator, `drawing_finalize` and `drawing_deliver` read one snapshot of
   every space and every entity (a construction line at position 5,001, a

@@ -387,8 +387,9 @@ class DetachedRead:
     *detached*: every other call on that document is refused by name (a
     ``DocumentBusyError``) until the read ends, and the exits that replace the
     document object - ``drawing_open`` / ``drawing_new`` / ``drawing_close`` /
-    ``document_activate`` / ``document_close`` - work at once, so nothing ever
-    needs a restart.
+    ``document_activate`` / ``document_close`` - do not wait for it, so nothing
+    needs a restart. They are not answered at once while the read computes: its
+    worker holds the GIL (``EzdxfBackend._async`` has the measurement).
 
     ``document`` is the ``Drawing`` object itself, not its ``id()``: the record
     keeps it alive until the read ends anyway, and an id could be reused by a
@@ -486,7 +487,8 @@ def detached_read_refusal(record: DetachedRead) -> DocumentBusyError:
         "cannot change it, so the document is NOT quarantined, but every other call on "
         "it is refused until the read ends - the refusal then lifts by itself. To go on "
         f"now, use {', '.join(DETACHED_READ_EXITS)}: they replace the document object "
-        "the read holds, so nothing races it; document_list() names the other "
+        "the read holds, so nothing races it, and do not wait for it (while it "
+        "computes, every answer is slower); document_list() names the other "
         "documents and also answers. No restart is needed; system_status() reports "
         "the read.",
     )

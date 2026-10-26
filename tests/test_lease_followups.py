@@ -17,7 +17,10 @@ swap wakes them at once and the new state answers them.
 
 Ordering is by ``threading.Event`` and ``asyncio`` futures, never by a sleep
 race. The only clocks are the deadlines under test; the "at once" bounds are
-measured with ``time.perf_counter`` and stated with their margin.
+measured with ``time.perf_counter`` and stated with their margin. They hold
+for these gated workers, which wait on an Event and so leave the GIL free; a
+worker that computes starves the event loop and every answer is slower until
+it ends (review minor 5; ``EzdxfBackend._async`` states the measurement).
 """
 
 from __future__ import annotations

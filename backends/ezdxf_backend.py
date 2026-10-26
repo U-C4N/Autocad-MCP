@@ -2546,15 +2546,23 @@ class EzdxfBackend(AutoCADBackend):
           ``readonly_overrun`` row is written, every other call on its
           document is refused by name (``DocumentBusyError``), and the exits
           (``quarantine_exit`` / ``detached_read_exit``: drawing_open /
-          drawing_new / drawing_close / document_activate / document_close)
-          go through at once, swapping out the lock the read holds — they
-          replace the document object the read holds, so nothing races it;
+          drawing_new / drawing_close / document_activate / document_close,
+          and document_list) do not wait for it, swapping out the lock the
+          read holds — they replace the document object the read holds (or,
+          document_list, only read the registry), so nothing races it. Not
+          waiting is not answering at once: a read that computes holds the
+          GIL and the event loop runs only in its switch slices, so every
+          answer is slow until the read ends (measured: an 8 s CPU-bound read
+          at a 1 s deadline - its own error at 5.1-5.5 s, a busy refusal in
+          1.2-1.8 s, drawing_new in 0.6-1.3 s; a read waiting on I/O leaves
+          the GIL free and they answer in milliseconds);
         - a swapped lock wakes its queue at once (``_DocLock.orphan``): a call
           queued on it is answered by the new state — a refusal, or a retry
           on the fresh lock for an exit — never by its own timeout;
         - ``EZDXF_CALL_TIMEOUT=0``: no deadline, so nothing is ever abandoned,
           quarantined or detached; a cancelled call's lease is still held
-          until its worker ends.
+          until its worker ends, and every later call - the exits included -
+          queues behind it: a runaway is freed only by its end or a restart.
 
         The document a call runs against (``Drawing``, path and identity) is
         captured once it holds the lock, right before its worker is submitted -
@@ -2659,9 +2667,10 @@ class EzdxfBackend(AutoCADBackend):
                     "the document is NOT quarantined. Its worker cannot be cancelled and still "
                     "reads the drawing, so until it finishes every other call on this document "
                     "answers 'busy' by name; drawing_open(path), drawing_new(), drawing_close(), "
-                    "document_activate(<another document>) and document_close() work right "
-                    "away. Raise EZDXF_CALL_TIMEOUT (seconds; 0 disables the timeout "
-                    "entirely) if this read is legitimately slow."
+                    "document_activate(<another document>) and document_close() do not wait for "
+                    "it (while it computes, every answer is slower). Raise EZDXF_CALL_TIMEOUT "
+                    "(seconds; 0 disables the timeout entirely - then nothing is detached and a "
+                    "runaway read holds every call) if this read is legitimately slow."
                 ) from exc
             self._orphan_lock(lock)
             self._quarantine_document(
