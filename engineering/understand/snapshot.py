@@ -54,6 +54,7 @@ reads block definitions into ``Snapshot.blocks``; exploding them is
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import os
 import re
@@ -88,6 +89,8 @@ Pt = tuple[float, float]
 
 #: ezdxf's placeholder for an extents header nobody computed.
 _UNSET_EXTENT = 1e19
+log = logging.getLogger(__name__)
+
 #: The live export's base name inside its temporary folder.
 _SNAP_BASE = "snap"
 
@@ -528,6 +531,33 @@ def _already_open(app, path: str):
     return None
 
 
+def _close_and_hand_back(backend, app, opened) -> Exception | None:
+    """Close a document this job opened, then make the bound one active again.
+
+    COM thread. Both steps are attempted, whatever the other did: AutoCAD
+    activates whichever document it likes after a ``Close`` (B11), and a
+    ``Close`` that raised may have left the opened document active - either
+    way the session's bound document is re-activated in this same job, so the
+    next call is not refused for a switch the server made. Returns the first
+    failure (logged) instead of raising, so the caller decides whether it may
+    replace an error already in flight - it never does.
+    """
+    problem: Exception | None = None
+    try:
+        opened.Close(False)
+    except Exception as exc:  # noqa: BLE001 - returned below
+        log.warning("the snapshot's read-only document did not close: %s", exc)
+        problem = exc
+    reactivate = getattr(backend, "_reactivate_bound_sync", None)
+    if reactivate is not None:
+        try:
+            reactivate(app)
+        except Exception as exc:  # noqa: BLE001 - returned below
+            log.warning("the bound document could not be made active again: %s", exc)
+            problem = problem or exc
+    return problem
+
+
 def _com_export(backend, path: str | None) -> tuple[str, str, str]:
     """(snapshot file, its temporary folder, source) - runs on the COM thread."""
     from backends import com_backend as com
@@ -545,6 +575,7 @@ def _com_export(backend, path: str | None) -> tuple[str, str, str]:
             opened = app.Documents.Open(str(path), True)  # read-only
             doc = opened
     folder = tempfile.mkdtemp(prefix="acadmcp_snap_")
+    exported = False
     try:
         name = str(backend._wait_out_rejected_call(lambda: doc.Name))
         selection = doc.SelectionSets.Add(f"_SNAP_{uuid.uuid4().hex[:8]}")
@@ -558,18 +589,18 @@ def _com_export(backend, path: str | None) -> tuple[str, str, str]:
                 selection.Delete()
             except Exception:  # a selection set left behind is harmless; the export is not
                 pass
+        exported = True
     except Exception:
         shutil.rmtree(folder, ignore_errors=True)
         raise
     finally:
         if opened is not None:
-            opened.Close(False)
-            # B11: AutoCAD activates whichever document it likes after the
-            # Close; the session's bound document is made active again in this
-            # same job, so the next call is not refused for a switch it made.
-            reactivate = getattr(backend, "_reactivate_bound_sync", None)
-            if reactivate is not None:
-                reactivate(app)
+            problem = _close_and_hand_back(backend, app, opened)
+            if problem is not None and exported:
+                # The export's own error, when there is one, is the one raised;
+                # otherwise the close / hand-back failure is, never silence.
+                shutil.rmtree(folder, ignore_errors=True)
+                raise problem
     written = sorted(Path(folder).glob(f"{_SNAP_BASE}.*"))
     if not written:
         shutil.rmtree(folder, ignore_errors=True)

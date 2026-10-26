@@ -32,7 +32,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from backends.quarantine import DocumentQuarantineError
+from backends.quarantine import DOCUMENT_REFUSALS
 from version import __version__
 
 from .scoring import combine
@@ -493,8 +493,8 @@ async def deliver_drawing(
     source_started = time.perf_counter()
     try:
         source = await source_revision(backend)
-    except DocumentQuarantineError:
-        raise  # a RuntimeError subclass: a quarantined document is refused, never delivered
+    except DOCUMENT_REFUSALS:
+        raise  # RuntimeError subclasses: a quarantined or switched document is refused
     except (ValueError, OSError, RuntimeError) as exc:
         source_error = str(exc) or type(exc).__name__
     timings["source_ms"] = round((time.perf_counter() - source_started) * 1000, 2)
@@ -532,6 +532,8 @@ async def deliver_drawing(
                     raise RuntimeError("backend returned no PNG bytes")
                 artifact_path.write_bytes(png)
             artifacts.append(_artifact_record(fmt, artifact_path, status="created"))
+        except DOCUMENT_REFUSALS:
+            raise  # e.g. the PNG of a switched seat: refused, never a "failed" artifact
         except Exception as exc:
             artifacts.append(_artifact_record(fmt, artifact_path, status="failed", error=str(exc)))
         finally:

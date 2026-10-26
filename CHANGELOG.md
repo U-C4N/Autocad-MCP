@@ -87,11 +87,17 @@ says where it went. Spec: `docs/superpowers/specs/2026-10-24-v1.7.0-design.md`.
   `document_id` and a content `revision` (`system_status`, `drawing_info`,
   `document_list`). Headless, the revision moves on every mutation, undo,
   redo and rollback, never on a save, export, finalize or delivery; live, on
-  each of the 98 content-changing `ComBackend` methods. The live engine binds
-  the document a call chose, and a call made after the operator switched
-  AutoCAD's active document is refused `active_document_changed` (naming the
-  bound and the active document) before anything is read or written;
+  each of the 98 content-changing `ComBackend` methods once the call hands
+  work to AutoCAD (an argument refusal before that moves nothing, as
+  headlessly). The live engine binds the document a call chose, and a call
+  made after the operator switched AutoCAD's active document is refused
+  `active_document_changed` (naming the bound and the active document) before
+  anything is read or written - `view_screenshot` included, checked again
+  after the capture - and the QA readers (validator, critique, delivery) pass
+  the refusal on typed instead of reporting a failed check;
   `transaction_commit` / `transaction_rollback` address the bound document.
+  A document belongs to one running AutoCAD: after a restart even an unsaved
+  `Drawing1.dwg` is a new document with a new id (`application_changed`).
 - **Operation records and client ids (B12).** One record per call in a
   bounded in-memory journal (operation id, tool, request hash, state,
   document id, revision before and after, error kind); states `committed`,
@@ -144,7 +150,11 @@ says where it went. Spec: `docs/superpowers/specs/2026-10-24-v1.7.0-design.md`.
   `scripts/smoke_*_com.py` assert on it (the P&ID smoke no longer passes on
   `dangling` alone), and `scripts/smoke_verify_com.py` covers the bound
   document, HATCH and DIMENSION read-back, Export delivery and saved-file
-  verification. The results are committed under `benchmarks/results/live/`.
+  verification. `scripts/smoke_document_com.py` measures the bound-document
+  guard itself on two unsaved documents of its own (the refusal, the
+  screenshot refusal, the hand-back after a snapshot, re-binding, the
+  application identity). The results are committed under
+  `benchmarks/results/live/`.
 - **Benchmark matrix v8 (B56).** v7 plus ten tasks: `requirements_roundtrip`,
   `cancel_safety`, `qa_large_drawing`, `export_safety`, `stale_preview`, and
   the rivals' ground (`revision_guarded_edit`, `pid_file_roundtrip`,

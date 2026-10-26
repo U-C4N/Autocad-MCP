@@ -11,7 +11,7 @@ import asyncio
 import math
 from typing import TYPE_CHECKING
 
-from backends.quarantine import DocumentQuarantineError, quarantine_refusal
+from backends.quarantine import DOCUMENT_REFUSALS, quarantine_refusal
 
 from .layers import ENGINEERING_LAYERS
 from .plan_spec import (
@@ -500,13 +500,15 @@ async def _run_check(check, focus: str, backend: AutoCADBackend, shared: dict) -
     """One check; a failure becomes an ``error`` issue of that focus, never silence.
 
     A ``DocumentQuarantineError`` propagates: the document is untrusted and the
-    caller must be told so, not handed a finding about it.
+    caller must be told so, not handed a finding about it. So does the live
+    engine's ``ActiveDocumentChangedError``: the check read nothing of the
+    bound document (``DOCUMENT_REFUSALS``).
     """
     try:
         if getattr(check, "needs_shared", False):
             return await check(backend, shared)
         return await check(backend)
-    except DocumentQuarantineError:
+    except DOCUMENT_REFUSALS:
         raise
     except Exception as exc:  # noqa: BLE001 - reported as check_failed below
         error = f"{type(exc).__name__}: {exc}"

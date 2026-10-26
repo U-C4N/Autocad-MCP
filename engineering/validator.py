@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from backends.quarantine import DocumentQuarantineError
+from backends.quarantine import DOCUMENT_REFUSALS
 
 from .qa_scan import qa_snapshot
 from .understand.snapshot import dxf_version_of
@@ -134,7 +134,8 @@ class DrawingValidator:
         dict ``run_critique`` will receive so a finalize reads the drawing
         once. A read that did not cover the drawing is an ``error`` finding
         ``scan_incomplete``; a step that raises is a finding naming the step;
-        a quarantine refusal propagates. Nothing is swallowed.
+        a quarantine refusal, or a live active-document switch, propagates
+        (``DOCUMENT_REFUSALS``). Nothing is swallowed.
 
         ``delivered_path`` is the delivery context (``drawing_deliver``): the
         bundle's canonical DXF. Steps 6 and 8 then check that file - on disk,
@@ -210,7 +211,7 @@ class DrawingValidator:
                         {"missing": missing},
                     )
                 )
-        except DocumentQuarantineError:
+        except DOCUMENT_REFUSALS:
             raise
         except Exception as exc:
             findings.append(
@@ -311,7 +312,7 @@ class DrawingValidator:
                         "Screenshot returned no bytes (ezdxf needs matplotlib install)",
                     )
                 )
-        except DocumentQuarantineError:
+        except DOCUMENT_REFUSALS:
             raise
         except Exception as exc:
             findings.append(
@@ -359,7 +360,7 @@ class DrawingValidator:
                         f"Drawing reports saved=True but file not on disk: {full_path}",
                     )
                 )
-        except DocumentQuarantineError:
+        except DOCUMENT_REFUSALS:
             raise
         except Exception as exc:
             findings.append(
@@ -382,7 +383,7 @@ class DrawingValidator:
                         "drawing_info.full_path is empty",
                     )
                 )
-        except DocumentQuarantineError:
+        except DOCUMENT_REFUSALS:
             raise
         except Exception as exc:
             findings.append(

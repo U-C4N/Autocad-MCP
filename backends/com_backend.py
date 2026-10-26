@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import concurrent.futures
+import contextvars
 import functools
 import io
 import logging
@@ -64,6 +65,7 @@ if _WIN32_AVAILABLE:
         import win32com.client
         import win32con  # noqa: F401
         import win32gui
+        import win32process
         import win32ui
 
         _COM_IMPORTS_OK = True
@@ -129,7 +131,7 @@ except ImportError:
 # COM thread-state (accessed ONLY from the COM executor thread)
 # ---------------------------------------------------------------------------
 
-_COM_STATE: dict[str, Any] = {}  # keys: "app"
+_COM_STATE: dict[str, Any] = {}  # keys: "app", "app_identity"
 
 #: Per-thread state of the executor job running now (B11): ``guard`` is the
 #: ``_JobGuard`` that ``_acad_doc()`` consults. Thread-local, not in
@@ -170,7 +172,7 @@ def _com_teardown():
     paired with a CoUninitialize when the worker is torn down or a stuck
     SendCommand eventually unblocks, instead of leaking the apartment forever.
     """
-    _COM_STATE.pop("app", None)
+    _drop_app()
     if _COM_IMPORTS_OK:
         try:
             pythoncom.CoUninitialize()
@@ -271,6 +273,45 @@ def _acad_app():
                     f"{config.DEFAULT_CAD_PROGID!r}.)"
                 ) from exc
     return _COM_STATE["app"]
+
+
+def _drop_app() -> None:
+    """Forget the cached Application proxy (and the identity read from it)."""
+    _COM_STATE.pop("app", None)
+    _COM_STATE.pop("app_identity", None)
+
+
+def _app_identity(app) -> tuple:
+    """Which running AutoCAD ``app`` is: ``(HWND, process id)`` of its main window.
+
+    A document is one document of one application (B11): an unsaved
+    ``Drawing1.dwg`` has the key ``('Drawing1.dwg', '')`` in every AutoCAD, so
+    after a restart the new one must not inherit the old one's id. Measured on
+    AutoCAD 2026 (25.1) on 2026-10-26: ``Application.HWND`` is an ``int`` and
+    two proxies from two ``GetActiveObject`` calls report the same one
+    (scripts/smoke_document_com.py). Read once per proxy and cached beside it,
+    so the guard costs no extra round trip. A proxy whose HWND cannot be read
+    is identified by itself - conservative: a re-attach is then refused as a
+    changed application once, and ``document_activate`` binds again.
+    """
+    cached = _COM_STATE.get("app_identity")
+    if cached is not None and cached[0] is app:
+        return cached[1]
+    try:
+        hwnd = int(app.HWND)
+    except Exception as exc:  # noqa: BLE001 - identified by the proxy instead
+        log.debug("Application.HWND unreadable (%s); identifying the proxy itself", exc)
+        identity: tuple = ("proxy", id(app))
+    else:
+        pid = None
+        if _COM_IMPORTS_OK:
+            try:
+                pid = int(win32process.GetWindowThreadProcessId(hwnd)[1]) or None
+            except Exception as exc:  # noqa: BLE001 - the HWND alone still tells two apart
+                log.debug("GetWindowThreadProcessId(%s) failed: %s", hwnd, exc)
+        identity = ("hwnd", hwnd, pid)
+    _COM_STATE["app_identity"] = (app, identity)
+    return identity
 
 
 #: ``AcSaveAsType`` template constants, newest first: ac2018_Template,
@@ -1822,18 +1863,41 @@ def _capture_window(hwnd: int) -> bytes | None:
 # ---------------------------------------------------------------------------
 
 
+#: The ``_mutating`` call running in this task: ``_run`` marks it ``reached``
+#: when it hands a job to the COM thread. A task copies the context, so a
+#: ``gather``-ed sub-call marks the same holder.
+_MUTATION_PROBE: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "acadmcp_mutation_probe", default=None
+)
+
+
+def _note_reached() -> None:
+    """The running ``_mutating`` call handed work to AutoCAD (see ``_run``)."""
+    probe = _MUTATION_PROBE.get()
+    if probe is not None:
+        probe["reached"] = True
+
+
 def _mutating(method):
     """Bump the bound document's content revision after ``method`` (B11).
 
-    On success and on failure - a write that raised may have landed in part,
-    so the revision moves - and never on ``ActiveDocumentChangedError``, which
-    is raised before anything reaches AutoCAD. Applied by name from
-    ``_MUTATING_METHODS``, never from a tool's cost class: that class counts
-    save and deliver as mutations, and ``cad_batch`` steps bypass it.
+    Only when the call handed work to AutoCAD - on success and on failure: a
+    write that raised may have landed in part, so the revision moves. Never on
+    ``ActiveDocumentChangedError``, which is raised before anything reaches
+    AutoCAD, and never for a call that returned or raised before its first
+    job (an argument refusal, ``transaction_rollback`` with no transaction),
+    which is what the headless revision does too. A refusal raised *inside* a
+    job still moves it: from outside a job a refusal and a partial write look
+    alike, and the safe error is one stale_revision too many. Applied by name
+    from ``_MUTATING_METHODS``, never from a tool's cost class: that class
+    counts save and deliver as mutations, and ``cad_batch`` steps bypass it.
     """
 
     @functools.wraps(method)
     async def wrapper(self, *args, **kwargs):
+        probe = {"reached": False}
+        outer = _MUTATION_PROBE.get()
+        token = _MUTATION_PROBE.set(probe)
         refused = False
         try:
             return await method(self, *args, **kwargs)
@@ -1841,7 +1905,10 @@ def _mutating(method):
             refused = True
             raise
         finally:
-            if not refused:
+            _MUTATION_PROBE.reset(token)
+            if probe["reached"] and outer is not None:
+                outer["reached"] = True  # a nested mutating call reached AutoCAD for both
+            if probe["reached"] and not refused:
                 self._bump_revision()
 
     wrapper.__acadmcp_mutating__ = True
@@ -1868,9 +1935,11 @@ class ComBackend(AutoCADBackend):
         self._transaction_active = False
         self._document_scope_key: tuple[str, str] | None = None
         # v1.7.0 (B11): the bound document and every document this session has
-        # bound, keyed by (Name, FullName) -> {"document_id", "revision"}.
+        # bound, keyed by (application, Name, FullName) -> {"document_id",
+        # "revision"}; the application is ``_app_identity``, so a restarted
+        # AutoCAD's documents are new documents whatever their names.
         self._bound: dict | None = None
-        self._known_documents: dict[tuple[str, str], dict] = {}
+        self._known_documents: dict[tuple, dict] = {}
 
     @property
     def name(self) -> str:
@@ -1899,7 +1968,7 @@ class ComBackend(AutoCADBackend):
                 "path": None,
                 "backend": "com",
             }
-        entry = self._known_documents.get((bound["name"], bound["full_name"])) or {}
+        entry = self._known_documents.get(self._bound_entry_key()) or {}
         return {
             "document_id": bound["document_id"],
             "revision": int(entry.get("revision", 0)),
@@ -2114,37 +2183,56 @@ class ComBackend(AutoCADBackend):
         refused with ``ActiveDocumentChangedError`` before anything is written.
         """
         doc, key = self._active_key_sync(app)
+        application = _app_identity(app)
         if self._bound is None:
             if key is None:
                 raise RuntimeError(
                     "No drawing is open in AutoCAD. Open or create a .dwg file first."
                 )
-            self._bind_key(key)
+            self._bind_key(key, application)
             return doc
-        if key != (self._bound["name"], self._bound["full_name"]):
-            raise ActiveDocumentChangedError(self._bound_view(), self._view_of(key))
+        restarted = self._bound["app"] != application
+        if restarted or key != (self._bound["name"], self._bound["full_name"]):
+            raise ActiveDocumentChangedError(
+                self._bound_view(),
+                self._view_of(key, application),
+                application_changed=restarted,
+            )
         return doc
 
-    def _bind_key(self, key: tuple[str, str]) -> bool:
-        """Bind ``key``; True when that is a different document than before."""
-        entry = self._known_documents.get(key)
+    def _bind_key(self, key: tuple[str, str], application: tuple | None = None) -> bool:
+        """Bind ``key`` in ``application``; True when that is another document than before."""
+        entry_key = (application, *key)
+        entry = self._known_documents.get(entry_key)
         if entry is None:
             entry = {"document_id": uuid.uuid4().hex, "revision": 0}
-            self._known_documents[key] = entry
+            self._known_documents[entry_key] = entry
         previous = None if self._bound is None else self._bound["document_id"]
-        self._bound = {"document_id": entry["document_id"], "name": key[0], "full_name": key[1]}
+        self._bound = {
+            "document_id": entry["document_id"],
+            "name": key[0],
+            "full_name": key[1],
+            "app": application,
+        }
         self._document_scope_key = key
         return previous != entry["document_id"]
 
+    def _bound_entry_key(self) -> tuple | None:
+        bound = self._bound
+        if bound is None:
+            return None
+        return (bound["app"], bound["name"], bound["full_name"])
+
     def _bind_active_sync(self) -> bool:
         """Bind whatever AutoCAD now has active (COM thread); True when that changed."""
-        _doc, key = self._active_key_sync(_acad_app())
+        app = _acad_app()
+        _doc, key = self._active_key_sync(app)
         if key is None:
             changed = self._bound is not None
             self._bound = None
             self._document_scope_key = None
             return changed
-        return self._bind_key(key)
+        return self._bind_key(key, _app_identity(app))
 
     async def _rebind(self) -> None:
         """After a call that chose a document: bind the active one, reset state on a change.
@@ -2168,23 +2256,30 @@ class ComBackend(AutoCADBackend):
         new = self._wait_out_rejected_call(lambda: (str(doc.Name), str(doc.FullName)))
         if new == old:
             return
-        entry = self._known_documents.pop(old, None) or {
+        application = bound["app"]
+        entry = self._known_documents.pop((application, *old), None) or {
             "document_id": bound["document_id"],
             "revision": 0,
         }
-        self._known_documents[new] = entry
-        self._bound = {"document_id": entry["document_id"], "name": new[0], "full_name": new[1]}
+        self._known_documents[(application, *new)] = entry
+        self._bound = {
+            "document_id": entry["document_id"],
+            "name": new[0],
+            "full_name": new[1],
+            "app": application,
+        }
         self._document_scope_key = new
 
     def _reactivate_bound_sync(self, app) -> bool:
         """Make the bound document active again after a job opened and closed another.
 
         COM thread. True when it had to activate it; False when it already was,
-        when nothing is bound, or when the bound document is gone (the next
-        guarded call then refuses by name).
+        when nothing is bound, or when the bound document is gone - closed, or
+        in an AutoCAD that is no longer the one attached (the next guarded call
+        then refuses by name).
         """
         bound = self._bound
-        if bound is None:
+        if bound is None or bound["app"] != _app_identity(app):
             return False
         key = (bound["name"], bound["full_name"])
 
@@ -2210,15 +2305,14 @@ class ComBackend(AutoCADBackend):
 
     def _bump_revision(self) -> None:
         """One more content revision on the bound document (see ``_mutating``)."""
-        bound = getattr(self, "_bound", None)
-        if bound is None:
+        if getattr(self, "_bound", None) is None:
             return
-        entry = self._known_documents.get((bound["name"], bound["full_name"]))
+        entry = self._known_documents.get(self._bound_entry_key())
         if entry is not None:
             entry["revision"] += 1
 
-    def _identity_of_key(self, key: tuple[str, str]) -> dict:
-        entry = self._known_documents.get(key)
+    def _identity_of_key(self, key: tuple[str, str], application: tuple | None = None) -> dict:
+        entry = self._known_documents.get((application, *key))
         return {
             "document_id": entry["document_id"] if entry else None,
             "revision": entry["revision"] if entry else None,
@@ -2232,11 +2326,13 @@ class ComBackend(AutoCADBackend):
             "path": bound["full_name"] or None,
         }
 
-    def _view_of(self, key: tuple[str, str] | None) -> dict | None:
+    def _view_of(
+        self, key: tuple[str, str] | None, application: tuple | None = None
+    ) -> dict | None:
         if key is None:
             return None
         return {
-            "document_id": self._identity_of_key(key)["document_id"],
+            "document_id": self._identity_of_key(key, application)["document_id"],
             "name": key[0],
             "path": key[1] or None,
         }
@@ -2301,6 +2397,7 @@ class ComBackend(AutoCADBackend):
                 CURRENT_OPERATION.reset(token)
 
         work = self._executor.submit(_job)
+        _note_reached()  # B11: from here a `_mutating` call may have written
         future = asyncio.wrap_future(work, loop=loop)
         try:
             if timeout > 0:
@@ -2349,7 +2446,7 @@ class ComBackend(AutoCADBackend):
                 except Exception:
                     pass
                 stuck.shutdown(wait=False)
-            _COM_STATE.pop("app", None)
+            _drop_app()
             self._connected = False
             raise RuntimeError(
                 f"AutoCAD did not respond within {timeout:.0f}s. The application "
@@ -2363,7 +2460,7 @@ class ComBackend(AutoCADBackend):
         except _COM_ERROR as e:
             hr = e.args[0] if e.args else 0
             if hr in (-2147221246, -2147221005, -2147417842):
-                _COM_STATE.pop("app", None)
+                _drop_app()
                 self._connected = False
             raise RuntimeError(
                 f"AutoCAD COM error ({hr:#010x}): {e.args[1] if len(e.args) > 1 else e}"
@@ -3155,9 +3252,10 @@ class ComBackend(AutoCADBackend):
             name = str(doc.Name)
             path = str(doc.FullName) or None
             bound = self._bound
-            closes_bound = bound is not None and (name, str(doc.FullName)) == (
-                bound["name"],
-                bound["full_name"],
+            closes_bound = (
+                bound is not None
+                and bound["app"] == _app_identity(app)
+                and (name, str(doc.FullName)) == (bound["name"], bound["full_name"])
             )
             dirty = not bool(doc.Saved)
             if dirty:
@@ -7433,11 +7531,28 @@ class ComBackend(AutoCADBackend):
         )
 
     async def view_screenshot(self, overlay_handles: bool = False) -> bytes | None:
+        """The AutoCAD window - of the bound document, or refused (B11).
+
+        A screenshot is evidence about this session's document, so it is
+        guarded like any read: checked before the capture, and checked again
+        after it, because the pixels come from whatever drawing the window
+        shows and an operator's tab click during the capture would hand back
+        another drawing's image. With nothing bound and nothing open the empty
+        application window is captured as before.
+        """
+
         def _sync():
+            app = _acad_app()
+            guarded = self._bound is not None or int(app.Documents.Count) > 0
+            if guarded:
+                self._guard(app)  # bound with nothing open is refused typed, too
             hwnd = _find_autocad_hwnd()
             if hwnd is None:
                 return None
-            return _capture_window(hwnd)
+            image = _capture_window(hwnd)
+            if guarded:
+                self._guard(app)
+            return image
 
         return await self._run(_sync)
 
@@ -7578,7 +7693,10 @@ class ComBackend(AutoCADBackend):
                     if bound is None
                     else {"name": bound["name"], "path": bound["full_name"] or None},
                     "active_document_changed": bound is not None
-                    and active_key != (bound["name"], bound["full_name"]),
+                    and (
+                        active_key != (bound["name"], bound["full_name"])
+                        or bound["app"] != _app_identity(app)
+                    ),
                     "transaction_active": tx_active,
                     # Accurate capability list: the backend authors 2D entities
                     # (lines/arcs/circles/polylines/text/hatch/dims/blocks). It

@@ -198,6 +198,7 @@ def com_store(monkeypatch):
     backend = module.ComBackend()
 
     async def _run_inline(func, *args, **kwargs):
+        module._note_reached()  # what the real `_run` notes when it hands a job over
         return func(*args, **kwargs)
 
     monkeypatch.setattr(backend, "_run", _run_inline)

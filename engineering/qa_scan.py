@@ -51,7 +51,7 @@ from collections import Counter
 from dataclasses import dataclass, replace
 
 import config
-from backends.quarantine import DocumentQuarantineError, mark_readonly
+from backends.quarantine import DOCUMENT_REFUSALS, mark_readonly
 from engineering.understand.snapshot import (
     Snapshot,
     _box,
@@ -190,15 +190,16 @@ async def qa_snapshot(backend, shared: dict) -> tuple[Snapshot | None, ScanCover
     Returns ``(snapshot, coverage)``. ``snapshot`` is None when nothing was
     read (over ``MAX_QA_ENTITIES``, or the read failed); a live export whose
     counts disagree with AutoCAD's returns what it read with
-    ``coverage.complete`` False. A ``DocumentQuarantineError`` propagates and
-    is not cached.
+    ``coverage.complete`` False. A ``DocumentQuarantineError`` or a live
+    ``ActiveDocumentChangedError`` (``DOCUMENT_REFUSALS``) propagates, typed,
+    and is not cached.
     """
     cached = shared.get(QA_SNAPSHOT_KEY)
     if cached is not None:
         return cached
     try:
         result = await _read_all_spaces(backend)
-    except DocumentQuarantineError:
+    except DOCUMENT_REFUSALS:
         raise
     except Exception as exc:  # noqa: BLE001 - reported as an incomplete scan, never as clean
         reason = f"the drawing could not be read: {type(exc).__name__}: {exc}"
@@ -331,7 +332,7 @@ async def shared_index(shared: dict, key: str, build, backend):
         return cached
     try:
         value = await build(backend)
-    except DocumentQuarantineError:
+    except DOCUMENT_REFUSALS:
         raise
     except Exception as exc:
         shared[key] = _FailedBuild(exc)
