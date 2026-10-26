@@ -38,8 +38,8 @@ server write moves it by one, not two; a hand edit after a preview is refused by
 itself; installing the reactor leaves DBMOD 0; an edit to another document
 does not move the bound one, and that document's own count catches it once
 it is bound again; a removed reactor (``vlr-remove``) is counted as an
-unwatched gap and installed again. One counter read costs ~1.2 ms, two per
-guarded job. Typed commands need the command line, which the smoke harness
+unwatched gap and installed again. One counter read cost a median 1.18 ms
+in one run and 0.55 ms in the recorded one, two reads per guarded job. Typed commands need the command line, which the smoke harness
 never drives; a raw probe on the same seat and day, on its own document,
 measured the reactor's count moving for the ERASE, LINE and MOVE commands and
 for U, and not for ZOOM.

@@ -102,8 +102,8 @@ says where it went. Spec: `docs/superpowers/specs/2026-10-24-v1.7.0-design.md`.
   the operator edited database objects of the bound document by hand: a
   transient AutoLISP database reactor counts them in the document's own
   namespace and the server reads it through `VL.Application.16` - no COM
-  event sink, no `SendCommand`, nothing saved into the drawing, ~1.2 ms per
-  read and two reads per guarded call. A preview or precondition check reads
+  event sink, no `SendCommand`, nothing saved into the drawing, 0.6-1.2 ms
+  per read (median, two live runs) and two reads per guarded call. A preview or precondition check reads
   it first, so a stale `expected_revision` is refused by the revision itself;
   `system_status.operator_edits` reports whether it is counting.
 - **Operation records and client ids (B12).** One record per call in a
