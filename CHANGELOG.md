@@ -105,7 +105,10 @@ says where it went. Spec: `docs/superpowers/specs/2026-10-24-v1.7.0-design.md`.
   event sink, no `SendCommand`, nothing saved into the drawing, 0.6-1.2 ms
   per read (median, two live runs) and two reads per guarded call. A preview or precondition check reads
   it first, so a stale `expected_revision` is refused by the revision itself;
-  `system_status.operator_edits` reports whether it is counting.
+  `system_status.operator_edits` reports whether it is counting. Two servers
+  bound to one document (two clients on one seat) each keep their own id in
+  the shared namespace, so a read by one never moves the other's revision; a
+  write by one is an outside edit to the other.
 - **Operation records and client ids (B12).** One record per call in a
   bounded in-memory journal (operation id, tool, request hash, state,
   document id, revision before and after, error kind); states `committed`,
@@ -244,7 +247,10 @@ says where it went. Spec: `docs/superpowers/specs/2026-10-24-v1.7.0-design.md`.
 - Saved-file verification re-bound by handle onto whatever feature now held
   the handle: a partial renumbering that gave a bore's handle to a pin of the
   same type measured the pin. The handle stage now also needs the source's
-  geometry (or no other feature carrying it, for an in-place edit), the tag
+  geometry, or an in-place edit: no other feature carrying it except an
+  unchanged twin that already had it at its own handle (a double-drawn bore
+  edited in the file is measured and fails, never passed on the twin); an
+  edit beside a new feature drawn at the old geometry is ambiguous, the tag
   stage keeps to the source's space, and a source binding without a handle is
   never reported as "re-bound". An open document that is not shown to be the
   file's source (fewer than half of the entities match) makes the report

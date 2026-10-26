@@ -327,10 +327,15 @@ def _app_identity(app) -> tuple:
 # AutoCAD 2026 (25.1) on 2026-10-26 on scratch Documents.Add() documents
 # (scripts/smoke_operator_edits_com.py): see ``ComBackend._edit_counter_start``.
 
-#: Installs the reactor (once: ``vlr-added-p`` guards a second one), tags the
-#: namespace with the document id and answers ``"<id>:<count>"``. Not
-#: ``vlr-pers``: the reactor lives in the session and is never saved.
-#: ``all-documents`` keeps it counting while another drawing is active.
+#: Installs the reactor (once: ``vlr-added-p`` guards a second one), adds the
+#: document id to the namespace's ``acadmcp:edit-ids`` and answers
+#: ``"<id>:<count>"``. Not ``vlr-pers``: the reactor lives in the session and
+#: is never saved. ``all-documents`` keeps it counting while another drawing is
+#: active. The ids are a list, not one tag: two servers bound to one document
+#: (two clients on one seat) share the namespace and its count, and each must
+#: find its own id there - a single tag would make each one's install look,
+#: to the other, like a removed reactor, and their reads would move each
+#: other's revision for ever.
 _EDIT_COUNTER_INSTALL = (
     "(progn (vl-load-com)"
     " (if (null acadmcp:edit-n) (setq acadmcp:edit-n 0))"
@@ -340,15 +345,18 @@ _EDIT_COUNTER_INSTALL = (
     "(:vlr-objectAppended . acadmcp:edit-bump) (:vlr-objectModified . acadmcp:edit-bump)"
     " (:vlr-objectErased . acadmcp:edit-bump) (:vlr-objectUnErased . acadmcp:edit-bump))))"
     " (vlr-set-notification acadmcp:edit-r 'all-documents)))"
-    ' (setq acadmcp:edit-id "{document_id}")'
-    ' (strcat acadmcp:edit-id ":" (itoa acadmcp:edit-n)))'
+    ' (if (not (member "{document_id}" acadmcp:edit-ids))'
+    ' (setq acadmcp:edit-ids (cons "{document_id}" acadmcp:edit-ids)))'
+    ' (strcat "{document_id}" ":" (itoa acadmcp:edit-n)))'
 )
 
 #: ``"<id>:<count>"``, or nil when no reactor is installed (a namespace the
-#: server never installed into) or it was removed (``vlr-remove-all``).
+#: server never installed into), it was removed (``vlr-remove-all``) or this
+#: id was never added to the namespace (it is another document's, or a
+#: reopened one's).
 _EDIT_COUNTER_READ = (
-    "(if (and acadmcp:edit-r (vlr-added-p acadmcp:edit-r) acadmcp:edit-id)"
-    ' (strcat acadmcp:edit-id ":" (itoa acadmcp:edit-n)))'
+    '(if (and acadmcp:edit-r (vlr-added-p acadmcp:edit-r) (member "{document_id}" acadmcp:edit-ids))'
+    ' (strcat "{document_id}" ":" (itoa acadmcp:edit-n)))'
 )
 
 _VL_PROGID = "VL.Application.16"
@@ -418,7 +426,8 @@ def _vl_document_forms(app, document_id: str, *, fresh: bool):
     functions = _vl_get(_vl_get(vl, "ActiveDocument"), "Functions")
     reader = _vl_call(functions, "Item", "read")
     evaluator = _vl_call(functions, "Item", "eval")
-    forms = (reader, evaluator, _vl_call(reader, "funcall", _EDIT_COUNTER_READ))
+    source = _EDIT_COUNTER_READ.format(document_id=document_id)
+    forms = (reader, evaluator, _vl_call(reader, "funcall", source))
     docs[document_id] = forms
     return forms
 

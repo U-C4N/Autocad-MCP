@@ -35,13 +35,14 @@ class _Fn:
             return arg  # the "parsed" form is the source text itself
         self._seat.evals += 1
         ns = self._doc.lisp
+        document_id = re.search(r'\(member "([0-9a-f]+)" acadmcp:edit-ids\)', arg).group(1)
         if "vlr-acdb-reactor" in arg:
             ns.setdefault("n", 0)
             ns["reactor"] = True
-            ns["id"] = re.search(r'acadmcp:edit-id "([0-9a-f]+)"', arg).group(1)
-        elif not ns.get("reactor") or "id" not in ns:
+            ns.setdefault("ids", set()).add(document_id)
+        elif not ns.get("reactor") or document_id not in ns.get("ids", ()):
             return None
-        return f"{ns['id']}:{ns['n']}"
+        return f"{document_id}:{ns['n']}"
 
 
 class _Functions:
@@ -118,7 +119,7 @@ def com(seat):
 async def test_an_operator_edit_between_two_calls_moves_the_revision(com, seat):
     await com.system_set_variable("LTSCALE", 2.0)
     assert com.document_identity()["revision"] == 1
-    assert seat.first.lisp["id"] == com.document_identity()["document_id"]
+    assert seat.first.lisp["ids"] == {com.document_identity()["document_id"]}
 
     seat.first.changed()  # the operator moves a line by hand
     await com.system_get_variable("LTSCALE")
@@ -163,11 +164,11 @@ async def test_a_removed_reactor_counts_as_a_change_and_is_installed_again(com, 
 @pytest.mark.asyncio
 async def test_an_edit_in_another_document_does_not_move_the_bound_revision(com, seat):
     await com.system_get_variable("LTSCALE")
-    seat.second.lisp.update(reactor=True, n=0, id="f" * 32)
+    seat.second.lisp.update(reactor=True, n=0, ids={"f" * 32})
     seat.second.changed()
     await com.system_get_variable("LTSCALE")
     assert com.document_identity()["revision"] == 0
-    assert "reactor" not in seat.first.lisp or seat.first.lisp["id"] != "f" * 32
+    assert "f" * 32 not in seat.first.lisp.get("ids", ())
 
 
 @pytest.mark.asyncio
@@ -205,3 +206,34 @@ async def test_without_visual_lisp_the_revision_counts_the_servers_writes_only(
     assert com.document_identity()["revision"] == 1, "no counter: a hand edit is not seen"
     status = com.operator_edits_status()
     assert status["counted"] is False and "Problem in loading application" in status["reason"]
+
+
+def _session():
+    backend = cb.ComBackend()
+    backend._executor = DaemonExecutor(max_workers=1, name="test-sta-2")
+    backend._connected = True
+    return backend
+
+
+@pytest.mark.asyncio
+async def test_a_second_session_on_the_same_document_moves_nothing_by_reading(com, seat):
+    # two servers bound to one document (Claude Desktop and Claude Code on one
+    # seat) share the namespace and its counter: a read by either moves neither
+    other = _session()
+    try:
+        await com.system_get_variable("LTSCALE")
+        preview = await make_preview(com)
+        for _ in range(3):
+            await other.system_get_variable("LTSCALE")
+            await com.system_get_variable("LTSCALE")
+        assert com.document_identity()["revision"] == preview.revision
+        assert other.document_identity()["revision"] == 0
+        await check_preconditions(com, expected_revision=preview.revision)
+        # a write by the other session is an edit made outside this one
+        await other.system_set_variable("LTSCALE", 3.0)
+        await com.system_get_variable("LTSCALE")
+        assert com.document_identity()["revision"] == preview.revision + 1
+        await other.system_get_variable("LTSCALE")
+        assert other.document_identity()["revision"] == 1, "its own write, counted once"
+    finally:
+        other._executor.shutdown(wait=False)
