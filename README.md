@@ -19,7 +19,7 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 
 </div>
 
-> **v1.7 release snapshot:** 248 tools · 11 resources · 5 prompt templates · 6013 collected tests.
+> **v1.7 release snapshot:** 248 tools · 11 resources · 5 prompt templates · 6060 collected tests.
 > 248 is the **registered** count; a default install advertises 243 over `tools/list`,
 > because `ENABLE_3D` is unset. `system_about` is the runtime authority.
 
@@ -219,7 +219,7 @@ One contract across 23 modules in `backends/contracts/`. `@capability(key, reaso
 | Entity area by handle | ActiveX `.Area` | Analytic, bulges included |
 | HATCH filled area (islands subtracted) | AutoCAD's own number | Loops walked, `hatch_style` reported |
 | HATCH loops and DIMENSION fields in `entity_get` | ✅ read from a `Document.Export` snapshot | ✅ |
-| A session bound to its document | ✅ an active-tab switch is refused | — *only the server switches documents* |
+| A session bound to its document | ✅ an active-tab switch is refused, `view_screenshot` included; a restarted AutoCAD is a new document (`application_changed`); the operator's object edits move the revision | — *only the server switches documents* |
 | REGION / 3DSOLID area | ✅ | — *ACIS is opaque to ezdxf* |
 | 3D solids | ✅ *with `ENABLE_3D=true`* | — |
 | DWG write | ✅ `SaveAs` | via the ODA File Converter, if installed |
@@ -239,7 +239,7 @@ One contract across 23 modules in `backends/contracts/`. `@capability(key, reaso
 ᶜ Headless CHSPACE has four restrictions, named in its capability reason: top-view untwisted viewports only; dimensions refused unless frozen; ACIS, proxy and table entities refused; viewport clipping reported rather than applied.</sub>
 
 > [!IMPORTANT]
-> The COM paths run against a **live AutoCAD 2026** through six asserting smoke scripts (`scripts/smoke_*_com.py`) on one harness (`scripts/live/harness.py`: attach only, its own documents, an active-document guard). The 1.7.0 run passed **91 / 91** checks; its JSON is committed under [`benchmarks/results/live/`](https://github.com/U-C4N/Autocad-MCP/tree/main/benchmarks/results/live). These runs catch what no headless test can: ActiveX refuses `entity.Layer` on a missing layer where ezdxf quietly creates it, calls a block reference `BLOCKREFERENCE` rather than `INSERT`, and, once pywin32's type-library cache exists, hands every listed entity back as a bare `IAcadEntity` with no endpoints. Each of those broke a tool that passed every headless test.
+> The COM paths run against a **live AutoCAD 2026** through eight asserting smoke scripts (`scripts/smoke_*_com.py`) on one harness (`scripts/live/harness.py`: attach only, its own documents, an active-document guard). The 1.7.0 runs passed **129 / 129** checks (91 on the release commit, then 22 for the bound document and 16 for the operator-edit counter on the close-out); their JSON is committed under [`benchmarks/results/live/`](https://github.com/U-C4N/Autocad-MCP/tree/main/benchmarks/results/live). These runs catch what no headless test can: ActiveX refuses `entity.Layer` on a missing layer where ezdxf quietly creates it, calls a block reference `BLOCKREFERENCE` rather than `INSERT`, and, once pywin32's type-library cache exists, hands every listed entity back as a bare `IAcadEntity` with no endpoints. Each of those broke a tool that passed every headless test.
 
 ## Evidence
 
@@ -398,7 +398,7 @@ The readers were tuned on the synthetic plant pair and on one real P&ID / layout
 
 **Verification measures what it can bind, and says so when it cannot.** A requirement is measured on a feature it can identify: by handle, by the feature tag this server's generators write, by an architectural element, by a geometric predicate or by a DIMENSION's defpoints. On somebody else's drawing that usually means a predicate. Two equal candidates are `ambiguous`, and a spline or a tilted plane is `unsupported`. Neither is a pass, so a report full of `unknown` is a report that needs better selectors, not a clean part.
 
-**A live revision sees the operator's object edits, not everything.** No COM event sink is used (one left the seat refusing `Documents.Add()`); a transient AutoLISP database reactor in the bound document, read through `VL.Application.16`, counts object changes, and a change since the server's previous call is one more `revision`. Measured on AutoCAD 2026: an entity added, moved, re-propertied or deleted, a layer added or changed, ERASE and U each move it by one. A view change and a system variable written with `SetVariable` do not, an edit made while a server call runs is folded into that call, and without Visual LISP the revision counts this server's writes only (`system_status.operator_edits` says which). Two counter reads per live call, 0.6-1.2 ms each (median, two runs). The preview's entity fingerprints still back every apply. The operation journal is in memory: a server restart forgets every operation id (durable in 1.8).
+**A live revision sees the operator's object edits, not everything.** No COM event sink is used (one left the seat refusing `Documents.Add()`); a transient AutoLISP database reactor in the bound document, read through `VL.Application.16`, counts object changes, and a change since the server's previous call is one more `revision`. Measured on AutoCAD 2026: an entity added, moved, re-propertied or deleted, a layer added or changed, ERASE and U each move it by one. A view change and a system variable written with `SetVariable` do not, an edit made while a server call runs is folded into that call, and without Visual LISP the revision counts this server's writes only (`system_status.operator_edits` says which). Two counter reads per live call, 0.6-1.2 ms each (median, two runs). Two servers bound to one document each keep their own counter id, so a read by one never moves the other's revision; a write by one is an outside edit to the other. The preview's entity fingerprints still back every apply. The operation journal is in memory: a server restart forgets every operation id (durable in 1.8).
 
 **A damaged DXF is refused, not recovered.** A truncated file is refused by name and the open document is kept. `ezdxf.recover` arrives in 1.7.1.
 
@@ -528,7 +528,7 @@ uv run ruff check . && uv run ruff format --check .
 
 `uv.lock` pins the whole transitive graph, so this reproduces CI exactly. CI runs Linux (3.11 / 3.12) and Windows (mocked COM), plus package, Docker and MCP-registry jobs. It also runs `claude plugin validate --strict` on the marketplace and the plugin, the generated-file gates (`build_plugin.py --check`, `generate_tool_inventory.py --check`, `check_doc_numbers.py`) and a contents check of the built wheel and sdist: the wheel holds the server and nothing else, and the sdist holds only what git tracks. The release gate runs the same three test lanes, plus a headless lane that runs the correctness suite against the previous tag with `--fail-on-regression`, before anything reaches PyPI. Releases are tag-driven: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 
-The live COM paths are checked on a running AutoCAD, never in CI: `python scripts/smoke_verify_com.py --json out/verify.json` (and the six other `scripts/smoke_*_com.py`) attaches to the open seat, works only in documents it creates, and closes them.
+The live COM paths are checked on a running AutoCAD, never in CI: `python scripts/smoke_verify_com.py --json out/verify.json` (and the seven other `scripts/smoke_*_com.py`) attaches to the open seat, works only in documents it creates, and closes them.
 
 ## Roadmap
 

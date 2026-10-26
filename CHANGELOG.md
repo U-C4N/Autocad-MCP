@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.7.0] — 2026-10-25
+## [1.7.0] — 2026-10-26
 
 1.6 taught the server to draw whole sheets and to read other people's
 drawings. 1.7.0 makes what it draws **provable** and what it runs **safe**: a
@@ -19,9 +19,9 @@ the evidence behind it; and a cancelled call, a big drawing or a hostile text
 cell can no longer produce a silent wrong answer. 247 → 248 registered tools
 (one new: `drawing_verify_requirements`), 8 → 11 resources, 5 prompts; the
 correctness suite at 61 / 61 against v1.6.0's 48 / 61 with zero regressions;
-benchmark matrix v8 at 31 / 31; the live COM harness at 91 / 91 checks on
-AutoCAD 2026; and no workload slower than 1.6.0 beyond the measured noise
-(v1.7.0 / v1.6.0 ratios 0.62 to 1.02 over 20 alternating rounds of
+benchmark matrix v8 at 31 / 31; the live COM harness at 129 / 129 checks
+over eight smokes on AutoCAD 2026; and no workload slower than 1.6.0
+beyond the measured noise (v1.7.0 / v1.6.0 ratios 0.62 to 1.02 over 20 alternating rounds of
 `perf_compare.py` on an idle machine, A/A spread 5.5 %,
 `perf-v1.6.0-vs-v1.7.0.json`). Headless creation
 throughput against v1.4.0 is still not won back: **Not in 1.7.0**
@@ -210,7 +210,13 @@ says where it went. Spec: `docs/superpowers/specs/2026-10-24-v1.7.0-design.md`.
   once it holds the lock, not at entry. A cancelled `transaction_begin` no
   longer leaves its checkpoint open, and a cancelled `cad_batch` checks its
   rollback's answer and fingerprint and closes any checkpoint a step opened
-  above its own. Workers run on daemon threads; `call_outcomes` are in `system_status`.
+  above its own; a batch that succeeds closes it too and reports
+  `atomicity.unwound`, and a rollback that ends in `ROLLBACK NOT VERIFIED`
+  or `CHECKPOINT LEFT OPEN` says so. An error that escapes a batch without a
+  cancellation is recorded with its own cause, not as a cancellation. A QA
+  read that overruns is detached, never quarantined, also when `_async` is
+  wrapped (the read-only mark travels on the function). Workers run on
+  daemon threads; `call_outcomes` are in `system_status`.
 - **QA scans stopped early and failed open (B02).** `drawing_critique`, the
   validator, `drawing_finalize` and `drawing_deliver` read one snapshot of
   every space and every entity (a construction line at position 5,001, a
@@ -329,7 +335,7 @@ Recorded in the spec, not dropped:
 
 ### Live COM smoke
 
-`scripts/live/harness.py` on AutoCAD 2026 (`25.1s`, build `W.60.0.0`), Windows 11, CPython 3.13.15, pywin32 312; server 1.7.0 at `c54ea94`, clean tree. 91 of 91 checks passed, 3 `RPC_E_CALL_REJECTED` retries; every smoke worked only in documents it added and closed them with `Close(False)`, and the operator's drawing was neither activated, written, saved nor closed. The JSON results are `benchmarks/results/live/*.json`.
+`scripts/live/harness.py` on AutoCAD 2026 (`25.1s`, build `W.60.0.0`), Windows 11, CPython 3.13.15, pywin32 312, clean tree each time. 129 of 129 checks passed over eight smokes: the first six ran on the release commit `c54ea94` (91 checks, 3 `RPC_E_CALL_REJECTED` retries); `smoke_document_com.py` ran on `72b814a` and `smoke_operator_edits_com.py` on `948d744`, the close-out commits that changed the bound document and the live revision (one retry each). Every smoke worked only in documents it added and closed them with `Close(False)`, and the operator's drawing was neither activated, written, saved nor closed. The JSON results are `benchmarks/results/live/*.json`.
 
 | Smoke | Checks | Time | What it covers |
 |---|---:|---:|---|
@@ -339,6 +345,8 @@ Recorded in the spec, not dropped:
 | `smoke_settings_com.py` | 33 / 33 | 4.7 s | environment: styles, a template, the page setup read back from the plotted PDF's `/MediaBox`, layer states, named views, UCS, preferences, document properties |
 | `smoke_understand_com.py` | 7 / 7 | 4.5 s | understanding: `Document.Export` snapshots of a DWG pair, the P&ID read as schematic, every pipe run and cable row equal to the truth, a diff naming exactly the moved entity |
 | `smoke_verify_com.py` | 27 / 27 | 7.6 s | verification: the bound document and its refusal, HATCH loops and DIMENSION read-back, requirements on the live document, Export delivery (not re-pointed), the delivered DXF and a DWG re-measured, an edited copy failing at 22 |
+| `smoke_document_com.py` | 22 / 22 | 4.7 s | the bound document: the active-tab refusal with nothing written and no revision moved, the screenshot refusal, the hand-back after a snapshot, re-binding under the known ids, the application identity on a second proxy and after a re-attach |
+| `smoke_operator_edits_com.py` | 16 / 16 | 8.6 s | the live revision: a server write and each hand edit (add, move, property, layer property, layer add, delete) move it by one, a hand edit after a preview is refused by the revision, a removed reactor is a gap, another document's edit moves nothing, `DBMOD` stays 0 |
 
 The first clean run of `smoke_arch_com.py` stopped in its plan stage on a per-call `TimeoutError` (`COM_CALL_TIMEOUT`, the seat busy, one `RPC_E_CALL_REJECTED` retry before it) with its document closed; the rerun recorded here passed all six checks in 133.7 s. The same smoke took 87 s on the W3 run at `e212f1b`.
 
