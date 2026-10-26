@@ -6938,7 +6938,9 @@ async def drawing_deliver(
     and saved flag, the DXF version, every sha256 and the build. Parity reads the
     delivered DXF back and compares it with a fresh serialisation of the document over
     every space: zero changed, added or removed entities, the same counts per space,
-    the same block definitions.
+    the same block definitions. Both sides are exports, so parity cannot see content
+    the export itself loses (`parity.scope` says so); with requirements,
+    `parity.content_check` is `acceptance`, the check that can.
 
     With ``requirements`` every requirement is measured on the delivered DXF, read
     fresh and re-bound from the document; the bundle gains ``acceptance.json`` and
@@ -12415,7 +12417,10 @@ async def drawing_verify_requirements(
       candidates being `unknown` - with `rebinding` and the before / after
       `comparison` in the report. A count or absence is counted afresh on the
       file, never carried over; a DIMENSION not found again there is a blocking
-      `dimension_unverified` finding.
+      `dimension_unverified` finding. `provenance` says whether the current
+      document can be the file's source (at least half of the entities match
+      unchanged); when not, a blocking `artifact_source_mismatch` finding, no
+      comparison, and a handle-naming requirement is `unknown`.
     - `manifest_path`: re-hashes a drawing_deliver bundle and lists every
       artifact whose sha256 no longer matches (`stale`) or that is gone
       (`missing`).

@@ -245,3 +245,46 @@ async def test_verify_manifest_checks_the_report_and_requirements_hashes(backend
     assert checked["ok"] is False
     assert [row["filename"] for row in checked["stale"]] == ["acceptance.json"]
     assert [row["field"] for row in checked["inconsistent"]] == ["requirements_hash"]
+
+
+async def _lossy_export(backend, monkeypatch):
+    """Make every DXF export drop the r = 20 bore, as a faulty exporter would."""
+    original = backend.drawing_export_dxf
+
+    async def export(path, *args, **kwargs):
+        result = await original(path, *args, **kwargs)
+        doc = ezdxf.readfile(path)
+        for circle in doc.modelspace().query("CIRCLE"):
+            if abs(circle.dxf.radius - 20.0) < 1e-9:
+                doc.modelspace().delete_entity(circle)
+        doc.saveas(path)
+        return result
+
+    monkeypatch.setattr(backend, "drawing_export_dxf", export)
+
+
+@pytest.mark.asyncio
+async def test_parity_states_that_it_cannot_see_what_the_export_itself_loses(
+    backend, tmp_path, monkeypatch
+):
+    # review minor 13: both parity sides are exports, so an entity the export
+    # drops is dropped from both and parity holds; the requirement measured on
+    # the delivered file against its source target is the content check
+    handles = await _open_part(backend, tmp_path)
+    await _lossy_export(backend, monkeypatch)
+    rs = RequirementSet(requirements=(_diameter("R1", handles["bore"]),), units="mm")
+    bundle = tmp_path / "bundle"
+    result = await deliver_drawing(
+        backend, bundle, formats=["dxf"], min_score=0, strict_critique=False, requirements=rs
+    )
+    assert result.parity["ok"] is True
+    assert result.status == "failed_acceptance"
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["parity"]["scope"] == delivery.PARITY_SCOPE
+    assert "export" in manifest["parity"]["scope"]
+    assert manifest["parity"]["content_check"] == "acceptance"
+    without = await deliver_drawing(
+        backend, tmp_path / "plain", formats=["dxf"], min_score=0, strict_critique=False
+    )
+    assert without.parity["ok"] is True and without.status == "success"
+    assert without.parity["content_check"] is None

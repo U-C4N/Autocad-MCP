@@ -11,6 +11,12 @@ saved flag), the DXF export (method and version), the acceptance summary with
 the requirements digest and the report hash, and the build (version, and the
 git SHA of the server's own checkout when there is one).
 
+Parity's scope is export consistency (``PARITY_SCOPE``, carried in the record):
+both sides are exports of the same document, so it catches a difference
+between them or a file changed after the export, never content the export
+itself loses. The requirements measured on the delivered file are the content
+check; ``parity.content_check`` names it, or is None when none was given.
+
 Exporting never re-points the document (v1.7.0, B23): the live engine writes
 through ``Document.Export``, the headless one writes a copy; the open document
 keeps its name, path and saved flag, and those go into the manifest. The
@@ -56,6 +62,18 @@ MANIFEST_SCHEMA = "1.1"
 PARITY_TOL = 1e-6
 #: Rows of each parity difference kept in the manifest; the counts are complete.
 PARITY_ROWS = 50
+#: What parity can detect, carried in every parity record (review minor 13).
+#: Both sides are ``drawing_export_dxf`` outputs, so an entity the export
+#: itself drops or alters is missing from both and parity holds; the content
+#: check is the acceptance report (``content_check``), which measures the
+#: requirements on the delivered file against their source targets.
+PARITY_SCOPE = (
+    "export consistency: the delivered DXF read back and compared with a second, private "
+    "export of the same document over every space and block definition. It detects a "
+    "difference between the two exports or a change to the file after the export; it "
+    "cannot detect content the export itself loses, which both sides lose alike - the "
+    "requirements measured on the delivered file (content_check) are what detect that"
+)
 #: The server package's own root: the repository in a source checkout,
 #: site-packages in a wheel (no .git there, so no SHA).
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -242,6 +260,7 @@ def compare_artifacts(source, reopened, *, tol: float = PARITY_TOL) -> dict:
                 differences.append({"field": f"blocks_{key}", "names": list(blocks[key])})
     return {
         "ok": not differences,
+        "scope": PARITY_SCOPE,
         "tolerance": tol,
         "move_tol": diff["move_tol"],
         "handles_stable": diff["handles_stable"],
@@ -255,6 +274,7 @@ def compare_artifacts(source, reopened, *, tol: float = PARITY_TOL) -> dict:
 def _parity_failure(field: str, error: str) -> dict:
     return {
         "ok": False,
+        "scope": PARITY_SCOPE,
         "tolerance": PARITY_TOL,
         "move_tol": None,
         "handles_stable": None,
@@ -568,6 +588,8 @@ async def deliver_drawing(
             parity = compare_artifacts(source, reopened)
         except ValueError as exc:
             parity = _parity_failure("reopen", str(exc))
+    # parity cannot see what the export loses (PARITY_SCOPE); name what can
+    parity["content_check"] = "acceptance" if requirements is not None else None
 
     score = combine(
         validation.summary,

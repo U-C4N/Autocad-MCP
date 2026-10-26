@@ -440,3 +440,165 @@ async def test_a_dimension_gone_from_the_file_blocks_acceptance(backend, tmp_pat
     assert [f["kind"] for f in report["findings"]] == ["dimension_unverified"]
     (row,) = report["rows"]
     assert row["dimension"]["status"] == "unknown"
+
+
+# -- review minors 14 / 15: what the handle and tag stages accept, which document --
+
+
+def _lined(path, circles) -> dict:
+    """A frame and four lines (created first, so their handles stay put), then
+    ``circles`` as in ``_write``."""
+    doc = ezdxf.new("R2010", units=4)
+    msp = doc.modelspace()
+    handles = {
+        "frame": msp.add_lwpolyline([(0, 0), (200, 0), (200, 100), (0, 100)], close=True).dxf.handle
+    }
+    for k in range(4):
+        msp.add_line((10, 10 + 20 * k), (190, 10 + 20 * k))
+    for name, cx, cy, radius in circles:
+        handles[name] = msp.add_circle((cx, cy), radius).dxf.handle
+    doc.saveas(path)
+    return handles
+
+
+@pytest.mark.asyncio
+async def test_a_partial_renumbering_never_measures_the_feature_at_the_old_handle(
+    backend, tmp_path
+):
+    # frame and lines keep their handles (handles stable), but the save gave the
+    # bore's handle to an untagged pin of the same type: the bore is re-bound by
+    # its geometry, never measured as the pin
+    source = _lined(tmp_path / "a.dxf", [("bore", 50, 50, 20), ("pin", 150, 50, 5)])
+    saved = _lined(tmp_path / "b.dxf", [("pin", 150, 50, 5), ("bore", 50, 50, 20)])
+    assert saved["pin"] == source["bore"]
+    await backend.drawing_open(str(tmp_path / "a.dxf"))
+    rs = RequirementSet(requirements=(_diameter("R1", source["bore"]),), units="mm")
+    report = await verify_artifact(str(tmp_path / "b.dxf"), rs, backend=backend)
+    assert report["rebinding"]["handles_stable"] is True
+    (row,) = report["rows"]
+    assert row["status"] == "pass"
+    assert abs(row["measured"]["value"] - 40.0) <= 1e-9
+    assert row["handles"] == [saved["bore"]]
+    assert [item["method"] for item in report["rebinding"]["rows"]] == ["geometry"]
+
+
+@pytest.mark.asyncio
+async def test_a_feature_edited_in_place_is_still_measured_at_its_handle(backend, tmp_path):
+    source = _lined(tmp_path / "a.dxf", [("bore", 50, 50, 20), ("pin", 150, 50, 5)])
+    saved = _lined(tmp_path / "b.dxf", [("bore", 50, 50, 21), ("pin", 150, 50, 5)])
+    assert saved["bore"] == source["bore"]
+    await backend.drawing_open(str(tmp_path / "a.dxf"))
+    rs = RequirementSet(requirements=(_diameter("R1", source["bore"]),), units="mm")
+    report = await verify_artifact(str(tmp_path / "b.dxf"), rs, backend=backend)
+    (row,) = report["rows"]
+    assert row["status"] == "fail"
+    assert abs(row["measured"]["value"] - 42.0) <= 1e-9
+    assert [item["method"] for item in report["rebinding"]["rows"]] == ["handle"]
+
+
+@pytest.mark.asyncio
+async def test_the_tag_stage_keeps_to_the_source_space(backend, tmp_path):
+    # the file renumbered handles and carries the bore's tag a second time on
+    # Layout1: the model-space bore is still the only candidate in its space
+    source = _write(tmp_path / "a.dxf", [("bore", 50, 50, 20, True), ("pin", 150, 80, 5, False)])
+    doc = ezdxf.new("R2010", units=4)
+    doc.appids.add("ACADMCP_MECH")
+    msp = doc.modelspace()
+    msp.add_circle((150, 80), 5)
+    msp.add_lwpolyline([(0, 0), (200, 0), (200, 100), (0, 100)], close=True)
+    rows = [row for row in encode(TAG, kinds=("feature",)) if row[0] != 1001]
+    bore = msp.add_circle((50, 50), 20)
+    bore.set_xdata("ACADMCP_MECH", rows)
+    paper = doc.layouts.get("Layout1").add_circle((30, 30), 12)
+    paper.set_xdata("ACADMCP_MECH", rows)
+    doc.saveas(tmp_path / "b.dxf")
+    await backend.drawing_open(str(tmp_path / "a.dxf"))
+    rs = RequirementSet(requirements=(_diameter("R1", source["bore"]),), units="mm")
+    report = await verify_artifact(str(tmp_path / "b.dxf"), rs, backend=backend)
+    assert report["rebinding"]["handles_stable"] is False
+    (row,) = report["rows"]
+    assert row["status"] == "pass"
+    assert row["handles"] == [bore.dxf.handle]
+    assert [item["method"] for item in report["rebinding"]["rows"]] == ["tag"]
+
+
+@pytest.mark.asyncio
+async def test_a_source_binding_without_a_handle_is_never_reported_as_re_bound(backend, tmp_path):
+    import dataclasses
+
+    from engineering.verification.report import measure_requirements
+    from engineering.verification.types import Binding
+
+    source = _write(tmp_path / "a.dxf", [("bore", 50, 50, 20, False), ("pin", 150, 50, 5, False)])
+    await backend.drawing_open(str(tmp_path / "a.dxf"))
+    rs = RequirementSet(requirements=(_diameter("R1", source["bore"]),), units="mm")
+    run = await measure_requirements(backend, rs)
+    hollow = Binding(requirement_id="R1", status="bound", refs=(), candidates=(), reason="x")
+    run = dataclasses.replace(run, bindings=(hollow,))
+    _bindings, rows, _stable = artifact.rebind(rs, run, run.snapshot, run.observed)
+    (rebound,) = rows
+    assert rebound["method"] == "fresh"
+    assert "names no feature handle" in rebound["reason"]
+    assert not rebound["reason"].rstrip().endswith(" by")
+
+
+def _unrelated(path) -> None:
+    """Another drawing altogether: three lines, nothing in common with ``_write``'s."""
+    doc = ezdxf.new("R2010", units=4)
+    msp = doc.modelspace()
+    for k in range(3):
+        msp.add_line((0, 300 + 10 * k), (80, 300 + 10 * k))
+    doc.saveas(path)
+
+
+@pytest.mark.asyncio
+async def test_an_artifact_of_another_drawing_is_never_accepted(backend, tmp_path):
+    # before the fix the open document could not bind the handle, so it was
+    # "bound afresh on the file" - and the unrelated artifact passed
+    source = _write(tmp_path / "a.dxf", [("bore", 50, 50, 20, False), ("pin", 150, 50, 5, False)])
+    _unrelated(tmp_path / "other.dxf")
+    await backend.drawing_open(str(tmp_path / "other.dxf"))
+    rs = RequirementSet(requirements=(_diameter("R1", source["bore"]),), units="mm")
+    report = await verify_artifact(str(tmp_path / "a.dxf"), rs, backend=backend)
+    assert report["provenance"]["source_matches"] is False
+    assert report["provenance"]["matched"] == 0
+    assert report["accepted"] is False
+    assert "artifact_source_mismatch" in [f["kind"] for f in report["findings"]]
+    (row,) = report["rows"]
+    assert row["status"] == "unknown", "a handle of another drawing names nothing here"
+    assert report["comparison"] is None
+    assert report["source_document"]["path"] == str(tmp_path / "other.dxf")
+
+
+@pytest.mark.asyncio
+async def test_a_handle_free_requirement_on_another_drawing_is_measured_but_not_accepted(
+    backend, tmp_path
+):
+    _holes(tmp_path / "saved.dxf")
+    _unrelated(tmp_path / "other.dxf")
+    await backend.drawing_open(str(tmp_path / "other.dxf"))
+    raw = _raw_predicate("N", "count", {"exact": 4}, type="circle", radius_max=6)
+    report = await server.drawing_verify_requirements(
+        requirements=raw, artifact_path=str(tmp_path / "saved.dxf"), ctx=_FakeCtx(backend)
+    )
+    (row,) = report["rows"]
+    assert (row["status"], row["measured"]["value"]) == ("pass", 4.0)
+    assert report["status"] == "pass"
+    assert report["accepted"] is False
+    assert any(item.startswith("artifact_source_mismatch") for item in report["blocking"])
+
+
+@pytest.mark.asyncio
+async def test_the_artifact_of_the_open_document_matches_its_source(backend, tmp_path):
+    source = _write(tmp_path / "a.dxf", [("bore", 50, 50, 20, False), ("pin", 150, 50, 5, False)])
+    await backend.drawing_open(str(tmp_path / "a.dxf"))
+    rs = RequirementSet(requirements=(_diameter("R1", source["bore"]),), units="mm")
+    report = await verify_artifact(str(tmp_path / "a.dxf"), rs, backend=backend)
+    provenance = report["provenance"]
+    assert provenance["source_matches"] is True
+    assert (provenance["matched"], provenance["source_entities"]) == (3, 3)
+    assert provenance["artifact_entities"] == 3
+    assert report["accepted"] is True
+    # without the source document nothing is claimed about it
+    alone = await verify_artifact(str(tmp_path / "a.dxf"), rs)
+    assert alone["provenance"] is None
