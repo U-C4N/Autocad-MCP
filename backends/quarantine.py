@@ -486,6 +486,7 @@ def detached_read_refusal(record: DetachedRead) -> DocumentBusyError:
         "cannot change it, so the document is NOT quarantined, but every other call on "
         "it is refused until the read ends - the refusal then lifts by itself. To go on "
         f"now, use {', '.join(DETACHED_READ_EXITS)}: they replace the document object "
-        "the read holds, so nothing races it. No restart is needed; system_status() "
-        "reports the read.",
+        "the read holds, so nothing races it; document_list() names the other "
+        "documents and also answers. No restart is needed; system_status() reports "
+        "the read.",
     )

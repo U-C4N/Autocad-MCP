@@ -446,6 +446,52 @@ async def test_closing_the_reads_document_is_an_exit(backend, monkeypatch, gates
     assert not gate.finished.is_set()
 
 
+async def test_document_list_answers_while_a_detached_read_holds_the_document(
+    backend, monkeypatch, gates, tmp_path
+):
+    """1.7.0 review minor 4. RED: the refusal points at
+    ``document_activate(<another document>)``, yet ``document_list`` - the call
+    that names those documents - was refused as busy too. Listing reads only
+    the registry and each document's entity count; next to a read nothing
+    can race it."""
+    other = str(tmp_path / "other.dxf")
+    await backend.drawing_save_as(other)
+    await backend.drawing_new()
+    monkeypatch.setattr(config.settings, "ezdxf_call_timeout", 0.3)
+    gate = gates()
+    with pytest.raises(RuntimeError, match="read-only"):
+        await backend._async(gate.body(), readonly=True)
+    monkeypatch.setattr(config.settings, "ezdxf_call_timeout", 30)
+    with pytest.raises(DocumentBusyError, match="document_list") as refused:
+        await backend.entity_count()
+    rows = await asyncio.wait_for(backend.document_list(), timeout=AT_ONCE)
+    assert other in [row["path"] for row in rows]
+    assert not gate.finished.is_set(), "the read is still running"
+    # The listed document is the way out, and the read's document stays refused.
+    await asyncio.wait_for(backend.document_activate(other), timeout=AT_ONCE)
+    assert await backend._async(lambda: "other") == "other"
+    assert "document_activate" in str(refused.value)
+
+
+async def test_at_timeout_zero_a_runaway_read_holds_even_the_exits(backend, monkeypatch, gates):
+    """1.7.0 review minor 3: with EZDXF_CALL_TIMEOUT=0 from the start nothing
+    is detached, so a cancelled read keeps the lock until its worker ends and
+    every call queues behind it - the exits included. Only the read ending (or
+    a restart) frees the document; the README says so."""
+    monkeypatch.setattr(config.settings, "ezdxf_call_timeout", 0)
+    gate = gates()
+    task = asyncio.ensure_future(backend._async(gate.body(), readonly=True))
+    await _wait_for(gate.entered)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    exit_call = asyncio.ensure_future(backend.drawing_new())
+    done, _ = await asyncio.wait({exit_call}, timeout=AT_ONCE)
+    assert not done, "an exit went through while the read held the lock"
+    gate.release.set()
+    await asyncio.wait_for(exit_call, timeout=10)
+
+
 async def test_a_readonly_overrun_at_timeout_zero_is_never_detached(backend, monkeypatch, gates):
     """EZDXF_CALL_TIMEOUT=0: no deadline, so a cancelled read keeps its lease
     until its worker ends, as Task 1 specified - nothing is detached."""

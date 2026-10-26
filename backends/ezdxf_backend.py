@@ -3536,7 +3536,12 @@ class EzdxfBackend(AutoCADBackend):
         def _sync():
             return [self._document_row(key, state) for key, state in self._docs.items()]
 
-        return await self._async(_sync, readonly=True)
+        # Admitted past a detached read like an exit (review minor 4): the
+        # busy refusal sends the caller to document_activate(<another
+        # document>), and this is the call that names them. It reads the
+        # registry and each document's entity count, so running next to a
+        # read races nothing.
+        return await self._async(_sync, readonly=True, detached_read_exit=True)
 
     async def document_activate(self, name_or_path: str) -> dict:
         if not isinstance(name_or_path, str):
