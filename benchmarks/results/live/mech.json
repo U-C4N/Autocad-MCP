@@ -4,8 +4,8 @@
   "status": "pass",
   "exit_code": 0,
   "reason": null,
-  "started_at": "2026-10-25T18:00:55+00:00",
-  "duration_s": 50.186,
+  "started_at": "2026-10-26T10:04:34+00:00",
+  "duration_s": 58.487,
   "environment": {
     "autocad": {
       "name": "AutoCAD",
@@ -26,7 +26,7 @@
     "pywin32": "312",
     "server": {
       "version": "1.7.0",
-      "sha": "c54ea945d85ca6c3d74588ccd3258e7d5c58357d",
+      "sha": "13499fe888120ed929cc0c3b0afe303b1de83a74",
       "dirty": false
     }
   },
@@ -35,7 +35,7 @@
     "passed": 10,
     "failed": 0,
     "errors": 0,
-    "rpc_retries": 0
+    "rpc_retries": 4
   },
   "checks": [
     {
@@ -64,12 +64,12 @@
       "status": "pass",
       "expected": {
         "rows": 1,
-        "handle": "2F6"
+        "handle": "2F9"
       },
       "observed": {
         "rows": 1,
         "handles": [
-          "2F6"
+          "2F9"
         ]
       },
       "stage": "checks"
@@ -85,7 +85,7 @@
       "name": "the balloon placed",
       "status": "pass",
       "expected": null,
-      "observed": "319",
+      "observed": "31C",
       "stage": "checks"
     },
     {
@@ -124,18 +124,18 @@
     "kept": false
   },
   "report": {
-    "part_id": "F6",
+    "part_id": "F9",
     "views": 2,
     "section_omitted": [],
     "dimensions": 12,
-    "bolt_handle": "2F6",
+    "bolt_handle": "2F9",
     "xdata_chunks": 1,
     "parts_list_rows": 1,
     "parts_list_handles": [
-      "2F6"
+      "2F9"
     ],
     "parts_list_representation": "native",
-    "balloon": "319",
+    "balloon": "31C",
     "xref_attached": "XREF_SOURCE",
     "xref_listed": 1,
     "xref_detached": true,
@@ -143,7 +143,7 @@
     "dwg": {
       "name": "mech_smoke.dwg",
       "exists": true,
-      "bytes": 32070,
+      "bytes": 32098,
       "magic": "AC1032"
     },
     "critique_issues": 0,

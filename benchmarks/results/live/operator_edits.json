@@ -4,8 +4,8 @@
   "status": "pass",
   "exit_code": 0,
   "reason": null,
-  "started_at": "2026-10-26T08:56:25+00:00",
-  "duration_s": 8.617,
+  "started_at": "2026-10-26T10:06:01+00:00",
+  "duration_s": 8.572,
   "environment": {
     "autocad": {
       "name": "AutoCAD",
@@ -26,7 +26,7 @@
     "pywin32": "312",
     "server": {
       "version": "1.7.0",
-      "sha": "948d74407c9fe38ee87162a33d222306c611a489",
+      "sha": "13499fe888120ed929cc0c3b0afe303b1de83a74",
       "dirty": false
     }
   },
@@ -35,7 +35,7 @@
     "passed": 16,
     "failed": 0,
     "errors": 0,
-    "rpc_retries": 1
+    "rpc_retries": 2
   },
   "checks": [
     {
@@ -211,16 +211,16 @@
     },
     "cost": {
       "guarded_read_median_ms_on": [
-        8.47,
-        24.4,
-        22.68
+        21.07,
+        21.26,
+        28.1
       ],
       "guarded_read_median_ms_off": [
-        8.01,
-        23.71,
-        25.92
+        17.13,
+        21.47,
+        21.83
       ],
-      "counter_read_median_ms": 0.55,
+      "counter_read_median_ms": 0.75,
       "counter_reads_per_guarded_job": 2
     }
   }

@@ -4,8 +4,8 @@
   "status": "pass",
   "exit_code": 0,
   "reason": null,
-  "started_at": "2026-10-25T18:01:51+00:00",
-  "duration_s": 4.544,
+  "started_at": "2026-10-26T10:05:43+00:00",
+  "duration_s": 5.608,
   "environment": {
     "autocad": {
       "name": "AutoCAD",
@@ -26,7 +26,7 @@
     "pywin32": "312",
     "server": {
       "version": "1.7.0",
-      "sha": "c54ea945d85ca6c3d74588ccd3258e7d5c58357d",
+      "sha": "13499fe888120ed929cc0c3b0afe303b1de83a74",
       "dirty": false
     }
   },
@@ -35,7 +35,7 @@
     "passed": 7,
     "failed": 0,
     "errors": 0,
-    "rpc_retries": 0
+    "rpc_retries": 1
   },
   "checks": [
     {
@@ -145,7 +145,7 @@
     "kept": false
   },
   "report": {
-    "export_s": 0.056,
+    "export_s": 0.082,
     "live_pid_source": "live:pid.dxf",
     "dwg_pid_source": "live:pid.dwg",
     "model_space": {

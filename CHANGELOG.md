@@ -335,20 +335,20 @@ Recorded in the spec, not dropped:
 
 ### Live COM smoke
 
-`scripts/live/harness.py` on AutoCAD 2026 (`25.1s`, build `W.60.0.0`), Windows 11, CPython 3.13.15, pywin32 312, clean tree each time. 129 of 129 checks passed over eight smokes: the first six ran on the release commit `c54ea94` (91 checks, 3 `RPC_E_CALL_REJECTED` retries); `smoke_document_com.py` ran on `72b814a` and `smoke_operator_edits_com.py` on `948d744`, the close-out commits that changed the bound document and the live revision (one retry each). Every smoke worked only in documents it added and closed them with `Close(False)`, and the operator's drawing was neither activated, written, saved nor closed. The JSON results are `benchmarks/results/live/*.json`.
+`scripts/live/harness.py` on AutoCAD 2026 (`25.1s`, build `W.60.0.0`), Windows 11, CPython 3.13.15, pywin32 312, clean tree each time. 129 of 129 checks passed over eight smokes, all on the close-out commit `13499fe` (10 `RPC_E_CALL_REJECTED` retries). Every smoke worked only in documents it added and closed them with `Close(False)`, and the operator's drawing was neither activated, written, saved nor closed. The JSON results are `benchmarks/results/live/*.json`.
 
 | Smoke | Checks | Time | What it covers |
 |---|---:|---:|---|
-| `smoke_pid_com.py` | 8 / 8 | 68.2 s | P&ID: placement, classification, node confidence, nodes and edges equal to the headless run of the same spec, the six `pid_*` focuses, the pump's XDATA |
-| `smoke_arch_com.py` | 6 / 6 | 133.7 s | architecture: the plan from its spec, both rooms read back within 0.1 % of label and hand-computed floor, the three schedules, zero critique issues |
-| `smoke_mech_com.py` | 10 / 10 | 50.2 s | mechanical: part, section, dimensions, an ISO 4014 block with its XDATA, the parts list read off the drawing as a native TABLE, a linked balloon, an xref attached and detached, a real `.dwg`, zero critique issues |
-| `smoke_settings_com.py` | 33 / 33 | 4.7 s | environment: styles, a template, the page setup read back from the plotted PDF's `/MediaBox`, layer states, named views, UCS, preferences, document properties |
-| `smoke_understand_com.py` | 7 / 7 | 4.5 s | understanding: `Document.Export` snapshots of a DWG pair, the P&ID read as schematic, every pipe run and cable row equal to the truth, a diff naming exactly the moved entity |
-| `smoke_verify_com.py` | 27 / 27 | 7.6 s | verification: the bound document and its refusal, HATCH loops and DIMENSION read-back, requirements on the live document, Export delivery (not re-pointed), the delivered DXF and a DWG re-measured, an edited copy failing at 22 |
-| `smoke_document_com.py` | 22 / 22 | 4.7 s | the bound document: the active-tab refusal with nothing written and no revision moved, the screenshot refusal, the hand-back after a snapshot, re-binding under the known ids, the application identity on a second proxy and after a re-attach |
+| `smoke_pid_com.py` | 8 / 8 | 12.5 s | P&ID: placement, classification, node confidence, nodes and edges equal to the headless run of the same spec, the six `pid_*` focuses, the pump's XDATA |
+| `smoke_arch_com.py` | 6 / 6 | 43.3 s | architecture: the plan from its spec, both rooms read back within 0.1 % of label and hand-computed floor, the three schedules, zero critique issues |
+| `smoke_mech_com.py` | 10 / 10 | 58.5 s | mechanical: part, section, dimensions, an ISO 4014 block with its XDATA, the parts list read off the drawing as a native TABLE, a linked balloon, an xref attached and detached, a real `.dwg`, zero critique issues |
+| `smoke_settings_com.py` | 33 / 33 | 8.7 s | environment: styles, a template, the page setup read back from the plotted PDF's `/MediaBox`, layer states, named views, UCS, preferences, document properties |
+| `smoke_understand_com.py` | 7 / 7 | 5.6 s | understanding: `Document.Export` snapshots of a DWG pair, the P&ID read as schematic, every pipe run and cable row equal to the truth, a diff naming exactly the moved entity |
+| `smoke_verify_com.py` | 27 / 27 | 5.8 s | verification: the bound document and its refusal, HATCH loops and DIMENSION read-back, requirements on the live document, Export delivery (not re-pointed), the delivered DXF and a DWG re-measured, an edited copy failing at 22 |
+| `smoke_document_com.py` | 22 / 22 | 5.1 s | the bound document: the active-tab refusal with nothing written and no revision moved, the screenshot refusal, the hand-back after a snapshot, re-binding under the known ids, the application identity on a second proxy and after a re-attach |
 | `smoke_operator_edits_com.py` | 16 / 16 | 8.6 s | the live revision: a server write and each hand edit (add, move, property, layer property, layer add, delete) move it by one, a hand edit after a preview is refused by the revision, a removed reactor is a gap, another document's edit moves nothing, `DBMOD` stays 0 |
 
-The first clean run of `smoke_arch_com.py` stopped in its plan stage on a per-call `TimeoutError` (`COM_CALL_TIMEOUT`, the seat busy, one `RPC_E_CALL_REJECTED` retry before it) with its document closed; the rerun recorded here passed all six checks in 133.7 s. The same smoke took 87 s on the W3 run at `e212f1b`.
+The first `smoke_arch_com.py` run after AutoCAD was restarted stopped in its critique: the harness's active-document guard refused because AutoCAD's active document was not one the run had opened, with nothing written to any other document. Both reruns passed all six checks; the one committed here took 43.3 s.
 
 ## [1.6.0] — 2026-09-25
 

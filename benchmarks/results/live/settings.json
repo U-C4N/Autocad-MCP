@@ -4,8 +4,8 @@
   "status": "pass",
   "exit_code": 0,
   "reason": null,
-  "started_at": "2026-10-25T18:01:46+00:00",
-  "duration_s": 4.726,
+  "started_at": "2026-10-26T10:05:33+00:00",
+  "duration_s": 8.704,
   "environment": {
     "autocad": {
       "name": "AutoCAD",
@@ -26,7 +26,7 @@
     "pywin32": "312",
     "server": {
       "version": "1.7.0",
-      "sha": "c54ea945d85ca6c3d74588ccd3258e7d5c58357d",
+      "sha": "13499fe888120ed929cc0c3b0afe303b1de83a74",
       "dirty": false
     }
   },
@@ -35,7 +35,7 @@
     "passed": 33,
     "failed": 0,
     "errors": 0,
-    "rpc_retries": 1
+    "rpc_retries": 0
   },
   "checks": [
     {
@@ -185,8 +185,8 @@
     {
       "name": "smoke document re-activated",
       "status": "pass",
-      "expected": "Drawing61.dwg",
-      "observed": "Drawing61.dwg",
+      "expected": "Drawing6.dwg",
+      "observed": "Drawing6.dwg",
       "stage": "template"
     },
     {
@@ -341,7 +341,7 @@
       "attached": true,
       "launched": false
     },
-    "document": "Drawing61.dwg",
+    "document": "Drawing6.dwg",
     "styles": {
       "dimstyle": {
         "ok": true,
@@ -491,7 +491,7 @@
           297.039
         ],
         "paper": "ISO_A3",
-        "name": "Drawing61-Layout1.pdf"
+        "name": "Drawing6-Layout1.pdf"
       },
       "installed_plot_styles": [
         "Autodesk-Color.stb",

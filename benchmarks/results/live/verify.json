@@ -4,8 +4,8 @@
   "status": "pass",
   "exit_code": 0,
   "reason": null,
-  "started_at": "2026-10-25T18:01:56+00:00",
-  "duration_s": 7.64,
+  "started_at": "2026-10-26T10:05:49+00:00",
+  "duration_s": 5.833,
   "environment": {
     "autocad": {
       "name": "AutoCAD",
@@ -26,7 +26,7 @@
     "pywin32": "312",
     "server": {
       "version": "1.7.0",
-      "sha": "c54ea945d85ca6c3d74588ccd3258e7d5c58357d",
+      "sha": "13499fe888120ed929cc0c3b0afe303b1de83a74",
       "dirty": false
     }
   },
@@ -41,11 +41,11 @@
     {
       "name": "drawing_new binds the new document",
       "status": "pass",
-      "expected": "Drawing64.dwg",
+      "expected": "Drawing9.dwg",
       "observed": {
-        "document_id": "8b55d1d59d1f46b28a0472612a1aab19",
+        "document_id": "55f4648d1eec4b68a2099a01ab2a3624",
         "revision": 0,
-        "name": "Drawing64.dwg",
+        "name": "Drawing9.dwg",
         "path": null,
         "backend": "com"
       },
@@ -58,17 +58,18 @@
       "observed": {
         "ok": false,
         "kind": "active_document_changed",
-        "error": "AutoCAD's active document changed: this session is bound to 'Drawing64.dwg' but 'Drawing63.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing64.dwg', or call document_activate('Drawing63.dwg') to bind this session to it.",
+        "error": "AutoCAD's active document changed: this session is bound to 'Drawing9.dwg' but 'Drawing8.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing9.dwg', or call document_activate('Drawing8.dwg') to bind this session to it.",
         "bound": {
-          "document_id": "8b55d1d59d1f46b28a0472612a1aab19",
-          "name": "Drawing64.dwg",
+          "document_id": "55f4648d1eec4b68a2099a01ab2a3624",
+          "name": "Drawing9.dwg",
           "path": null
         },
         "active": {
-          "document_id": "b673eae70bd546299ee19890193fd346",
-          "name": "Drawing63.dwg",
+          "document_id": "9da0ad0257ca402aad991a7e368cef2f",
+          "name": "Drawing8.dwg",
           "path": null
-        }
+        },
+        "application_changed": false
       },
       "stage": "bound document"
     },
@@ -76,23 +77,24 @@
       "name": "the refusal names the bound and the active document",
       "status": "pass",
       "expected": {
-        "bound": "Drawing64.dwg",
-        "active": "Drawing63.dwg"
+        "bound": "Drawing9.dwg",
+        "active": "Drawing8.dwg"
       },
       "observed": {
         "ok": false,
         "kind": "active_document_changed",
-        "error": "AutoCAD's active document changed: this session is bound to 'Drawing64.dwg' but 'Drawing63.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing64.dwg', or call document_activate('Drawing63.dwg') to bind this session to it.",
+        "error": "AutoCAD's active document changed: this session is bound to 'Drawing9.dwg' but 'Drawing8.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing9.dwg', or call document_activate('Drawing8.dwg') to bind this session to it.",
         "bound": {
-          "document_id": "8b55d1d59d1f46b28a0472612a1aab19",
-          "name": "Drawing64.dwg",
+          "document_id": "55f4648d1eec4b68a2099a01ab2a3624",
+          "name": "Drawing9.dwg",
           "path": null
         },
         "active": {
-          "document_id": "b673eae70bd546299ee19890193fd346",
-          "name": "Drawing63.dwg",
+          "document_id": "9da0ad0257ca402aad991a7e368cef2f",
+          "name": "Drawing8.dwg",
           "path": null
-        }
+        },
+        "application_changed": false
       },
       "stage": "bound document"
     },
@@ -100,12 +102,12 @@
       "name": "nothing landed in either document",
       "status": "pass",
       "expected": {
-        "Drawing63.dwg": 1,
-        "Drawing64.dwg": 0
+        "Drawing8.dwg": 1,
+        "Drawing9.dwg": 0
       },
       "observed": {
-        "Drawing63.dwg": 1,
-        "Drawing64.dwg": 0
+        "Drawing8.dwg": 1,
+        "Drawing9.dwg": 0
       },
       "stage": "bound document"
     },
@@ -119,8 +121,8 @@
     {
       "name": "document_activate binds the session again, under the same id",
       "status": "pass",
-      "expected": "8b55d1d59d1f46b28a0472612a1aab19",
-      "observed": "8b55d1d59d1f46b28a0472612a1aab19",
+      "expected": "55f4648d1eec4b68a2099a01ab2a3624",
+      "observed": "55f4648d1eec4b68a2099a01ab2a3624",
       "stage": "bound document"
     },
     {
@@ -305,12 +307,12 @@
       "name": "the open document is not re-pointed or saved",
       "status": "pass",
       "expected": {
-        "name": "Drawing64.dwg",
+        "name": "Drawing9.dwg",
         "full_name": "",
         "saved": false
       },
       "observed": {
-        "name": "Drawing64.dwg",
+        "name": "Drawing9.dwg",
         "full_name": "",
         "saved": false
       },
@@ -329,6 +331,7 @@
       "expected": null,
       "observed": {
         "ok": true,
+        "scope": "export consistency: the delivered DXF read back and compared with a second, private export of the same document over every space and block definition. It detects a difference between the two exports or a change to the file after the export; it cannot detect content the export itself loses, which both sides lose alike - the requirements measured on the delivered file (content_check) are what detect that",
         "tolerance": 1e-06,
         "move_tol": 1.370803254482568,
         "handles_stable": true,
@@ -354,7 +357,8 @@
           "removed": [],
           "changed": []
         },
-        "differences": []
+        "differences": [],
+        "content_check": "acceptance"
       },
       "stage": "export delivery"
     },
@@ -511,27 +515,28 @@
   "report": {
     "bound": {
       "documents": [
-        "Drawing63.dwg",
-        "Drawing64.dwg"
+        "Drawing8.dwg",
+        "Drawing9.dwg"
       ],
       "refusal": {
         "ok": false,
         "kind": "active_document_changed",
-        "error": "AutoCAD's active document changed: this session is bound to 'Drawing64.dwg' but 'Drawing63.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing64.dwg', or call document_activate('Drawing63.dwg') to bind this session to it.",
+        "error": "AutoCAD's active document changed: this session is bound to 'Drawing9.dwg' but 'Drawing8.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing9.dwg', or call document_activate('Drawing8.dwg') to bind this session to it.",
         "bound": {
-          "document_id": "8b55d1d59d1f46b28a0472612a1aab19",
-          "name": "Drawing64.dwg",
+          "document_id": "55f4648d1eec4b68a2099a01ab2a3624",
+          "name": "Drawing9.dwg",
           "path": null
         },
         "active": {
-          "document_id": "b673eae70bd546299ee19890193fd346",
-          "name": "Drawing63.dwg",
+          "document_id": "9da0ad0257ca402aad991a7e368cef2f",
+          "name": "Drawing8.dwg",
           "path": null
-        }
+        },
+        "application_changed": false
       },
       "counts": {
-        "Drawing63.dwg": 1,
-        "Drawing64.dwg": 0
+        "Drawing8.dwg": 1,
+        "Drawing9.dwg": 0
       }
     },
     "read_back": {

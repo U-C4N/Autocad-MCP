@@ -4,8 +4,8 @@
   "status": "pass",
   "exit_code": 0,
   "reason": null,
-  "started_at": "2026-10-26T08:25:51+00:00",
-  "duration_s": 4.669,
+  "started_at": "2026-10-26T10:05:56+00:00",
+  "duration_s": 5.067,
   "environment": {
     "autocad": {
       "name": "AutoCAD",
@@ -26,7 +26,7 @@
     "pywin32": "312",
     "server": {
       "version": "1.7.0",
-      "sha": "72b814ac2135207b7eb4d1a4406eb1ed30d4f202",
+      "sha": "13499fe888120ed929cc0c3b0afe303b1de83a74",
       "dirty": false
     }
   },
@@ -42,12 +42,12 @@
       "name": "an unsaved document's FullName is ''",
       "status": "pass",
       "expected": {
-        "Drawing5.dwg": "",
-        "Drawing6.dwg": ""
+        "Drawing10.dwg": "",
+        "Drawing11.dwg": ""
       },
       "observed": {
-        "Drawing5.dwg": "",
-        "Drawing6.dwg": ""
+        "Drawing10.dwg": "",
+        "Drawing11.dwg": ""
       },
       "stage": "unsaved documents"
     },
@@ -67,12 +67,12 @@
       "expected": "distinct",
       "observed": {
         "names": [
-          "Drawing5.dwg",
-          "Drawing6.dwg"
+          "Drawing10.dwg",
+          "Drawing11.dwg"
         ],
         "ids": [
-          "bd7822ca1995427ba524f7be591c0970",
-          "d0e54a04ba95495ab9ad359bdd0c876d"
+          "768c29629cfb4ba7ad365085f2e56c32",
+          "0d1c865fa60441d49879dccb89ae3203"
         ]
       },
       "stage": "unsaved documents"
@@ -82,9 +82,9 @@
       "status": "pass",
       "expected": null,
       "observed": {
-        "document_id": "d0e54a04ba95495ab9ad359bdd0c876d",
+        "document_id": "0d1c865fa60441d49879dccb89ae3203",
         "revision": 1,
-        "name": "Drawing6.dwg",
+        "name": "Drawing11.dwg",
         "path": null,
         "backend": "com"
       },
@@ -97,15 +97,15 @@
       "observed": {
         "ok": false,
         "kind": "active_document_changed",
-        "error": "AutoCAD's active document changed: this session is bound to 'Drawing6.dwg' but 'Drawing5.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing6.dwg', or call document_activate('Drawing5.dwg') to bind this session to it.",
+        "error": "AutoCAD's active document changed: this session is bound to 'Drawing11.dwg' but 'Drawing10.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing11.dwg', or call document_activate('Drawing10.dwg') to bind this session to it.",
         "bound": {
-          "document_id": "d0e54a04ba95495ab9ad359bdd0c876d",
-          "name": "Drawing6.dwg",
+          "document_id": "0d1c865fa60441d49879dccb89ae3203",
+          "name": "Drawing11.dwg",
           "path": null
         },
         "active": {
-          "document_id": "bd7822ca1995427ba524f7be591c0970",
-          "name": "Drawing5.dwg",
+          "document_id": "768c29629cfb4ba7ad365085f2e56c32",
+          "name": "Drawing10.dwg",
           "path": null
         },
         "application_changed": false
@@ -116,22 +116,22 @@
       "name": "the refusal names B as bound and A, under its known id, as active",
       "status": "pass",
       "expected": {
-        "bound": "Drawing6.dwg",
-        "active": "Drawing5.dwg",
+        "bound": "Drawing11.dwg",
+        "active": "Drawing10.dwg",
         "application_changed": false
       },
       "observed": {
         "ok": false,
         "kind": "active_document_changed",
-        "error": "AutoCAD's active document changed: this session is bound to 'Drawing6.dwg' but 'Drawing5.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing6.dwg', or call document_activate('Drawing5.dwg') to bind this session to it.",
+        "error": "AutoCAD's active document changed: this session is bound to 'Drawing11.dwg' but 'Drawing10.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing11.dwg', or call document_activate('Drawing10.dwg') to bind this session to it.",
         "bound": {
-          "document_id": "d0e54a04ba95495ab9ad359bdd0c876d",
-          "name": "Drawing6.dwg",
+          "document_id": "0d1c865fa60441d49879dccb89ae3203",
+          "name": "Drawing11.dwg",
           "path": null
         },
         "active": {
-          "document_id": "bd7822ca1995427ba524f7be591c0970",
-          "name": "Drawing5.dwg",
+          "document_id": "768c29629cfb4ba7ad365085f2e56c32",
+          "name": "Drawing10.dwg",
           "path": null
         },
         "application_changed": false
@@ -142,12 +142,12 @@
       "name": "nothing landed in either document",
       "status": "pass",
       "expected": {
-        "Drawing5.dwg": 0,
-        "Drawing6.dwg": 1
+        "Drawing10.dwg": 0,
+        "Drawing11.dwg": 1
       },
       "observed": {
-        "Drawing5.dwg": 0,
-        "Drawing6.dwg": 1
+        "Drawing10.dwg": 0,
+        "Drawing11.dwg": 1
       },
       "stage": "the guard"
     },
@@ -155,16 +155,16 @@
       "name": "the refused write moved no revision",
       "status": "pass",
       "expected": {
-        "document_id": "d0e54a04ba95495ab9ad359bdd0c876d",
+        "document_id": "0d1c865fa60441d49879dccb89ae3203",
         "revision": 1,
-        "name": "Drawing6.dwg",
+        "name": "Drawing11.dwg",
         "path": null,
         "backend": "com"
       },
       "observed": {
-        "document_id": "d0e54a04ba95495ab9ad359bdd0c876d",
+        "document_id": "0d1c865fa60441d49879dccb89ae3203",
         "revision": 1,
-        "name": "Drawing6.dwg",
+        "name": "Drawing11.dwg",
         "path": null,
         "backend": "com"
       },
@@ -182,9 +182,9 @@
       "status": "pass",
       "expected": null,
       "observed": {
-        "active_document": "Drawing5.dwg",
+        "active_document": "Drawing10.dwg",
         "bound_document": {
-          "name": "Drawing6.dwg",
+          "name": "Drawing11.dwg",
           "path": null
         },
         "active_document_changed": true
@@ -196,11 +196,11 @@
       "status": "pass",
       "expected": [
         true,
-        "Drawing6.dwg"
+        "Drawing11.dwg"
       ],
       "observed": [
         true,
-        "Drawing6.dwg"
+        "Drawing11.dwg"
       ],
       "stage": "reactivate the bound document"
     },
@@ -221,11 +221,11 @@
     {
       "name": "document_activate binds A under its known id",
       "status": "pass",
-      "expected": "bd7822ca1995427ba524f7be591c0970",
+      "expected": "768c29629cfb4ba7ad365085f2e56c32",
       "observed": {
-        "document_id": "bd7822ca1995427ba524f7be591c0970",
+        "document_id": "768c29629cfb4ba7ad365085f2e56c32",
         "revision": 0,
-        "name": "Drawing5.dwg",
+        "name": "Drawing10.dwg",
         "path": null,
         "backend": "com"
       },
@@ -242,16 +242,16 @@
       "name": "B is bound again under its own id and revision",
       "status": "pass",
       "expected": {
-        "document_id": "d0e54a04ba95495ab9ad359bdd0c876d",
+        "document_id": "0d1c865fa60441d49879dccb89ae3203",
         "revision": 1,
-        "name": "Drawing6.dwg",
+        "name": "Drawing11.dwg",
         "path": null,
         "backend": "com"
       },
       "observed": {
-        "document_id": "d0e54a04ba95495ab9ad359bdd0c876d",
+        "document_id": "0d1c865fa60441d49879dccb89ae3203",
         "revision": 1,
-        "name": "Drawing6.dwg",
+        "name": "Drawing11.dwg",
         "path": null,
         "backend": "com"
       },
@@ -272,13 +272,13 @@
       "name": "a re-attached session keeps the document's id and revision",
       "status": "pass",
       "expected": {
-        "document_id": "d0e54a04ba95495ab9ad359bdd0c876d",
+        "document_id": "0d1c865fa60441d49879dccb89ae3203",
         "revision": 2
       },
       "observed": {
-        "document_id": "d0e54a04ba95495ab9ad359bdd0c876d",
+        "document_id": "0d1c865fa60441d49879dccb89ae3203",
         "revision": 2,
-        "name": "Drawing6.dwg",
+        "name": "Drawing11.dwg",
         "path": null,
         "backend": "com"
       },
@@ -318,7 +318,7 @@
       "name": "view_screenshot of the bound document answers",
       "status": "pass",
       "expected": null,
-      "observed": 80731,
+      "observed": 80912,
       "stage": "dwg snapshot hand-back"
     }
   ],
@@ -330,72 +330,72 @@
   },
   "report": {
     "unsaved": {
-      "a": "Drawing5.dwg",
-      "b": "Drawing6.dwg",
+      "a": "Drawing10.dwg",
+      "b": "Drawing11.dwg",
       "id_a": {
-        "document_id": "bd7822ca1995427ba524f7be591c0970",
+        "document_id": "768c29629cfb4ba7ad365085f2e56c32",
         "revision": 0,
-        "name": "Drawing5.dwg",
+        "name": "Drawing10.dwg",
         "path": null,
         "backend": "com"
       },
       "id_b": {
-        "document_id": "d0e54a04ba95495ab9ad359bdd0c876d",
+        "document_id": "0d1c865fa60441d49879dccb89ae3203",
         "revision": 0,
-        "name": "Drawing6.dwg",
+        "name": "Drawing11.dwg",
         "path": null,
         "backend": "com"
       }
     },
     "guard": {
       "bound": {
-        "document_id": "d0e54a04ba95495ab9ad359bdd0c876d",
+        "document_id": "0d1c865fa60441d49879dccb89ae3203",
         "revision": 1,
-        "name": "Drawing6.dwg",
+        "name": "Drawing11.dwg",
         "path": null,
         "backend": "com"
       },
       "refusal": {
         "ok": false,
         "kind": "active_document_changed",
-        "error": "AutoCAD's active document changed: this session is bound to 'Drawing6.dwg' but 'Drawing5.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing6.dwg', or call document_activate('Drawing5.dwg') to bind this session to it.",
+        "error": "AutoCAD's active document changed: this session is bound to 'Drawing11.dwg' but 'Drawing10.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing11.dwg', or call document_activate('Drawing10.dwg') to bind this session to it.",
         "bound": {
-          "document_id": "d0e54a04ba95495ab9ad359bdd0c876d",
-          "name": "Drawing6.dwg",
+          "document_id": "0d1c865fa60441d49879dccb89ae3203",
+          "name": "Drawing11.dwg",
           "path": null
         },
         "active": {
-          "document_id": "bd7822ca1995427ba524f7be591c0970",
-          "name": "Drawing5.dwg",
+          "document_id": "768c29629cfb4ba7ad365085f2e56c32",
+          "name": "Drawing10.dwg",
           "path": null
         },
         "application_changed": false
       },
       "counts": {
-        "Drawing5.dwg": 0,
-        "Drawing6.dwg": 1
+        "Drawing10.dwg": 0,
+        "Drawing11.dwg": 1
       }
     },
     "reactivate": {
       "first": true,
       "again": false,
       "active": [
-        "Drawing6.dwg",
+        "Drawing11.dwg",
         ""
       ]
     },
     "activate": {
       "a": {
-        "document_id": "bd7822ca1995427ba524f7be591c0970",
+        "document_id": "768c29629cfb4ba7ad365085f2e56c32",
         "revision": 0,
-        "name": "Drawing5.dwg",
+        "name": "Drawing10.dwg",
         "path": null,
         "backend": "com"
       },
       "b": {
-        "document_id": "d0e54a04ba95495ab9ad359bdd0c876d",
+        "document_id": "0d1c865fa60441d49879dccb89ae3203",
         "revision": 1,
-        "name": "Drawing6.dwg",
+        "name": "Drawing11.dwg",
         "path": null,
         "backend": "com"
       }
@@ -407,16 +407,16 @@
         "same_identity": true
       },
       "before": {
-        "document_id": "d0e54a04ba95495ab9ad359bdd0c876d",
+        "document_id": "0d1c865fa60441d49879dccb89ae3203",
         "revision": 1,
-        "name": "Drawing6.dwg",
+        "name": "Drawing11.dwg",
         "path": null,
         "backend": "com"
       },
       "after": {
-        "document_id": "d0e54a04ba95495ab9ad359bdd0c876d",
+        "document_id": "0d1c865fa60441d49879dccb89ae3203",
         "revision": 2,
-        "name": "Drawing6.dwg",
+        "name": "Drawing11.dwg",
         "path": null,
         "backend": "com"
       }

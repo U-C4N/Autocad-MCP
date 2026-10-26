@@ -4,8 +4,8 @@
   "status": "pass",
   "exit_code": 0,
   "reason": null,
-  "started_at": "2026-10-25T18:02:21+00:00",
-  "duration_s": 133.72,
+  "started_at": "2026-10-26T10:07:48+00:00",
+  "duration_s": 43.321,
   "environment": {
     "autocad": {
       "name": "AutoCAD",
@@ -26,7 +26,7 @@
     "pywin32": "312",
     "server": {
       "version": "1.7.0",
-      "sha": "c54ea945d85ca6c3d74588ccd3258e7d5c58357d",
+      "sha": "13499fe888120ed929cc0c3b0afe303b1de83a74",
       "dirty": false
     }
   },
