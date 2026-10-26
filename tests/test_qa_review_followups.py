@@ -481,3 +481,44 @@ async def test_a_negative_max_qa_entities_is_refused_when_the_settings_load(monk
 async def test_zero_max_qa_entities_still_disables_the_ceiling(monkeypatch):
     monkeypatch.setenv("MAX_QA_ENTITIES", "0")
     assert config.Settings().max_qa_entities == 0
+
+
+@pytest.mark.parametrize("wrapper", ["forwards_kwargs", "drops_kwargs"])
+async def test_a_wrapped_async_still_carries_the_qa_reads_readonly_flag(
+    backend, monkeypatch, wrapper
+):
+    """1.7.0 review minor 6. RED: the flag was passed only when ``_async``'s own
+    signature named ``readonly``, so a tracing wrapper taking ``**kw`` (or one
+    that drops keywords) silently lost it, and an overrunning QA read
+    quarantined the document instead of detaching."""
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    real_records = qa_scan.records_from_doc
+
+    def gated(*args, **kwargs):
+        entered.set()
+        try:
+            assert release.wait(30), "the test never released the read"
+            return real_records(*args, **kwargs)
+        finally:
+            finished.set()
+
+    real_async = backend._async
+
+    async def traced(func, *args, **kw):
+        if wrapper == "drops_kwargs":
+            return await real_async(func, *args)
+        return await real_async(func, *args, **kw)
+
+    monkeypatch.setattr(qa_scan, "records_from_doc", gated)
+    monkeypatch.setattr(backend, "_async", traced)
+    monkeypatch.setattr(config.settings, "ezdxf_call_timeout", 0.3)
+    try:
+        snap, coverage = await qa_snapshot(backend, {})
+        assert entered.is_set()
+        assert snap is None and coverage.complete is False
+        assert backend._quarantine is None, "a read must never quarantine"
+        assert "NOT quarantined" in coverage.reason
+        assert backend.call_outcomes[-1]["outcome"] == "readonly_overrun"
+    finally:
+        release.set()
+    await _wait_for(finished)

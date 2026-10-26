@@ -67,6 +67,7 @@ from .quarantine import (
     DocumentQuarantineError,
     QuarantineRecord,
     detached_read_refusal,
+    is_marked_readonly,
     quarantine_refusal,
     real_call_name,
 )
@@ -2538,7 +2539,8 @@ class EzdxfBackend(AutoCADBackend):
           worker is abandoned: the lock is swapped, the orphaned one is never
           released (waiters already past the gate must not inherit it), and the
           document is quarantined;
-        - ``readonly=True``: an overrun never quarantines the document — a
+        - ``readonly=True`` (or a ``func`` marked by
+          ``quarantine.mark_readonly``): an overrun never quarantines the document — a
           read cannot change it. From the call's ORIGINAL deadline on (a
           cancelled read keeps its deadline too) the read is *detached*: a
           ``readonly_overrun`` row is written, every other call on its
@@ -2571,6 +2573,9 @@ class EzdxfBackend(AutoCADBackend):
         ``quarantine_exit=True`` is for the three calls that rebind
         ``self._doc`` to a freshly constructed object; they still take the lock.
         """
+        # A function marked by quarantine.mark_readonly is a read whatever
+        # keywords a wrapper around this method passed on.
+        readonly = readonly or is_marked_readonly(func)
         # The gate, before any await: a refusal must not queue.
         if self._quarantine is not None or self._detached_reads:
             self._gate(quarantine_exit, detached_read_exit)

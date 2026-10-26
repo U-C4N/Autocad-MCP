@@ -16,11 +16,11 @@ module is the one reader they share now:
   ezdxf layout; ``Layout.Block.Count`` on the live engine). Above
   ``MAX_QA_ENTITIES`` (default 2,000,000; 0 disables) the read is refused and
   the coverage says why - a partial scan is never passed off as a whole one.
-* Headless, the read runs under the backend's lock as a **read-only** call.
-  ``_async(..., readonly=True)`` arrives with Task 1 on its own branch; until
-  it has, :func:`_async_readonly` passes the flag only when ``_async``'s
-  signature declares it, and never through ``**kwargs`` (which would hand
-  ``readonly`` to the closure itself).
+* Headless, the read runs under the backend's lock as a **read-only** call:
+  :func:`_async_readonly` passes ``readonly=True`` *and* marks the function
+  (``quarantine.mark_readonly``), so a wrapper around ``_async`` that drops
+  the keyword - a monkeypatch, a tracer - still hands ``_async`` a read. An
+  overrunning QA read is detached, never quarantined.
 * Live, the active document is exported to a temporary DXF
   (``engineering/understand/snapshot.py::_com_export``) in the same COM job
   that counts its layouts, and the export's records per layout are compared
@@ -46,13 +46,12 @@ propagates: a quarantined document must never read as clean.
 from __future__ import annotations
 
 import asyncio
-import inspect
 import shutil
 from collections import Counter
 from dataclasses import dataclass, replace
 
 import config
-from backends.quarantine import DocumentQuarantineError
+from backends.quarantine import DocumentQuarantineError, mark_readonly
 from engineering.understand.snapshot import (
     Snapshot,
     _box,
@@ -93,24 +92,10 @@ class ScanCoverage:
         }
 
 
-def _accepts_readonly(backend) -> bool:
-    """Does this backend's ``_async`` declare a ``readonly`` parameter?
-
-    Only an explicit parameter counts: today's ``_async(self, func, *args,
-    quarantine_exit=False, **kwargs)`` would forward ``readonly`` to ``func``.
-    """
-    try:
-        return "readonly" in inspect.signature(backend._async).parameters
-    except (TypeError, ValueError):
-        return False
-
-
 async def _async_readonly(backend, func):
-    """``backend._async(func, readonly=True)`` where Task 1's flag exists,
-    ``backend._async(func)`` where it does not yet."""
-    if _accepts_readonly(backend):
-        return await backend._async(func, readonly=True)
-    return await backend._async(func)
+    """``backend._async(func, readonly=True)``, with ``func`` marked as a read
+    too, so the flag survives a wrapper that drops the keyword."""
+    return await backend._async(mark_readonly(func), readonly=True)
 
 
 def _limit() -> int:

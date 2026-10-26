@@ -17,7 +17,7 @@ import ezdxf
 import pytest
 
 import config
-from backends.quarantine import DocumentQuarantineError
+from backends.quarantine import DocumentQuarantineError, is_marked_readonly
 from engineering import qa_scan
 from engineering.qa_scan import ScanCoverage, entity_infos_all_spaces, qa_snapshot
 from engineering.understand.snapshot import EntityRecord, records_from_doc
@@ -155,7 +155,7 @@ async def test_a_quarantine_refusal_propagates_and_is_not_cached(backend, monkey
     assert "qa_snapshot" not in shared
 
 
-# -- the read-only flag (Task 1 lands it on its own branch) ---------------------------
+# -- the read-only flag: passed, and carried on the function itself ----------------
 
 
 class _AsyncWithFlag:
@@ -163,29 +163,17 @@ class _AsyncWithFlag:
         self.seen = []
 
     async def _async(self, func, *args, quarantine_exit=False, readonly=False, **kwargs):
-        self.seen.append(readonly)
+        self.seen.append((readonly, is_marked_readonly(func)))
         return func(*args, **kwargs)
 
 
-class _AsyncWithoutFlag:
-    def __init__(self):
-        self.seen = []
-
-    async def _async(self, func, *args, quarantine_exit=False, **kwargs):
-        self.seen.append(kwargs)
-        return func(*args, **kwargs)
-
-
-async def test_readonly_is_passed_only_when_async_declares_it():
+async def test_readonly_is_passed_and_marked_on_the_function():
+    """1.7.0 review minor 6: the flag used to be passed only when ``_async``'s
+    signature named it, so a wrapper taking ``**kw`` lost it silently. Now it is
+    always passed, and the function carries it for a wrapper that drops it."""
     with_flag = _AsyncWithFlag()
-    without_flag = _AsyncWithoutFlag()
-
     assert await qa_scan._async_readonly(with_flag, lambda: 7) == 7
-    # Forwarding readonly through **kwargs would hand it to the closure, which
-    # takes no arguments: the call would raise TypeError.
-    assert await qa_scan._async_readonly(without_flag, lambda: 8) == 8
-    assert with_flag.seen == [True]
-    assert without_flag.seen == [{}]
+    assert with_flag.seen == [(True, True)]
 
 
 # -- the live engine: the export is compared with AutoCAD's own counts ----------------

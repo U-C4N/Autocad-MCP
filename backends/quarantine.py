@@ -41,6 +41,8 @@ __all__ = [
     "DocumentQuarantineError",
     "QuarantineRecord",
     "detached_read_refusal",
+    "is_marked_readonly",
+    "mark_readonly",
     "quarantine_refusal",
     "real_call_name",
 ]
@@ -51,6 +53,27 @@ __all__ = [
 _MAX_RESULT_REPR = 200
 
 log = logging.getLogger(__name__)
+
+
+#: The attribute :func:`mark_readonly` sets on a function handed to
+#: ``EzdxfBackend._async``.
+_READONLY_MARK = "__acadmcp_readonly__"
+
+
+def mark_readonly(func: Callable) -> Callable:
+    """Mark ``func`` as a read for ``EzdxfBackend._async`` and return it.
+
+    The ``readonly=True`` keyword is one argument a wrapper around ``_async``
+    (a monkeypatch, a decorator, a tracer) can drop; the mark travels on the
+    function itself, which every wrapper has to pass on, and ``_async`` treats
+    a marked function exactly as ``readonly=True``.
+    """
+    setattr(func, _READONLY_MARK, True)
+    return func
+
+
+def is_marked_readonly(func: Any) -> bool:
+    return getattr(func, _READONLY_MARK, False) is True
 
 
 def real_call_name(func: Any) -> str:
