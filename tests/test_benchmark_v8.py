@@ -164,6 +164,8 @@ async def _run(task_id, tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("task_id", NEW_IDS)
 async def test_each_new_task_passes_headlessly(task_id, tmp_path):
+    if task_id == "export_safety":
+        pytest.importorskip("openpyxl", reason="the task writes XLSX: the [office] extra")
     passed, metrics, _artifacts = await _run(task_id, tmp_path)
     assert passed, metrics
 
@@ -230,6 +232,7 @@ async def test_qa_large_drawing_fails_loudly_when_the_scan_stops_at_5000(tmp_pat
 
 @pytest.mark.asyncio
 async def test_export_safety_fails_loudly_without_the_csv_prefix(tmp_path, monkeypatch):
+    pytest.importorskip("openpyxl", reason="the task writes XLSX: the [office] extra")
     from engineering.export import cells
 
     monkeypatch.setattr(cells, "csv_text", lambda value: "" if value is None else str(value))

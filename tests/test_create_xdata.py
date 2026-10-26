@@ -94,6 +94,7 @@ class _FakeEntity:
 
 
 def _com_seat(monkeypatch):
+    pytest.importorskip("win32com.client", reason="pywin32 not installed")
     import backends.com_backend as cb
 
     log: list = []

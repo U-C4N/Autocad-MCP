@@ -29,7 +29,12 @@ from engineering.export.cells import (
     write_csv,
 )
 
-openpyxl = pytest.importorskip("openpyxl")
+try:
+    import openpyxl
+except ImportError:  # the [office] extra; skipped per test so the collected count holds
+    openpyxl = None
+
+needs_openpyxl = pytest.mark.skipif(openpyxl is None, reason="XLSX needs the [office] extra")
 
 #: Every leading character the rule exists for, a value spanning two lines,
 #: a negative number written as text, and a value nothing should touch.
@@ -143,6 +148,7 @@ def test_write_csv_refuses_a_header_that_does_not_match_the_kinds(tmp_path):
     assert not (tmp_path / "x.csv").exists()
 
 
+@needs_openpyxl
 def test_xlsx_text_cells_are_string_cells_after_a_save_load_round_trip(tmp_path):
     book = openpyxl.Workbook()
     sheet = book.active
@@ -161,6 +167,7 @@ def test_xlsx_text_cells_are_string_cells_after_a_save_load_round_trip(tmp_path)
         assert numeric_text.data_type == "s" and numeric_text.value == xlsx_expected(text)
 
 
+@needs_openpyxl
 def test_without_the_override_openpyxl_would_have_stored_a_formula():
     """The reason the override exists, kept as a check on the locked openpyxl."""
     sheet = openpyxl.Workbook().active
@@ -222,6 +229,7 @@ def test_the_parts_list_csv(tmp_path):
         assert line == [str(index), "2", csv_expected(text), csv_expected(text), "-12.5", "'-12.5"]
 
 
+@needs_openpyxl
 def test_the_parts_list_xlsx_keeps_quantities_and_masses_numeric(tmp_path):
     from engineering.sheet.extract import write_rows
 
@@ -288,6 +296,7 @@ def pipe_result():
     return result
 
 
+@needs_openpyxl
 def test_the_takeoff_csv(pipe_result, tmp_path):
     from engineering.understand.report import write_workbook
 
@@ -301,6 +310,7 @@ def test_the_takeoff_csv(pipe_result, tmp_path):
     assert warnings == [csv_expected(t) for t in CORPUS]
 
 
+@needs_openpyxl
 def test_the_takeoff_xlsx(pipe_result, tmp_path):
     from engineering.understand.report import write_workbook
 
@@ -319,6 +329,7 @@ def test_the_takeoff_xlsx(pipe_result, tmp_path):
     ]
 
 
+@needs_openpyxl
 def test_the_cable_takeoff_keeps_kw_numeric_and_a_text_section_text(tmp_path):
     from engineering.understand.report import write_workbook
     from engineering.understand.takeoff import cable_rows
@@ -340,6 +351,7 @@ def test_the_cable_takeoff_keeps_kw_numeric_and_a_text_section_text(tmp_path):
 # ── (3) the method sheet says so ────────────────────────────────────────────
 
 
+@needs_openpyxl
 @pytest.mark.parametrize(
     ("lang", "topic", "words"),
     [
