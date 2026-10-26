@@ -211,9 +211,22 @@ says where it went. Spec: `docs/superpowers/specs/2026-10-24-v1.7.0-design.md`.
   document's name, path and saved flag are untouched. `drawing_save_as` keeps
   re-pointing, as it should. Delivery parity compares every space and every
   block definition against a fresh serialisation of the document, so a hole
-  moved inside the outline fails it; the manifest (schema 1.1) records the
-  document id and revision, the export method, the requirements hash and the
-  report hash.
+  moved inside the outline of the delivered file fails it. Both sides are
+  exports, so parity cannot see content the export itself loses; its record
+  says so (`scope`) and names the check that can (`content_check`: the
+  requirements measured on the delivered file). The manifest (schema 1.1)
+  records the document id and revision, the export method, the requirements
+  hash and the report hash.
+- Saved-file verification re-bound by handle onto whatever feature now held
+  the handle: a partial renumbering that gave a bore's handle to a pin of the
+  same type measured the pin. The handle stage now also needs the source's
+  geometry (or no other feature carrying it, for an in-place edit), the tag
+  stage keeps to the source's space, and a source binding without a handle is
+  never reported as "re-bound". An open document that is not shown to be the
+  file's source (fewer than half of the entities match) makes the report
+  `provenance.source_matches: false` with a blocking
+  `artifact_source_mismatch`: nothing is re-bound from it, no comparison is
+  made, and a handle of the other drawing names nothing on the file.
 - `text_find_replace` on a live seat read a narrowed `IAcadEntity` without
   `TextString` and raised; it also rewrote the measurement text inside a
   DIMENSION's anonymous block on both engines. Anonymous blocks are skipped,

@@ -11,10 +11,13 @@ are re-bound from the source binding, one feature at a time:
 1. by handle - only while handles look stable (``diff_snapshots``'
    ``handles_stable``: at least one exact match and at least half of them kept
    their handle) and only onto a feature of the same type, space and
-   ``ACADMCP_*`` tags; a save that renumbers handles makes a handle name a
-   stranger, so this stage then does not run;
+   ``ACADMCP_*`` tags whose geometry is the source's - or, edited in place,
+   when no other feature of the file has the source's geometry; a save that
+   renumbers handles makes a handle name a stranger, so this stage then does
+   not run, and a partial renumbering that moved the source's geometry to
+   another handle falls through to the next stages;
 2. by feature tag - the same ``ACADMCP_*`` payload on exactly one feature of
-   the same type;
+   the same type and space;
 3. by geometry - exactly one feature of the same type, space and nesting depth
    whose geometry equals the source's within the epsilon.
 
@@ -36,6 +39,16 @@ own; when it cannot be found again the report carries a blocking
 and - with ``backend`` - the before / after comparison and the source document
 as its evidence, so ``mark_stale`` can tell when the document moved after the
 artifact was written.
+
+The open document must be the file's source before anything is re-bound from
+it (:func:`provenance`): at least ``SOURCE_MATCH_SHARE`` of the entities of the
+larger of the two must match unchanged. When that cannot be shown - another
+drawing is open, or the file was edited past it - the report carries
+``provenance`` with the counts and a blocking ``artifact_source_mismatch``
+finding, ``comparison`` is None, a handle-naming requirement is ``unknown`` (a
+handle of another drawing names nothing) and only a handle-free one is resolved
+afresh on the file: the wrong drawing is never described as the source, and no
+file is accepted because of it.
 
 The DWG route copies the file first because a fresh read must not be the
 document AutoCAD already has open (``take_snapshot`` would export that one,
@@ -72,8 +85,21 @@ from engineering.verification.report import (
 )
 from engineering.verification.types import Binding, FeatureRef, ObservedGeometry, RequirementSet
 
-__all__ = ["ArtifactReadError", "rebind", "rebound_dimension_evidence", "verify_artifact"]
+__all__ = [
+    "ARTIFACT_SOURCE_MISMATCH",
+    "SOURCE_MATCH_SHARE",
+    "ArtifactReadError",
+    "provenance",
+    "rebind",
+    "rebound_dimension_evidence",
+    "verify_artifact",
+]
 
+#: finding kind: the open document cannot be shown to be the saved file's source
+ARTIFACT_SOURCE_MISMATCH = "artifact_source_mismatch"
+#: share of entities (of the larger drawing) that must match unchanged for the
+#: open document to count as the saved file's source
+SOURCE_MATCH_SHARE = 0.5
 _COUNTING = ("count", "absence")
 #: selector kinds that resolve without naming a handle
 _HANDLE_FREE = frozenset({"predicate", "feature_tag"})
@@ -135,13 +161,32 @@ def _same_geometry(f, g, eps: float) -> bool:
 
 
 def _rebind_feature(f, after: ObservedGeometry, *, handles_stable: bool, by_key: dict, eps: float):
-    """``(feature or None, method, candidates)`` for one source feature."""
+    """``(feature or None, method, candidates)`` for one source feature.
+
+    The handle stage takes the feature at the source's handle when its geometry
+    is the source's, or when no other feature of the file has that geometry (the
+    feature was edited in place, and the edit is what gets measured). When the
+    source's geometry stands at another handle the save gave this handle away -
+    a partial renumbering - and the later stages decide."""
     if handles_stable:
         g = by_key.get((f.handle, f.block_path))
-        if g is not None and g.type == f.type and g.space == f.space and g.tags == f.tags:
+        if (
+            g is not None
+            and g.type == f.type
+            and g.space == f.space
+            and g.tags == f.tags
+            and (
+                _same_geometry(f, g, eps)
+                or not any(h is not g and _same_geometry(f, h, eps) for h in after.features)
+            )
+        ):
             return g, "handle", ()
     if f.tags:
-        tagged = [g for g in after.features if g.tags == f.tags and g.type == f.type]
+        tagged = [
+            g
+            for g in after.features
+            if g.tags == f.tags and g.type == f.type and g.space == f.space
+        ]
         if len(tagged) == 1:
             return tagged[0], "tag", ()
         if len(tagged) > 1:
@@ -256,8 +301,14 @@ def rebind(
     after_observed: ObservedGeometry,
     *,
     binding_policy: str = "strict",
+    source_matches: bool = True,
+    handles_stable: bool | None = None,
 ) -> tuple[tuple[Binding, ...], list[dict], bool | None]:
     """``(bindings on the saved file, one re-binding row per requirement, handles_stable)``.
+
+    ``source_matches`` False (:func:`provenance` could not show ``before`` to be
+    the file's source): nothing is re-bound from ``before``; a handle-free
+    requirement is resolved afresh on the file and any other is ``unknown``.
 
     A ``count`` / ``absence`` requirement is the set its selectors define, so it
     is resolved afresh on the saved file - never carried over from the source's
@@ -297,7 +348,33 @@ def rebind(
                 }
             )
         return tuple(bindings), rows, None
-    handles_stable = bool(diff_snapshots(before.snapshot, after_snap)["handles_stable"])
+    if not source_matches:
+        # the open document is not shown to be this file's source: nothing is
+        # re-bound from it, and a handle - which names an entity of one drawing
+        # only - is never resolved on the file instead
+        for requirement in rs.requirements:
+            binding = fresh.get(requirement.id) or _unknown(requirement.id, "no binding produced")
+            why = "the open document is not shown to be the source of this file"
+            if _handle_free(requirement):
+                _add(
+                    requirement.id,
+                    "fresh",
+                    _with_reason(binding, f"{why}; resolved afresh on the file: {binding.reason}"),
+                )
+            else:
+                kinds = sorted({s.kind for s in requirement.features} - _HANDLE_FREE)
+                _add(
+                    requirement.id,
+                    "none",
+                    _unknown(
+                        requirement.id,
+                        f"{why}, and the requirement names features by {', '.join(kinds)}: a "
+                        "handle of another drawing names nothing here",
+                    ),
+                )
+        return tuple(bindings), rows, None
+    if handles_stable is None:  # not handed over from provenance()
+        handles_stable = bool(diff_snapshots(before.snapshot, after_snap)["handles_stable"])
     by_key = {(g.handle, g.block_path): g for g in after_observed.features}
     before_by_key = {(f.handle, f.block_path): f for f in before.observed.features}
     eps = default_epsilon(after_observed)
@@ -353,7 +430,29 @@ def rebind(
             before_by_key=before_by_key,
             eps=eps,
         )
-        method = "+".join(sorted(methods)) or "none"
+        if not methods:
+            # a bound source binding with no feature handle: nothing was re-bound,
+            # so nothing may be reported as re-bound - resolved afresh where a
+            # fresh resolution means the same thing, unknown otherwise
+            why = "the source binding names no feature handle, so nothing was re-bound"
+            if handle_free or handles_stable:
+                _add(
+                    requirement.id,
+                    "fresh",
+                    _with_reason(binding, f"{why}; resolved afresh on the file: {binding.reason}"),
+                )
+            else:
+                _add(
+                    requirement.id,
+                    "none",
+                    _unknown(
+                        requirement.id,
+                        f"{why}, and the saved file renumbered handles: it cannot be "
+                        "resolved afresh",
+                    ),
+                )
+            continue
+        method = "+".join(sorted(methods))
         afresh = _keys_of_refs(binding.refs or binding.candidates)
         if problem is not None:
             reason = f"re-binding on the saved file failed: {problem}"
@@ -380,7 +479,7 @@ def rebind(
                 ),
             )
             continue
-        reason = f"re-bound on the saved file by {', '.join(sorted(methods)) or 'reference'}"
+        reason = f"re-bound on the saved file by {', '.join(sorted(methods))}"
         if handle_free:
             reason += "; the selectors resolve to the same features afresh"
         _add(
@@ -509,6 +608,33 @@ def rebound_dimension_evidence(
     return evidence, unresolved
 
 
+def provenance(source: Snapshot, saved: Snapshot) -> dict:
+    """Whether the open document can be the source of the saved file, by content.
+
+    ``diff_snapshots`` matches every entity of both (all spaces); ``matched`` is
+    the number found unchanged, ``share`` that number over the larger of the
+    two entity counts. ``source_matches`` is ``share >= SOURCE_MATCH_SHARE``,
+    or True when both are empty (nothing to tell apart). A document id cannot
+    decide this: it is minted per open, so the same drawing reopened has a new
+    one and a file carries none. A file edited past the threshold is reported
+    the same way as another drawing's file - its source cannot be shown.
+    """
+    diff = diff_snapshots(source, saved)
+    summary = diff["summary"]
+    larger = max(summary["old_entities"], summary["new_entities"])
+    matched = summary["unchanged"]
+    share = matched / larger if larger else None
+    return {
+        "source_entities": summary["old_entities"],
+        "artifact_entities": summary["new_entities"],
+        "matched": matched,
+        "share": share,
+        "threshold": SOURCE_MATCH_SHARE,
+        "source_matches": share is None or share >= SOURCE_MATCH_SHARE,
+        "handles_stable": bool(diff["handles_stable"]),
+    }
+
+
 def _compare(before: dict, after: dict) -> list[dict]:
     """Per requirement: the status and value on the document and on the saved file."""
     after_rows = {row["id"]: row for row in after["rows"]}
@@ -541,7 +667,9 @@ async def verify_artifact(
     Refuses a missing file (FileNotFoundError), a suffix other than .dxf / .dwg
     (ValueError), a DWG headlessly (``dwg`` capability) and a DWG the live
     engine cannot copy (``ArtifactReadError``). An unreadable DXF is refused by
-    ``read_snapshot`` with the reason.
+    ``read_snapshot`` with the reason. With ``backend`` the report carries
+    ``provenance`` (None without): an open document that is not shown to be the
+    file's source is a blocking ``artifact_source_mismatch``, never a comparison.
     """
     if binding_policy not in BINDING_POLICIES:
         raise ValueError(
@@ -564,9 +692,17 @@ async def verify_artifact(
         before = await measure_requirements(backend, rs, binding_policy=binding_policy)
 
     def _work():
+        origin = None if before is None else provenance(before.snapshot, after_snap)
+        matches = origin is None or origin["source_matches"]
         observed = observe(after_snap, explode_inserts=True, document=document)
         bindings, rebinding, stable = rebind(
-            rs, before, after_snap, observed, binding_policy=binding_policy
+            rs,
+            before,
+            after_snap,
+            observed,
+            binding_policy=binding_policy,
+            source_matches=matches,
+            handles_stable=None if origin is None else origin["handles_stable"],
         )
         by_id = {binding.requirement_id: binding for binding in bindings}
         # as report._measure: the evaluator applies a requirement's own
@@ -580,14 +716,26 @@ async def verify_artifact(
         )
         if before is None:
             dimensions, unresolved = dimension_evidence(rs, after_snap, observed), []
+        elif not matches:
+            # a DIMENSION is named by handle: of another drawing it names nothing
+            dimensions = {}
+            unresolved = [
+                (
+                    requirement.id,
+                    "the open document is not shown to be the source of this file, so its "
+                    "DIMENSION cannot be found again",
+                )
+                for requirement in rs.requirements
+                if any(selector.kind == "dimension" for selector in requirement.features)
+            ]
         else:
             dimensions, unresolved = rebound_dimension_evidence(
                 rs, before, after_snap, observed, handles_stable=bool(stable)
             )
-        return observed, bindings, measurements, rebinding, stable, dimensions, unresolved
+        return origin, observed, bindings, measurements, rebinding, stable, dimensions, unresolved
 
     work = await asyncio.to_thread(_work)
-    observed, bindings, measurements, rebinding, stable, dimensions, unresolved = work
+    origin, observed, bindings, measurements, rebinding, stable, dimensions, unresolved = work
     record = {
         "path": str(target),
         "sha256": sha,
@@ -607,7 +755,24 @@ async def verify_artifact(
             message=f"the DIMENSION check could not be made on the saved file: {why}",
         )
     report["rebinding"] = {"handles_stable": stable, "rows": rebinding}
-    if before is not None:
+    report["provenance"] = origin
+    if origin is not None and not origin["source_matches"]:
+        share = origin["share"] or 0.0
+        report = add_finding(
+            report,
+            kind=ARTIFACT_SOURCE_MISMATCH,
+            requirement="*",
+            message=(
+                f"the open document ({before.document.get('name')}) is not shown to be the "
+                f"source of {target.name}: {origin['matched']} of "
+                f"{max(origin['source_entities'], origin['artifact_entities'])} entities match "
+                f"unchanged ({share:.0%}, at least {SOURCE_MATCH_SHARE:.0%} needed). Open the "
+                "drawing this file was saved from and verify again"
+            ),
+        )
+        report["comparison"] = None
+        report["source_document"] = dict(before.document)
+    elif before is not None:
         before_report = build_report(
             rs,
             before.bindings,
