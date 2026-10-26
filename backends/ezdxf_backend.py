@@ -8585,6 +8585,10 @@ class EzdxfBackend(AutoCADBackend):
 
         return await self._async(_sync)
 
+    def transaction_depth(self) -> int | None:
+        # The active document's snapshot stack; system_status reports the same.
+        return len(self._transaction_stack)
+
     # ── system ────────────────────────────────────────────────────────────────
 
     async def system_status(self) -> dict:

@@ -7544,6 +7544,10 @@ class ComBackend(AutoCADBackend):
         self._transaction_active = False
         return result
 
+    def transaction_depth(self) -> int | None:
+        # A nested transaction_begin is refused here, so the depth is 0 or 1.
+        return int(bool(self._transaction_active))
+
     # ── system ──────────────────────────────────────────────────────────────
 
     async def system_status(self) -> dict:

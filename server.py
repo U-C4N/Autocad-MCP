@@ -4813,30 +4813,46 @@ def _batch_transaction_ok(outcome) -> tuple[bool, str | None]:
     return False, str(outcome.get("error") or "backend declined")
 
 
-def _record_cancelled_batch_rollback(
-    backend, ctx, outcome: str, error: str | None, started: float
+def _record_escaped_batch_rollback(
+    backend, ctx, outcome: str, error: str | None, started: float, cause: str
 ) -> None:
-    """Leave a trace of a cancelled batch whose rollback did not happen.
+    """Leave a trace of a batch, ended by an exception, whose rollback failed.
 
-    The SDK has already answered the cancelled request, so nothing can be
-    returned or raised: the failure is logged naming the request id (a warning
-    when the backend declined, an error when it raised) and appended to the
-    backend's ``call_outcomes`` (``system_status`` reports the last few) -
-    ``outcome`` is ``rollback_declined`` (the backend answered ``ok: False``)
-    or ``rollback_failed`` (it raised). Never raises.
+    Nothing can be returned from that path - a cancelled request has already
+    been answered by the SDK, any other exception is on its way to the client -
+    so the failure is logged naming the request id (an error when the rollback
+    raised, a warning otherwise) and appended to the backend's
+    ``call_outcomes`` (``system_status`` reports the last few). ``outcome`` is
+    ``rollback_declined`` (the backend answered ``ok: False``),
+    ``rollback_failed`` (it raised) or ``rollback_unverified`` (it answered ok,
+    but the fingerprint or the transaction depth differs from before the
+    batch). ``cause`` is ``"cancelled"`` or the ``Type: message`` of the
+    exception that ended the batch - only a cancellation is called one. Never
+    raises.
     """
     try:
         request_id = ctx.request_id if ctx is not None else None
     except Exception:  # no request context (a direct call in a test or script)
         request_id = None
+    ended_by = (
+        f"cancelled request {request_id}"
+        if cause == "cancelled"
+        else f"request {request_id} ended by {cause}"
+    )
+    happened = (
+        "answered ok but was not verified"
+        if outcome == "rollback_unverified"
+        else "was not performed"
+    )
     # A rollback that raised is an error, as before; one the backend declined
     # is a warning, as _batch_transaction_ok reports it on the normal path.
     log.log(
         logging.ERROR if outcome == "rollback_failed" else logging.WARNING,
-        "cad_batch: the rollback after cancelled request %s was not performed (%s: %s); "
+        "cad_batch: the rollback after %s %s (%s: %s); "
         "the steps that ran may still be in the drawing - check system_status and "
         "transaction_rollback before retrying",
-        request_id,
+        ended_by,
+        happened,
         outcome,
         error,
     )
@@ -4853,10 +4869,76 @@ def _record_cancelled_batch_rollback(
                 "document": None,
                 "request_id": None if request_id is None else str(request_id),
                 "error": error,
+                "cause": cause,
             }
         )
     except Exception as exc:  # a foreign backend's container must not break the cancel
         log.debug("cad_batch: call_outcomes not recordable: %s", exc)
+
+
+#: Upper bound on the checkpoints a batch's close unwinds above its own: a step
+#: loop that opened more than this is closed only this far, and the payload or
+#: the record says what depth is left.
+_BATCH_MAX_UNWIND = 64
+
+
+def _read_transaction_depth(backend) -> int | None:
+    try:
+        depth = backend.transaction_depth()
+    except Exception as exc:  # a probe must never break the close
+        log.debug("transaction depth unavailable: %s", exc)
+        return None
+    return depth if isinstance(depth, int) else None
+
+
+async def _close_batch_checkpoint(backend, close, base_depth: int | None):
+    """Close the batch's checkpoint, and every checkpoint a step opened above it.
+
+    ``close`` is the backend's ``transaction_rollback`` or
+    ``transaction_commit``. A step that called ``transaction_begin`` pushed a
+    checkpoint above the batch's; one close pops *that* one and answers ok,
+    leaving the batch's open (and, on a rollback, the steps before the inner
+    begin in the drawing). So the close repeats while the depth is above the
+    one read before the batch opened its own. Returns ``(performed, declined,
+    unwound, depth_left)``: ``unwound`` counts the closes beyond the first.
+    """
+    performed, declined = _batch_transaction_ok(await close())
+    unwound = 0
+    depth = _read_transaction_depth(backend)
+    while (
+        performed
+        and base_depth is not None
+        and depth is not None
+        and depth > base_depth
+        and unwound < _BATCH_MAX_UNWIND
+    ):
+        performed, declined = _batch_transaction_ok(await close())
+        unwound += 1
+        depth = _read_transaction_depth(backend)
+    return performed, declined, unwound, depth
+
+
+async def _escaped_rollback_problem(
+    backend, before: dict | None, base_depth: int | None, depth_left: int | None
+) -> str | None:
+    """Why a rollback that answered ok after an escaped exception is not verified.
+
+    The normal path's checks, for a path that has no payload to carry them:
+    the fingerprint taken before step 1 against one read now, then the depth.
+    ``None`` when both hold or cannot be read (the normal path reports that as
+    ``verified: None``, not as a failure).
+    """
+    after = await _batch_fingerprint(backend)
+    if before is not None and after is not None and before != after:
+        return (
+            "the document fingerprint differs from the one taken before step 1: "
+            f"before {before}, after {after}"
+        )
+    if base_depth is not None and depth_left is not None and depth_left > base_depth:
+        return (
+            f"transaction_depth is {depth_left} after the rollback, {base_depth} before the batch"
+        )
+    return None
 
 
 async def _batch_fingerprint(backend) -> dict | None:
@@ -5059,7 +5141,8 @@ async def cad_batch(
     ATOMICITY is reported, not assumed. Read the `atomicity` block: on the
     headless backend rollback restores a full document snapshot; on live AutoCAD
     it sends an UNDO whose landing AutoCAD never confirms. The default
-    on_error="stop" claims nothing and is exact on both.
+    on_error="stop" claims nothing and is exact on both. A checkpoint a step
+    opens with transaction_begin is closed with the batch's (`unwound`).
 
     NOT CALLABLE from a batch: the raw command/LISP escape hatches, and
     cad_batch itself. Call those directly.
@@ -5238,11 +5321,13 @@ async def cad_batch(
     guarantee, note = "none", _BATCH_NO_CLAIM_NOTE.format(mode=mode)
     transaction = False
     before = None
+    base_depth = None
     if mode == "rollback":
         guarantee, note = _batch_rollback_guarantee(backend)
         if guarantee == "none":
             raise ToolError(f"cad_batch: on_error='rollback' is unavailable here. {note}")
         before = await _batch_fingerprint(backend)
+        base_depth = _read_transaction_depth(backend)
         # B01: the begin runs shielded. Cancelled mid-await, its worker would
         # still finish (the lease follows the worker) and push a checkpoint
         # this call never learns about - left open, a later bare rollback
@@ -5420,32 +5505,48 @@ async def cad_batch(
         # that ran still in the drawing. Roll back, shielded: anyio
         # cancellation is level-triggered, so a bare await here would itself be
         # cancelled before the rollback body ran (engineering/pid/spec.py has
-        # the measurements). After a cancellation a failed rollback is logged,
-        # never raised: the SDK has already answered the request.
+        # the measurements). The rollback is checked the way the normal path
+        # checks it - its answer, every checkpoint a step opened above the
+        # batch's, and the fingerprint - and a failure is logged and recorded,
+        # never raised over the exception that ended the batch.
         if transaction:
             cancelled = isinstance(exc, anyio.get_cancelled_exc_class())
+            cause = "cancelled" if cancelled else f"{type(exc).__name__}: {exc}"
             with anyio.CancelScope(shield=True):
                 rollback_started = time.time()
                 try:
-                    answer = await backend.transaction_rollback()
+                    performed, declined, _, depth_left = await _close_batch_checkpoint(
+                        backend, backend.transaction_rollback, base_depth
+                    )
                 except Exception as rollback_exc:
                     if not cancelled:
                         raise
-                    _record_cancelled_batch_rollback(
+                    _record_escaped_batch_rollback(
                         backend,
                         ctx,
                         "rollback_failed",
                         f"{type(rollback_exc).__name__}: {rollback_exc}",
                         rollback_started,
+                        cause,
                     )
                 else:
-                    # The answer is checked the way the normal path checks it:
-                    # a declined rollback leaves the steps in the drawing.
-                    performed, declined = _batch_transaction_ok(answer)
                     if not performed:
-                        _record_cancelled_batch_rollback(
-                            backend, ctx, "rollback_declined", declined, rollback_started
+                        _record_escaped_batch_rollback(
+                            backend, ctx, "rollback_declined", declined, rollback_started, cause
                         )
+                    else:
+                        problem = await _escaped_rollback_problem(
+                            backend, before, base_depth, depth_left
+                        )
+                        if problem is not None:
+                            _record_escaped_batch_rollback(
+                                backend,
+                                ctx,
+                                "rollback_unverified",
+                                problem,
+                                rollback_started,
+                                cause,
+                            )
         raise
 
     await ctx.report_progress(total, total)
@@ -5454,6 +5555,8 @@ async def cad_batch(
     verified = None
     after = None
     declined = None
+    unwound = 0
+    depth_left = None
     if transaction:
         # B01: the commit or rollback that closes the checkpoint runs shielded;
         # a cancellation arriving now must not leave it half-closed.
@@ -5467,11 +5570,15 @@ async def cad_batch(
                 # rollback"} and the caller's work is still there. Reporting
                 # rolled_back=True off the bare await would be the same class of
                 # lie as writing DXF bytes into a .dwg.
-                rolled_back, declined = _batch_transaction_ok(await backend.transaction_rollback())
+                rolled_back, declined, unwound, depth_left = await _close_batch_checkpoint(
+                    backend, backend.transaction_rollback, base_depth
+                )
                 after = await _batch_fingerprint(backend)
                 verified = None if (before is None or after is None) else before == after
             else:
-                committed, declined = _batch_transaction_ok(await backend.transaction_commit())
+                committed, declined, unwound, depth_left = await _close_batch_checkpoint(
+                    backend, backend.transaction_commit, base_depth
+                )
         # A request cancelled while the shield held still ends as a
         # cancellation: returning normally makes the SDK answer it a second
         # time, and `assert not self._completed` in mcp.shared.session kills
@@ -5486,6 +5593,8 @@ async def cad_batch(
         atomicity.update(
             {"committed": committed, "verified": verified, "before": before, "after": after}
         )
+        if unwound:
+            atomicity["unwound"] = unwound
     payload = {
         "ok": ok,
         "dry_run": False,
@@ -5513,6 +5622,18 @@ async def cad_batch(
         payload["atomicity"]["note"] = (
             "ROLLBACK NOT VERIFIED - the document fingerprint differs from the one "
             f"taken before step 1. {note}"
+        )
+    elif base_depth is not None and depth_left is not None and depth_left > base_depth:
+        payload["atomicity"]["note"] = (
+            f"CHECKPOINT LEFT OPEN - transaction_depth is {depth_left} after closing "
+            f"{unwound + 1} checkpoint(s), {base_depth} before the batch: steps opened "
+            f"more than {_BATCH_MAX_UNWIND} with transaction_begin. {note}"
+        )
+    elif unwound:
+        closed = "rolled back" if failed else "committed"
+        payload["atomicity"]["note"] = (
+            f"A step opened {unwound} checkpoint(s) of its own with transaction_begin; "
+            f"they were {closed} with the batch's, so none is left open. {note}"
         )
     return payload
 

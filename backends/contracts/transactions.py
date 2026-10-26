@@ -19,3 +19,13 @@ class TransactionContract(ABC):
 
     @abstractmethod
     async def transaction_rollback(self) -> dict: ...
+
+    def transaction_depth(self) -> int | None:
+        """How many checkpoints are open now, read without a backend call.
+
+        ``cad_batch`` reads it before opening its own checkpoint and after
+        closing one, so a checkpoint a step opened above the batch's is closed
+        with it instead of leaving the batch's open. ``None`` means the backend
+        cannot say, and nothing is unwound on a guess.
+        """
+        return None
