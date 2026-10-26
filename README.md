@@ -35,7 +35,7 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 | **Identity, revisions, previews** | Every document has an id and a content revision. On a live seat the session stays on the document it chose: a switch of AutoCAD's active tab is refused (`active_document_changed`), not followed. `cad_batch`, `drawing_refine`, `text_find_replace` and `pid_from_spec` preview exactly what they would change and apply only if nothing moved (`stale_revision`). A client operation id makes a retry replay instead of repeat |
 | **The skill, as a plugin** | The premium skill is back. It is rewritten around this workflow and installs with the server as a Claude Code plugin ([below](#as-a-claude-code-plugin)), along with twenty negative eval cases |
 | **Task recipes** | Five versioned recipes served as resources (`autocad://recipes/index`): dimensioned part → verify → deliver, foreign P&ID → lists, revision pair → takeoff delta, A3 sheet delivery and foreign-drawing audit. Each one runs end to end in a test |
-| **Evidence** | Correctness suite 61 / 61 against v1.6.0's 48 / 61 with zero regressions, matrix v8 31 / 31, the live COM harness passing on AutoCAD 2026, and no workload slower than 1.6.0 ([evidence](#evidence)) |
+| **Evidence** | Correctness suite 61 / 61 against v1.6.0's 48 / 61 with zero regressions, matrix v8 31 / 31, the live COM harness passing on AutoCAD 2026, and no workload slower than 1.6.0 beyond the measured noise ([evidence](#evidence)) |
 
 ### The verification workflow
 
@@ -239,7 +239,7 @@ One contract across 23 modules in `backends/contracts/`. `@capability(key, reaso
 ᶜ Headless CHSPACE has four restrictions, named in its capability reason: top-view untwisted viewports only; dimensions refused unless frozen; ACIS, proxy and table entities refused; viewport clipping reported rather than applied.</sub>
 
 > [!IMPORTANT]
-> Every COM path added in v1.6 was executed against a **live AutoCAD 2026**, one smoke script per track (`scripts/smoke_*_com.py`), each run recorded in the changelog. In 1.7 those smokes assert on one harness (`scripts/live/harness.py`: attach only, its own documents, an active-document guard). A sixth smoke covers the verification paths, and their JSON results are committed under [`benchmarks/results/live/`](https://github.com/U-C4N/Autocad-MCP/tree/main/benchmarks/results/live). Those runs found defects no headless test could. ActiveX refuses `entity.Layer` on a missing layer, where ezdxf quietly creates it, so `mech_part_draw` died after drawing every view. ActiveX calls a block reference `BLOCKREFERENCE`, not `INSERT`, so the parts list read nothing. And once pywin32's type-library cache existed, every listed entity arrived as a bare `IAcadEntity` with no line endpoints, so the room reader saw no walls and `arch_plan_from_spec` refused its first room label.
+> The COM paths run against a **live AutoCAD 2026** through six asserting smoke scripts (`scripts/smoke_*_com.py`) on one harness (`scripts/live/harness.py`: attach only, its own documents, an active-document guard). The 1.7.0 run passed **91 / 91** checks; its JSON is committed under [`benchmarks/results/live/`](https://github.com/U-C4N/Autocad-MCP/tree/main/benchmarks/results/live). These runs catch what no headless test can: ActiveX refuses `entity.Layer` on a missing layer where ezdxf quietly creates it, calls a block reference `BLOCKREFERENCE` rather than `INSERT`, and, once pywin32's type-library cache exists, hands every listed entity back as a bare `IAcadEntity` with no endpoints. Each of those broke a tool that passed every headless test.
 
 ## Evidence
 
@@ -264,7 +264,7 @@ A fixed 100-point rubric applied to nine public AutoCAD MCP servers ([`source_re
 > [!NOTE]
 > Read this as a documented self-assessment, not an independent review: this repository applies the rubric to itself and to the others. The competitor rows are their July 2026 snapshots and were not re-reviewed for this release, and the best of them, varavista/autocad-mcp, scored 84. 1.4.0 was given one overall 95. This review is stricter and scores each category apart. The rubric was not re-applied for 1.7.0: the 1.6.0 column stands as it was published.
 
-A second lane runs tasks instead of reading source. Every task in the fixed-task matrix can fail, and its artifacts are verified by re-opening the DXF, never by trusting a response. The reference adapter passes **31 / 31** of matrix v8. The two competitors with adapters, pinned at their July 2026 commits, passed 5 / 10 and 4 / 10 of the ten v2 tasks they were run on. The twenty-one tasks added since then were never put to them, so they show as *not run*, not as zero (in 1.7.0 their lanes record the v8 tasks as `not_run` or `environment_blocked`, never as a score):
+A second lane runs tasks instead of reading source. Every task in the fixed-task matrix can fail, and its artifacts are verified by re-opening the DXF, never by trusting a response. This server passes **31 / 31** of matrix v8. The two competitors with adapters, pinned at their July 2026 commits, passed 5 / 10 and 4 / 10 of the ten v2 tasks they were run on. The twenty-one tasks added since were never put to them, so their lanes record them as `not_run` or `environment_blocked`, never as zero:
 
 <img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/autocad-mcp-taskmatrix.svg" alt="Task matrix: autocad-mcp-pro passes all 31 tasks; beiming183 and puran-water were run on the first ten, with the later twenty-one not run" width="800">
 
@@ -327,13 +327,7 @@ The twenty-two checks 1.6 added against v1.5.1 (`miss → pass`) each pin a numb
 
 ### The task matrix — tasks that can fail
 
-An earlier matrix scored this server 10/10, which carried no information: every task in it exercised something the server was built around. Five tasks were added in 1.5 because they *can* fail, and three of them did while being written. 1.6 adds six more:
-
-- one the P&ID reader can fail on its own;
-- one where the PDF file, not the setter, is the witness;
-- one where a whole mechanical sheet has to come out clean;
-- one where a floor plan's rooms are read back off the drawing;
-- two where a foreign plant's P&ID and layout are read: the takeoffs against lengths computed in advance, and the one-call report against the defects planted in it.
+An early matrix scored this server 10/10, which carried no information: every task exercised something the server was built around. Since 1.5 a task joins the matrix only if it *can* fail. Three of 1.5's five did while being written.
 
 1.7 adds ten (matrix v8, 31 tasks). Five test what 1.7.0 promises, and five stand on ground a rival server claims:
 
@@ -341,7 +335,7 @@ An earlier matrix scored this server 10/10, which carried no information: every 
 - `cancel_safety`, `qa_large_drawing` (offenders at the 5,001st entity, after the 10,000th and on a paper layout), `export_safety` and `stale_preview`;
 - `revision_guarded_edit` (beiming183's revision discipline), `pid_file_roundtrip` (puran-water's P&ID tools), `foreign_edit_verified`, `damaged_dxf_refusal` (refused by name; recovery is 1.7.1) and `dimension_binding`.
 
-The rivals' lanes record these tasks as `not_run` or `environment_blocked`, never as zero.
+The tasks added in 1.5 and 1.6, with what each is verified against:
 
 | Task | Verified against |
 |---|---|
@@ -363,17 +357,17 @@ The rivals' lanes record these tasks as `not_run` or `environment_blocked`, neve
 
 The workloads call the same backend methods the MCP tools call, so server-side overhead is included. Numbers move with hardware; the report records the machine fingerprint. **Read the next section before quoting them.** Entity creation is still slower than in v1.4.0.
 
-**1.7.0 against 1.6.0: not slower.** `benchmarks/perf_compare.py` builds a v1.6.0 worktree and measures both trees in alternating rounds, base, head, head, base, with one interpreter. The A/A calibration measures the base against itself in every round. Values are medians of 20 rounds after 5 warm-ups, and each ratio is the median of the paired per-round ratios ([`perf-v1.6.0-vs-v1.7.0.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/perf-v1.6.0-vs-v1.7.0.json)):
+**1.7.0 against 1.6.0: not slower beyond the noise.** `benchmarks/perf_compare.py` builds a v1.6.0 worktree and measures both trees in alternating rounds, base, head, head, base, with one interpreter. The A/A calibration measures the base against itself in every round. Values are medians of 20 rounds after 5 warm-ups, and each ratio is the median of the paired per-round ratios ([`perf-v1.6.0-vs-v1.7.0.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/perf-v1.6.0-vs-v1.7.0.json)):
 
 | Workload | v1.6.0 | v1.7.0 | ratio |
 |---|---:|---:|---:|
-| 2,000 lines, one call each | 497.1 ms | 458.2 ms | 0.98 |
-| 10,000 lines: build, DXF export, reopen | 5,113.3 ms | 4,760.9 ms | 0.94 |
-| Region query over 10,000 entities | 1,284.5 ms | 1,020.5 ms | 0.83 |
-| Premium quality pass | 159.3 ms | 106.1 ms | 0.64 |
-| 2,000 `entity_create_line` calls through the MCP server | 11,900.1 ms | 11,577.2 ms | 0.92 |
+| 2,000 lines, one call each | 492.1 ms | 454.9 ms | 0.95 |
+| 10,000 lines: build, DXF export, reopen | 5,139.3 ms | 4,986.8 ms | 0.91 |
+| Region query over 10,000 entities | 1,377.6 ms | 1,012.8 ms | 1.02 |
+| Premium quality pass | 182.7 ms | 108.0 ms | 0.62 |
+| 2,000 `entity_create_line` calls through the MCP server | 14,414.4 ms | 13,412.6 ms | 0.96 |
 
-The gate holds every ratio at or below 1 + max(0.05, 2 × the A/A spread). This run's A/A spread was 22.5 % on a busy machine, so its bound was a loose 1.45. Read the ratios, not the bound: none is above 1. The W2 phase gate, run on a quieter machine, had a worst ratio of 1.049 against a bound of 1.12. These runs use CPython 3.13 and the table below uses 3.11.15, so compare ratios, never milliseconds across tables.
+The gate holds every ratio at or below 1 + max(0.05, 2 × the A/A spread). This run was taken on an idle machine: the A/A spread was 5.5 %, so the bound was 1.11. The region query's 1.02 is inside that noise. Its two medians differ the other way (1,377.6 vs 1,012.8 ms) because the ratio column pairs each round's base and head before taking the median, and the paired figure is the one the gate trusts. These runs use CPython 3.13 and the table below uses 3.11.15, so compare ratios, never milliseconds across tables.
 
 ## What this release is bad at
 

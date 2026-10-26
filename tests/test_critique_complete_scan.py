@@ -403,8 +403,11 @@ async def test_drawing_deliver_reads_the_drawing_once(backend, tmp_path, monkeyp
 #: the maintainer's machine (2026-10-24, inside the suite); the O(n^2) pair loops
 #: alone took 8.9 s at 5,000 lines. Sixty seconds is the regression line.
 CRITIQUE_BOUND_S = 60.0
-#: How long a concurrent system_status may take to answer.
-STATUS_BOUND_S = 0.5
+#: How long a concurrent system_status may take to answer. The defect this
+#: guards was an event loop stalled for the whole critique (8.9 s at 5,000
+#: lines); an answering loop measured 0.52-0.59 s worst under a loaded machine
+#: (the full suite beside perf and A/B runs), so 0.5 s flaked without a stall.
+STATUS_BOUND_S = 2.0
 
 
 async def test_a_50000_line_critique_leaves_system_status_answering(backend):

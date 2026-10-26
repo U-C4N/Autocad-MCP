@@ -246,15 +246,16 @@ from [`results/published/perf-v1.6.0-vs-v1.7.0.json`](results/published/perf-v1.
 
 | Workload | v1.6.0 | v1.7.0 | ratio |
 |---|---:|---:|---:|
-| 2,000 lines, one call each | 497.1 ms | 458.2 ms | 0.98 |
-| 10,000 lines: build, DXF export, reopen | 5,113.3 ms | 4,760.9 ms | 0.94 |
-| Region query over 10,000 entities | 1,284.5 ms | 1,020.5 ms | 0.83 |
-| Premium quality pass | 159.3 ms | 106.1 ms | 0.64 |
-| 2,000 `entity_create_line` calls through the MCP server | 11,900.1 ms | 11,577.2 ms | 0.92 |
+| 2,000 lines, one call each | 492.1 ms | 454.9 ms | 0.95 |
+| 10,000 lines: build, DXF export, reopen | 5,139.3 ms | 4,986.8 ms | 0.91 |
+| Region query over 10,000 entities | 1,377.6 ms | 1,012.8 ms | 1.02 |
+| Premium quality pass | 182.7 ms | 108.0 ms | 0.62 |
+| 2,000 `entity_create_line` calls through the MCP server | 14,414.4 ms | 13,412.6 ms | 0.96 |
 
-The A/A spread was 22.5 % (a busy machine; bound 1.45), so the ratios carry
-the result: none is above 1. The W2 phase gate on a quieter machine had a
-worst ratio of 1.049 against a bound of 1.12. 1.7.0 does not win back
+Measured on an idle machine: the A/A spread was 5.5 %, so the bound was
+1.11, and the region query's 1.02 is inside that noise. The ratio is the
+median of each round's paired head / base ratio, not the ratio of the two
+medians, which is why that row's medians point the other way. 1.7.0 does not win back
 v1.4.0's creation throughput; that is B10, 1.7.1.
 
 ```bash

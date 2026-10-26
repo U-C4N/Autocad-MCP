@@ -20,9 +20,10 @@ cell can no longer produce a silent wrong answer. 247 → 248 registered tools
 (one new: `drawing_verify_requirements`), 8 → 11 resources, 5 prompts; the
 correctness suite at 61 / 61 against v1.6.0's 48 / 61 with zero regressions;
 benchmark matrix v8 at 31 / 31; the live COM harness at 91 / 91 checks on
-AutoCAD 2026; and no workload slower than 1.6.0 (every v1.7.0 / v1.6.0
-ratio between 0.64 and 0.98 over 20 alternating rounds of
-`perf_compare.py`, `perf-v1.6.0-vs-v1.7.0.json`). Headless creation
+AutoCAD 2026; and no workload slower than 1.6.0 beyond the measured noise
+(v1.7.0 / v1.6.0 ratios 0.62 to 1.02 over 20 alternating rounds of
+`perf_compare.py` on an idle machine, A/A spread 5.5 %,
+`perf-v1.6.0-vs-v1.7.0.json`). Headless creation
 throughput against v1.4.0 is still not won back: **Not in 1.7.0**
 says where it went. Spec: `docs/superpowers/specs/2026-10-24-v1.7.0-design.md`.
 
@@ -247,6 +248,11 @@ says where it went. Spec: `docs/superpowers/specs/2026-10-24-v1.7.0-design.md`.
   `arch_rooms_detect` / `arch_schedule`; `prompt_electrical_schematic` uses
   current tools only and says electrical schematics are 1.9.0.
 - `drawing_refine` previews also when the score already meets `min_score`.
+- The plugin carries an icon (`plugin/.claude-plugin/icon.png`, a spur gear
+  drawn by `gear_draw_spur_front_view`), and the README's `uvx` pin is one of
+  the release numbers the version-drift test holds to pyproject.
+- The correctness suite removes the temporary folders its checks write; every
+  A/B run used to leave one per check in `%TEMP%`.
 
 ### Not in 1.7.0
 

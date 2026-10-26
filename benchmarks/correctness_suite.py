@@ -16,10 +16,20 @@ method the old version lacks simply raises AttributeError -> miss.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import math
 import os
+import shutil
 import sys
 import tempfile
+
+
+def _scratch_dir(prefix: str = "acadmcp_check_") -> str:
+    """A temporary folder removed when the check's process exits; every A/B run
+    used to leave one folder per check in %TEMP%."""
+    folder = tempfile.mkdtemp(prefix=prefix)
+    atexit.register(shutil.rmtree, folder, ignore_errors=True)
+    return folder
 
 
 async def _b():
@@ -72,7 +82,7 @@ async def core_linear_dim():
 async def core_save_dxf_roundtrip():
     b = await _b()
     await b.entity_create_line(0, 0, 10, 10)
-    path = os.path.join(tempfile.mkdtemp(), "rt.dxf")
+    path = os.path.join(_scratch_dir(), "rt.dxf")
     await b.drawing_save_as(path, "dxf")
     import ezdxf
 
@@ -362,7 +372,7 @@ async def settings_layer_state_roundtrip():
     await b.layer_freeze("LS_B")
     restored = await b.layer_state_restore("bench")
     layers = {layer.name: layer for layer in await b.layer_list()}
-    path = os.path.join(tempfile.mkdtemp(), "ls.dxf")
+    path = os.path.join(_scratch_dir(), "ls.dxf")
     await b.drawing_save_as(path, "dxf")
     await b.drawing_open(path)
     names_after_reopen = {row["name"] for row in await b.layer_state_list()}
@@ -400,7 +410,7 @@ async def settings_pdf_mediabox_a3():
 
     b = await _b()
     await b.page_setup_apply("Layout1", resolve_page_setup("ANSI_B"))
-    out_dir = tempfile.mkdtemp()
+    out_dir = _scratch_dir()
     report_b = await batch_plot(b, ["Layout1"], out_dir, "{drawing}-{layout}-ansi_b.pdf")
     width_b, height_b = report_b["sheets"][0]["mediabox_mm"]
     applied = await b.page_setup_apply("Layout1", resolve_page_setup("ISO_A3"))
@@ -825,7 +835,7 @@ def _plant_pair() -> dict:
     """The synthetic plant pair, written to a fresh temporary folder."""
     from tests.fixtures.plant_pair import build_plant_pair
 
-    return build_plant_pair(tempfile.mkdtemp(prefix="acadmcp_plant_"))
+    return build_plant_pair(_scratch_dir(prefix="acadmcp_plant_"))
 
 
 def _quoted(handle: str) -> str:
@@ -851,7 +861,7 @@ async def scale_check_detects_schematic():
 
     truth = _plant_pair()
     pair = scale_check(read_snapshot(truth["pid"]), read_snapshot(truth["layout"]))
-    folder = tempfile.mkdtemp(prefix="acadmcp_scale_")
+    folder = _scratch_dir(prefix="acadmcp_scale_")
     positions = [(0, 0), (4000, 0), (8000, 0), (0, 3000), (4000, 3000), (8000, 6000)]
     paths = []
     for factor in (1.0, 2.0):
@@ -944,7 +954,7 @@ async def diff_detects_known_edits():
     from engineering.understand.diff import diff_snapshots
     from engineering.understand.snapshot import read_snapshot
 
-    folder = tempfile.mkdtemp(prefix="acadmcp_diff_")
+    folder = _scratch_dir(prefix="acadmcp_diff_")
     old_path, new_path = os.path.join(folder, "rev_a.dxf"), os.path.join(folder, "rev_b.dxf")
     doc = ezdxf.new("R2018")
     msp = doc.modelspace()
@@ -1009,7 +1019,7 @@ async def topology_known_defects():
     cross_b = msp.add_line((2000, 1000), (3000, 0), dxfattribs=pipe)
     bar = msp.add_line((4000, 0), (5000, 0), dxfattribs=pipe)
     stem = msp.add_line((4500, 0), (4500, 500), dxfattribs=pipe)
-    path = os.path.join(tempfile.mkdtemp(prefix="acadmcp_topo_"), "topology.dxf")
+    path = os.path.join(_scratch_dir(prefix="acadmcp_topo_"), "topology.dxf")
     doc.saveas(path)
 
     found = topology_findings(read_snapshot(path), layers=["PIPE"], gap=10.0)
@@ -1311,7 +1321,7 @@ async def verify_t09_diameter_under_its_label():
         center=(50, 50), radius=19.9, angle=0, text="Ø40", dimstyle="Standard"
     )
     dim.render()
-    path = os.path.join(tempfile.mkdtemp(), "t09.dxf")
+    path = os.path.join(_scratch_dir(), "t09.dxf")
     doc.saveas(path)
     b = await _b()
     await b.drawing_open(path)
@@ -1421,7 +1431,7 @@ async def verify_t11_inner_hole_moved_caught_on_reopen():
     rs = _requirement_set(_req_item("PITCH", "distance", [tag("h1"), tag("h2")], {"nominal": 20.0}))
     if (await verify_requirements(b, rs))["status"] != "pass":
         return False
-    path = os.path.join(tempfile.mkdtemp(), "t11.dxf")
+    path = os.path.join(_scratch_dir(), "t11.dxf")
     await b.drawing_save_as(path, "dxf")
 
     def parity(doc):
@@ -1548,7 +1558,7 @@ async def verify_t18_dimension_override_and_dimlfac_visible():
             )
             dim.render()
             handles.append(dim.dimension.dxf.handle)
-        path = os.path.join(tempfile.mkdtemp(), "t18.dxf")
+        path = os.path.join(_scratch_dir(), "t18.dxf")
         doc.saveas(path)
         return path, handles
 
@@ -1605,7 +1615,7 @@ async def verify_t25_handle_renumber_rebinds():
     from engineering.verification.artifact import verify_artifact
 
     tag = {"kind": "feature", "part": "P1", "feature": "bore", "view": "front"}
-    folder = tempfile.mkdtemp()
+    folder = _scratch_dir()
 
     def write(name, circles):
         doc = ezdxf.new("R2010", units=4)
@@ -1675,7 +1685,7 @@ async def verify_t36_report_stale_after_file_change():
             "BORE", "diameter", [{"kind": "handle", "handle": bore.handle}], {"nominal": 40.0}
         )
     )
-    bundle = os.path.join(tempfile.mkdtemp(), "bundle")
+    bundle = os.path.join(_scratch_dir(), "bundle")
     result = await deliver_drawing(
         b, bundle, formats=["dxf"], min_score=0, strict_critique=False, requirements=rs
     )
