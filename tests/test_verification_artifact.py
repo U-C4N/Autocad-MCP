@@ -497,6 +497,49 @@ async def test_a_feature_edited_in_place_is_still_measured_at_its_handle(backend
 
 
 @pytest.mark.asyncio
+async def test_an_edited_feature_is_measured_at_its_handle_beside_an_unchanged_twin(
+    backend, tmp_path
+):
+    # the bore was double-drawn in the source (a common foreign-drawing defect);
+    # the delivered file then changed the bore's radius. The twin kept the old
+    # geometry at the handle it already had, so it is no renumbering: the edited
+    # bore is measured and fails, never the twin
+    source = _lined(tmp_path / "a.dxf", [("bore", 50, 50, 20), ("twin", 50, 50, 20)])
+    saved = _lined(tmp_path / "b.dxf", [("bore", 50, 50, 25), ("twin", 50, 50, 20)])
+    assert saved == source
+    await backend.drawing_open(str(tmp_path / "a.dxf"))
+    rs = RequirementSet(requirements=(_diameter("R1", source["bore"]),), units="mm")
+    report = await verify_artifact(str(tmp_path / "b.dxf"), rs, backend=backend)
+    (row,) = report["rows"]
+    assert row["status"] == "fail"
+    assert abs(row["measured"]["value"] - 50.0) <= 1e-9
+    assert row["handles"] == [source["bore"]]
+    assert [item["method"] for item in report["rebinding"]["rows"]] == ["handle"]
+
+
+@pytest.mark.asyncio
+async def test_an_edited_feature_beside_a_new_one_at_its_old_geometry_is_never_accepted(
+    backend, tmp_path
+):
+    # the bore was edited in place and a new circle drawn at its old size: the
+    # handle stage cannot tell that from a partial renumbering, so the
+    # requirement is never passed on the new circle
+    source = _lined(tmp_path / "a.dxf", [("bore", 50, 50, 20), ("pin", 150, 50, 5)])
+    saved = _lined(
+        tmp_path / "b.dxf", [("bore", 50, 50, 25), ("pin", 150, 50, 5), ("new", 50, 50, 20)]
+    )
+    assert saved["bore"] == source["bore"]
+    await backend.drawing_open(str(tmp_path / "a.dxf"))
+    rs = RequirementSet(requirements=(_diameter("R1", source["bore"]),), units="mm")
+    report = await verify_artifact(str(tmp_path / "b.dxf"), rs, backend=backend)
+    (row,) = report["rows"]
+    assert row["status"] == "unknown"
+    assert row["handles"] == []
+    candidates = {h for ref in row["binding"]["candidates"] for h in ref["handles"]}
+    assert candidates == {saved["bore"], saved["new"]}
+
+
+@pytest.mark.asyncio
 async def test_the_tag_stage_keeps_to_the_source_space(backend, tmp_path):
     # the file renumbered handles and carries the bore's tag a second time on
     # Layout1: the model-space bore is still the only candidate in its space

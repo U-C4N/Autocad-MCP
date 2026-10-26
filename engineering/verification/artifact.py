@@ -12,10 +12,13 @@ are re-bound from the source binding, one feature at a time:
    ``handles_stable``: at least one exact match and at least half of them kept
    their handle) and only onto a feature of the same type, space and
    ``ACADMCP_*`` tags whose geometry is the source's - or, edited in place,
-   when no other feature of the file has the source's geometry; a save that
+   when no other feature of the file has the source's geometry except at a
+   handle that already had it in the source (an unchanged twin); a save that
    renumbers handles makes a handle name a stranger, so this stage then does
    not run, and a partial renumbering that moved the source's geometry to
-   another handle falls through to the next stages;
+   another handle and another source feature to this one falls through to the
+   next stages; an edit beside a new feature at the old geometry cannot be
+   told from that, and is ambiguous with both as candidates;
 2. by feature tag - the same ``ACADMCP_*`` payload on exactly one feature of
    the same type and space;
 3. by geometry - exactly one feature of the same type, space and nesting depth
@@ -160,27 +163,53 @@ def _same_geometry(f, g, eps: float) -> bool:
     )
 
 
-def _rebind_feature(f, after: ObservedGeometry, *, handles_stable: bool, by_key: dict, eps: float):
+def _rebind_feature(
+    f,
+    after: ObservedGeometry,
+    *,
+    handles_stable: bool,
+    by_key: dict,
+    eps: float,
+    before_by_key: dict | None = None,
+):
     """``(feature or None, method, candidates)`` for one source feature.
 
     The handle stage takes the feature at the source's handle when its geometry
-    is the source's, or when no other feature of the file has that geometry (the
-    feature was edited in place, and the edit is what gets measured). When the
-    source's geometry stands at another handle the save gave this handle away -
-    a partial renumbering - and the later stages decide."""
+    is the source's, or when it was edited in place: no other feature of the
+    file has the source's geometry, or every one that has it already had it at
+    the same handle in the source (an unchanged twin, such as a double-drawn
+    circle, is not the source feature moved). When the source's geometry stands
+    at a handle that did not carry it in the source, and the feature at the
+    source's handle is another source feature that took this handle, the save
+    renumbered partially and the later stages decide. Any other case - the
+    feature edited and a feature drawn at its old geometry - cannot be told
+    from a renumbering, and both are returned as candidates."""
     if handles_stable:
         g = by_key.get((f.handle, f.block_path))
-        if (
-            g is not None
-            and g.type == f.type
-            and g.space == f.space
-            and g.tags == f.tags
-            and (
-                _same_geometry(f, g, eps)
-                or not any(h is not g and _same_geometry(f, h, eps) for h in after.features)
+        if g is not None and g.type == f.type and g.space == f.space and g.tags == f.tags:
+            if _same_geometry(f, g, eps):
+                return g, "handle", ()
+            before_by_key = before_by_key or {}
+            movers = [
+                h
+                for h in after.features
+                if h is not g
+                and _same_geometry(f, h, eps)
+                and not (
+                    (old := before_by_key.get((h.handle, h.block_path))) is not None
+                    and _same_geometry(f, old, eps)
+                )
+            ]
+            if not movers:
+                return g, "handle", ()
+            moved_here = any(
+                key != (f.handle, f.block_path)
+                and _same_geometry(source, g, eps)
+                and not ((now := by_key.get(key)) is not None and _same_geometry(source, now, eps))
+                for key, source in before_by_key.items()
             )
-        ):
-            return g, "handle", ()
+            if not moved_here:
+                return None, "handle", (g, *movers)
     if f.tags:
         tagged = [
             g
@@ -268,7 +297,12 @@ def _rebind_refs(prior: Binding, after_observed, *, handles_stable, by_key, befo
                 problem = f"feature {handle} of the source is not in its observed geometry"
                 return refs, matched_all, methods, problem, candidates
             found, how, cands = _rebind_feature(
-                feature, after_observed, handles_stable=handles_stable, by_key=by_key, eps=eps
+                feature,
+                after_observed,
+                handles_stable=handles_stable,
+                by_key=by_key,
+                eps=eps,
+                before_by_key=before_by_key,
             )
             methods.add(how)
             if found is None:
@@ -505,13 +539,20 @@ def _same_measured_points(f, g, eps: float) -> bool:
     )
 
 
-def _rebind_dimension(source, after: ObservedGeometry, *, handles_stable, by_key, eps):
+def _rebind_dimension(
+    source, after: ObservedGeometry, *, handles_stable, by_key, eps, before_by_key=None
+):
     """``(DIMENSION or None, method, candidates)``: as any feature (handle, tag, the
     whole geometry), then by what it is drawn to alone - its type, defpoints and
     angle - so a DIMENSION whose text was edited on the way is still found and
     its text judged, not lost."""
     found, how, cands = _rebind_feature(
-        source, after, handles_stable=handles_stable, by_key=by_key, eps=eps
+        source,
+        after,
+        handles_stable=handles_stable,
+        by_key=by_key,
+        eps=eps,
+        before_by_key=before_by_key,
     )
     if found is not None or cands:
         return found, how, cands
@@ -548,6 +589,7 @@ def rebound_dimension_evidence(
     which blocks acceptance - never a missing check that reads as clean."""
     eps = default_epsilon(after_observed)
     by_key = {(g.handle, g.block_path): g for g in after_observed.features}
+    before_by_key = {(f.handle, f.block_path): f for f in before.observed.features}
     evidence: dict[str, dict] = {}
     unresolved: list[tuple[str, str]] = []
     for requirement in rs.requirements:
@@ -580,7 +622,12 @@ def rebound_dimension_evidence(
                     evidence[requirement.id] = item
             continue
         found, how, cands = _rebind_dimension(
-            source, after_observed, handles_stable=handles_stable, by_key=by_key, eps=eps
+            source,
+            after_observed,
+            handles_stable=handles_stable,
+            by_key=by_key,
+            eps=eps,
+            before_by_key=before_by_key,
         )
         if found is None:
             why = (
