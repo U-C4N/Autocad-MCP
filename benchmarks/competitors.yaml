@@ -7,6 +7,14 @@
       "backends": ["ezdxf", "com"]
     },
     {
+      "id": "agentcad",
+      "adapter": "benchmarks.adapters.agentcad:AgentCADAdapter",
+      "backends": ["ezdxf"],
+      "repo": "https://github.com/lizaixi01/AgentCAD",
+      "pinned_sha": "39fa4b55899233ab7ac5cbb52714a4767ca164c6",
+      "notes": "MCP stdio; pinned external evaluator playbooks and isolated product interpreter. One internal cancellation fixture is disclosed in benchmarks/agentcad.md."
+    },
+    {
       "id": "puran-water-autocad-mcp",
       "adapter": "benchmarks.adapters.puran_water:PuranWaterAdapter",
       "backends": ["ezdxf"],

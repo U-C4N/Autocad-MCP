@@ -165,18 +165,21 @@ The v8 tasks stage their inputs inside the headless engine; on the live engine t
 
 **Run manifest.** Every report carries `manifest`: the server's commit and whether tracked files were modified (`dirty`), the sha256 of the files that generate the fixtures (`FIXTURE_SOURCES`), `EVALUATOR_VERSION` and the installed versions of ezdxf, fastmcp, mcp, numpy, openpyxl, matplotlib and pywin32.
 
-## Live competitor lane (v1.4)
+## Live competitor lane
 
-Two competitor adapters now execute the exact same task matrix, black-box over
-MCP stdio, against commits pinned in `competitors.yaml`:
+Competitor adapters execute the fixed tasks over MCP stdio against commits
+pinned in `competitors.yaml`. AgentCAD adds a v8 contributor submission;
+its translated gates and internal cancellation fixture are described in
+[the reproduction and evidence notes](agentcad.md):
 
 | Server | Matrix | Pinned | Score | Pass | Coverage |
 |---|---|---|---:|---:|---:|
 | autocad-mcp-pro (reference) | v8 (31) | 1.7.0 tree | 100.0 | 31/31 | 100% |
+| AgentCAD (contributor submission) | v8 (31) | `39fa4b5` | 100.0 | 31/31 | 100% |
 | beiming183-cloud/AutoCAD-MCP | v2 (10) | `11f7c47e` | 50.0 | 5/10 | 50% |
 | puran-water/autocad-mcp | v2 (10) | `95476a33` | 45.0 | 4/10 | 50% |
 
-The competitor rows are the v1.4 runs, unchanged. Read the matrix column
+The beiming183 and puran-water rows are the v1.4 runs, unchanged. Read the matrix column
 before the score column: the denominators differ because the twenty-one tasks
 added since v2 came after those runs and have not been put to them.
 
@@ -186,7 +189,10 @@ Method and boundaries:
   `benchmarks/.competitors/<id>/` (gitignored), builds an isolated venv, and
   installs the competitor from its own `pyproject.toml`.
 - `benchmarks/adapters/mcp_stdio.py` drives the competitor exactly like an MCP
-  host (fastmcp `Client` over stdio). No competitor code is imported.
+  host (fastmcp `Client` over stdio) for the original two competitors.
+  `benchmarks/adapters/agentcad.py` loads pinned evaluator playbooks and uses
+  the official MCP SDK; its one internal worker fixture is disclosed in
+  [agentcad.md](agentcad.md). Product CAD operations execute in a separate process.
 - Task playbooks call each server's **own documented tool contract**, read from
   the pinned source (consolidated `operation` + payload tools; beiming's
   `doc_id`/`expected_revision` discipline is honored via

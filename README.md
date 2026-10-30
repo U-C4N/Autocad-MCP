@@ -19,7 +19,7 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 
 </div>
 
-> **v1.7 release snapshot:** 248 tools · 11 resources · 5 prompt templates · 6060 collected tests.
+> **v1.7 release snapshot:** 248 tools · 11 resources · 5 prompt templates · 6072 collected tests.
 > 248 is the **registered** count; a default install advertises 243 over `tools/list`,
 > because `ENABLE_3D` is unset. `system_about` is the runtime authority.
 
@@ -264,9 +264,9 @@ A fixed 100-point rubric applied to nine public AutoCAD MCP servers ([`source_re
 > [!NOTE]
 > Read this as a documented self-assessment, not an independent review: this repository applies the rubric to itself and to the others. The competitor rows are their July 2026 snapshots and were not re-reviewed for this release, and the best of them, varavista/autocad-mcp, scored 84. 1.4.0 was given one overall 95. This review is stricter and scores each category apart. The rubric was not re-applied for 1.7.0: the 1.6.0 column stands as it was published.
 
-A second lane runs tasks instead of reading source. Every task in the fixed-task matrix can fail, and its artifacts are verified by re-opening the DXF, never by trusting a response. This server passes **31 / 31** of matrix v8. The two competitors with adapters, pinned at their July 2026 commits, passed 5 / 10 and 4 / 10 of the ten v2 tasks they were run on. The twenty-one tasks added since were never put to them, so their lanes record them as `not_run` or `environment_blocked`, never as zero:
+A second lane runs tasks instead of reading source. Every task in the fixed-task matrix can fail, and its artifacts are verified by re-opening the DXF, never by trusting a response. This server passes **31 / 31** of matrix v8. [AgentCAD's contributor submission](benchmarks/agentcad.md), pinned at `39fa4b5`, also records **31 / 31** through MCP stdio; its translated playbooks and internal cancellation fixture are documented for review. This is a runtime tie, not a source-review score. The two earlier competitors, pinned at their July 2026 commits, passed 5 / 10 and 4 / 10 of the ten v2 tasks they were run on. The twenty-one tasks added since were never put to them, so their lanes record them as `not_run` or `environment_blocked`, never as zero:
 
-<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/autocad-mcp-taskmatrix.svg" alt="Task matrix: autocad-mcp-pro passes all 31 tasks; beiming183 and puran-water were run on the first ten, with the later twenty-one not run" width="800">
+<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/autocad-mcp-taskmatrix.svg" alt="Task matrix: autocad-mcp-pro and the AgentCAD submission pass all 31 tasks; beiming183 and puran-water were run on the first ten, with the later twenty-one not run" width="800">
 
 ### Correctness — every release re-proves itself
 
