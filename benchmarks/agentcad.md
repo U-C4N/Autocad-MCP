@@ -102,6 +102,26 @@ documented 2D profiles and sections, and plant lengths are preliminary
 rectilinear estimates. See the pinned
 [workflow contracts](https://github.com/lizaixi01/AgentCAD/blob/39fa4b55899233ab7ac5cbb52714a4767ca164c6/docs/engineering-workflows.md).
 
+## Standard-runner reproduction
+
+The registered lane was run again on clean evaluator commit
+`8c805f049fd6048a8b99b3d7be1f1e9534ac7cfc`, with the same clean product pin:
+**31 attempted, 31 passed, 100.0**, including all ten v2 tasks. No partial,
+unsupported, not-run or environment-blocked result is present.
+
+- [Published report](results/published/agentcad.json), byte-for-byte the standard
+  runner's `--publish` output; its artifact paths are sanitized by the runner.
+- [New archive](results/published/agentcad-evidence-v8/evidence.zip) and
+  [per-file manifest](results/published/agentcad-evidence-v8/manifest.json):
+  296 files, including 46 returned artifact references, transcripts, 62 product
+  source files, playbooks, registration shim, and full upstream pytest output.
+- Archive SHA256:
+  `8db2d928e6faae6486c0e9b60af3f7acfcaded6f45debd55ce1e9f1f6c486018`
+  (1,601,093 bytes).
+- Upstream regression suite: **6,071 passed, 1 xfailed**, 166 warnings, with
+  headless backend selected. Ruff lint and format checks pass. The original
+  299-file product evidence above is preserved as a distinct measurement.
+
 ## Review request
 
 Please review the translated playbooks and evidence, reproduce the registered

@@ -1,0 +1,3363 @@
+{
+  "adapter": "agentcad",
+  "adapter_metadata": {
+    "backend": "ezdxf",
+    "evidence_boundary": "Contributor submission; subject to upstream review. Runtime tie, not a source-review score.",
+    "interface": "MCP stdio (official SDK)",
+    "kind": "mcp-stdio-with-documented-internal-cancellation-fixture",
+    "live_autocad": false,
+    "mcp_calls": 125,
+    "partial_score_policy": "0; only every original gate earns 100",
+    "pinned_sha": "39fa4b55899233ab7ac5cbb52714a4767ca164c6",
+    "playbook_git_blob_sha256": {
+      "examples/autocad_benchmark/cancel_worker.py": "9679302f13bd9a8373e9af7fb4348e3ef79249642f2485eb1b77f6e42076fbf8",
+      "examples/autocad_benchmark/run.py": "423721062408b63ba60be5179091fd68d4584f75baf44015ff3fe9b48e08690d"
+    },
+    "product_dirty": false,
+    "product_sha": "39fa4b55899233ab7ac5cbb52714a4767ca164c6",
+    "python": "D:\\Projects\\Autocad-MCP-agentcad-submission\\benchmarks\\.competitors\\agentcad\\venv\\Scripts\\python.exe",
+    "repo": "https://github.com/lizaixi01/AgentCAD",
+    "scripts_enabled": false,
+    "server_environment": {
+      "dependencies": {
+        "ezdxf": "1.4.5",
+        "mcp": "1.30.0",
+        "pypdf": "6.21.4"
+      },
+      "module": "D:\\Projects\\Autocad-MCP-agentcad-submission\\benchmarks\\.competitors\\agentcad\\repo\\src\\agentcad\\__init__.py",
+      "python": "3.11.16 (main, Sep  1 2026, 14:15:24) [MSC v.1944 64 bit (AMD64)]"
+    },
+    "server_lifecycle": "fresh MCP process per task; extra fresh reader where required",
+    "source_sha256": {
+      "src/agentcad/__init__.py": "0cf3c6b11a60837047df4ef8ff581ebbe32ea447ac6f1e8a59efed1ac1c1efd0",
+      "src/agentcad/_script_runner.py": "36256bc268d029ef52ecdbc308a1de68f5c119364f6c86ff05816e9867a41616",
+      "src/agentcad/backends/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "src/agentcad/backends/acad_live.py": "3e5ac5487eaa6217de61af7afdc15005f995dd717e160c54d2430a6c464bfcd3",
+      "src/agentcad/backends/autocad.py": "1d8d3815f39caca7da75249b6a8164003eb01db587a9d2996100c115a0b7cbf2",
+      "src/agentcad/backends/freecad.py": "8eaa6ec237fc87f75730417d569111d19937ff7eb97cac2170b17616c4ae08c3",
+      "src/agentcad/cli.py": "021f5037045cd3044e9e41a59e9dfc62cc55dd716a7d2ed7349248605a4b0345",
+      "src/agentcad/constraints.py": "b5789b985bf4a742ebe52337cdb919961d26bd17da0b958f619dda95e4b8335c",
+      "src/agentcad/discovery.py": "ea298092196bd6bb03e373fdbcaf7e544fa29fbb8f61c1b02fa74c34d4bb6d00",
+      "src/agentcad/docspec.py": "17fd570a4167c5dfa6eb303dab7fbb132cc9dacec9f298ac145b6cdea099bced",
+      "src/agentcad/engine.py": "00f50d0d57ca11441012e5ff4f7059af7a55c887b16c51310ffd29334ea6299e",
+      "src/agentcad/engineering/__init__.py": "9b0488135b54b44275e5906f106de14926a09a9f8f60971007d9cf0f8d5f538a",
+      "src/agentcad/engineering/architecture.py": "3ee9231463d2f1e20e4e9bcf016e7ab18b86e8ba0dac26a354ab6afafbbef9dd",
+      "src/agentcad/engineering/mechanical.py": "32663504615724351e712170ce15f3fc8dfcc8eec23791623532782c20a9e7a5",
+      "src/agentcad/engineering/pid.py": "388877962a332900cc54405dc202eaff7f3cdc134a947b526223d193d006155f",
+      "src/agentcad/engineering/plant.py": "44f8b4a8b64f4da05d62e51173f7375d27b0d1da41f341822f976a89186116aa",
+      "src/agentcad/engineering/records.py": "d6d9a96bc12c617029440e2b53201c9e1db155a0b854323397debe2c54dc0d9b",
+      "src/agentcad/errors.py": "3cb481be20980080b601410cb55ec4d9913dedee4d8de3d0f83c779b354f471a",
+      "src/agentcad/geom.py": "c189948de9fe0bbff71e7871c42dec70b04d3d4bb4fe09a970f8a7ba2335ca9b",
+      "src/agentcad/guards.py": "3b48ef66cb5ae86fb31add3f863660513d9d2ff067d1f50ca82327e0763720c1",
+      "src/agentcad/http_api.py": "8df40f7a7e1970ad9a3c757009aaaa482cf3789f2612e14af54945e94785a9e5",
+      "src/agentcad/images.py": "7eee42f27acd3ac26609a5e21cf8c6abaeaaa3a276cb1bf805c2f963173179b8",
+      "src/agentcad/install.py": "02330db0e399479e0bf242c5ec4cf9983eaf3c90a29c654597d3c6b9c1259ae0",
+      "src/agentcad/mcp_config.py": "118c17938f14a3492210469af103ff97ba83b3c29c01e34e57578c27691ac0ce",
+      "src/agentcad/mcp_server.py": "2d0b11a13ae229d9e7c5e8526cb56889fa7a389df208fddeda43bfd965f03e7a",
+      "src/agentcad/measure.py": "eb379006b3f23ebc9e5c94472cd1344af8e88da53e816ba42379c5b1faa50145",
+      "src/agentcad/metadata.py": "57d76e666fd8b308430080443e4261d512c09c836ab3c287700786f8c8d04807",
+      "src/agentcad/model.py": "c3846d4cb2691adc43b99fdb763d3a27fd4e731a14824e0f41e82891739554aa",
+      "src/agentcad/ops/__init__.py": "47fa69ed995be1e6533d057fef849920c65040149ec8b7ec1940139bfe2fa2a0",
+      "src/agentcad/ops/analysis.py": "28e606161228100f73262b389eba2fd67e288c8ed7f3cc0efb3286db880c5a2b",
+      "src/agentcad/ops/annotate.py": "3c1b61bf3d5d4bb9975625d97a1afb6cd0a316c5e22263a9399535d8f0213278",
+      "src/agentcad/ops/draw.py": "a57d92439085c188a1b42b4ece5645d543c061213b933ff9d88b58496804f7dd",
+      "src/agentcad/ops/edit.py": "1740a55dd9a3c99322de0beda0c402a2f2aedcecd760e0422153325318022d4b",
+      "src/agentcad/ops/engineering.py": "c11b87c7e0f668e83931569921e8fd704bf47bb9de6eef11e8d06d5d894ea7ac",
+      "src/agentcad/ops/library.py": "41ae6802d9bae49cf5d2d986545141ff014638c4f24d2c9ecf9b4979182fc88f",
+      "src/agentcad/ops/registry.py": "eff0b13154094bb6cc6231795a3806863f2505bb0400c781b6a2a7c04a0a83df",
+      "src/agentcad/ops/sheet.py": "13a58a342873b9936c515cd6d2daf60c3cf30cd39481a0f67945fe4d68d40f96",
+      "src/agentcad/ops/structure.py": "145c4df12a29941f548f876fe21108e2d90dc85735b7cd99174dd83444548cf9",
+      "src/agentcad/part/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "src/agentcad/part/_cq_runner.py": "6121069dc85a7c4e5c59c4591361fc218eb09f6a1bc4cf0ef0946873199b6434",
+      "src/agentcad/part/_fc_runner.py": "edf5c1ac4a9430f2f89cc560cbd3828411d1c3415f5873f86fe8d4733f576ef6",
+      "src/agentcad/part/compare.py": "61647e2c3d1d8a2c6d20aff9c346243952baf906b394fbbd2595518bc30d2b4d",
+      "src/agentcad/part/ops.py": "aa1b03d81fe6e3718abc84753a0ba4b689a57573c4a4869cd2814a12cc2faabc",
+      "src/agentcad/part/service.py": "8334e08962b594f40d1fe6fbde4615096f3147a13422e8101923083d2733f48a",
+      "src/agentcad/plot.py": "312802b53e3eda223d52dd10f196c24b230d6ff9d5b7d4500c5f41fd478e95fd",
+      "src/agentcad/policy.py": "cb5a17796ae0392b36e2f151b0540a233fc93975db3e2601681a9444d901b774",
+      "src/agentcad/progress.py": "bfd6d55a6ea26afac2c802f2ab618ae2064a01cc0235c0a89d73208936b6c39b",
+      "src/agentcad/quality.py": "3c7f4d53c5570c2eb3e43517cce5cf11c60f4823ae18df531f1aa69ee348a535",
+      "src/agentcad/scripting.py": "6bc1b8ac866b5e5b9ebfe962e0689e5f41c860fca19e6a90795dd10b21a759df",
+      "src/agentcad/service.py": "e47b1ceebb254f859e318b3c8c8ce9016bc1d760952dd5e4cf87eba661d73e6b",
+      "src/agentcad/spec.py": "67530f986f3efb4a4e65c8046af103364e1b484d878d82b257f614ecbe3f33e7",
+      "src/agentcad/stdlib.py": "fa9f12e7233bf911c08c064b1ee86c6774f0e2caaeca2ae030ffeb91f1366367",
+      "src/agentcad/store.py": "2746f6f2777cc4c80383f47a8427f8a9d213e217c63bd591823b7b24991ef4a5",
+      "src/agentcad/tabular.py": "065a0b4ce0fafdfc446d5f97f07d9e7c618620418e5728fcd310615bab8fb5f2",
+      "src/agentcad/units.py": "625072a448cf679f50237837120ea031ff1884ffa1deef1c167dc900b7538bf0",
+      "src/agentcad/validate/__init__.py": "12e1baa69967172b240cbb41dd6dd44974fc7be06e19dc76c294d924a69fe927",
+      "src/agentcad/validate/checks.py": "dd992a69928da25f41d4c71a32c2675265a184af7fd8117f7e023d251eed0d50",
+      "src/agentcad/validate/features.py": "cef4f2d99d738294b8944e3d7343abb1d62a923b7708b950720c8814ccf1cebe",
+      "src/agentcad/validate/requirements.py": "cadf1b07f71bb1813cb469b83c8d1b64ce3edf48090f67e9f58dc59d840b4149",
+      "src/agentcad/verification.py": "529ac3f9a76db54ecdd433b422f2d4c6c0be9f21e4ab6a01e0d0061e24052b2f",
+      "src/agentcad/viewer.py": "ba19fbce9110b2731f26ff5a498cfb595e9ada37151cc55b7e38085e44fc0292",
+      "src/agentcad/worker.py": "182ca116aebd4919f79e40982f5e9ece65d9d67a861f97375c680b95e6bfe626"
+    }
+  },
+  "environment": {
+    "implementation": "CPython",
+    "machine": "AMD64",
+    "platform": "Windows-10-10.0.26200-SP0",
+    "python": "3.11.16"
+  },
+  "generated_at": "2026-10-30T08:46:20.308127+00:00",
+  "git_sha": "8c805f049fd6048a8b99b3d7be1f1e9534ac7cfc",
+  "manifest": {
+    "dependencies": {
+      "ezdxf": "1.4.4",
+      "fastmcp": "3.4.5",
+      "matplotlib": "3.11.1",
+      "mcp": "1.29.0",
+      "numpy": "2.4.6",
+      "openpyxl": "3.1.5",
+      "pywin32": "312"
+    },
+    "dirty": false,
+    "evaluator_version": "v8.1",
+    "fixtures": [
+      {
+        "path": "benchmarks/adapters/autocad_mcp_pro.py",
+        "sha256": "5c40688cd9de97a6a4e3ee17b64c347b2de12931191bdc196b1f908db4a1815e",
+        "size_bytes": 86335
+      },
+      {
+        "path": "engineering/arch/spec.py",
+        "sha256": "c273533e4df3a28ff0e08a0886a00aa2c69290d5a03cf0044438c37d23d78248",
+        "size_bytes": 14859
+      },
+      {
+        "path": "engineering/pid/spec.py",
+        "sha256": "efdb92d0cd4a8c5f0b7577c40fe7948c4160c431d31e9b6c48fbbbbd06e61850",
+        "size_bytes": 28426
+      },
+      {
+        "path": "tests/fixtures/plant_pair.py",
+        "sha256": "c683b62b24332670e8323e54519d17cd48ae8ae921d36b744a2e302ebce04248",
+        "size_bytes": 25419
+      }
+    ],
+    "server_sha": "8c805f049fd6048a8b99b3d7be1f1e9534ac7cfc"
+  },
+  "matrix": "v8",
+  "results": [
+    {
+      "artifacts": [
+        {
+          "filename": "core_geometry.dxf",
+          "sha256": "ea84b3c00a8a5bb4ff7101934f72a4cb995a2a12dd9997700e85012d62a29cb4",
+          "size_bytes": 37374
+        }
+      ],
+      "duration_ms": 2745.25,
+      "message": "",
+      "metrics": {
+        "line_length": 5.0
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "core_geometry"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "modify_query.dxf",
+          "sha256": "7a0c4d542fd8fae0125cfc2c2645002539e6b939eadd75cd3d8e7fb72b5b3be7",
+          "size_bytes": 37278
+        }
+      ],
+      "duration_ms": 2872.25,
+      "message": "",
+      "metrics": {
+        "start": [
+          5.0,
+          2.0
+        ]
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "modify_query"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "layers_linetypes.dxf",
+          "sha256": "e2f2f795759a55c42af5483f624039bf5d056460d44d4f518dc9f61c9a56d176",
+          "size_bytes": 37347
+        }
+      ],
+      "duration_ms": 2471.46,
+      "message": "",
+      "metrics": {
+        "center_linetype": "CENTER"
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "layers_linetypes"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "dimensions.dxf",
+          "sha256": "38c06f87e58afff13df369c33a7146e6e01e8e135fc51bd018d6f19b31878249",
+          "size_bytes": 38674
+        }
+      ],
+      "duration_ms": 2810.87,
+      "message": "",
+      "metrics": {
+        "entity_type": "DIMENSION",
+        "render_block": "*D1"
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "dimensions"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "table_mleader.dxf",
+          "sha256": "f794a4e510b6c49127bdcaf50a09894bdd4cc8299235d890e9eeb4e5c0c72ed5",
+          "size_bytes": 38763
+        }
+      ],
+      "duration_ms": 2640.78,
+      "message": "The pinned reference also accepts composite representations; native TABLE/MLEADER is not claimed.",
+      "metrics": {
+        "native_table_mleader": false,
+        "representations": [
+          "composite grid + TEXT",
+          "LEADER + MTEXT"
+        ]
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "table_mleader"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "transactions.dxf",
+          "sha256": "0818c10fc0e764dcd268f2423423246da5e1d662127d9f26246bcce5c7c7805d",
+          "size_bytes": 37078
+        }
+      ],
+      "duration_ms": 3308.97,
+      "message": "",
+      "metrics": {
+        "entity_count_after_rollback": 0
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "transactions"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "preflight.dxf",
+          "sha256": "d30a7ef8d8e1026a3b1452b15447730f001a00e7dfbca185fa410984da45ae55",
+          "size_bytes": 37078
+        }
+      ],
+      "duration_ms": 2342.18,
+      "message": "",
+      "metrics": {
+        "metrics": {
+          "duration_ms": 0.15,
+          "input_bytes": 136,
+          "output_bytes": 432
+        },
+        "ok": true,
+        "operation_count": 9,
+        "ready": true,
+        "requirements": [
+          {
+            "height": 25.0,
+            "id": "outline",
+            "layer": "OUTLINE",
+            "source": null,
+            "type": "outline",
+            "width": 50.0
+          },
+          {
+            "id": "dim.width",
+            "kind": "linear",
+            "type": "dimension",
+            "value": 50.0
+          },
+          {
+            "id": "dim.height",
+            "kind": "linear",
+            "type": "dimension",
+            "value": 25.0
+          }
+        ],
+        "spec_hash": "sha256:7a9bf154a6dcda85b1487a07bb0040c1665d6b727827ea54307cf58b8ab4727a",
+        "tool": "preflight"
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "preflight"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "quality_refiner.dxf",
+          "sha256": "b9a2edb05cbd82b9b1778d2b04dc5654348c56ddff2a8345395c674833940908",
+          "size_bytes": 37156
+        }
+      ],
+      "duration_ms": 2647.35,
+      "message": "",
+      "metrics": {
+        "final_score": 100,
+        "initial_score": 85,
+        "iterations": [
+          {
+            "changes": {
+              "added": [],
+              "deleted": [
+                "97"
+              ],
+              "modified": []
+            },
+            "score": 100
+          }
+        ],
+        "metrics": {
+          "duration_ms": 175.64,
+          "input_bytes": 58,
+          "output_bytes": 686
+        },
+        "ok": true,
+        "tool": "refine_drawing",
+        "validation": {
+          "coverage": {
+            "checked_layout": "Model",
+            "unchecked_layouts": []
+          },
+          "duration_ms": 13.04,
+          "file": "D:\\Projects\\AgentCAD-output\\upstream-submission\\native-run\\artifacts\\workspace\\quality_refiner.dxf",
+          "issues": [],
+          "passed": true,
+          "readable": true,
+          "recognized": {
+            "circles": [],
+            "closed_contours": 0,
+            "dimensions": [],
+            "entity_count": 1,
+            "ezdxf_version": "1.4.5",
+            "outline": null
+          },
+          "requirements": [],
+          "summary": {
+            "errors": 0,
+            "requirements_failed": 0,
+            "requirements_total": 0,
+            "warnings": 0
+          }
+        }
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "quality_refiner"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "dxf_roundtrip.dxf",
+          "sha256": "a60ccae3d2be1ec1a81b4f0e492721fd940ab1f560a993fd608997b82db16eb8",
+          "size_bytes": 37159
+        },
+        {
+          "filename": "roundtrip-export.dxf",
+          "sha256": "26abeb5da0e3961b5564903b93f50204762df2b4043a3828b2c7434361072fb7",
+          "size_bytes": 44525
+        }
+      ],
+      "duration_ms": 5020.81,
+      "message": "",
+      "metrics": {
+        "entity_count": 1,
+        "fresh_process": true
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "dxf_roundtrip"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "auditable_delivery.dxf",
+          "sha256": "1938c52bb5f9afd9468486052c6c06e094dded067ecb14f2f634d95ad3cf4f3d",
+          "size_bytes": 37156
+        },
+        {
+          "filename": "auditable_delivery.dxf",
+          "sha256": "04411bdc78758434c2ddfcd82273a7222f0d434ede4d093c8b053c10102042f6",
+          "size_bytes": 44522
+        },
+        {
+          "filename": "manifest.json",
+          "sha256": "be41db22f7f725f2f43e024acb7cc37baca23ec24314dd1fc04450274891a860",
+          "size_bytes": 1159
+        }
+      ],
+      "duration_ms": 2449.87,
+      "message": "",
+      "metrics": {
+        "artifacts": [
+          {
+            "bytes": 44522,
+            "format": "dxf",
+            "path": "delivery/auditable_delivery.dxf",
+            "reread_ok": true,
+            "sha256": "04411bdc78758434c2ddfcd82273a7222f0d434ede4d093c8b053c10102042f6"
+          }
+        ],
+        "created": "2026-10-30T08:44:30.339+00:00",
+        "manifest": "delivery/manifest.json",
+        "metrics": {
+          "duration_ms": 155.96,
+          "input_bytes": 121,
+          "output_bytes": 1099
+        },
+        "ok": true,
+        "quality_score": 100,
+        "revision": 2,
+        "sha256": "be41db22f7f725f2f43e024acb7cc37baca23ec24314dd1fc04450274891a860",
+        "source": "auditable_delivery.dxf",
+        "source_sha256": "1938c52bb5f9afd9468486052c6c06e094dded067ecb14f2f634d95ad3cf4f3d",
+        "status": "success",
+        "tool": "deliver_drawing",
+        "validation": {
+          "coverage": {
+            "checked_layout": "Model",
+            "unchecked_layouts": []
+          },
+          "duration_ms": 15.14,
+          "file": "D:\\Projects\\AgentCAD-output\\upstream-submission\\native-run\\artifacts\\workspace\\auditable_delivery.dxf",
+          "issues": [],
+          "passed": true,
+          "readable": true,
+          "recognized": {
+            "circles": [],
+            "closed_contours": 0,
+            "dimensions": [],
+            "entity_count": 1,
+            "ezdxf_version": "1.4.5",
+            "outline": null
+          },
+          "requirements": [],
+          "summary": {
+            "errors": 0,
+            "requirements_failed": 0,
+            "requirements_total": 0,
+            "warnings": 0
+          }
+        },
+        "version": 1
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "auditable_delivery"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 2378.27,
+      "message": "",
+      "metrics": {
+        "BPOLY": [
+          {
+            "aliases": [
+              "BPOLY",
+              "BOUNDARY"
+            ],
+            "description": "BPOLY / BOUNDARY: trace a simple closed LINE/ARC/open-polyline chain around an interior point. Sources remain. Intersecting or branching networks require trimming first.",
+            "kind": "operation",
+            "name": "trace_boundary",
+            "score": 100,
+            "tool": "apply_operations"
+          }
+        ],
+        "CHSPACE": [
+          {
+            "aliases": [
+              "CHSPACE"
+            ],
+            "description": "CHSPACE: transfer entities to another layout with an explicit scale and translation (paper millimetres per model unit). Original handles are retained.",
+            "kind": "operation",
+            "name": "change_space",
+            "score": 100,
+            "tool": "apply_operations"
+          }
+        ],
+        "FILLET": [
+          {
+            "aliases": [
+              "FILLET"
+            ],
+            "description": "AutoCAD FILLET of two LINEs: trims/extends both to tangency and adds a tangent ARC (radius 0 = sharp corner).",
+            "kind": "operation",
+            "name": "fillet",
+            "score": 100,
+            "tool": "apply_operations"
+          }
+        ],
+        "OVERKILL": [
+          {
+            "aliases": [
+              "OVERKILL"
+            ],
+            "description": "OVERKILL: remove exact duplicate geometry on each layout, keeping the first.",
+            "kind": "operation",
+            "name": "remove_duplicates",
+            "score": 100,
+            "tool": "apply_operations"
+          }
+        ],
+        "QSELECT": [
+          {
+            "aliases": [
+              "QSELECT",
+              "SELECT",
+              "FILTER"
+            ],
+            "description": "inspect entities",
+            "kind": "tool",
+            "name": "inspect_entities",
+            "score": 100,
+            "tool": "inspect_entities"
+          }
+        ],
+        "WBLOCK": [
+          {
+            "aliases": [
+              "WBLOCK"
+            ],
+            "description": "WBLOCK: define a reusable block by copying selected drawing entities; sources remain.",
+            "kind": "operation",
+            "name": "block_from_entities",
+            "score": 100,
+            "tool": "apply_operations"
+          }
+        ]
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "tool_discovery"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 5307.94,
+      "message": "AGENTCAD_TOOL_PROFILE=discovery; default full profile remains compatible. Same upstream ratio estimator.",
+      "metrics": {
+        "advertised_tools": 3,
+        "catalog_chars": 921,
+        "ceiling": 2000,
+        "discovery_tokens": 220,
+        "full_tokens": 7863,
+        "instructions_included": false,
+        "tokenizer": "ratio/v1 (estimate)"
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "token_budget"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "hatch_islands.dxf",
+          "sha256": "20031213caf985d398d89ef98ebdc785c83b1ae81e4edebb88f1148e806da5ac",
+          "size_bytes": 37787
+        }
+      ],
+      "duration_ms": 2613.48,
+      "message": "",
+      "metrics": {
+        "after": {
+          "area": 400.0,
+          "exact": true,
+          "handle": "96",
+          "method": "analytic_bulge",
+          "paths": 2,
+          "perimeter": 80.0,
+          "style": "ignore",
+          "type": "HATCH"
+        },
+        "before": {
+          "area": 300.0,
+          "exact": true,
+          "handle": "96",
+          "method": "analytic_bulge",
+          "paths": 2,
+          "perimeter": 120.0,
+          "style": "outer",
+          "type": "HATCH"
+        },
+        "edit": {
+          "bytes": 37787,
+          "changes": {
+            "added": [],
+            "deleted": [],
+            "modified": [
+              "96"
+            ]
+          },
+          "checkpoint_before": "cp-0002",
+          "drawing": "hatch_islands.dxf",
+          "journal_seq": 3,
+          "metrics": {
+            "duration_ms": 147.77,
+            "input_bytes": 142,
+            "output_bytes": 857
+          },
+          "ok": true,
+          "results": [
+            {
+              "edits": [
+                {
+                  "changed": {
+                    "style": {
+                      "new": "ignore",
+                      "old": "outer"
+                    }
+                  },
+                  "handle": "96"
+                }
+              ],
+              "index": 0,
+              "modified": [
+                "96"
+              ],
+              "op": "edit_hatch"
+            }
+          ],
+          "revision": 3,
+          "sha256": "20031213caf985d398d89ef98ebdc785c83b1ae81e4edebb88f1148e806da5ac",
+          "tool": "apply_operations",
+          "validation": {
+            "coverage": {
+              "checked_layout": "Model",
+              "unchecked_layouts": []
+            },
+            "issues": [],
+            "passed": true,
+            "recognized": {
+              "circles": {
+                "by_diameter": {},
+                "count": 0
+              },
+              "closed_contours": 0,
+              "dimensions": {
+                "by_kind": {},
+                "count": 0
+              },
+              "entity_count": 1,
+              "outline": null
+            },
+            "requirements": [],
+            "requirements_passed": [],
+            "summary": {
+              "errors": 0,
+              "requirements_failed": 0,
+              "requirements_total": 0,
+              "warnings": 0
+            }
+          }
+        }
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "hatch_islands"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "selection_filter.dxf",
+          "sha256": "b36df963f4c29d88f09c0558a097396e6625ce8b892f42cbd22d3dc6361f2bdb",
+          "size_bytes": 37432
+        }
+      ],
+      "duration_ms": 2559.99,
+      "message": "",
+      "metrics": {
+        "counts": [
+          1,
+          2,
+          3,
+          1,
+          1
+        ],
+        "filtered_by": [
+          "type",
+          "layer"
+        ]
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "selection_filter"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "measure_from_handle.dxf",
+          "sha256": "eae805d05d5b30268ae2f3e9e584082b264de312ccc59ddad8b79a993101cd84",
+          "size_bytes": 37789
+        }
+      ],
+      "duration_ms": 2446.7,
+      "message": "",
+      "metrics": {
+        "boundary": {
+          "closed": true,
+          "fingerprint": "0157d84971cefd4b94e897b079539c69d6bd5718a20ed97f61673f531480c5f7",
+          "id": "9A",
+          "layer": "0",
+          "points": [
+            [
+              0.0,
+              0.0
+            ],
+            [
+              10.0,
+              0.0
+            ],
+            [
+              10.0,
+              10.0,
+              1.0
+            ],
+            [
+              0.0,
+              10.0
+            ]
+          ],
+          "tag": "boundary",
+          "type": "LWPOLYLINE"
+        },
+        "measurement": {
+          "area": 139.26990816987242,
+          "closed": true,
+          "exact": true,
+          "handle": "9A",
+          "method": "analytic_bulge",
+          "perimeter": 45.70796326794897,
+          "type": "LWPOLYLINE"
+        },
+        "shoelace": 100.0
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "measure_from_handle"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "pid_roundtrip.dxf",
+          "sha256": "07ee5884f104ce4a69ff5f81a22256b6d11b262a1d5ba07f2a4f336fae25766f",
+          "size_bytes": 47353
+        }
+      ],
+      "duration_ms": 2620.38,
+      "message": "",
+      "metrics": {
+        "critique": [],
+        "drawing": "pid_roundtrip.dxf",
+        "equipment_list": [
+          {
+            "category": "equipment",
+            "handle": "9E",
+            "id": "P-101",
+            "symbol": "centrifugal_pump",
+            "tag": "P-101"
+          },
+          {
+            "category": "equipment",
+            "handle": "AC",
+            "id": "V-201",
+            "symbol": "vertical_vessel",
+            "tag": "V-201"
+          }
+        ],
+        "graph": {
+          "edges": [
+            {
+              "confidence": 1.0,
+              "from_tag": "P-101",
+              "handle": "CF",
+              "line_class": "process_major",
+              "line_number": "100-P-1001-CS1",
+              "number_source": "xdata",
+              "to_tag": "FCV-101"
+            },
+            {
+              "confidence": 1.0,
+              "from_tag": "FCV-101",
+              "handle": "D2",
+              "line_class": "process_major",
+              "line_number": "100-P-1001-CS1",
+              "number_source": "xdata",
+              "to_tag": "V-201"
+            },
+            {
+              "confidence": 1.0,
+              "from_tag": "FIC-101",
+              "handle": "D5",
+              "line_class": "electric",
+              "line_number": null,
+              "number_source": "xdata",
+              "to_tag": "FCV-101"
+            },
+            {
+              "confidence": 1.0,
+              "from_tag": "V-201",
+              "handle": "D6",
+              "line_class": "process_major",
+              "line_number": "3",
+              "number_source": "xdata",
+              "to_tag": "TO P&ID-002"
+            }
+          ],
+          "nodes": [
+            {
+              "category": "equipment",
+              "handle": "9E",
+              "id": "P-101",
+              "symbol": "centrifugal_pump",
+              "tag": "P-101"
+            },
+            {
+              "category": "equipment",
+              "handle": "AC",
+              "id": "V-201",
+              "symbol": "vertical_vessel",
+              "tag": "V-201"
+            },
+            {
+              "category": "valves",
+              "handle": "B7",
+              "id": "FCV-101",
+              "symbol": "control_valve",
+              "tag": "FCV-101"
+            },
+            {
+              "category": "instruments",
+              "handle": "C2",
+              "id": "FIC-101",
+              "symbol": "instrument_dcs",
+              "tag": "FIC-101"
+            },
+            {
+              "category": "connectors",
+              "handle": "CB",
+              "id": "OP-1",
+              "symbol": "",
+              "tag": "TO P&ID-002"
+            }
+          ],
+          "stats": {
+            "confidence_min": 1.0,
+            "dangling": 0
+          }
+        },
+        "instrument_index": [
+          {
+            "connected_to": "FCV-101",
+            "tag": "FIC-101"
+          }
+        ],
+        "line_list": [
+          {
+            "confidence": 1.0,
+            "from_tag": "P-101",
+            "handle": "CF",
+            "line_class": "process_major",
+            "line_number": "100-P-1001-CS1",
+            "number_source": "xdata",
+            "to_tag": "FCV-101"
+          },
+          {
+            "confidence": 1.0,
+            "from_tag": "FCV-101",
+            "handle": "D2",
+            "line_class": "process_major",
+            "line_number": "100-P-1001-CS1",
+            "number_source": "xdata",
+            "to_tag": "V-201"
+          },
+          {
+            "confidence": 1.0,
+            "from_tag": "FIC-101",
+            "handle": "D5",
+            "line_class": "electric",
+            "line_number": null,
+            "number_source": "xdata",
+            "to_tag": "FCV-101"
+          },
+          {
+            "confidence": 1.0,
+            "from_tag": "V-201",
+            "handle": "D6",
+            "line_class": "process_major",
+            "line_number": "3",
+            "number_source": "xdata",
+            "to_tag": "TO P&ID-002"
+          }
+        ],
+        "metrics": {
+          "duration_ms": 17.46,
+          "input_bytes": 50,
+          "output_bytes": 2296
+        },
+        "ok": true,
+        "tool": "read_engineering"
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "pid_roundtrip"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "ansi-b.pdf",
+          "sha256": "c76529608911a4599fdfd8a5f5c6d8180630c44c0ca02f9e37e363eecca39e8f",
+          "size_bytes": 615
+        },
+        {
+          "filename": "iso-a3.pdf",
+          "sha256": "4721ee09e664bb185c170bb20686bc6b59230471774f52054ab451d0f8714aae",
+          "size_bytes": 615
+        },
+        {
+          "filename": "page_setup_truth.dxf",
+          "sha256": "59ff2429676ae9421940e020601b45daed8ef5befdd2a1bd7be91543005d72e1",
+          "size_bytes": 37738
+        }
+      ],
+      "duration_ms": 3252.53,
+      "message": "",
+      "metrics": {
+        "ansi_b_mm": [
+          432.0010833333333,
+          279.00136111111107
+        ],
+        "change": {
+          "changed": {
+            "ctb": {
+              "new": "monochrome.ctb",
+              "old": ""
+            },
+            "paper_size_mm": {
+              "new": [
+                420.0,
+                297.0
+              ],
+              "old": [
+                432.0,
+                279.0
+              ]
+            }
+          },
+          "ctb_known": true,
+          "index": 0,
+          "layout": "Layout1",
+          "op": "set_page_setup",
+          "page_setup": {
+            "ctb": "monochrome.ctb",
+            "orientation": "landscape",
+            "paper_size_mm": [
+              420.0,
+              297.0
+            ],
+            "scale": [
+              1.0,
+              1.0
+            ]
+          }
+        },
+        "iso_a3_mm": [
+          419.9995833333333,
+          297.0000833333333
+        ]
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "page_setup_truth"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "mech_assembly.dxf",
+          "sha256": "b08b2bc627c4ba2058d69efee1a328e9e8656829693716e19170dddf3698a7b8",
+          "size_bytes": 73905
+        }
+      ],
+      "duration_ms": 4842.96,
+      "message": "",
+      "metrics": {
+        "balloons": [
+          {
+            "handle": "17D",
+            "item": 1,
+            "leader": "17F",
+            "role": "balloon",
+            "targets": [
+              "10C"
+            ],
+            "text": "17E"
+          },
+          {
+            "handle": "180",
+            "item": 2,
+            "leader": "182",
+            "role": "balloon",
+            "targets": [
+              "E0"
+            ],
+            "text": "181"
+          },
+          {
+            "handle": "183",
+            "item": 3,
+            "leader": "185",
+            "role": "balloon",
+            "targets": [
+              "13F",
+              "152"
+            ],
+            "text": "184"
+          },
+          {
+            "handle": "186",
+            "item": 4,
+            "leader": "188",
+            "role": "balloon",
+            "targets": [
+              "14D",
+              "157"
+            ],
+            "text": "187"
+          }
+        ],
+        "bom": [
+          {
+            "description": "FLANGE",
+            "handles": [
+              "10C"
+            ],
+            "item": 1,
+            "quantity": 1,
+            "size": "",
+            "standard": "cast_iron"
+          },
+          {
+            "description": "HUB",
+            "handles": [
+              "E0"
+            ],
+            "item": 2,
+            "quantity": 1,
+            "size": "",
+            "standard": "steel"
+          },
+          {
+            "description": "hex_bolt",
+            "handles": [
+              "13F",
+              "152"
+            ],
+            "item": 3,
+            "quantity": 2,
+            "size": "M12x60",
+            "standard": "ISO 4014"
+          },
+          {
+            "description": "hex_nut",
+            "handles": [
+              "14D",
+              "157"
+            ],
+            "item": 4,
+            "quantity": 2,
+            "size": "M12",
+            "standard": "ISO 4032"
+          }
+        ],
+        "circles": [
+          {
+            "center": [
+              280.0,
+              160.0
+            ],
+            "diameter": 90.0,
+            "handle": "110",
+            "kind": "profile",
+            "part": "FLANGE",
+            "role": "view_circle"
+          },
+          {
+            "center": [
+              280.0,
+              160.0
+            ],
+            "diameter": 40.0,
+            "handle": "111",
+            "kind": "profile",
+            "part": "FLANGE",
+            "role": "view_circle"
+          },
+          {
+            "center": [
+              302.9809703885628,
+              182.9809703885628
+            ],
+            "diameter": 13.5,
+            "handle": "112",
+            "kind": "bolt_hole",
+            "part": "FLANGE",
+            "pcd": 65.0,
+            "role": "view_circle"
+          },
+          {
+            "center": [
+              257.0190296114372,
+              182.9809703885628
+            ],
+            "diameter": 13.5,
+            "handle": "113",
+            "kind": "bolt_hole",
+            "part": "FLANGE",
+            "pcd": 65.0,
+            "role": "view_circle"
+          },
+          {
+            "center": [
+              257.0190296114372,
+              137.01902961143722
+            ],
+            "diameter": 13.5,
+            "handle": "114",
+            "kind": "bolt_hole",
+            "part": "FLANGE",
+            "pcd": 65.0,
+            "role": "view_circle"
+          },
+          {
+            "center": [
+              302.9809703885628,
+              137.0190296114372
+            ],
+            "diameter": 13.5,
+            "handle": "115",
+            "kind": "bolt_hole",
+            "part": "FLANGE",
+            "pcd": 65.0,
+            "role": "view_circle"
+          }
+        ],
+        "critique": [],
+        "drawing": "mech_assembly.dxf",
+        "metrics": {
+          "duration_ms": 60.76,
+          "input_bytes": 57,
+          "output_bytes": 3702
+        },
+        "ok": true,
+        "original_quality": {
+          "issues": [],
+          "passed": true,
+          "quality": {
+            "errors": 0,
+            "grade": "B",
+            "info": 0,
+            "invalidity_ratio": 0.0,
+            "score": 92.0,
+            "warnings": 1
+          },
+          "validation": [
+            {
+              "code": "fake_dimension_text",
+              "detail": {
+                "real_dim_count": 3,
+                "sample_handles": [
+                  "176"
+                ]
+              },
+              "message": "1 TEXT/MTEXT entities look like dimensions (Ø, ±, R, etc.) — use dimension_* tools instead",
+              "severity": "warning"
+            }
+          ]
+        },
+        "parts": [
+          {
+            "handle": "E0",
+            "measured": {
+              "diameter": 90.0,
+              "length": 55.0
+            },
+            "name": "HUB",
+            "views": [
+              "front",
+              "section"
+            ]
+          },
+          {
+            "handle": "10C",
+            "measured": {
+              "diameter": 90.0,
+              "length": 15.0
+            },
+            "name": "FLANGE",
+            "views": [
+              "front",
+              "side"
+            ]
+          }
+        ],
+        "quality_score": 100,
+        "sections": [
+          {
+            "handle": "E5",
+            "part": "HUB",
+            "role": "section",
+            "style": "full"
+          },
+          {
+            "handle": "EA",
+            "part": "HUB",
+            "role": "section",
+            "style": "full"
+          }
+        ],
+        "tool": "read_engineering",
+        "validation": {
+          "coverage": {
+            "checked_layout": "Model",
+            "unchecked_layouts": []
+          },
+          "duration_ms": 30.09,
+          "file": "D:\\Projects\\AgentCAD-output\\upstream-submission\\native-run\\artifacts\\workspace\\mech_assembly.dxf",
+          "issues": [],
+          "passed": true,
+          "readable": true,
+          "recognized": {
+            "circles": [
+              {
+                "center": [
+                  280.0,
+                  160.0
+                ],
+                "diameter": 90.0,
+                "id": "110"
+              },
+              {
+                "center": [
+                  280.0,
+                  160.0
+                ],
+                "diameter": 40.0,
+                "id": "111"
+              },
+              {
+                "center": [
+                  302.980970389,
+                  182.980970389
+                ],
+                "diameter": 13.5,
+                "id": "112"
+              },
+              {
+                "center": [
+                  257.019029611,
+                  182.980970389
+                ],
+                "diameter": 13.5,
+                "id": "113"
+              },
+              {
+                "center": [
+                  257.019029611,
+                  137.019029611
+                ],
+                "diameter": 13.5,
+                "id": "114"
+              },
+              {
+                "center": [
+                  302.980970389,
+                  137.019029611
+                ],
+                "diameter": 13.5,
+                "id": "115"
+              },
+              {
+                "center": [
+                  345.0,
+                  250.0
+                ],
+                "diameter": 8.0,
+                "id": "17D"
+              },
+              {
+                "center": [
+                  125.0,
+                  250.0
+                ],
+                "diameter": 8.0,
+                "id": "180"
+              },
+              {
+                "center": [
+                  49.6075,
+                  110.0
+                ],
+                "diameter": 8.0,
+                "id": "183"
+              },
+              {
+                "center": [
+                  99.6075,
+                  110.0
+                ],
+                "diameter": 8.0,
+                "id": "186"
+              }
+            ],
+            "closed_contours": 6,
+            "dimensions": [
+              {
+                "id": "EE",
+                "kind": "linear",
+                "measurement": 40.0
+              },
+              {
+                "id": "FD",
+                "kind": "linear",
+                "measurement": 15.0
+              },
+              {
+                "id": "122",
+                "kind": "linear",
+                "measurement": 15.0
+              }
+            ],
+            "entity_count": 116,
+            "ezdxf_version": "1.4.5",
+            "outline": {
+              "bbox": [
+                20.0,
+                10.0,
+                410.0,
+                287.0
+              ],
+              "entities": [
+                "98"
+              ],
+              "size": [
+                390.0,
+                277.0
+              ]
+            }
+          },
+          "requirements": [],
+          "summary": {
+            "errors": 0,
+            "requirements_failed": 0,
+            "requirements_total": 0,
+            "warnings": 0
+          }
+        }
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "mech_assembly"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "arch_roundtrip.dxf",
+          "sha256": "4534b56b13fd189df8b8fd066ddd530a5752ffedd6620e4db38070821c7a6e85",
+          "size_bytes": 76218
+        }
+      ],
+      "duration_ms": 4006.07,
+      "message": "",
+      "metrics": {
+        "critique": [],
+        "detected_rooms": [
+          {
+            "area": 27743750.0,
+            "confidence": 1.0,
+            "loop": [
+              [
+                125.0,
+                125.0
+              ],
+              [
+                1000.0,
+                125.0
+              ],
+              [
+                2000.0,
+                125.0
+              ],
+              [
+                3500.0,
+                125.0
+              ],
+              [
+                4950.0,
+                125.0
+              ],
+              [
+                4950.0,
+                2000.0
+              ],
+              [
+                4950.0,
+                2900.0
+              ],
+              [
+                4950.0,
+                3200.0
+              ],
+              [
+                4950.0,
+                5875.0
+              ],
+              [
+                3500.0,
+                5875.0
+              ],
+              [
+                2000.0,
+                5875.0
+              ],
+              [
+                1000.0,
+                5875.0
+              ],
+              [
+                125.0,
+                5875.0
+              ],
+              [
+                125.0,
+                3200.0
+              ],
+              [
+                125.0,
+                2900.0
+              ],
+              [
+                125.0,
+                2000.0
+              ]
+            ]
+          },
+          {
+            "area": 21993750.0,
+            "confidence": 1.0,
+            "loop": [
+              [
+                5050.0,
+                125.0
+              ],
+              [
+                8875.0,
+                125.0
+              ],
+              [
+                8875.0,
+                2000.0
+              ],
+              [
+                8875.0,
+                2900.0
+              ],
+              [
+                8875.0,
+                3200.0
+              ],
+              [
+                8875.0,
+                5875.0
+              ],
+              [
+                5050.0,
+                5875.0
+              ],
+              [
+                5050.0,
+                3200.0
+              ],
+              [
+                5050.0,
+                2900.0
+              ],
+              [
+                5050.0,
+                2000.0
+              ]
+            ]
+          }
+        ],
+        "drawing": "arch_roundtrip.dxf",
+        "metrics": {
+          "duration_ms": 78.31,
+          "input_bytes": 60,
+          "output_bytes": 3959
+        },
+        "ok": true,
+        "openings": [
+          {
+            "handle": "A7",
+            "height": null,
+            "id": "D1",
+            "kind": "door",
+            "nominal_width": 1000.0,
+            "role": "opening",
+            "sill": null,
+            "tag": "D1",
+            "wall": "EXT",
+            "width": 1000.0
+          },
+          {
+            "handle": "B7",
+            "height": 1200,
+            "id": "W2",
+            "kind": "window",
+            "nominal_width": 1200.0,
+            "role": "opening",
+            "sill": 900,
+            "tag": "W2",
+            "wall": "EXT",
+            "width": 1200.0
+          },
+          {
+            "handle": "C6",
+            "height": 1200,
+            "id": "W1",
+            "kind": "window",
+            "nominal_width": 1500.0,
+            "role": "opening",
+            "sill": 900,
+            "tag": "W1",
+            "wall": "EXT",
+            "width": 1500.0
+          },
+          {
+            "handle": "D6",
+            "height": null,
+            "id": "D2",
+            "kind": "door",
+            "nominal_width": 900.0,
+            "role": "opening",
+            "sill": null,
+            "tag": "D2",
+            "wall": "INT",
+            "width": 900.0
+          }
+        ],
+        "original_quality": {
+          "issues": [],
+          "passed": true,
+          "quality": {
+            "errors": 0,
+            "grade": "A",
+            "info": 0,
+            "invalidity_ratio": 0.0,
+            "score": 100.0,
+            "warnings": 0
+          },
+          "validation": []
+        },
+        "quality_score": 100,
+        "rooms": [
+          {
+            "area": 27743750.0,
+            "detected_area": 27743750.0,
+            "handle": "EC",
+            "id": "R1",
+            "label": "01 LIVING 27.74 m2",
+            "name": "LIVING",
+            "number": "01",
+            "role": "room"
+          },
+          {
+            "area": 21993750.0,
+            "detected_area": 21993750.0,
+            "handle": "ED",
+            "id": "R2",
+            "label": "02 HALL 21.99 m2",
+            "name": "HALL",
+            "number": "02",
+            "role": "room"
+          }
+        ],
+        "schedules": {
+          "doors": [
+            {
+              "handle": "A7",
+              "height": null,
+              "id": "D1",
+              "kind": "door",
+              "nominal_width": 1000.0,
+              "role": "opening",
+              "sill": null,
+              "tag": "D1",
+              "wall": "EXT",
+              "width": 1000.0
+            },
+            {
+              "handle": "D6",
+              "height": null,
+              "id": "D2",
+              "kind": "door",
+              "nominal_width": 900.0,
+              "role": "opening",
+              "sill": null,
+              "tag": "D2",
+              "wall": "INT",
+              "width": 900.0
+            }
+          ],
+          "rooms": [
+            {
+              "area": 27743750.0,
+              "detected_area": 27743750.0,
+              "handle": "EC",
+              "id": "R1",
+              "label": "01 LIVING 27.74 m2",
+              "name": "LIVING",
+              "number": "01",
+              "role": "room"
+            },
+            {
+              "area": 21993750.0,
+              "detected_area": 21993750.0,
+              "handle": "ED",
+              "id": "R2",
+              "label": "02 HALL 21.99 m2",
+              "name": "HALL",
+              "number": "02",
+              "role": "room"
+            }
+          ],
+          "windows": [
+            {
+              "handle": "B7",
+              "height": 1200,
+              "id": "W2",
+              "kind": "window",
+              "nominal_width": 1200.0,
+              "role": "opening",
+              "sill": 900,
+              "tag": "W2",
+              "wall": "EXT",
+              "width": 1200.0
+            },
+            {
+              "handle": "C6",
+              "height": 1200,
+              "id": "W1",
+              "kind": "window",
+              "nominal_width": 1500.0,
+              "role": "opening",
+              "sill": 900,
+              "tag": "W1",
+              "wall": "EXT",
+              "width": 1500.0
+            }
+          ]
+        },
+        "stairs": [
+          {
+            "handle": "DD",
+            "id": "S1",
+            "riser_height": 175,
+            "risers": 16,
+            "role": "stair"
+          }
+        ],
+        "tool": "read_engineering",
+        "validation": {
+          "coverage": {
+            "checked_layout": "Model",
+            "unchecked_layouts": []
+          },
+          "duration_ms": 43.59,
+          "file": "D:\\Projects\\AgentCAD-output\\upstream-submission\\native-run\\artifacts\\workspace\\arch_roundtrip.dxf",
+          "issues": [],
+          "passed": true,
+          "readable": true,
+          "recognized": {
+            "circles": [],
+            "closed_contours": 13,
+            "dimensions": [
+              {
+                "id": "EE",
+                "kind": "linear",
+                "measurement": 250.0
+              },
+              {
+                "id": "FF",
+                "kind": "linear",
+                "measurement": 875.0
+              },
+              {
+                "id": "10E",
+                "kind": "linear",
+                "measurement": 1000.0
+              },
+              {
+                "id": "11D",
+                "kind": "linear",
+                "measurement": 6875.0
+              },
+              {
+                "id": "12C",
+                "kind": "linear",
+                "measurement": 250.0
+              },
+              {
+                "id": "13D",
+                "kind": "linear",
+                "measurement": 9250.0
+              },
+              {
+                "id": "14C",
+                "kind": "linear",
+                "measurement": 250.0
+              },
+              {
+                "id": "15D",
+                "kind": "linear",
+                "measurement": 5750.0
+              },
+              {
+                "id": "16C",
+                "kind": "linear",
+                "measurement": 250.0
+              },
+              {
+                "id": "17D",
+                "kind": "linear",
+                "measurement": 6250.0
+              }
+            ],
+            "entity_count": 88,
+            "ezdxf_version": "1.4.5",
+            "outline": {
+              "bbox": [
+                5100.0,
+                1000.0,
+                6000.0,
+                5200.0
+              ],
+              "entities": [
+                "DD"
+              ],
+              "size": [
+                900.0,
+                4200.0
+              ]
+            }
+          },
+          "requirements": [],
+          "summary": {
+            "errors": 0,
+            "requirements_failed": 0,
+            "requirements_total": 0,
+            "warnings": 0
+          }
+        }
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "arch_roundtrip"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "takeoff_roundtrip.dxf",
+          "sha256": "24a5bad116e2f56de08473c521e92a1e4af962434fa4c691bc10f117a397cd92",
+          "size_bytes": 37076
+        },
+        {
+          "filename": "layout.dxf",
+          "sha256": "3987c2443bb73becdfeeb34f3b16086116353af4d5a5aad42d4671215bfbd92d",
+          "size_bytes": 40501
+        },
+        {
+          "filename": "pid.dxf",
+          "sha256": "7eb0690e0798d51c0094dd5744a32351c1652ed558d4ab7e2ff0ceaacdb76eee",
+          "size_bytes": 33767
+        }
+      ],
+      "duration_ms": 2936.3,
+      "message": "",
+      "metrics": {
+        "mismatches": [],
+        "report": {
+          "cable": {
+            "allowance": 0.2,
+            "rows": [
+              {
+                "cable_m": 9,
+                "kw": 5.5,
+                "length_m": 6.9,
+                "panel": "CP-1",
+                "source_handle": "9F",
+                "tag": "M11"
+              },
+              {
+                "cable_m": 17,
+                "kw": 2.2,
+                "length_m": 14.1,
+                "panel": "CP-1",
+                "source_handle": "A0",
+                "tag": "T102"
+              },
+              {
+                "cable_m": 19,
+                "kw": 7.5,
+                "length_m": 15.8,
+                "panel": "CP-2",
+                "source_handle": "A1",
+                "tag": "M12"
+              },
+              {
+                "cable_m": 10,
+                "kw": null,
+                "length_m": 8.0,
+                "panel": "CP-2",
+                "source_handle": "A2",
+                "tag": "T202"
+              }
+            ]
+          },
+          "layout_selection": {
+            "ambiguous": [],
+            "cluster": [
+              -200.0,
+              -200.0,
+              36200.0,
+              12200.0
+            ],
+            "positions": {
+              "CP-1": [
+                1200.0,
+                10800.0
+              ],
+              "CP-2": [
+                35000.0,
+                1300.0
+              ],
+              "M11": [
+                5500.0,
+                8200.0
+              ],
+              "M12": [
+                26300.0,
+                8400.0
+              ],
+              "T101": [
+                3000.0,
+                3000.0
+              ],
+              "T102": [
+                8000.0,
+                3500.0
+              ],
+              "T103": [
+                13500.0,
+                3000.0
+              ],
+              "T104": [
+                17000.0,
+                8500.0
+              ],
+              "T201": [
+                23500.0,
+                3200.0
+              ],
+              "T202": [
+                28700.0,
+                3000.0
+              ],
+              "T203": [
+                33000.0,
+                8800.0
+              ]
+            }
+          },
+          "method": "Preliminary Manhattan routing; geometry in inferred millimetres, no elevations or installed-route claim",
+          "metrics": {
+            "duration_ms": 167.41,
+            "input_bytes": 170,
+            "output_bytes": 2826
+          },
+          "ok": true,
+          "pipe": {
+            "length_source": "layout_rmst",
+            "runs": [
+              {
+                "diameters": [
+                  "Ø51"
+                ],
+                "direct_size_segments": 1,
+                "handles": [
+                  "71"
+                ],
+                "layout_m": 5.5,
+                "segments": 1,
+                "service": "product",
+                "status": "A",
+                "tags": [
+                  "T101",
+                  "T102"
+                ]
+              },
+              {
+                "diameters": [
+                  "SMS51"
+                ],
+                "direct_size_segments": 1,
+                "handles": [
+                  "73",
+                  "74",
+                  "75",
+                  "76",
+                  "77",
+                  "78"
+                ],
+                "layout_m": 13.2,
+                "segments": 6,
+                "service": "product",
+                "status": "B",
+                "tags": [
+                  "M11",
+                  "T102",
+                  "T103"
+                ]
+              },
+              {
+                "diameters": [
+                  "Ø38",
+                  "Ø51"
+                ],
+                "direct_size_segments": 4,
+                "handles": [
+                  "7D",
+                  "7E"
+                ],
+                "layout_m": 9.0,
+                "segments": 4,
+                "service": "product",
+                "status": "A",
+                "tags": [
+                  "T103",
+                  "T104"
+                ]
+              },
+              {
+                "diameters": [
+                  "DN20"
+                ],
+                "direct_size_segments": 1,
+                "handles": [
+                  "85"
+                ],
+                "layout_m": null,
+                "segments": 1,
+                "service": "product",
+                "status": "C",
+                "tags": [
+                  "T104",
+                  "T105"
+                ]
+              },
+              {
+                "diameters": [
+                  "Ø38"
+                ],
+                "direct_size_segments": 3,
+                "handles": [
+                  "87"
+                ],
+                "layout_m": 20.7,
+                "segments": 3,
+                "service": "cip_supply",
+                "status": "A",
+                "tags": [
+                  "T101",
+                  "T201"
+                ]
+              },
+              {
+                "diameters": [
+                  "20x27"
+                ],
+                "direct_size_segments": 1,
+                "handles": [
+                  "8C",
+                  "8D"
+                ],
+                "layout_m": 8.0,
+                "segments": 3,
+                "service": "cip_supply",
+                "status": "B",
+                "tags": [
+                  "M12",
+                  "T201"
+                ]
+              },
+              {
+                "diameters": [
+                  "Ø38"
+                ],
+                "direct_size_segments": 4,
+                "handles": [
+                  "92"
+                ],
+                "layout_m": 25.7,
+                "segments": 4,
+                "service": "cip_return",
+                "status": "A",
+                "tags": [
+                  "T101",
+                  "T202"
+                ]
+              },
+              {
+                "diameters": [
+                  "Ø38"
+                ],
+                "direct_size_segments": 2,
+                "handles": [
+                  "98"
+                ],
+                "layout_m": 10.1,
+                "segments": 2,
+                "service": "cip_return",
+                "status": "A",
+                "tags": [
+                  "T202",
+                  "T203"
+                ]
+              },
+              {
+                "diameters": [
+                  "DN25"
+                ],
+                "direct_size_segments": 2,
+                "handles": [
+                  "9C"
+                ],
+                "layout_m": 7.1,
+                "segments": 2,
+                "service": "ice_water",
+                "status": "A",
+                "tags": [
+                  "M12",
+                  "T203"
+                ]
+              }
+            ]
+          },
+          "scale": {
+            "median_ratio": 1.0397515958577919,
+            "pairs": 55,
+            "verdict": "schematic",
+            "within_10pct": 0.21818181818181817
+          },
+          "tool": "plant_takeoff",
+          "warnings": [
+            "INSUNITS declares in; annotation height 250 suggests mm"
+          ]
+        }
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "takeoff_roundtrip"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "understand_foreign.dxf",
+          "sha256": "8a6cea0841fd2b724137105ac8c6bb991891f548e2a5ceb822467ec1089584f2",
+          "size_bytes": 37076
+        },
+        {
+          "filename": "layout.dxf",
+          "sha256": "9b4cb7766fe9fbf510cbf2fee71e0a6f6e0040595d5599da79963af76fb3cfab",
+          "size_bytes": 40501
+        },
+        {
+          "filename": "pid.dxf",
+          "sha256": "c43313e6883a7e8ce6c322e6e9da7c3971cfeba8e5b3e37282d29709b2aac87b",
+          "size_bytes": 33767
+        }
+      ],
+      "duration_ms": 2751.68,
+      "message": "",
+      "metrics": {
+        "layout": {
+          "clusters": [
+            {
+              "box": [
+                -200.0,
+                -200.0,
+                36200.0,
+                12200.0
+              ],
+              "handles": [
+                "35",
+                "36",
+                "37",
+                "38",
+                "39",
+                "3A",
+                "3B",
+                "3C",
+                "3D",
+                "3E",
+                "3F",
+                "40",
+                "41",
+                "42",
+                "4D",
+                "4E",
+                "57",
+                "58",
+                "43",
+                "44",
+                "45",
+                "46",
+                "5A",
+                "47",
+                "48",
+                "49",
+                "4A",
+                "4B",
+                "4C",
+                "59",
+                "4F",
+                "50",
+                "51",
+                "52",
+                "5C",
+                "53",
+                "54",
+                "55",
+                "56",
+                "5B"
+              ]
+            },
+            {
+              "box": [
+                99800.0,
+                -200.0,
+                136200.0,
+                12200.0
+              ],
+              "handles": [
+                "5D",
+                "5E",
+                "5F",
+                "60",
+                "61",
+                "62",
+                "63",
+                "64",
+                "65",
+                "66",
+                "67",
+                "68",
+                "69",
+                "6A",
+                "75",
+                "76",
+                "7F",
+                "80",
+                "6B",
+                "6C",
+                "6D",
+                "6E",
+                "82",
+                "6F",
+                "70",
+                "71",
+                "72",
+                "73",
+                "74",
+                "81",
+                "77",
+                "78",
+                "79",
+                "7A",
+                "84",
+                "7B",
+                "7C",
+                "7D",
+                "7E",
+                "83"
+              ]
+            }
+          ],
+          "drawing": "understand_foreign/layout.dxf",
+          "extents": {
+            "outlier_handles": [
+              "85"
+            ]
+          },
+          "layers": [
+            {
+              "name": "0",
+              "service": null
+            },
+            {
+              "name": "Defpoints",
+              "service": null
+            },
+            {
+              "name": "WALLS",
+              "service": null
+            },
+            {
+              "name": "ROOMS",
+              "service": null
+            },
+            {
+              "name": "EQUIPMENT",
+              "service": null
+            },
+            {
+              "name": "TAGS",
+              "service": null
+            },
+            {
+              "name": "E-PANEL",
+              "service": null
+            },
+            {
+              "name": "E-CALLOUT",
+              "service": "electrical"
+            }
+          ],
+          "metrics": {
+            "duration_ms": 116.24,
+            "input_bytes": 48,
+            "output_bytes": 1273
+          },
+          "ok": true,
+          "tool": "understand_drawing",
+          "units": {
+            "agree": false,
+            "declared": "in",
+            "evidence": {
+              "median_text_height": 250.0,
+              "method": "annotation-size heuristic"
+            },
+            "inferred": "mm"
+          },
+          "warnings": [
+            "INSUNITS declares in; annotation height 250 suggests mm"
+          ]
+        },
+        "pid": {
+          "clusters": [
+            {
+              "box": [
+                1060.0,
+                -2164.406548431105,
+                34489.93860845839,
+                19550.0
+              ],
+              "handles": [
+                "4D",
+                "4F",
+                "50",
+                "52",
+                "53",
+                "55",
+                "56",
+                "58",
+                "59",
+                "5B",
+                "5C",
+                "5E",
+                "5F",
+                "61",
+                "62",
+                "64",
+                "65",
+                "67",
+                "68",
+                "6A",
+                "6B",
+                "6D",
+                "6E",
+                "70",
+                "71",
+                "72",
+                "73",
+                "74",
+                "75",
+                "76",
+                "77",
+                "78",
+                "79",
+                "7A",
+                "7C",
+                "7D",
+                "7E",
+                "7F",
+                "81",
+                "82",
+                "83",
+                "84",
+                "85",
+                "86",
+                "87",
+                "88",
+                "89",
+                "8A",
+                "8B",
+                "8C",
+                "8D",
+                "8E",
+                "90",
+                "91",
+                "92",
+                "93",
+                "94",
+                "95",
+                "96",
+                "97",
+                "98",
+                "99",
+                "9A",
+                "9B",
+                "9C",
+                "9D",
+                "9E",
+                "9F",
+                "A0",
+                "A1",
+                "A2"
+              ]
+            }
+          ],
+          "drawing": "understand_foreign/pid.dxf",
+          "extents": {
+            "outlier_handles": []
+          },
+          "layers": [
+            {
+              "name": "0",
+              "service": null
+            },
+            {
+              "name": "Defpoints",
+              "service": null
+            },
+            {
+              "name": "P_product piping",
+              "service": "product"
+            },
+            {
+              "name": "P_cipsupplyline",
+              "service": "cip_supply"
+            },
+            {
+              "name": "P_cipreturnline",
+              "service": "cip_return"
+            },
+            {
+              "name": "P_ijswater",
+              "service": "ice_water"
+            },
+            {
+              "name": "E_power",
+              "service": "electrical"
+            },
+            {
+              "name": "KLEPPEN",
+              "service": null
+            },
+            {
+              "name": "TEKST",
+              "service": null
+            },
+            {
+              "name": "TAGS",
+              "service": null
+            },
+            {
+              "name": "EQUIPMENT",
+              "service": null
+            }
+          ],
+          "metrics": {
+            "duration_ms": 37.59,
+            "input_bytes": 45,
+            "output_bytes": 1286
+          },
+          "ok": true,
+          "tool": "understand_drawing",
+          "units": {
+            "agree": true,
+            "declared": "mm",
+            "evidence": {
+              "median_text_height": 250.0,
+              "method": "annotation-size heuristic"
+            },
+            "inferred": "mm"
+          },
+          "warnings": []
+        }
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "understand_foreign"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "requirements_roundtrip.dxf",
+          "sha256": "0a6923c4026e9233acfdc493b5ee4acd56d599d783fa40a8976af678bb095159",
+          "size_bytes": 46463
+        }
+      ],
+      "duration_ms": 5879.79,
+      "message": "",
+      "metrics": {
+        "artifact": {
+          "constraints": [
+            {
+              "actual": 20.0,
+              "entities": [
+                "95"
+              ],
+              "error": 0.0,
+              "expected": 20.0,
+              "id": "R1",
+              "satisfied": true,
+              "tolerance": 1e-06,
+              "type": "diameter"
+            },
+            {
+              "actual": 90.0,
+              "entities": [
+                "96",
+                "97"
+              ],
+              "error": 0.0,
+              "expected": 90.0,
+              "id": "R2",
+              "satisfied": true,
+              "tolerance": 1e-06,
+              "type": "distance"
+            },
+            {
+              "actual": 54.120236511,
+              "entities": [
+                "96",
+                "95"
+              ],
+              "error": 2.642085806,
+              "expected": 51.478150705,
+              "id": "R3",
+              "satisfied": false,
+              "tolerance": 1e-06,
+              "type": "distance"
+            }
+          ],
+          "count": [
+            {
+              "actual": 4,
+              "deviation": 0.0,
+              "entities": [
+                "96",
+                "97",
+                "98",
+                "99"
+              ],
+              "expected": 4,
+              "id": "R4",
+              "message": "",
+              "status": "pass",
+              "tolerance": 0,
+              "type": "hole_count"
+            }
+          ],
+          "failed": [
+            "R3"
+          ]
+        },
+        "document": {
+          "constraints": [
+            {
+              "actual": 20.0,
+              "entities": [
+                "95"
+              ],
+              "error": 0.0,
+              "expected": 20.0,
+              "id": "R1",
+              "satisfied": true,
+              "tolerance": 1e-06,
+              "type": "diameter"
+            },
+            {
+              "actual": 90.0,
+              "entities": [
+                "96",
+                "97"
+              ],
+              "error": 0.0,
+              "expected": 90.0,
+              "id": "R2",
+              "satisfied": true,
+              "tolerance": 1e-06,
+              "type": "distance"
+            },
+            {
+              "actual": 51.478150705,
+              "entities": [
+                "96",
+                "95"
+              ],
+              "error": 0.0,
+              "expected": 51.478150705,
+              "id": "R3",
+              "satisfied": true,
+              "tolerance": 1e-06,
+              "type": "distance"
+            }
+          ],
+          "count": [
+            {
+              "actual": 4,
+              "deviation": 0.0,
+              "entities": [
+                "96",
+                "97",
+                "98",
+                "99"
+              ],
+              "expected": 4,
+              "id": "R4",
+              "message": "",
+              "status": "pass",
+              "tolerance": 0,
+              "type": "hole_count"
+            }
+          ],
+          "failed": []
+        },
+        "equivalent_contract": "native check-only constraints R1-R3 + geometry count R4",
+        "fresh_process": {
+          "constraints": [
+            {
+              "actual": 20.0,
+              "entities": [
+                "95"
+              ],
+              "error": 0.0,
+              "expected": 20.0,
+              "id": "R1",
+              "satisfied": true,
+              "tolerance": 1e-06,
+              "type": "diameter"
+            },
+            {
+              "actual": 90.0,
+              "entities": [
+                "96",
+                "97"
+              ],
+              "error": 0.0,
+              "expected": 90.0,
+              "id": "R2",
+              "satisfied": true,
+              "tolerance": 1e-06,
+              "type": "distance"
+            },
+            {
+              "actual": 54.120236511,
+              "entities": [
+                "96",
+                "95"
+              ],
+              "error": 2.642085806,
+              "expected": 51.478150705,
+              "id": "R3",
+              "satisfied": false,
+              "tolerance": 1e-06,
+              "type": "distance"
+            }
+          ],
+          "count": [
+            {
+              "actual": 4,
+              "deviation": 0.0,
+              "entities": [
+                "96",
+                "97",
+                "98",
+                "99"
+              ],
+              "expected": 4,
+              "id": "R4",
+              "message": "",
+              "status": "pass",
+              "tolerance": 0,
+              "type": "hole_count"
+            }
+          ],
+          "failed": [
+            "R3"
+          ]
+        },
+        "moved_mm": 3
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "requirements_roundtrip"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "cancel_safety.dxf",
+          "sha256": "12fbb3b6c3a9c3b8a6eb76405b3a30e510c4c7dd26a3f4447c0be90b34d4db0e",
+          "size_bytes": 37154
+        }
+      ],
+      "duration_ms": 5867.55,
+      "message": "Internal held-worker fixture, matching the original's private _async probe; public MCP health read afterwards.",
+      "metrics": {
+        "entity_count_after": 1,
+        "healthy": true,
+        "overlapped": false,
+        "trace": [
+          "A:end",
+          "B:run"
+        ]
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "cancel_safety"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "qa_large_drawing.dxf",
+          "sha256": "7f53f804ccb52455c6bac9f21b728e5df2f519c1785a9526f9f29f9740379afa",
+          "size_bytes": 1517171
+        }
+      ],
+      "duration_ms": 35767.85,
+      "message": "Full model and paper validation called separately; all reference construction findings and the duplicate are required.",
+      "metrics": {
+        "construction": {
+          "after_10000": "279C",
+          "at_5001": "1414",
+          "paper": "279D"
+        },
+        "duplicate_found": true,
+        "issue_codes": [
+          "CONSTRUCTION_GEOMETRY",
+          "DUPLICATE_ENTITY",
+          "LAYOUT_NOT_VALIDATED"
+        ],
+        "missing_construction": []
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "qa_large_drawing"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "export-bom.dxf",
+          "sha256": "c6b780c903db2159a55928bc6e71dd059afda17bd987f14c87ce970765a8b07a",
+          "size_bytes": 41327
+        },
+        {
+          "filename": "export.csv",
+          "sha256": "9e3dca03acab70d9a1eae345237364b7e5969721cecad7f3fe8a51c7b69e9960",
+          "size_bytes": 171
+        },
+        {
+          "filename": "export.xlsx",
+          "sha256": "084fe4b73b89a3f181dacca25a57aa73fb01c6d12363f1bf5151558df5736ef3",
+          "size_bytes": 1633
+        },
+        {
+          "filename": "export_safety.dxf",
+          "sha256": "7bdc5cacd5a53f9ecf8a165c530866f67114192068a69653ad023b23e43f04b4",
+          "size_bytes": 47313
+        },
+        {
+          "filename": "lines.csv",
+          "sha256": "0e8f84a2d52d01791841eb430f951242a6203c534e4b29073ad7d91fea38fde0",
+          "size_bytes": 221
+        }
+      ],
+      "duration_ms": 3920.81,
+      "message": "",
+      "metrics": {
+        "bom_csv": [
+          [
+            "item",
+            "qty",
+            "designation",
+            "standard",
+            "material",
+            "mass"
+          ],
+          [
+            "1",
+            "1",
+            "'=1+1",
+            "",
+            "'-2+3",
+            ""
+          ],
+          [
+            "2",
+            "1",
+            "'@SUM(A1:A9)",
+            "",
+            "'-2+3",
+            ""
+          ],
+          [
+            "3",
+            "1",
+            "'+cmd|' /C calc'!A0",
+            "",
+            "'-2+3",
+            ""
+          ],
+          [
+            "4",
+            "1",
+            "'@NOW()",
+            "'-ISO 4014",
+            "'=HYPERLINK(1)",
+            "-12.5"
+          ]
+        ],
+        "formula_cells": [],
+        "numeric_mass": true,
+        "pid_csv": [
+          {
+            "confidence": "1.0",
+            "from_tag": "P-101",
+            "handle": "CF",
+            "line_class": "process_major",
+            "line_number": "'=1+1",
+            "to_tag": "FCV-101"
+          },
+          {
+            "confidence": "1.0",
+            "from_tag": "FCV-101",
+            "handle": "D2",
+            "line_class": "process_major",
+            "line_number": "'=1+1",
+            "to_tag": "V-201"
+          },
+          {
+            "confidence": "1.0",
+            "from_tag": "FIC-101",
+            "handle": "D5",
+            "line_class": "electric",
+            "line_number": "",
+            "to_tag": "FCV-101"
+          },
+          {
+            "confidence": "1.0",
+            "from_tag": "V-201",
+            "handle": "D6",
+            "line_class": "process_major",
+            "line_number": "3",
+            "to_tag": "TO P&ID-002"
+          }
+        ],
+        "xlsx_texts": [
+          "",
+          "+cmd|' /C calc'!A0",
+          "-2+3",
+          "-ISO 4014",
+          "=1+1",
+          "=HYPERLINK(1)",
+          "@NOW()",
+          "@SUM(A1:A9)"
+        ]
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "export_safety"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "stale_preview.dxf",
+          "sha256": "4c9c8bdff327950abd0ca96d99cac2f0fd60b2a4c98724adc90c13422b0b4278",
+          "size_bytes": 37282
+        }
+      ],
+      "duration_ms": 3066.38,
+      "message": "",
+      "metrics": {
+        "final": [
+          5.0,
+          0.0
+        ],
+        "moved_over_stale_preview": false,
+        "refusal": {
+          "error": {
+            "category": "input",
+            "code": "STALE_REVISION",
+            "details": {
+              "actual_revision": 2,
+              "changed_handles": [
+                "96"
+              ],
+              "expected_revision": 2
+            },
+            "entities": [
+              "96"
+            ],
+            "hint": "Read or preview again, then submit the new preconditions",
+            "message": "The drawing changed after the edit was planned",
+            "partial_changes": false,
+            "retryable": false
+          },
+          "metrics": {
+            "duration_ms": 35.91,
+            "input_bytes": 299,
+            "output_bytes": 380
+          },
+          "ok": false,
+          "tool": "apply_operations"
+        }
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "stale_preview"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "revision_guarded_edit.dxf",
+          "sha256": "0811c3077a31fafbc8016bbfd5c0e9caf1359cb031235aeba1caeb486d32db27",
+          "size_bytes": 37278
+        }
+      ],
+      "duration_ms": 3570.12,
+      "message": "",
+      "metrics": {
+        "refusal": {
+          "error": {
+            "category": "input",
+            "code": "STALE_REVISION",
+            "details": {
+              "actual_revision": 4,
+              "changed_handles": [],
+              "expected_revision": 2
+            },
+            "entities": [],
+            "hint": "Read or preview again, then submit the new preconditions",
+            "message": "The drawing changed after the edit was planned",
+            "partial_changes": false,
+            "retryable": false
+          },
+          "metrics": {
+            "duration_ms": 36.18,
+            "input_bytes": 145,
+            "output_bytes": 372
+          },
+          "ok": false,
+          "tool": "apply_operations"
+        },
+        "revisions": [
+          2,
+          3,
+          4
+        ]
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "revision_guarded_edit"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "pid_file_roundtrip.dxf",
+          "sha256": "55324ca30cd5a9db990218947ff5bcccd20804630d9588308c3d682c9b9bbe53",
+          "size_bytes": 47355
+        }
+      ],
+      "duration_ms": 5013.56,
+      "message": "",
+      "metrics": {
+        "equal": {
+          "critique": true,
+          "equipment_list": true,
+          "graph": true,
+          "instrument_index": true,
+          "line_list": true
+        },
+        "fresh_read": {
+          "critique": [],
+          "drawing": "pid_file_roundtrip.dxf",
+          "equipment_list": [
+            {
+              "category": "equipment",
+              "handle": "9E",
+              "id": "P-101",
+              "symbol": "centrifugal_pump",
+              "tag": "P-101"
+            },
+            {
+              "category": "equipment",
+              "handle": "AC",
+              "id": "V-201",
+              "symbol": "vertical_vessel",
+              "tag": "V-201"
+            }
+          ],
+          "graph": {
+            "edges": [
+              {
+                "confidence": 1.0,
+                "from_tag": "P-101",
+                "handle": "CF",
+                "line_class": "process_major",
+                "line_number": "100-P-1001-CS1",
+                "number_source": "xdata",
+                "to_tag": "FCV-101"
+              },
+              {
+                "confidence": 1.0,
+                "from_tag": "FCV-101",
+                "handle": "D2",
+                "line_class": "process_major",
+                "line_number": "100-P-1001-CS1",
+                "number_source": "xdata",
+                "to_tag": "V-201"
+              },
+              {
+                "confidence": 1.0,
+                "from_tag": "FIC-101",
+                "handle": "D5",
+                "line_class": "electric",
+                "line_number": null,
+                "number_source": "xdata",
+                "to_tag": "FCV-101"
+              },
+              {
+                "confidence": 1.0,
+                "from_tag": "V-201",
+                "handle": "D6",
+                "line_class": "process_major",
+                "line_number": "3",
+                "number_source": "xdata",
+                "to_tag": "TO P&ID-002"
+              }
+            ],
+            "nodes": [
+              {
+                "category": "equipment",
+                "handle": "9E",
+                "id": "P-101",
+                "symbol": "centrifugal_pump",
+                "tag": "P-101"
+              },
+              {
+                "category": "equipment",
+                "handle": "AC",
+                "id": "V-201",
+                "symbol": "vertical_vessel",
+                "tag": "V-201"
+              },
+              {
+                "category": "valves",
+                "handle": "B7",
+                "id": "FCV-101",
+                "symbol": "control_valve",
+                "tag": "FCV-101"
+              },
+              {
+                "category": "instruments",
+                "handle": "C2",
+                "id": "FIC-101",
+                "symbol": "instrument_dcs",
+                "tag": "FIC-101"
+              },
+              {
+                "category": "connectors",
+                "handle": "CB",
+                "id": "OP-1",
+                "symbol": "",
+                "tag": "TO P&ID-002"
+              }
+            ],
+            "stats": {
+              "confidence_min": 1.0,
+              "dangling": 0
+            }
+          },
+          "instrument_index": [
+            {
+              "connected_to": "FCV-101",
+              "tag": "FIC-101"
+            }
+          ],
+          "line_list": [
+            {
+              "confidence": 1.0,
+              "from_tag": "P-101",
+              "handle": "CF",
+              "line_class": "process_major",
+              "line_number": "100-P-1001-CS1",
+              "number_source": "xdata",
+              "to_tag": "FCV-101"
+            },
+            {
+              "confidence": 1.0,
+              "from_tag": "FCV-101",
+              "handle": "D2",
+              "line_class": "process_major",
+              "line_number": "100-P-1001-CS1",
+              "number_source": "xdata",
+              "to_tag": "V-201"
+            },
+            {
+              "confidence": 1.0,
+              "from_tag": "FIC-101",
+              "handle": "D5",
+              "line_class": "electric",
+              "line_number": null,
+              "number_source": "xdata",
+              "to_tag": "FCV-101"
+            },
+            {
+              "confidence": 1.0,
+              "from_tag": "V-201",
+              "handle": "D6",
+              "line_class": "process_major",
+              "line_number": "3",
+              "number_source": "xdata",
+              "to_tag": "TO P&ID-002"
+            }
+          ],
+          "metrics": {
+            "duration_ms": 18.47,
+            "input_bytes": 55,
+            "output_bytes": 2301
+          },
+          "ok": true,
+          "tool": "read_engineering"
+        }
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "pid_file_roundtrip"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "foreign-original.dxf",
+          "sha256": "fc8cd96ecb888edf7f131a30e384aa7769712b9106083f07de1b4f7960a14f4d",
+          "size_bytes": 19119
+        },
+        {
+          "filename": "foreign_edit_verified.dxf",
+          "sha256": "1221bb4b7d3cd191a3efb28dd69a34d2ee029252e1d4bb155b5a5c6c3cdb61ff",
+          "size_bytes": 15909
+        }
+      ],
+      "duration_ms": 5390.01,
+      "message": "",
+      "metrics": {
+        "added": [],
+        "after_failed": [],
+        "before_failed": [
+          "H3"
+        ],
+        "changed": [
+          "32"
+        ],
+        "fingerprint_guard": true,
+        "pitch_after": [
+          {
+            "actual": 60.0,
+            "entities": [
+              "30",
+              "31"
+            ],
+            "error": 0.0,
+            "expected": 60.0,
+            "id": "P",
+            "satisfied": true,
+            "tolerance": 1e-06,
+            "type": "distance"
+          }
+        ],
+        "pitch_before": [
+          {
+            "actual": 60.0,
+            "entities": [
+              "30",
+              "31"
+            ],
+            "error": 0.0,
+            "expected": 60.0,
+            "id": "P",
+            "satisfied": true,
+            "tolerance": 1e-06,
+            "type": "distance"
+          }
+        ],
+        "pitch_reopened": [
+          {
+            "actual": 60.0,
+            "entities": [
+              "30",
+              "31"
+            ],
+            "error": 0.0,
+            "expected": 60.0,
+            "id": "P",
+            "satisfied": true,
+            "tolerance": 1e-06,
+            "type": "distance"
+          }
+        ],
+        "removed": []
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "foreign_edit_verified"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "damaged_dxf_refusal.dxf",
+          "sha256": "5c84bffbd897c8b25b701d8ae8c4793ad5e16a3c6d641d56a44edee38bb20d39",
+          "size_bytes": 37156
+        },
+        {
+          "filename": "intact.dxf",
+          "sha256": "60176f2c34b08b1a1741c8cbfa85af180a50dd9032fa9efefec9eeab8210e344",
+          "size_bytes": 24891
+        },
+        {
+          "filename": "not-a-drawing.dxf",
+          "sha256": "6d800db0cf8c6f288f522e9a9f424b91ad2e9eccebe628de8e15462950db0955",
+          "size_bytes": 176
+        },
+        {
+          "filename": "truncated.dxf",
+          "sha256": "a87be9506a463af5192f0979b08e1b9ea25ccfdbff91439a53987498a6f7fa3c",
+          "size_bytes": 12445
+        }
+      ],
+      "duration_ms": 2452.35,
+      "message": "",
+      "metrics": {
+        "cases": {
+          "not-a-drawing.dxf": {
+            "error": {
+              "category": "file",
+              "code": "DXF_PARSE_ERROR",
+              "entities": [],
+              "hint": "The file is corrupt or not DXF; use recover or rollback to a checkpoint",
+              "message": "not-a-drawing.dxf is not a DXF file: File 'D:\\Projects\\AgentCAD-output\\upstream-submission\\native-run\\artifacts\\workspace\\not-a-drawing.dxf' is not a DXF file.",
+              "partial_changes": false,
+              "retryable": false
+            },
+            "named": true,
+            "refused": true
+          },
+          "truncated.dxf": {
+            "error": {
+              "category": "file",
+              "code": "DXF_PARSE_ERROR",
+              "entities": [],
+              "hint": "The file is corrupt or not DXF; use recover or rollback to a checkpoint",
+              "message": "truncated.dxf is not a valid DXF: DXFStructureError: missing ENDSEC tag.",
+              "partial_changes": false,
+              "retryable": false
+            },
+            "named": true,
+            "refused": true
+          }
+        },
+        "document_kept": true,
+        "identity": "file path + exact bytes; server is stateless"
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "damaged_dxf_refusal"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "dimension_binding.dxf",
+          "sha256": "c92b2c6317d8bde0775e59f49e8ed3b22f6e4f38549e9abea576dd25373ee620",
+          "size_bytes": 51223
+        }
+      ],
+      "duration_ms": 2339.53,
+      "message": "",
+      "metrics": {
+        "accepted": false,
+        "drawing": "dimension_binding.dxf",
+        "findings": [
+          {
+            "handle": "9E",
+            "kind": "dimension_mismatch",
+            "requirement": "D2"
+          },
+          {
+            "handle": "B0",
+            "kind": "dimension_mismatch",
+            "requirement": "D3"
+          }
+        ],
+        "metrics": {
+          "duration_ms": 33.02,
+          "input_bytes": 229,
+          "output_bytes": 762
+        },
+        "ok": true,
+        "rows": [
+          {
+            "bound": true,
+            "displayed": 42.0,
+            "findings": [],
+            "handle": "8C",
+            "id": "D1",
+            "measured": 42.0,
+            "status": "pass"
+          },
+          {
+            "bound": true,
+            "displayed": 42.0,
+            "findings": [
+              "dimension_mismatch"
+            ],
+            "handle": "9E",
+            "id": "D2",
+            "measured": 40.0,
+            "status": "pass"
+          },
+          {
+            "bound": true,
+            "displayed": 42.0,
+            "findings": [
+              "dimension_mismatch"
+            ],
+            "handle": "B0",
+            "id": "D3",
+            "measured": 21.0,
+            "status": "pass"
+          },
+          {
+            "bound": true,
+            "displayed": 40.0,
+            "findings": [],
+            "handle": "C1",
+            "id": "D4",
+            "measured": 40.0,
+            "status": "pass"
+          }
+        ],
+        "tool": "verify_dimensions"
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "dimension_binding"
+    }
+  ],
+  "schema_version": "2.0",
+  "summary": {
+    "attempted": 31,
+    "coverage_percent": 100.0,
+    "environment_blocked": 0,
+    "not_run": 0,
+    "passed": 31,
+    "score": 100.0,
+    "supported": 31,
+    "unsupported": 0
+  },
+  "timeout_seconds": 180.0
+}
