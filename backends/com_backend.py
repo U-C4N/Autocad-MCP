@@ -2046,6 +2046,30 @@ def _mutating(method):
     return wrapper
 
 
+def _auto_linear_rotation(x1, y1, x2, y2) -> float:
+    """Rotation for AddDimRotated when the caller did not pin one, in radians.
+
+    AddDimRotated measures the projection of the two points onto its dimension
+    line. A vertical pair (same X) with rotation 0 therefore measures 0.0, and
+    AutoCAD still creates the entity without complaint — the failure is silent
+    in the drawing, not in the API. Follow the dominant delta instead.
+    """
+    return math.pi / 2 if abs(y2 - y1) > abs(x2 - x1) else 0.0
+
+
+def _ray_sweep(vx, vy, x1, y1, x2, y2) -> float:
+    """Counter-clockwise sweep from ray 1 to ray 2, in radians, within [0, 2pi).
+
+    AddDimAngular stores this sweep in the DXF: the entity's COM Measurement
+    always reports the minor angle, but a consumer reading the DXF back gets the
+    reflex angle when the rays are handed over the other way round. Deciding the
+    order up front keeps both views on the same number.
+    """
+    a1 = math.atan2(y1 - vy, x1 - vx)
+    a2 = math.atan2(y2 - vy, x2 - vx)
+    return (a2 - a1) % (2.0 * math.pi)
+
+
 class ComBackend(AutoCADBackend):
     """Live AutoCAD control via COM API."""
 
@@ -5996,7 +6020,7 @@ class ComBackend(AutoCADBackend):
         y2,
         dim_x,
         dim_y,
-        rotation=0.0,
+        rotation=None,
         layer=None,
         tol_upper=None,
         tol_lower=None,
@@ -6007,16 +6031,36 @@ class ComBackend(AutoCADBackend):
             mspace = _msp()
             # The ActiveX API has no AddDimLinear — rotated linear dims are
             # created with AddDimRotated (GH issue #3).
+            #
+            # rotation is in degrees. None means "follow the points": a vertical
+            # pair needs 90 or the measured value is 0.0 (see the helper).
+            angle = (
+                _auto_linear_rotation(x1, y1, x2, y2)
+                if rotation is None
+                else deg2rad(rotation)
+            )
             dim = mspace.AddDimRotated(
                 _apoint(x1, y1),
                 _apoint(x2, y2),
                 _apoint(dim_x, dim_y),
-                deg2rad(rotation),
+                angle,
             )
             if layer:
                 dim.Layer = layer
             _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode, text_override)
             _regen()
+            if abs(x2 - x1) > 1e-9 or abs(y2 - y1) > 1e-9:
+                try:
+                    measured = float(dim.Measurement)
+                except Exception:
+                    measured = None
+                if measured is not None and abs(measured) < 1e-9:
+                    log.warning(
+                        "dimension_linear measured 0.0 for (%.6g,%.6g)-(%.6g,%.6g) "
+                        "at rotation %.1f deg; pass rotation explicitly if the "
+                        "dimension line direction is unusual",
+                        x1, y1, x2, y2, math.degrees(angle),
+                    )
             return _entity_info(dim)
 
         return await self._run(_sync)
@@ -6052,15 +6096,27 @@ class ComBackend(AutoCADBackend):
         tx,
         ty,
         layer=None,
+        minor_angle=True,
     ) -> EntityInfo:
         def _sync():
             mspace = _msp()
+            rx1, ry1, rx2, ry2 = x1, y1, x2, y2
+            if minor_angle and _ray_sweep(vx, vy, rx1, ry1, rx2, ry2) > math.pi:
+                # Swap before creating: the sweep is what lands in the DXF, and
+                # COM Measurement always reports the minor angle either way, so
+                # checking the created entity would never fire.
+                rx1, ry1, rx2, ry2 = rx2, ry2, rx1, ry1
             dim = mspace.AddDimAngular(
                 _apoint(vx, vy),
-                _apoint(x1, y1),
-                _apoint(x2, y2),
+                _apoint(rx1, ry1),
+                _apoint(rx2, ry2),
                 _apoint(tx, ty),
             )
+            # AddDimAngular sweeps from ray 1 to ray 2, so the order of the two
+            # rays decides between the angle and its reflex complement: the same
+            # geometry reads 330 degrees or 30 depending on which ray comes
+            # first. Callers almost always want the angle they can see, so swap
+            # the rays once when the first result is the reflex one.
             if layer:
                 dim.Layer = layer
             _regen()
