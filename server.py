@@ -2373,7 +2373,11 @@ async def dimension_linear(
     y2: Annotated[float, "Second extension line origin Y"],
     dim_x: Annotated[float, "Dimension line position X"],
     dim_y: Annotated[float, "Dimension line position Y"],
-    rotation: Annotated[float, "Angle of the measured dimension (0=horizontal, 90=vertical)"] = 0.0,
+    rotation: Annotated[
+        float | None,
+        "Angle of the measured dimension in degrees (0=horizontal, 90=vertical). "
+        "Omit to let it follow the two points, which is what a vertical pair needs.",
+    ] = None,
     layer: Annotated[str | None, "Layer name"] = None,
     tol_upper: Annotated[float | None, "Upper deviation (mm), e.g. 0.02 for +0.02"] = None,
     tol_lower: Annotated[float | None, "Lower deviation (mm), e.g. 0.01 for -0.01"] = None,
@@ -2396,6 +2400,10 @@ async def dimension_linear(
     ctx: Context = None,
 ) -> dict:
     """Create a linear dimension, optionally toleranced (ISO 129 or ISO 286 fit)."""
+    # Resolve the same way the backend does, so the nominal used for fit
+    # tolerances matches the dimension that actually gets drawn.
+    if rotation is None:
+        rotation = 90.0 if abs(y2 - y1) > abs(x2 - x1) else 0.0
     angle = math.radians(rotation)
     nominal = abs((x2 - x1) * math.cos(angle) + (y2 - y1) * math.sin(angle))
     tol_upper, tol_lower, tol_mode, text_override = _fit_to_tolerances(
@@ -2453,11 +2461,16 @@ async def dimension_angular(
     text_x: Annotated[float, "Dimension text position X"],
     text_y: Annotated[float, "Dimension text position Y"],
     layer: Annotated[str | None, "Layer name"] = None,
+    minor_angle: Annotated[
+        bool,
+        "Measure the angle below 180 degrees. Set false to keep whichever angle "
+        "the ray order produces (the reflex angle above 180).",
+    ] = True,
     ctx: Context = None,
 ) -> dict:
     """Create an angular dimension measuring the angle between two lines from a vertex."""
     result = await _backend(ctx).dimension_angular(
-        vertex_x, vertex_y, x1, y1, x2, y2, text_x, text_y, layer
+        vertex_x, vertex_y, x1, y1, x2, y2, text_x, text_y, layer, minor_angle
     )
     return _dc(result)
 
