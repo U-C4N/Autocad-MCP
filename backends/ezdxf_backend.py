@@ -5976,7 +5976,7 @@ class EzdxfBackend(AutoCADBackend):
         y2,
         dim_x,
         dim_y,
-        rotation=0.0,
+        rotation=None,
         layer=None,
         tol_upper=None,
         tol_lower=None,
@@ -5989,11 +5989,18 @@ class EzdxfBackend(AutoCADBackend):
             override, text = build_dim_override(tol_upper, tol_lower, tol_mode, text_override)
             override = _with_header_dimvars(self._require_doc(), override)
             msp = self._msp()
+            # Same rule as the COM backend: a vertical pair needs 90 degrees or
+            # the measured value collapses to 0.
+            angle_deg = (
+                float(rotation)
+                if rotation is not None
+                else (90.0 if abs(y2 - y1) > abs(x2 - x1) else 0.0)
+            )
             dim = msp.add_linear_dim(
                 base=(float(dim_x), float(dim_y)),
                 p1=(float(x1), float(y1)),
                 p2=(float(x2), float(y2)),
-                angle=float(rotation),
+                angle=angle_deg,
                 text=text if text is not None else "<>",
                 dimstyle=_current_dimstyle_name(self._require_doc()),
                 override=override or None,
@@ -6048,14 +6055,21 @@ class EzdxfBackend(AutoCADBackend):
         tx,
         ty,
         layer=None,
+        minor_angle=True,
     ) -> EntityInfo:
         def _sync():
             msp = self._msp()
             vxf, vyf = float(vx), float(vy)
+            rx1, ry1, rx2, ry2 = float(x1), float(y1), float(x2), float(y2)
+            if minor_angle:
+                a1 = math.atan2(ry1 - vyf, rx1 - vxf)
+                a2 = math.atan2(ry2 - vyf, rx2 - vxf)
+                if (a2 - a1) % (2.0 * math.pi) > math.pi:
+                    rx1, ry1, rx2, ry2 = rx2, ry2, rx1, ry1
             dim = msp.add_angular_dim_2l(
                 base=(float(tx), float(ty)),
-                line1=((vxf, vyf), (float(x1), float(y1))),
-                line2=((vxf, vyf), (float(x2), float(y2))),
+                line1=((vxf, vyf), (rx1, ry1)),
+                line2=((vxf, vyf), (rx2, ry2)),
                 location=(float(tx), float(ty)),
                 dimstyle=_current_dimstyle_name(self._require_doc()),
                 override=_with_header_dimvars(self._require_doc(), None),
