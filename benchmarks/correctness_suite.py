@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextlib
 import math
 import os
 import shutil
@@ -1711,6 +1712,521 @@ async def verify_t36_report_stale_after_file_change():
     )
 
 
+# ── 1.8.0 W1: lineweight truth, one error envelope, durable state, region render ──
+#
+# Every module 1.8.0 added (backends.atomic_write, engineering.errors,
+# backends.base.parse_lineweight ...) is imported INSIDE its check: the A/B
+# runner executes this file against the v1.7.0 tree too, where a module-level
+# import of a new name would break every check instead of failing this one.
+# A check that drives the server resolves ``server.py`` from the tree under
+# test (the working directory / PYTHONPATH the runner sets), never from this
+# file's location, and points ``ACADMCP_STATE_DIR`` at a fresh folder outside
+# every repository so nothing reaches the developer's real journal.
+
+
+@contextlib.contextmanager
+def _environment(**values):
+    """Set (or, with None, remove) environment variables; restore them on exit.
+
+    The test suite runs these checks in-process, so nothing may leak out.
+    """
+    saved = {name: os.environ.get(name) for name in values}
+    try:
+        for name, value in values.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+@contextlib.asynccontextmanager
+async def _served_headless():
+    """An in-memory MCP client on ``server.mcp`` over a fresh headless document.
+
+    The backend factory is replaced (as ``verify_t05`` does) so the lifespan can
+    never attach to a running AutoCAD, and the durable journal of 1.8.0 opens in
+    a private temporary folder.
+    """
+    from fastmcp import Client
+
+    import server
+    from backends.ezdxf_backend import EzdxfBackend
+
+    async def make():
+        backend = EzdxfBackend()
+        await backend.connect()
+        await backend.drawing_new()
+        return backend
+
+    original = server._make_backend
+    server._make_backend = make
+    try:
+        with _environment(
+            AUTOCAD_MCP_BACKEND="ezdxf", ACADMCP_STATE_DIR=_scratch_dir("acadmcp_state_")
+        ):
+            async with Client(server.mcp) as client:
+                yield client
+    finally:
+        server._make_backend = original
+
+
+async def lineweight_truth():
+    """-3 is Default, ``"ByLayer"`` is -1, and a layer refuses ByLayer before writing.
+
+    1.7.0's schemas said "-3=ByLayer": an entity set to -3 (DXF Default, the
+    LWDEFAULT setting) was reported to the model as by-layer. Now the entity row
+    names what it carries (``lineweight_name``): -3 reads "Default"; the name
+    ``"ByLayer"`` lands as DXF -1 and reads back "ByLayer". A layer cannot be
+    ByLayer: ``layer_create(lineweight="ByLayer")`` raises the typed
+    ``InvalidLineweightError`` and neither the layer table nor the document
+    revision moves - the refusal comes before any write.
+    """
+    from backends.base import InvalidLineweightError
+
+    b = await _b()
+    line = await b.entity_create_line(0, 0, 10, 0)
+    await b.entity_set_properties(line.handle, lineweight=-3)
+    as_default = getattr(await b.entity_get(line.handle), "lineweight_name", None)
+    default_ok = as_default == "Default" and b._doc.entitydb[line.handle].dxf.lineweight == -3
+
+    await b.entity_set_properties(line.handle, lineweight="ByLayer")
+    as_bylayer = getattr(await b.entity_get(line.handle), "lineweight_name", None)
+    bylayer_ok = as_bylayer == "ByLayer" and b._doc.entitydb[line.handle].dxf.lineweight == -1
+
+    revision = b.document_identity()["revision"]
+    try:
+        await b.layer_create("LW-REFUSED", lineweight="ByLayer")
+        refused = False
+    except InvalidLineweightError:
+        refused = True
+    unwritten = "LW-REFUSED" not in b._doc.layers and b.document_identity()["revision"] == revision
+    return default_ok and bylayer_ok and refused and unwritten
+
+
+async def _step_error(client, tool: str, args: dict) -> dict | None:
+    """The one step row's error of ``cad_batch``; a step the batch refuses before
+    running anything is read off the dry run, where its row is reported."""
+    steps = [{"tool": tool, "args": args}]
+    result = await client.call_tool(
+        "cad_batch", {"steps": steps, "on_error": "continue"}, raise_on_error=False
+    )
+    if result.is_error:
+        result = await client.call_tool(
+            "cad_batch", {"steps": steps, "dry_run": True}, raise_on_error=False
+        )
+    rows = (result.structured_content or {}).get("results") or []
+    if len(rows) != 1 or not isinstance(rows[0].get("error"), dict):
+        return None
+    return rows[0]["error"]
+
+
+async def error_envelope_routes_agree():
+    """A refusal has one typed envelope, called directly or as a batch step (1.8-02).
+
+    Two provoked errors through the real tools: ``entity_move`` on a handle
+    that does not exist (``not_found``) and ``drawing_open`` outside
+    ``ALLOWED_PATHS`` (``path_refused``). The direct call must fail with
+    structured content ``{ok: false, kind, category, retryable}`` - 1.7.0 sent
+    prose only - and the same call as a ``cad_batch`` step must carry the same
+    kind, category and retryable. Category is the kind's own row of
+    ``engineering.errors``; neither refusal wrote anything, so neither is
+    retryable-by-accident: both routes must agree whatever the value.
+    """
+    from pathlib import Path
+
+    import config
+    from engineering import errors
+
+    drawings = _scratch_dir()
+    allowed = os.path.join(drawings, "allowed")
+    os.makedirs(allowed)
+    cases = (
+        ("not_found", "entity_move", {"handle": "FFFFFF", "dx": 1.0, "dy": 0.0}),
+        ("path_refused", "drawing_open", {"path": os.path.join(drawings, "elsewhere.dxf")}),
+    )
+    saved_paths = list(config.settings.allowed_paths)
+    config.settings.allowed_paths = [Path(allowed).resolve()]
+    agreed: list[bool] = []
+    try:
+        async with _served_headless() as client:
+            for kind, tool, args in cases:
+                direct = await client.call_tool(tool, args, raise_on_error=False)
+                payload = direct.structured_content
+                if not direct.is_error or not isinstance(payload, dict):
+                    agreed.append(False)
+                    continue
+                step = await _step_error(client, tool, args)
+                if step is None:
+                    agreed.append(False)
+                    continue
+                category = errors.describe(kind).category
+                agreed.append(
+                    payload.get("ok") is False
+                    and payload.get("kind") == kind
+                    and payload.get("category") == category
+                    and isinstance(payload.get("retryable"), bool)
+                    and (step.get("kind"), step.get("category"), step.get("retryable"))
+                    == (kind, category, payload["retryable"])
+                )
+    finally:
+        config.settings.allowed_paths = saved_paths
+    return len(agreed) == len(cases) and all(agreed)
+
+
+class _StdioServer:
+    """``python server.py`` of the tree under test over stdio, raw JSON-RPC lines.
+
+    Raw lines rather than a fastmcp client so that ``Popen.kill()``
+    (TerminateProcess on Windows, SIGKILL elsewhere) is an unannounced death:
+    no shutdown hook of the server runs.
+    """
+
+    def __init__(self, script: str, env: dict, cwd: str, log_path: str, timeout: float):
+        import queue
+        import subprocess
+        import threading
+
+        self._log = open(log_path, "ab")  # noqa: SIM115 - closed in kill()
+        self.proc = subprocess.Popen(
+            [sys.executable, script],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=self._log,
+            env=env,
+            cwd=cwd,
+        )
+        self._lines: queue.Queue = queue.Queue()
+        threading.Thread(target=self._pump, daemon=True).start()
+        self._next_id = 0
+        self._answers: dict[int, dict] = {}
+        self.request(
+            "initialize",
+            {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "correctness-suite", "version": "0"},
+            },
+            timeout,
+        )
+        self._write({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+    def _pump(self) -> None:
+        import json
+
+        for raw in self.proc.stdout:
+            line = raw.strip()
+            if line:
+                try:
+                    self._lines.put(json.loads(line))
+                except ValueError:
+                    continue  # not a JSON-RPC line
+        self._lines.put(None)
+
+    def _write(self, message: dict) -> None:
+        import json
+
+        self.proc.stdin.write(json.dumps(message).encode("utf-8") + b"\n")
+        self.proc.stdin.flush()
+
+    def request(self, method: str, params: dict, timeout: float) -> dict:
+        import time
+
+        self._next_id += 1
+        request_id = self._next_id
+        self._write({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+        deadline = time.monotonic() + timeout
+        while request_id not in self._answers:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError(f"no answer to {method} within {timeout:.0f}s")
+            message = self._lines.get(timeout=left)
+            if message is None:
+                raise RuntimeError("the server closed its stdout")
+            if "id" in message and ("result" in message or "error" in message):
+                self._answers[message["id"]] = message
+        message = self._answers.pop(request_id)
+        if "error" in message:
+            return {"isError": True, "rpc_error": message["error"]}
+        return message["result"]
+
+    def call(self, name: str, arguments: dict | None = None, timeout: float = 30.0) -> dict:
+        result = self.request("tools/call", {"name": name, "arguments": arguments or {}}, timeout)
+        return {"is_error": bool(result.get("isError")), **(result.get("structuredContent") or {})}
+
+    def kill(self) -> None:
+        try:
+            self.proc.kill()
+            self.proc.wait(timeout=30)
+        finally:
+            for stream in (self.proc.stdin, self.proc.stdout, self._log):
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+
+def _server_env(state_dir: str) -> dict:
+    """The parent's environment minus every journal / state setting, headless,
+    the full advertised surface, the tree under test first on ``PYTHONPATH``."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("JOURNAL_", "CHECKPOINT_", "ACADMCP_"))
+    }
+    env.update(
+        {
+            "AUTOCAD_MCP_BACKEND": "ezdxf",
+            "ACADMCP_STATE_DIR": state_dir,
+            "PYTHONUTF8": "1",
+            "PYTHONPATH": os.getcwd(),
+            "TOOL_PROFILE": "full",
+            "TOOL_PACKS": "all",
+            "DISCOVERY_MODE": "off",
+        }
+    )
+    return env
+
+
+def _journal_replay_after_kill() -> bool:
+    script = os.path.join(os.getcwd(), "server.py")
+    if not os.path.isfile(script):
+        return False
+    state_dir = _scratch_dir("acadmcp_state_")
+    drawings = _scratch_dir()
+    log_path = os.path.join(drawings, "server.log")
+    path = os.path.join(drawings, "replay.dxf")
+    line = {"x1": 0, "y1": 0, "x2": 10, "y2": 0}
+    batch = {"steps": [{"tool": "entity_create_line", "args": line}], "operation_id": "op-1"}
+    other = {
+        "steps": [{"tool": "entity_create_line", "args": {**line, "x2": 20}}],
+        "operation_id": "op-1",
+    }
+
+    first = _StdioServer(script, _server_env(state_dir), drawings, log_path, timeout=40.0)
+    try:
+        first.call("drawing_new")
+        ran = first.call("cad_batch", batch)
+        saved = first.call("drawing_save", {"path": path})
+    finally:
+        first.kill()
+    if ran.get("ok") is not True or saved["is_error"]:
+        return False
+
+    second = _StdioServer(script, _server_env(state_dir), drawings, log_path, timeout=40.0)
+    try:
+        opened = second.call("drawing_open", {"path": path})
+        count_before = second.call("drawing_info").get("entity_count")
+        replay = second.call("cad_batch", batch)
+        count_after = second.call("drawing_info").get("entity_count")
+        conflict = second.call("cad_batch", other)
+        count_last = second.call("drawing_info").get("entity_count")
+    finally:
+        second.kill()
+    return (
+        opened["is_error"] is False
+        and count_before == 1
+        and replay.get("replayed") is True
+        and replay.get("operation_id") == "op-1"
+        and replay.get("ok") is True
+        and replay.get("succeeded") == ran.get("succeeded") == 1
+        and count_after == 1
+        and conflict["is_error"] is True
+        and conflict.get("kind") == "operation_conflict"
+        and count_last == 1
+    )
+
+
+async def journal_replay_after_kill():
+    """A client operation id survives a killed server (B13, 1.8-03).
+
+    Server A (``python server.py`` of the tree under test, stdio, headless, a
+    fresh ``ACADMCP_STATE_DIR``) runs ``cad_batch(operation_id="op-1")`` - one
+    line - saves and is killed. Server B on the same state folder opens the
+    file (1 entity); the same id with the same steps answers ``replayed: true``
+    with A's ``succeeded`` (1) and draws nothing (still 1 entity); the same id
+    with other steps is ``operation_conflict`` and draws nothing either. On
+    1.7.0 the journal lived in memory, so B ran op-1 again: 2 entities.
+    """
+    return await asyncio.to_thread(_journal_replay_after_kill)
+
+
+async def atomic_save_untouched_on_failure():
+    """A save that cannot replace its target leaves it byte for byte (1.8-04).
+
+    The document is saved once, gains a circle, and is saved again while the
+    target is held: on Windows by an open handle that does not share delete
+    access - what an antivirus scan or a viewer does, and what makes
+    ``os.replace`` fail with a sharing violation; elsewhere by an
+    ``os.replace`` that raises ``PermissionError`` onto the target. The save
+    must be refused with the typed kind ``save_locked``, the target's bytes
+    must be the first save's, and no ``.tmp`` (nor a pending marker) may stay
+    behind. Released, the same document saves (2 entities). 1.7.0 wrote
+    straight into the target - it was rewritten under the reader's handle.
+    """
+    import ezdxf
+
+    state = _scratch_dir("acadmcp_state_")
+    with _environment(ACADMCP_STATE_DIR=state):
+        b = await _b()
+        await b.entity_create_line(0, 0, 10, 0)
+        folder = _scratch_dir()
+        target = os.path.join(folder, "part.dxf")
+        await b.drawing_save_as(target, "dxf")
+        with open(target, "rb") as stream:
+            before = stream.read()
+        await b.entity_create_circle(0, 0, 5)
+
+        if sys.platform == "win32":
+            holder = open(target, "rb")  # noqa: SIM115 - held across the save on purpose
+            release = holder.close
+        else:
+            from backends import atomic_write
+
+            real_replace = atomic_write.os.replace
+
+            def locked(src, dst, *args, **kwargs):
+                if os.path.abspath(dst) == os.path.abspath(target):
+                    raise PermissionError(13, "The process cannot access the file", dst)
+                return real_replace(src, dst, *args, **kwargs)
+
+            atomic_write.os.replace = locked
+
+            def release():
+                atomic_write.os.replace = real_replace
+
+        refusal = None
+        try:
+            await b.drawing_save()
+        except Exception as exc:  # noqa: BLE001 - the refusal's type is what is checked
+            refusal = exc
+        finally:
+            release()
+
+        with open(target, "rb") as stream:
+            after = stream.read()
+        leftovers = [n for n in os.listdir(folder) if n.endswith(".tmp") or ".acadmcp-" in n]
+        pending = os.path.join(state, "pending")
+        markers = os.listdir(pending) if os.path.isdir(pending) else []
+        refused_ok = refusal is not None and getattr(refusal, "kind", None) == "save_locked"
+        if not (refused_ok and after == before and not leftovers and not markers):
+            return False
+        await b.drawing_save()
+        return len(ezdxf.readfile(target).modelspace()) == 2
+
+
+async def lineage_revision_continues():
+    """Reopening an unchanged saved file continues its document and revision (1.8-04).
+
+    A plain DXF is opened, gains three lines (revision 3), is saved and its
+    document closed. A fresh engine opens the same, unchanged file: the
+    ``document_id`` is the one the first engine held and the revision is 3 -
+    it continues, never back to 0. 1.7.0 minted a new id at revision 0 on
+    every open. The lineage lives in ``<ACADMCP_STATE_DIR>/lineage``, never in
+    the DXF.
+    """
+    import ezdxf
+
+    from backends.ezdxf_backend import EzdxfBackend
+
+    folder = _scratch_dir()
+    path = os.path.join(folder, "part.dxf")
+    ezdxf.new("R2010").saveas(path)
+    with _environment(ACADMCP_STATE_DIR=_scratch_dir("acadmcp_state_")):
+        writer = EzdxfBackend()
+        await writer.connect()
+        try:
+            await writer.drawing_open(path)
+            for y in range(3):
+                await writer.entity_create_line(0, y, 10, y)
+            await writer.drawing_save()
+            before = writer.document_identity()
+            await writer.document_close()
+        finally:
+            await writer.disconnect()
+
+        reader = EzdxfBackend()
+        await reader.connect()
+        try:
+            await reader.drawing_open(path)
+            after = reader.document_identity()
+        finally:
+            await reader.disconnect()
+    return (
+        before["revision"] == 3
+        and after["document_id"] == before["document_id"]
+        and after["revision"] == before["revision"]
+    )
+
+
+def _png_size(data: bytes) -> tuple[int, int] | None:
+    """(width, height) from a PNG's IHDR chunk, or None for anything else."""
+    if len(data) < 24 or not data.startswith(b"\x89PNG\r\n\x1a\n") or data[12:16] != b"IHDR":
+        return None
+    return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+
+
+def _region_report(result, requested: tuple[float, float, float, float]) -> bool:
+    """One applied region image: ``px`` [400, 200] for a 2:1 window at max_px
+    400, the PNG's own size equal to ``px``, one scale on x and y, and the drawn
+    window holding the requested one."""
+    import base64
+
+    report = result.structured_content
+    if result.is_error or not isinstance(report, dict):
+        return False
+    images = [c for c in result.content if getattr(c, "type", None) == "image"]
+    if len(images) != 1 or report.get("applied") is not True:
+        return False
+    region, ppu = report.get("region"), report.get("px_per_unit")
+    if report.get("framing") != "region" or report.get("px") != [400, 200]:
+        return False
+    if not region or len(region) != 4 or not ppu:
+        return False
+    x0, y0, x1, y1 = region
+    rx0, ry0, rx1, ry1 = requested
+    return (
+        _png_size(base64.b64decode(images[0].data)) == (400, 200)
+        and math.isclose(400 / (x1 - x0), ppu, rel_tol=1e-9)
+        and math.isclose(200 / (y1 - y0), ppu, rel_tol=1e-9)
+        and x0 <= rx0
+        and y0 <= ry0
+        and x1 >= rx1
+        and y1 >= ry1
+    )
+
+
+async def region_render_applied():
+    """A window is really drawn, at a stated scale, on both region tools (1.8-07).
+
+    ``view_screenshot(region=[0, 0, 100, 50], max_px=400)`` must answer
+    ``applied: true`` with ``px`` [400, 200] (the PNG's own size; a 2:1 window
+    at a 400 px long side) and ``px_per_unit`` 4 on x and on y.
+    ``view_zoom_and_screenshot`` with the same four corners must do the same
+    headlessly - 1.7.0 passed the window to a no-op zoom and rendered the whole
+    model space, with nothing saying so; ``view_screenshot`` had no region.
+    """
+    requested = (0.0, 0.0, 100.0, 50.0)
+    async with _served_headless() as client:
+        await client.call_tool("entity_create_circle", {"cx": 50, "cy": 25, "radius": 10})
+        await client.call_tool("entity_create_circle", {"cx": 1000, "cy": 0, "radius": 5})
+        shot = await client.call_tool(
+            "view_screenshot", {"region": list(requested), "max_px": 400}, raise_on_error=False
+        )
+        zoomed = await client.call_tool(
+            "view_zoom_and_screenshot",
+            {"x1": 0, "y1": 0, "x2": 100, "y2": 50, "max_px": 400},
+            raise_on_error=False,
+        )
+    return _region_report(shot, requested) and _region_report(zoomed, requested)
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -1788,6 +2304,12 @@ CHECKS = {
         verify_t36_report_stale_after_file_change,
         "Verification",
     ),
+    "lineweight_truth": (lineweight_truth, "Entities"),
+    "error_envelope_routes_agree": (error_envelope_routes_agree, "Reliability"),
+    "journal_replay_after_kill": (journal_replay_after_kill, "Durability"),
+    "atomic_save_untouched_on_failure": (atomic_save_untouched_on_failure, "Durability"),
+    "lineage_revision_continues": (lineage_revision_continues, "Durability"),
+    "region_render_applied": (region_render_applied, "Render"),
 }
 
 
