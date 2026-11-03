@@ -1355,6 +1355,32 @@ def _com_dimensions_using(doc, style_name: str) -> list[str]:
     return sorted(handles, key=lambda handle: int(handle, 16))
 
 
+def _com_select_all(doc, codes: list[int], values: list) -> list:
+    """The members of one ``SelectionSet.Select(acSelectionSetAll, ...)`` (1.8-12).
+
+    ``ssget "X"``: every layout, never the screen - a crossing or window
+    selection only finds what the current view shows. ``codes`` / ``values``
+    are the DXF group-code filter (``backends.set_edits.com_filter``); none
+    selects everything. The set is deleted again whatever happens; a failed
+    selection raises (never an empty list reported as fact).
+    """
+    ss = doc.SelectionSets.Add(f"_WHERE_{uuid.uuid4().hex[:8]}")
+    try:
+        if codes:
+            filter_values = win32com.client.VARIANT(
+                pythoncom.VT_ARRAY | pythoncom.VT_VARIANT, list(values)
+            )
+            ss.Select(_AC_SELECTION_SET_ALL, None, None, _ai(codes), filter_values)
+        else:
+            ss.Select(_AC_SELECTION_SET_ALL)
+        return [ss.Item(index) for index in range(ss.Count)]
+    finally:
+        try:
+            ss.Delete()
+        except Exception as exc:
+            log.debug("SelectionSet cleanup failed: %s", exc)
+
+
 #: File suffixes AutoCAD hands to the Windows font system rather than its
 #: SHX loader (see ``_com_locate_font``).
 _TRUETYPE_SUFFIXES = frozenset({".ttf", ".ttc", ".otf"})
@@ -7538,6 +7564,167 @@ class ComBackend(AutoCADBackend):
 
         return await self._run(_sync)
 
+    # ── set-based edits (1.8-12; the grammar is backends/set_edits.py) ──────────
+
+    async def entity_select_where(self, where, set_, space="model") -> dict:
+        from backends import set_edits as se
+
+        query, base, scope = se.parse_where(where), se.parse_set(set_), se.parse_space(space)
+
+        def _sync():
+            doc = _acad_doc()
+            spec, _missing = se.resolve_layer(base, se.com_layer_names(doc))
+            found, skipped = se.com_select(doc, query, scope, _com_select_all)
+            handles = [str(e.Handle) for e in found]
+            return {
+                "ok": True,
+                "dry_run": True,
+                "space": scope,
+                "where": query.to_dict(),
+                "set": spec.to_dict(),
+                "count": len(found),
+                "would_change": sum(1 for e in found if se.com_differs(e, spec)),
+                "handles": handles[: se.HANDLE_SAMPLE],
+                "truncated": len(handles) > se.HANDLE_SAMPLE,
+                "skipped_locked": se.skipped_payload(skipped),
+            }
+
+        return await self._run(_sync)
+
+    async def entity_modify_where(self, where, set_, space="model", expect_count=None) -> dict:
+        from backends import set_edits as se
+        from engineering.changes.preview import StaleRevisionError
+
+        query, base, scope = se.parse_where(where), se.parse_set(set_), se.parse_space(space)
+
+        def _sync():
+            # One STA job: select, check the count, write - nothing else runs
+            # on the document between the three.
+            doc = _acad_doc()
+            spec, missing = se.resolve_layer(base, se.com_layer_names(doc))
+            found, skipped = se.com_select(doc, query, scope, _com_select_all)
+            if expect_count is not None and len(found) != int(expect_count):
+                raise StaleRevisionError(
+                    f"stale_revision: expect_count={int(expect_count)} but where now matches "
+                    f"{len(found)} entities; nothing was changed. Run the dry run again.",
+                    changed=[
+                        {"count": "where", "expected": int(expect_count), "actual": len(found)}
+                    ],
+                )
+            changing = [e for e in found if se.com_differs(e, spec)]
+            created = []
+            if missing and changing:
+                # ActiveX will not create a layer on assignment (Key not found).
+                doc.Layers.Add(spec.layer)
+                created.append(spec.layer)
+            if spec.linetype is not None and changing:
+                _ensure_linetype_loaded(spec.linetype)
+            for entity in changing:
+                se.com_write(entity, spec)
+            if changing:
+                _regen()
+            handles = [str(e.Handle) for e in changing]
+            return {
+                "ok": True,
+                "space": scope,
+                "where": query.to_dict(),
+                "set": spec.to_dict(),
+                "matched": len(found),
+                "changed": len(changing),
+                "unchanged": len(found) - len(changing),
+                "handles": handles[: se.HANDLE_SAMPLE],
+                "truncated": len(handles) > se.HANDLE_SAMPLE,
+                "skipped_locked": se.skipped_payload(skipped),
+                "layers_created": created,
+                "changes": se.changes_payload(modified=len(changing)),
+            }
+
+        return await self._run(_sync)
+
+    async def layer_rename(self, old, new) -> dict:
+        from backends import set_edits as se
+
+        def _sync():
+            doc = _acad_doc()
+            stored, target = se.rename_checks(old, new, se.com_layer_names(doc))
+            doc.Layers.Item(stored).Name = target
+            return {
+                "ok": True,
+                "old": stored,
+                "new": target,
+                # AutoCAD references a layer by object id: renaming the table
+                # record renames it everywhere and rewrites no entity.
+                "entities": None,
+                "by_space": None,
+                "blocks_touched": None,
+                "note": "Live: entities reference the layer by object id; none was rewritten.",
+                "current_layer": str(doc.ActiveLayer.Name),
+                "changes": se.changes_payload(modified=0, layers_renamed=1),
+            }
+
+        return await self._run(_sync)
+
+    async def layer_merge(self, sources, target, delete_sources=True) -> dict:
+        from backends import set_edits as se
+
+        target = se.merge_target(target)
+        names = se.merge_sources(sources, target)
+
+        def _sync():
+            doc = _acad_doc()
+            table = {}
+            for index in range(doc.Layers.Count):
+                layer = doc.Layers.Item(index)
+                table[str(layer.Name).lower()] = layer
+            missing = [n for n in (*names, target) if n.lower() not in table]
+            se.refuse_missing("layer_merge", missing, [str(lyr.Name) for lyr in table.values()])
+            stored = tuple(str(table[n.lower()].Name) for n in names)
+            goal = str(table[target.lower()].Name)
+            keys = {n.lower() for n in stored}
+            # A locked layer refuses every write to its entities; unlock the
+            # sources (about to go) and the target for the move, relock after.
+            relock = [n for n in (*stored, goal) if bool(table[n.lower()].Lock)]
+            for name in relock:
+                table[name.lower()].Lock = False
+            deleted: list[str] = []
+            not_deleted: list[dict] = []
+            try:
+                count, by_space, blocks = se.com_reassign(doc, keys, goal, _com_select_all)
+                moved_current = str(doc.ActiveLayer.Name).lower() in keys
+                if moved_current:
+                    doc.ActiveLayer = table[goal.lower()]
+                if delete_sources:
+                    for name in stored:
+                        try:
+                            table[name.lower()].Delete()
+                            deleted.append(name)
+                        except Exception as exc:  # reported per layer, never swallowed
+                            not_deleted.append({"layer": name, "reason": str(exc)})
+            finally:
+                for name in relock:
+                    if name not in deleted:
+                        try:
+                            table[name.lower()].Lock = True
+                        except Exception as exc:  # noqa: BLE001 - logged; the merge stands
+                            log.warning("layer_merge: could not relock %r: %s", name, exc)
+            if count:
+                _regen()
+            return {
+                "ok": True,
+                "sources": list(stored),
+                "target": goal,
+                "reassigned": count,
+                "by_space": by_space,
+                "blocks_touched": blocks,
+                "note": se.block_note(blocks),
+                "layers_deleted": deleted,
+                "layers_not_deleted": not_deleted,
+                "current_layer": str(doc.ActiveLayer.Name),
+                "changes": se.changes_payload(modified=count, layers_deleted=len(deleted)),
+            }
+
+        return await self._run(_sync)
+
     # ── linetype management ───────────────────────────────────────────────────
 
     async def linetype_list(self) -> list[str]:
@@ -9794,6 +9981,7 @@ _MUTATING_METHODS: frozenset[str] = frozenset(
         "entity_extend",
         "entity_fillet",
         "entity_mirror",
+        "entity_modify_where",
         "entity_move",
         "entity_offset",
         "entity_rotate",
@@ -9811,7 +9999,9 @@ _MUTATING_METHODS: frozenset[str] = frozenset(
         "layer_freeze",
         "layer_hide",
         "layer_lock",
+        "layer_merge",
         "layer_modify",
+        "layer_rename",
         "layer_set_current",
         "layer_show",
         "layer_state_delete",

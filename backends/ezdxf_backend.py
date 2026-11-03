@@ -7781,6 +7781,164 @@ class EzdxfBackend(AutoCADBackend):
 
         return await self._async(_sync)
 
+    # ── set-based edits (1.8-12; the grammar is backends/set_edits.py) ──────────
+
+    async def entity_select_where(self, where, set_, space="model") -> dict:
+        from backends import set_edits as se
+
+        query, base, scope = se.parse_where(where), se.parse_set(set_), se.parse_space(space)
+
+        def _sync():
+            doc = self._require_doc()
+            spec, _missing = se.resolve_layer(base, [lyr.dxf.name for lyr in doc.layers])
+            found, skipped = se.ezdxf_select(doc, query, scope)
+            handles = [str(e.dxf.handle) for e in found]
+            return {
+                "ok": True,
+                "dry_run": True,
+                "space": scope,
+                "where": query.to_dict(),
+                "set": spec.to_dict(),
+                "count": len(found),
+                "would_change": sum(1 for e in found if se.ezdxf_differs(e, spec)),
+                "handles": handles[: se.HANDLE_SAMPLE],
+                "truncated": len(handles) > se.HANDLE_SAMPLE,
+                "skipped_locked": se.skipped_payload(skipped),
+            }
+
+        return await self._async(_sync, readonly=True)
+
+    async def entity_modify_where(self, where, set_, space="model", expect_count=None) -> dict:
+        from backends import set_edits as se
+        from engineering.changes.preview import StaleRevisionError
+
+        query, base, scope = se.parse_where(where), se.parse_set(set_), se.parse_space(space)
+
+        def _sync():
+            doc = self._require_doc()
+            spec, missing = se.resolve_layer(base, [lyr.dxf.name for lyr in doc.layers])
+            found, skipped = se.ezdxf_select(doc, query, scope)
+            if expect_count is not None and len(found) != int(expect_count):
+                raise StaleRevisionError(
+                    f"stale_revision: expect_count={int(expect_count)} but where now matches "
+                    f"{len(found)} entities; nothing was changed. Run the dry run again.",
+                    changed=[
+                        {"count": "where", "expected": int(expect_count), "actual": len(found)}
+                    ],
+                )
+            changing = [e for e in found if se.ezdxf_differs(e, spec)]
+            created = []
+            if missing and changing:
+                doc.layers.add(spec.layer)
+                created.append(spec.layer)
+            if spec.linetype is not None and changing:
+                _ensure_linetype_loaded(doc, spec.linetype)
+            for entity in changing:
+                se.ezdxf_write(entity, spec)
+            if changing:
+                self._mark_dirty()
+            handles = [str(e.dxf.handle) for e in changing]
+            return {
+                "ok": True,
+                "space": scope,
+                "where": query.to_dict(),
+                "set": spec.to_dict(),
+                "matched": len(found),
+                "changed": len(changing),
+                "unchanged": len(found) - len(changing),
+                "handles": handles[: se.HANDLE_SAMPLE],
+                "truncated": len(handles) > se.HANDLE_SAMPLE,
+                "skipped_locked": se.skipped_payload(skipped),
+                "layers_created": created,
+                "changes": se.changes_payload(modified=len(changing)),
+            }
+
+        return await self._async(_sync)
+
+    async def layer_rename(self, old, new) -> dict:
+        from backends import set_edits as se
+
+        def _sync():
+            doc = self._require_doc()
+            stored, target = se.rename_checks(old, new, [lyr.dxf.name for lyr in doc.layers])
+            references = list(se.ezdxf_layer_references(doc, {stored.lower()}))
+            by_space, blocks = se.tally(doc, references, se.ezdxf_containers(doc))
+            # ezdxf renames the table entry, every entity's dxf.layer and the
+            # viewport frozen lists in one pass over the entity database.
+            doc.layers.get(stored).rename(target)
+            current = self._current_layer
+            if str(current).lower() == stored.lower():
+                self._current_layer = target
+                doc.header["$CLAYER"] = target
+            self._mark_dirty()
+            return {
+                "ok": True,
+                "old": stored,
+                "new": target,
+                "entities": len(references),
+                "by_space": by_space,
+                "blocks_touched": blocks,
+                "note": se.block_note(blocks),
+                "current_layer": self._current_layer,
+                "changes": se.changes_payload(modified=len(references), layers_renamed=1),
+            }
+
+        return await self._async(_sync)
+
+    async def layer_merge(self, sources, target, delete_sources=True) -> dict:
+        from backends import set_edits as se
+
+        target = se.merge_target(target)
+        names = se.merge_sources(sources, target)
+
+        def _sync():
+            doc = self._require_doc()
+            table = {str(lyr.dxf.name).lower(): str(lyr.dxf.name) for lyr in doc.layers}
+            missing = [n for n in (*names, target) if n.lower() not in table]
+            se.refuse_missing("layer_merge", missing, table.values())
+            stored = tuple(table[n.lower()] for n in names)
+            goal = table[target.lower()]
+            keys = {n.lower() for n in stored}
+            references = list(se.ezdxf_layer_references(doc, keys))
+            by_space, blocks = se.tally(doc, references, se.ezdxf_containers(doc))
+            for entity in references:
+                entity.dxf.layer = goal
+            moved_current = str(self._current_layer).lower() in keys
+            if moved_current:
+                self._current_layer = goal
+                doc.header["$CLAYER"] = goal
+            deleted = []
+            if delete_sources:
+                for viewport in list(doc.entitydb.values()):
+                    if not viewport.is_alive or viewport.dxftype() != "VIEWPORT":
+                        continue
+                    frozen = list(viewport.frozen_layers or [])
+                    kept = [n for n in frozen if str(n).lower() not in keys]
+                    if len(kept) != len(frozen):
+                        viewport.frozen_layers = kept
+                for name in stored:
+                    doc.layers.remove(name)
+                    deleted.append(name)
+            if references or deleted or moved_current:
+                self._mark_dirty()
+            return {
+                "ok": True,
+                "sources": list(stored),
+                "target": goal,
+                "reassigned": len(references),
+                "by_space": by_space,
+                "blocks_touched": blocks,
+                "note": se.block_note(blocks),
+                "layers_deleted": deleted,
+                "layers_not_deleted": [],
+                "current_layer": self._current_layer,
+                "changes": se.changes_payload(
+                    modified=len(references), layers_deleted=len(deleted)
+                ),
+            }
+
+        return await self._async(_sync)
+
     # ── linetype management ───────────────────────────────────────────────────
 
     async def linetype_list(self) -> list[str]:

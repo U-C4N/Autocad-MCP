@@ -205,7 +205,7 @@ class Settings:
         self.mcp_auth_token_readonly: str = os.environ.get("MCP_AUTH_TOKEN_READONLY", "").strip()
 
         # Exposed tool profile: "full" (default, everything) or "lean" (a
-        # curated 66-tool drafting/inspection core for clients with tight tool
+        # curated 67-tool drafting/inspection core for clients with tight tool
         # caps). Invalid values fall back to "full" with a warning at startup;
         # so does the "core" profile removed in v1.5.0 (see
         # server.REMOVED_TOOL_PROFILES).

@@ -3,7 +3,7 @@
   "schema_version": 2,
   "package_version": "1.7.0",
   "totals": {
-    "tools": 248,
+    "tools": 251,
     "resources": 12,
     "prompts": 5,
     "groups": 28
@@ -18,10 +18,10 @@
     "drawing": 11,
     "engineering": 10,
     "entity_creation": 18,
-    "entity_modification": 16,
+    "entity_modification": 17,
     "entity_query": 9,
     "environment": 22,
-    "layers": 14,
+    "layers": 16,
     "layouts": 12,
     "mechanical": 14,
     "page_setup": 6,
@@ -1230,7 +1230,7 @@
       "name": "dimension_auto",
       "group": "premium",
       "cost": "mutate",
-      "summary": "Dimension a set of entities at once, as a chain, baseline or ordinate run.",
+      "summary": "Dimension a part in one call: edges, hole diameters, arc radii, overall size.",
       "acad": [
         "QDIM",
         "DIMCONTINUE",
@@ -1249,7 +1249,7 @@
         "premium"
       ],
       "annotations": {
-        "title": "Dimension: Auto (chain / baseline / ordinate)",
+        "title": "Dimension: Auto (a whole part, one call)",
         "destructiveHint": false
       }
     },
@@ -3098,6 +3098,35 @@
       }
     },
     {
+      "name": "entity_modify_where",
+      "group": "entity_modification",
+      "cost": "destructive",
+      "summary": "Restyle every entity a filter matches (layer, colour, linetype, lineweight) in one call.",
+      "acad": [
+        "QSELECT",
+        "CHPROP"
+      ],
+      "synonyms": [
+        "change every entity on a layer",
+        "move all entities to another layer",
+        "set everything to bylayer",
+        "remove colour overrides",
+        "bulk change properties",
+        "modify where",
+        "restyle by filter",
+        "select by properties and change"
+      ],
+      "tags": [
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Modify Entities Where",
+        "readOnlyHint": false,
+        "destructiveHint": true
+      }
+    },
+    {
       "name": "entity_move",
       "group": "entity_modification",
       "cost": "mutate",
@@ -3700,6 +3729,30 @@
       }
     },
     {
+      "name": "layer_merge",
+      "group": "layers",
+      "cost": "destructive",
+      "summary": "Merge layers into one: move their entities, then delete them.",
+      "acad": [
+        "LAYMRG"
+      ],
+      "synonyms": [
+        "merge layers",
+        "combine layers",
+        "move a layer's entities onto another layer",
+        "fold layers into one",
+        "layer cleanup"
+      ],
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "Merge Layers",
+        "readOnlyHint": false,
+        "destructiveHint": true
+      }
+    },
+    {
       "name": "layer_modify",
       "group": "layers",
       "cost": "mutate",
@@ -3718,6 +3771,28 @@
       ],
       "annotations": {
         "title": "Modify Layer",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "layer_rename",
+      "group": "layers",
+      "cost": "mutate",
+      "summary": "Rename a layer; every entity on it follows.",
+      "acad": [
+        "RENAME"
+      ],
+      "synonyms": [
+        "rename a layer",
+        "change a layer name",
+        "fix a misnamed layer"
+      ],
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "Rename Layer",
         "readOnlyHint": false,
         "destructiveHint": false
       }

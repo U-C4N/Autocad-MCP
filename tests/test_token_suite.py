@@ -401,11 +401,7 @@ def test_a_batched_oracle_that_exists_meets_its_ceiling(report):
 
 def test_a_missing_verb_is_pending_never_a_pass(report):
     rows = _scenarios(report)
-    for name, verbs in (
-        ("layer_cleanup_300", {"entity_modify_where", "layer_merge"}),
-        ("dimension_plate", {"dimension_auto_v2"}),
-        ("history_value_lookup", {"drawing_history"}),
-    ):
+    for name, verbs in (("history_value_lookup", {"drawing_history"}),):
         batched = rows[name]["arms"]["batched"]
         assert batched["status"] == "pending_tool"
         assert batched["verified"] is None
@@ -413,11 +409,23 @@ def test_a_missing_verb_is_pending_never_a_pass(report):
         assert batched["session"] is None
     checked = ts.check_budget(report, BUDGET)
     pending = {item["cell"] for item in checked["pending"]}
-    assert {"task.layer_cleanup_300", "task.dimension_plate", "task.history_value_lookup"} <= (
-        pending
-    )
+    assert "task.history_value_lookup" in pending
     passed = {item["cell"] for item in checked["checked"]}
-    assert not any(cell.startswith("task.") for cell in passed)
+    assert "task.history_value_lookup" not in passed
+
+
+def test_the_h4_and_h5_oracles_are_measured_within_their_ci_ceilings(report):
+    """1.8-13 wrote both oracles with the 1.8-12 verbs and dimension_auto v2:
+    the cleanup in one cad_batch + a critique, the plate in one dimension_auto
+    + a critique - each verified, within its ceiling and gated on every PR."""
+    rows = _scenarios(report)
+    for name, calls in (("layer_cleanup_300", 2), ("dimension_plate", 2)):
+        batched = rows[name]["arms"]["batched"]
+        assert batched["status"] == "measured", batched["detail"]
+        assert batched["verified"] is True
+        assert batched["calls"] == calls <= BUDGET["task"][name]["ceiling"]
+        assert BUDGET["task"][name]["gate"] == "ci"
+        assert batched["session"]["turns"] == calls + 1
 
 
 def test_every_measured_arm_is_priced_as_a_session(report):

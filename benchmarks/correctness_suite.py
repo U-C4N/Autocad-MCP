@@ -2446,6 +2446,59 @@ async def write_path_autoload_refused():
     )
 
 
+async def dimension_auto_one_call_part():
+    """A plate dimensioned in one call, and not twice (1.8-13).
+
+    A closed 120 x 80 outline, six Ø11 holes, two R8 arcs and an ellipse, all
+    on GEOMETRY, in millimetres. One ``dimension_auto(selector={"layer":
+    "GEOMETRY"})`` must draw exactly four edge dimensions measuring 120, 80,
+    120, 80, six diameters of 11 and two radii of 8 - sizes fixed here, read
+    back off the DIMENSIONs themselves - and name the ellipse in ``omitted``. A
+    second identical call must draw nothing. 1.7.0 took LINE handles only and
+    refused the rest, so it cannot take a selector at all.
+    """
+    from pathlib import Path
+
+    import ezdxf
+
+    path = Path(_scratch_dir("acadmcp_dimauto_")) / "plate.dxf"
+    doc = ezdxf.new("R2018")
+    doc.header["$INSUNITS"] = 4
+    doc.layers.add("GEOMETRY")
+    msp = doc.modelspace()
+    geometry = {"layer": "GEOMETRY"}
+    msp.add_lwpolyline([(0, 0), (120, 0), (120, 80), (0, 80)], close=True, dxfattribs=geometry)
+    for x in (15.0, 60.0, 105.0):
+        for y in (15.0, 65.0):
+            msp.add_circle((x, y), 5.5, dxfattribs=geometry)
+    msp.add_arc((40, 40), 8.0, 0.0, 180.0, dxfattribs=geometry)
+    msp.add_arc((80, 40), 8.0, 180.0, 360.0, dxfattribs=geometry)
+    ellipse = msp.add_ellipse((60, 40), major_axis=(6, 0), ratio=0.5, dxfattribs=geometry)
+    doc.saveas(path)
+
+    b = await _b()
+    await b.drawing_open(str(path))
+    try:
+        first = await b.dimension_auto(selector={"layer": "GEOMETRY"})
+    except TypeError:  # 1.7.0: no selector
+        return False
+    report = first.to_dict()
+    dims = list(b._doc.modelspace().query("DIMENSION"))
+    kinds = sorted(d.dxf.dimtype & 0x0F for d in dims)
+    sizes = sorted(round(d.get_measurement(), 6) for d in dims)
+    omitted = [(row["handle"], row["type"]) for row in report["omitted"]]
+    again = await b.dimension_auto(selector={"layer": "GEOMETRY"})
+    after = len(list(b._doc.modelspace().query("DIMENSION")))
+    return (
+        len(report["created"]) == 12
+        and kinds == [0] * 4 + [3] * 6 + [4] * 2
+        and sizes == [8.0, 8.0] + [11.0] * 6 + [80.0, 80.0, 120.0, 120.0]
+        and omitted == [(ellipse.dxf.handle, "ELLIPSE")]
+        and len(again) == 0
+        and after == 12
+    )
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -2534,6 +2587,7 @@ CHECKS = {
     "dimension_truth_focus": (dimension_truth_focus, "Quality gate"),
     "policy_read_only_batch": (policy_read_only_batch, "Security"),
     "write_path_autoload_refused": (write_path_autoload_refused, "Security"),
+    "dimension_auto_one_call_part": (dimension_auto_one_call_part, "Dimensions"),
 }
 
 

@@ -825,7 +825,10 @@ def test_v9_carries_lisp_read_tier_without_moving_the_default():
     from benchmarks.tasks_v9 import DEFAULT_MATRIX, NEW_TASKS_V9, task_by_id
 
     assert task_by_id("lisp_read_tier", "v9").category == "security"
-    assert NEW_TASKS_V9[-1].task_id == "lisp_read_tier"
+    # Appended right after 1.8-17's task, in the order the items landed; later
+    # items (1.8-12/13, 1.8-08..10) append theirs after it.
+    ids = [task.task_id for task in NEW_TASKS_V9]
+    assert ids.index("lisp_read_tier") == ids.index("policy_read_only") + 1
     assert DEFAULT_MATRIX == "v8"
     assert hasattr(AutoCADMCPProAdapter, "_task_lisp_read_tier")
 

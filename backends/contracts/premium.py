@@ -708,108 +708,220 @@ class PremiumContract(ABC):
 
     async def dimension_auto(
         self,
-        handles: list[str],
+        handles: list[str] | None = None,
         style: DimStyle = "chain",
         offset: float = 10.0,
         layer: str | None = None,
+        *,
+        selector: dict | None = None,
+        include: list[str] | None = None,
+        group_equal: bool = False,
+        skip_existing: bool = True,
+        dry_run: bool = False,
     ) -> list[EntityInfo]:
-        """Generate ISO 129 dimensions across `handles` in the chosen style
-        (chain | baseline | ordinate). `offset` is the dimension-line
-        distance from the reference geometry (mm). `layer` defaults to the
-        active layer set's dimension layer (DIM, or M-DIMEN-T-N for iso13567)."""
-        if not handles:
-            return []
-        dim_layer = layer or self._role_layer("dim")
-        if style not in ("chain", "baseline", "ordinate"):
+        """Dimension a part in one call (v2, 1.8.0 plan item 1.8-13).
+
+        Exactly one of ``handles`` / ``selector`` (an ``entity_select_smart``
+        predicate) names the entities. LINEs get the ``style`` run 1.7 drew;
+        LWPOLYLINE straight segments a chain per side (oblique ones aligned);
+        CIRCLEs a diameter, ARCs a radius, both with the text outside the part
+        box; ``overall`` the selection's width and height
+        (``engineering/dimension_auto.py`` plans it, the ``dimension_*``
+        contracts draw it, so both engines draw the same plan).
+        ``skip_existing`` binds every existing DIMENSION through
+        ``engineering/verification/binding.py`` and skips a planned one that
+        measures the same feature. ``dry_run`` plans and draws nothing.
+
+        Returns a :class:`engineering.dimension_auto.DimensionAutoResult`: the
+        list of the dimensions drawn (as 1.7 returned) carrying
+        ``skipped_existing``, ``omitted`` (every entity not dimensioned, with
+        its reason - never dropped), ``redundant`` and the ``dim_overlap``
+        self-check of what was drawn. ``layer`` defaults to the active layer
+        set's dimension layer (DIM, or M-DIMEN-T-N for iso13567).
+        """
+        from engineering import dimension_auto as da
+
+        if style not in da.STYLES:
             raise RuntimeError(
                 f"dimension_auto: unknown style '{style}'. Use 'chain', 'baseline', or 'ordinate'."
             )
-        segs: list[tuple[float, float, float, float]] = []
-        for h in handles:
-            ent = await self.entity_get(h)
-            if ent.type != "LINE":
-                raise RuntimeError(
-                    f"dimension_auto V1: only LINE entities supported (handle {h} is {ent.type})."
-                )
-            s = ent.properties.get("start")
-            e = ent.properties.get("end")
-            if s is None or e is None:
-                raise RuntimeError(f"dimension_auto: line {h} missing start/end.")
-            segs.append((float(s[0]), float(s[1]), float(e[0]), float(e[1])))
+        kinds = da.parse_include(include)
+        if (handles is None) == (selector is None):
+            from engineering.errors import InvalidArgsError
 
-        off = float(offset)
-        results: list[EntityInfo] = []
+            raise InvalidArgsError(
+                "invalid_args: dimension_auto: give exactly one of handles (a list of entity "
+                "handles) or selector (an entity_select_smart predicate such as "
+                "{'layer': 'GEOMETRY'}); "
+                + ("neither was given." if handles is None else "both were given.")
+            )
+        dim_layer = layer or self._role_layer("dim")
+        if handles is not None:
+            if not handles:
+                return da.DimensionAutoResult(layer=dim_layer, dry_run=dry_run)
+            infos = [await self.entity_get(h) for h in handles]
+        else:
+            infos = await self.entity_select_smart(da.parse_selector(selector))
+        sources, omitted = da.normalize(infos)
+        plan = da.plan_dimensions(
+            sources, style=style, offset=float(offset), include=kinds, group_equal=group_equal
+        )
+        omitted.extend(plan.omitted)
+        planned, skipped = plan.dims, []
+        if skip_existing and planned:
+            existing, eps = await self._dimension_auto_existing()
+            planned, skipped = da.match_existing(planned, existing, eps)
+        if dry_run:
+            return da.DimensionAutoResult(
+                skipped_existing=skipped,
+                omitted=omitted,
+                redundant=plan.redundant,
+                planned=planned,
+                dry_run=True,
+                layer=dim_layer,
+            )
+        tags = await self._dimension_auto_tags({dim.source for dim in planned if dim.source})
+        created: list[EntityInfo] = []
+        if planned:
+            # live ActiveX will not create a layer on assignment (CLAUDE.md)
+            await self._ensure_layer(dim_layer)
+        for dim in planned:
+            created.append(await self._dimension_auto_draw(dim, dim_layer, tags.get(dim.source)))
+        overlap = await self._dimension_auto_overlap([info.handle for info in created])
+        return da.DimensionAutoResult(
+            created,
+            skipped_existing=skipped,
+            omitted=omitted,
+            redundant=plan.redundant,
+            overlap=overlap,
+            layer=dim_layer,
+        )
 
-        if style == "chain":
-            # Each line gets its own linear (rotated) dimension, offset clear of
-            # the geometry along its own perpendicular.
-            for sx, sy, ex, ey in segs:
-                mx = (sx + ex) / 2.0
-                my = (sy + ey) / 2.0
-                dx, dy = ex - sx, ey - sy
-                L = math.hypot(dx, dy) or 1.0
-                nx, ny = -dy / L, dx / L
-                dim = await self.dimension_linear(
-                    sx,
-                    sy,
-                    ex,
-                    ey,
-                    mx + nx * off,
-                    my + ny * off,
-                    rotation=math.degrees(math.atan2(dy, dx)),
-                    layer=dim_layer,
-                )
-                results.append(dim)
+    async def _dimension_auto_existing(self) -> tuple[list[dict], float]:
+        """Every DIMENSION already drawn, bound to the features it measures
+        (``bind_dimension``): ``([{handle, dimtype, refs, points, value}], epsilon)``.
+        One snapshot, read only when the target space holds a DIMENSION."""
+        if not await self.entity_list(type_filter="DIMENSION", limit=1):
+            return [], 1e-9
+        from engineering.understand.snapshot import take_snapshot
+        from engineering.verification.binding import bind_dimension
+        from engineering.verification.measure import default_epsilon
+        from engineering.verification.observe import observe
 
-        elif style == "baseline":
-            sx0, sy0, ex0, ey0 = segs[0]
-            dx, dy = ex0 - sx0, ey0 - sy0
-            L0 = math.hypot(dx, dy) or 1.0
-            ux, uy = dx / L0, dy / L0
-            base_rot = math.degrees(math.atan2(dy, dx))
-            for i, (_sx, _sy, ex, ey) in enumerate(segs):
-                dim = await self.dimension_linear(
-                    sx0,
-                    sy0,
-                    ex,
-                    ey,
-                    sx0 - uy * (off + i * off),
-                    sy0 + ux * (off + i * off),
-                    # Dimension line must run parallel to the (possibly rotated)
-                    # baseline, not horizontal.
-                    rotation=base_rot,
-                    layer=dim_layer,
-                )
-                results.append(dim)
+        snap = await take_snapshot(self)
+        observed = observe(snap, explode_inserts=False)
+        eps = default_epsilon(observed)
+        rows: list[dict] = []
+        for feature in observed.features:
+            if feature.type != "dimension":
+                continue
+            bound = bind_dimension(feature, observed, epsilon=eps)
+            if bound["status"] not in ("bound", "ambiguous"):
+                continue
+            defpoints = dict(feature.geometry)["defpoints"]
+            points = (
+                (tuple(defpoints[1]), tuple(defpoints[2]))
+                if bound["dimtype"] in (0, 1) and defpoints[1] and defpoints[2]
+                else None
+            )
+            rows.append(
+                {
+                    "handle": feature.handle,
+                    "dimtype": bound["dimtype"],
+                    "refs": {h for ref in bound["refs"] for h in ref.handles},
+                    "points": points,
+                    "value": bound["geometric_value"],
+                }
+            )
+        return rows, max(eps, 1e-9)
 
-        else:  # ordinate — stacked X/Y distances; each feature offset so dims don't overlap
-            for i, (sx, sy, ex, ey) in enumerate(segs):
-                rung = off + i * off  # stagger per feature to avoid coincident dims
-                if abs(ex - sx) > 1e-9:
-                    dim = await self.dimension_linear(
-                        sx,
-                        sy,
-                        ex,
-                        sy,
-                        sx + (ex - sx) / 2.0,
-                        max(sy, ey) + rung,
-                        layer=dim_layer,
-                    )
-                    results.append(dim)
-                if abs(ey - sy) > 1e-9:
-                    dim = await self.dimension_linear(
-                        ex,
-                        sy,
-                        ex,
-                        ey,
-                        max(sx, ex) + rung,
-                        (sy + ey) / 2.0,
-                        rotation=90.0,
-                        layer=dim_layer,
-                    )
-                    results.append(dim)
+    async def _dimension_auto_tags(self, handles: set[str]) -> dict[str, dict]:
+        """``{source handle: xdata}``: the ``role="dim"`` feature record (1.8-06)
+        for each source that carries an ``ACADMCP_MECH`` feature tag."""
+        from engineering.mech.xdata import APP_ID, PAYLOAD_VERSION, decode, to_values
 
-        return results
+        out: dict[str, dict] = {}
+        for handle in sorted(handles):
+            raw = await self.entity_get_xdata(handle, APP_ID)
+            values = (raw.get("xdata") or {}).get(APP_ID) or []
+            if not values:
+                continue
+            try:
+                payload = decode(values)
+            except ValueError:
+                continue  # not our payload: the codec refused it, nothing to copy
+            if payload.get("kind") != "feature":
+                continue
+            record = {
+                "v": PAYLOAD_VERSION,
+                "kind": "feature",
+                "part": str(payload.get("part", "")),
+                "feature": str(payload.get("feature", "")),
+                "view": str(payload.get("view", "")),
+                "role": "dim",
+            }
+            out[handle] = {APP_ID: to_values(record)}
+        return out
+
+    async def _dimension_auto_draw(self, dim, layer: str, xdata: dict | None) -> EntityInfo:
+        (x1, y1), (x2, y2) = dim.p1, dim.p2
+        if dim.kind == "linear":
+            return await self.dimension_linear(
+                x1,
+                y1,
+                x2,
+                y2,
+                dim.location[0],
+                dim.location[1],
+                rotation=dim.rotation,
+                layer=layer,
+                xdata=xdata,
+            )
+        if dim.kind == "aligned":
+            return await self.dimension_aligned(
+                x1, y1, x2, y2, dim.location[0], dim.location[1], layer=layer, xdata=xdata
+            )
+        if dim.kind == "diameter":
+            return await self.dimension_diameter(
+                x1,
+                y1,
+                x2,
+                y2,
+                leader_length=dim.leader,
+                layer=layer,
+                text_override=dim.text_override,
+                xdata=xdata,
+            )
+        return await self.dimension_radius(
+            x1, y1, x2, y2, leader_length=dim.leader, layer=layer, xdata=xdata
+        )
+
+    async def _dimension_auto_overlap(self, handles: list[str]) -> dict:
+        """The ``dim_overlap`` focus run on what this call drew: one snapshot, the
+        issues that name a new dimension. A read that fails says so."""
+        if not handles:
+            return {"checked": True, "issues": []}
+        from backends.quarantine import DOCUMENT_REFUSALS
+        from engineering.critique import _dim_overlap_issues
+        from engineering.understand.snapshot import take_snapshot
+
+        try:
+            snap = await take_snapshot(self)
+        except DOCUMENT_REFUSALS:
+            raise
+        except Exception as exc:
+            return {
+                "checked": False,
+                "reason": f"{type(exc).__name__}: {exc}"[:200],
+                "issues": [],
+            }
+        mine = {str(h).upper() for h in handles}
+        issues = [
+            {"handles": list(issue.handles), "message": issue.message}
+            for issue in _dim_overlap_issues(snap.records)
+            if mine & {str(h).upper() for h in issue.handles}
+        ]
+        return {"checked": True, "issues": issues}
 
     async def entity_select_smart(
         self,

@@ -504,7 +504,7 @@ async def test_tool_groups_is_byte_identical_to_the_source_declared_grouping():
 
 
 async def test_tool_group_sizes_are_unchanged():
-    """Frozen snapshot of the surface (248 tools, 28 groups).
+    """Frozen snapshot of the surface (251 tools, 28 groups).
 
     Taken before @cad_tool landed at 131 tools; `batch` moved 2 -> 3 when
     v1.5.0's `cad_batch` joined `entity_batch_create`/`entity_batch_modify`, and
@@ -615,6 +615,9 @@ async def test_tool_group_sizes_are_unchanged():
     (B22: requirements measured on the CAD geometry, pass / fail / unknown with
     the evidence) joined SECTION 26. It is tagged `understand` first, which
     outranks its `analysis` and `validation` tags, so it files there.
+
+    v1.8.0's 1.8-12 adds `entity_modify_where` to `entity_modification` (16 ->
+    17) and `layer_rename` / `layer_merge` to `layers` (14 -> 16): 251 tools.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
@@ -627,10 +630,10 @@ async def test_tool_group_sizes_are_unchanged():
         "drawing": 11,
         "engineering": 10,
         "entity_creation": 18,
-        "entity_modification": 16,
+        "entity_modification": 17,  # + entity_modify_where (1.8-12)
         "entity_query": 9,
         "environment": 22,
-        "layers": 14,
+        "layers": 16,  # + layer_rename, layer_merge (1.8-12)
         "layouts": 12,
         "mechanical": 14,
         "page_setup": 6,
@@ -647,4 +650,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 248
+    assert sum(sizes.values()) == 251
