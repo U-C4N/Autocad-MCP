@@ -46,6 +46,7 @@ log = logging.getLogger("autocad_mcp.errors")
 __all__ = [
     "BATCH_KINDS_1_7",
     "CATEGORIES",
+    "CHECKPOINT_KINDS",
     "ERROR_KINDS",
     "ERROR_TABLE",
     "FILE_KINDS",
@@ -123,6 +124,12 @@ FILE_KINDS = (
     "save_failed",
 )
 
+#: The checkpoint refusals of 1.8-08 (``backends/checkpoints.py``): a reference
+#: that names no checkpoint of the document, and one the CHECKPOINT_* budget
+#: evicted - told apart, so an evicted state is never reported as one that
+#: never existed.
+CHECKPOINT_KINDS = ("checkpoint_not_found", "checkpoint_evicted")
+
 #: Every kind an error envelope or a step row can carry. Closed: a client that
 #: branches on the taxonomy needs it enumerable. ``requires_reconcile`` is the
 #: operation journal's refusal (B12), already on the wire in 1.7.0;
@@ -142,6 +149,7 @@ ERROR_KINDS = BATCH_KINDS_1_7 + (
     *GATE_KINDS,
     *FILE_KINDS,
     "process_exit",
+    *CHECKPOINT_KINDS,
 )
 
 
@@ -235,6 +243,12 @@ ERROR_TABLE: dict[str, KindSpec] = {
     ),
     "process_exit": KindSpec(
         "dependency", False, "The server ended mid-call; inspect the drawing before a retry."
+    ),
+    "checkpoint_not_found": KindSpec(
+        "input", False, "Not a checkpoint of this document; checkpoint_list names them."
+    ),
+    "checkpoint_evicted": KindSpec(
+        "file", False, "Evicted by the CHECKPOINT_* budget; pick a kept one from checkpoint_list."
     ),
 }
 
@@ -527,6 +541,16 @@ def _file_error_of(exc: BaseException) -> BaseException | None:
     return _first_of(exc, types) if types else None
 
 
+def _checkpoint_error_of(exc: BaseException) -> BaseException | None:
+    """The 1.8-08 checkpoint refusal on the chain (``backends/checkpoints.py``), or None."""
+    try:
+        from backends.checkpoints import CheckpointError
+    except Exception as exc_import:  # pragma: no cover - a core module
+        log.debug("checkpoint error type unavailable: %s", exc_import)
+        return None
+    return _first_of(exc, CheckpointError)
+
+
 def typed_message(exc: BaseException) -> str | None:
     """The full sentence of a 1.8-04 open / save error on the chain, on one line.
 
@@ -705,6 +729,10 @@ def classify(exc: BaseException) -> dict:
         # 1.8-04: a damaged or protected drawing, a save that did not land. By
         # type; the instance's own ``kind`` (a SaveLockedError is an
         # AtomicWriteError whose kind is save_locked), and its own sentence.
+        return {"kind": str(found.kind), "message": compact_message(str(found))}
+    found = _checkpoint_error_of(exc)
+    if found is not None:
+        # 1.8-08: by type; the instance's own kind (not_found vs evicted).
         return {"kind": str(found.kind), "message": compact_message(str(found))}
     incomplete = _first_of(exc, CommandIncompleteError)
     if incomplete is not None:

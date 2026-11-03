@@ -2227,6 +2227,80 @@ async def region_render_applied():
     return _region_report(shot, requested) and _region_report(zoomed, requested)
 
 
+def _undo_after_restart() -> bool:
+    script = os.path.join(os.getcwd(), "server.py")
+    if not os.path.isfile(script):
+        return False
+    env = _server_env(_scratch_dir("acadmcp_state_"))
+    env.pop("EZDXF_UNDO_DEPTH", None)  # no undo setting: the default server
+    drawings = _scratch_dir()
+    log_path = os.path.join(drawings, "server.log")
+    path = os.path.join(drawings, "undo.dxf")
+
+    first = _StdioServer(script, env, drawings, log_path, timeout=40.0)
+    try:
+        first.call("drawing_new")
+        handle = first.call("entity_create_line", {"x1": 0, "y1": 0, "x2": 10, "y2": 0}).get(
+            "handle"
+        )
+        first.call("drawing_save_as", {"path": path})
+        moved = first.call("entity_move", {"handle": handle, "dx": 5, "dy": 5})
+        saved = first.call("drawing_save", {})
+    finally:
+        first.kill()
+    if not handle or moved["is_error"] or saved["is_error"]:
+        return False
+
+    second = _StdioServer(script, env, drawings, log_path, timeout=40.0)
+    try:
+        opened = second.call("drawing_open", {"path": path})
+        undone = second.call("drawing_undo")
+        line = second.call("entity_get", {"handle": handle})
+        # The unsaved variant: saved, one more move, killed.
+        second.call("drawing_save", {})
+        with open(path, "rb") as stream:
+            on_disk = stream.read()
+        second.call("entity_move", {"handle": handle, "dx": 1, "dy": 0})
+    finally:
+        second.kill()
+
+    third = _StdioServer(script, env, drawings, log_path, timeout=40.0)
+    try:
+        reopened = third.call("drawing_open", {"path": path})
+    finally:
+        third.kill()
+    with open(path, "rb") as stream:
+        unchanged = stream.read() == on_disk
+    props = line.get("properties") or {}
+    lost = reopened.get("lost_since_save") or {}
+    return (
+        opened["is_error"] is False
+        and undone.get("ok") is True
+        and undone.get("granularity") == "save"
+        and list(props.get("start") or [])[:2] == [0.0, 0.0]
+        and list(props.get("end") or [])[:2] == [10.0, 0.0]
+        and unchanged
+        and lost.get("count") == 1
+    )
+
+
+async def undo_after_restart():
+    """Undo works after the server is killed and restarted (1.8-08, §4.2).
+
+    Server A (``python server.py`` of the tree under test, stdio, headless, a
+    fresh ``ACADMCP_STATE_DIR``, no ``EZDXF_UNDO_DEPTH``) draws a line from
+    (0, 0) to (10, 0), saves, moves it by (5, 5), saves again and is killed.
+    Server B opens the file and calls ``drawing_undo``: the line must be back
+    at (0, 0)-(10, 0) and the step reported ``granularity: "save"``. B then
+    saves, moves the line once more and is killed unsaved; server C's
+    ``drawing_open`` must leave the file as B saved it and report
+    ``lost_since_save.count == 1``. 1.7.0 kept no history across a restart -
+    its headless ``drawing_undo`` was refused (``undo_history``) without
+    ``EZDXF_UNDO_DEPTH``, and the in-memory steps died with the process.
+    """
+    return await asyncio.to_thread(_undo_after_restart)
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -2310,6 +2384,7 @@ CHECKS = {
     "atomic_save_untouched_on_failure": (atomic_save_untouched_on_failure, "Durability"),
     "lineage_revision_continues": (lineage_revision_continues, "Durability"),
     "region_render_applied": (region_render_applied, "Render"),
+    "undo_after_restart": (undo_after_restart, "Durability"),
 }
 
 

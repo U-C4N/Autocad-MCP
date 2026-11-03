@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.7.0",
   "totals": {
-    "tools": 248,
+    "tools": 251,
     "resources": 11,
     "prompts": 5,
     "groups": 28
@@ -33,7 +33,7 @@
     "styles": 10,
     "system": 7,
     "templates": 2,
-    "transactions": 3,
+    "transactions": 6,
     "understanding": 5,
     "validation": 1,
     "view": 4
@@ -586,6 +586,47 @@
       "annotations": {
         "title": "Centre Marks (ISO 128-23)",
         "destructiveHint": false
+      }
+    },
+    {
+      "name": "checkpoint_create",
+      "group": "transactions",
+      "cost": "safe",
+      "summary": "Keep a named restore point of the drawing that survives a restart.",
+      "tags": [
+        "transaction"
+      ],
+      "annotations": {
+        "title": "Create Checkpoint",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "checkpoint_list",
+      "group": "transactions",
+      "cost": "read",
+      "summary": "List the drawing's durable checkpoints, newest first.",
+      "tags": [
+        "transaction"
+      ],
+      "annotations": {
+        "title": "List Checkpoints",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "checkpoint_restore",
+      "group": "transactions",
+      "cost": "destructive",
+      "summary": "Bring a checkpoint back: in place (undoable) or as a new document.",
+      "tags": [
+        "transaction"
+      ],
+      "annotations": {
+        "title": "Restore Checkpoint",
+        "readOnlyHint": false,
+        "destructiveHint": true
       }
     },
     {

@@ -169,6 +169,7 @@ _COLUMNS = (
     "args_json",
     "result_json",
     "result_sha256",
+    "checkpoint_before",
 )
 #: A server id's row.
 _INSERT = (
@@ -182,7 +183,7 @@ _UPSERT = (
 )
 _SET_FINAL = (
     "UPDATE operations SET state = ?, error_kind = ?, ended = ?, revision_after = ?, "
-    "document_id = ?, result_json = ?, result_sha256 = ? "
+    "document_id = ?, result_json = ?, result_sha256 = ?, checkpoint_after = ? "
 )
 _FINISH_SEQ = _SET_FINAL + "WHERE seq = ? AND server_instance = ?"
 _FINISH_CLIENT = (
@@ -860,6 +861,7 @@ class DurableJournal(OperationJournal):
                 args_text,
                 result[0],
                 result[1],
+                record.checkpoint_before,
             ),
         )
 
@@ -872,6 +874,7 @@ class DurableJournal(OperationJournal):
             record.document_id,
             stored[0],
             stored[1],
+            record.checkpoint_after,
         )
         if record.client_supplied:
             return _FINISH_CLIENT, (*final, record.operation_id, self.server_instance)
@@ -1128,6 +1131,42 @@ class DurableJournal(OperationJournal):
                     self._failed(exc, "read")
         return max(highs) if highs else None
 
+    def lost_since_save(
+        self, document_id: str, saved_revision: int, saved_at: float | None = None
+    ) -> dict:
+        """``OperationJournal.lost_since_save`` over every run's rows (1.8-08).
+
+        A killed server's unsaved calls are rows of an earlier run: committed
+        past the saved revision, or swept to ``unknown_commit`` at this open.
+        """
+        if self._connection is None:
+            return super().lost_since_save(document_id, saved_revision, saved_at)
+        from backends.operations import _lost, _lost_summary
+
+        with self._lock:
+            self._commit([], "flush")
+            try:
+                if self._connection is None:
+                    return super().lost_since_save(document_id, saved_revision, saved_at)
+                rows = self._connection.execute(
+                    "SELECT operation_id, tool, state, revision_before, revision_after, started, "
+                    "document_id FROM operations WHERE document_id = ? AND state IN "
+                    "('committed', 'partial', 'unknown_commit') AND (revision_after > ? OR "
+                    "(state = 'unknown_commit' AND revision_before >= ?))",
+                    (document_id, int(saved_revision), int(saved_revision)),
+                ).fetchall()
+            except sqlite3.Error as exc:
+                self._failed(exc, "read")
+                return super().lost_since_save(document_id, saved_revision, saved_at)
+        keys = ("operation_id", "tool", "state", "revision_before", "revision_after", "started")
+        found = {row[0]: dict(zip(keys, row[:6], strict=True)) for row in rows}
+        for row in found.values():
+            row["document_id"] = document_id
+        # This run's records not yet flushed are already in the file (flushed above).
+        return _lost_summary(
+            [row for row in found.values() if _lost(row, document_id, saved_revision, saved_at)]
+        )
+
     # ── status and shutdown ──
 
     def state_store(self) -> dict:
@@ -1157,7 +1196,7 @@ class DurableJournal(OperationJournal):
             "bytes": size,
             "documents": documents,
             "operations": operations,
-            "checkpoints": 0,
+            "checkpoints": _checkpoint_count(self.state_dir),
             "write_failures": self.write_failures,
             "reconciled_at_open": self.swept_at_open,
             "settings": self.settings.to_dict() if self.settings is not None else None,
@@ -1212,6 +1251,19 @@ def open_journal(
             maxlen=maxlen,
         )
     return DurableJournal(state_dir, settings=settings, is_read_only=is_read_only, maxlen=maxlen)
+
+
+def _checkpoint_count(state_dir: Path | None) -> int:
+    """Checkpoint files in the journal's state folder (1.8-08); 0 without one."""
+    if state_dir is None:
+        return 0
+    try:
+        from backends.checkpoints import CheckpointStore
+
+        return CheckpointStore(state_dir).count()
+    except Exception as exc:  # a count is evidence, never a reason to fail a status
+        log.debug("checkpoint count: %s", exc)
+        return 0
 
 
 def state_store_status(journal: OperationJournal) -> dict:

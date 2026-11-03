@@ -1908,3 +1908,100 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
             {"rows": rows, "findings": findings, "accepted": report["accepted"]},
             [str(path)],
         )
+
+    async def _task_undo_across_restart(self):
+        """v9 (1.8-08, §4.2): undo works after the server is killed and restarted.
+
+        A real ``python server.py`` (headless, a private state folder, no
+        ``EZDXF_UNDO_DEPTH``) draws a line (0, 0)-(10, 0), saves, moves it by
+        (5, 5), saves and is killed with ``Popen.kill()``. A new process opens
+        the file and one ``drawing_undo`` must put the line back at
+        (0, 0)-(10, 0) - endpoints read with ``entity_get``, an independent
+        oracle - reported at ``granularity: "save"``. The twin: that process
+        saves, moves the line once more and is killed unsaved; a third
+        process's ``drawing_open`` must find the file byte for byte as saved
+        and report ``lost_since_save.count == 1``.
+        """
+        import tempfile
+
+        from benchmarks.correctness_suite import _server_env, _StdioServer
+
+        root = Path(__file__).resolve().parents[2]
+        script = str(root / "server.py")
+        state = tempfile.mkdtemp(prefix="acadmcp-v9-state-")
+        env = {**_server_env(state), "PYTHONPATH": str(root)}
+        env.pop("EZDXF_UNDO_DEPTH", None)
+        folder = self.artifact_dir / "undo_across_restart"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = str(folder / "undo.dxf")
+        log_path = str(folder / "server.log")
+
+        def run() -> dict:
+            first = _StdioServer(script, env, str(folder), log_path, timeout=60.0)
+            try:
+                first.call("drawing_new")
+                handle = first.call(
+                    "entity_create_line", {"x1": 0, "y1": 0, "x2": 10, "y2": 0}
+                ).get("handle")
+                first.call("drawing_save_as", {"path": path})
+                first.call("entity_move", {"handle": handle, "dx": 5, "dy": 5})
+                first.call("drawing_save", {})
+            finally:
+                first.kill()
+            second = _StdioServer(script, env, str(folder), log_path, timeout=60.0)
+            try:
+                second.call("drawing_open", {"path": path})
+                undone = second.call("drawing_undo")
+                line = second.call("entity_get", {"handle": handle})
+                second.call("drawing_save", {})
+                with open(path, "rb") as stream:
+                    on_disk = stream.read()
+                second.call("entity_move", {"handle": handle, "dx": 1, "dy": 0})
+            finally:
+                second.kill()
+            third = _StdioServer(script, env, str(folder), log_path, timeout=60.0)
+            try:
+                reopened = third.call("drawing_open", {"path": path})
+            finally:
+                third.kill()
+            with open(path, "rb") as stream:
+                unchanged = stream.read() == on_disk
+            return {"undone": undone, "line": line, "reopened": reopened, "unchanged": unchanged}
+
+        try:
+            seen = await asyncio.to_thread(run)
+        finally:
+            import shutil
+
+            shutil.rmtree(state, ignore_errors=True)
+        props = seen["line"].get("properties") or {}
+        start, end = list(props.get("start") or [])[:2], list(props.get("end") or [])[:2]
+        lost = seen["reopened"].get("lost_since_save") or {}
+        passed = (
+            seen["undone"].get("ok") is True
+            and seen["undone"].get("granularity") == "save"
+            and start == [0.0, 0.0]
+            and end == [10.0, 0.0]
+            and seen["unchanged"]
+            and lost.get("count") == 1
+        )
+        return (
+            passed,
+            {
+                "undo": {
+                    key: seen["undone"].get(key)
+                    for key in ("ok", "granularity", "checkpoint", "restored_revision")
+                },
+                "endpoints_after_undo": [start, end],
+                "file_unchanged_after_unsaved_kill": seen["unchanged"],
+                "lost_since_save": lost,
+                "server_env_undo_depth": env.get("EZDXF_UNDO_DEPTH"),
+            },
+            [path],
+        )
+
+
+#: v9 (1.8.0): its headless-only tasks start their own headless server.
+from benchmarks.tasks_v9 import HEADLESS_ONLY_V9  # noqa: E402
+
+HEADLESS_ONLY = HEADLESS_ONLY | HEADLESS_ONLY_V9

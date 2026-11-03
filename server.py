@@ -188,6 +188,9 @@ async def autocad_lifespan(server):
         # A reopened file never re-issues a revision the journal saw (lineage).
         if hasattr(backend, "revision_high_lookup"):
             backend.revision_high_lookup = getattr(operations, "max_revision", None)
+        # 1.8-08: drawing_open reports the calls a reopened file no longer holds.
+        if hasattr(backend, "lost_since_save_lookup"):
+            backend.lost_since_save_lookup = getattr(operations, "lost_since_save", None)
         context: dict = {"backend": backend, "operations": operations}
     except Exception as exc:
         log.error("Backend initialization failed: %s", exc)
@@ -439,9 +442,28 @@ def _identity_of(backend) -> dict | None:
     if reader is None:
         return None
     try:
-        return reader()
+        identity = reader()
     except Exception:  # an identity is evidence, never a reason to fail a call
         return None
+    # 1.8-08: the journal row's checkpoint_before / checkpoint_after.
+    latest = getattr(backend, "latest_checkpoint", None)
+    if isinstance(identity, dict) and callable(latest):
+        try:
+            checkpoint = latest()
+        except Exception:  # evidence only
+            checkpoint = None
+        if checkpoint:
+            identity = {**identity, "checkpoint": checkpoint}
+    return identity
+
+
+async def _checkpoint_before(backend, tool: str) -> None:
+    """1.8-08: a durable checkpoint before a destructive tool (the live engine
+    exports one; the headless engine's are save / batch anchored). Never a
+    reason to fail the tool: the backend logs a checkpoint it could not take."""
+    taker = getattr(backend, "checkpoint_before", None)
+    if callable(taker):
+        await taker(tool)
 
 
 def _worker_outcome(backend, operation_id: str) -> str | None:
@@ -2008,9 +2030,14 @@ async def drawing_export_pdf(
     tags={"drawing", "cleanup"},
 )
 async def drawing_purge(ctx: Context = None) -> dict:
-    """Purge all unused objects (layers, blocks, linetypes, styles) from the drawing."""
+    """Purge all unused objects (layers, blocks, linetypes, styles) from the drawing.
+
+    Live AutoCAD stores a durable checkpoint first (checkpoint_list).
+    """
     await ctx.info("Purging drawing")
-    return await _backend(ctx).drawing_purge()
+    backend = _backend(ctx)
+    await _checkpoint_before(backend, "drawing_purge")
+    return await backend.drawing_purge()
 
 
 @cad_tool(summary="Scan the drawing for structural errors and repair what it finds.", cost="mutate")
@@ -2058,12 +2085,15 @@ async def drawing_close(
 async def drawing_undo(ctx: Context = None) -> dict:
     """Undo the last drawing operation.
 
-    On the live COM backend this is AutoCAD's own undo. The headless backend has
-    no journal, so a step is a full DXF snapshot and history is **off by
-    default** — set `EZDXF_UNDO_DEPTH` to the number of steps you want. Measured
-    cost of switching it on: 37x on entity creation (0.18 -> 6.65 ms per call).
-    For a single checkpoint around a risky sequence, `transaction_begin` /
-    `transaction_rollback` is far cheaper.
+    On the live COM backend this is AutoCAD's own undo. Headless (1.8.0), undo
+    steps back to the newest durable checkpoint below the current revision -
+    taken at every save, open, new drawing, rollback-mode cad_batch /
+    transaction and checkpoint_create - so it works after a server restart too,
+    and reports `granularity` ("save", "batch" or "label") and `checkpoint`.
+    For per-call steps set `EZDXF_UNDO_DEPTH` (a full DXF snapshot per call -
+    measured 37x on entity creation, 0.18 -> 6.65 ms); those are used first,
+    then the checkpoints. Without a state folder (JOURNAL_DURABLE=off) and
+    without EZDXF_UNDO_DEPTH it is refused with capability `undo_history`.
 
     Drawing something after an undo discards the redo branch, as in AutoCAD.
 
@@ -2083,8 +2113,9 @@ async def drawing_undo(ctx: Context = None) -> dict:
 async def drawing_redo(ctx: Context = None) -> dict:
     """Reapply the operation you just undid.
 
-    Same history as `drawing_undo`, so the headless backend needs
-    `EZDXF_UNDO_DEPTH` set. Anything drawn after an undo discards the redo
+    Same history as `drawing_undo`: headless, a checkpoint undo is redone from
+    the state it replaced (kept as a checkpoint), within the session. Anything
+    drawn after an undo discards the redo
     branch — otherwise redo would restore a state that never existed, with
     geometry you had removed reappearing beside geometry you drew afterwards.
     Reports `verified` the same way `drawing_undo` does.
@@ -3296,6 +3327,7 @@ async def text_find_replace(
         rows = list(result.get("entities") or [])
         preview = await make_preview(backend, handles=[row["handle"] for row in rows], planned=rows)
         return {**result, "preview": preview.to_dict()}
+    await _checkpoint_before(backend, "text_find_replace")
     if expected_revision is None and preconditions is None:
         return await backend.text_find_replace(find, replace, layer or None, match_case, False)
     return await _guarded_text_find_replace(
@@ -3558,6 +3590,7 @@ async def entity_delete_many(
     """Delete multiple entities in one call. Returns count of deleted entities."""
     await ctx.info(f"Deleting {len(handles)} entities")
     b = _backend(ctx)
+    await _checkpoint_before(b, "entity_delete_many")  # 1.8-08: live AutoCAD only
     deleted = 0
     errors = []
     for i, h in enumerate(handles):
@@ -6195,7 +6228,7 @@ async def view_zoom_and_screenshot(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 10: Transactions (3 tools) ──────────────────────────────────────
+# ── SECTION 10: Transactions (6 tools) ──────────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -6253,6 +6286,108 @@ async def transaction_rollback(ctx: Context = None) -> dict:
     """
     await ctx.warning("Rolling back transaction")
     return await _backend(ctx).transaction_rollback()
+
+
+# 1.8-08: durable checkpoints (backends/checkpoints.py). Registered beside the
+# transactions: the same "go back to a known state" family, filed in that group.
+
+
+@cad_tool(summary="Keep a named restore point of the drawing that survives a restart.", cost="safe")
+@mcp.tool(
+    annotations={"title": "Create Checkpoint", "readOnlyHint": False, "destructiveHint": False},
+    tags={"transaction"},
+)
+async def checkpoint_create(
+    label: Annotated[
+        str | None,
+        "A name to find it by later (checkpoint_restore and drawing_diff accept it).",
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """Store the drawing as it is now as a durable checkpoint, optionally labelled.
+
+    Checkpoints live in the state folder (ACADMCP_STATE_DIR), gzip-compressed,
+    and survive a server restart: drawing_undo steps back to them and
+    checkpoint_restore brings one back. Saves, the open, a new drawing and every
+    rollback-mode cad_batch / transaction boundary take one by themselves; this
+    adds one where you want a named point (`granularity: "label"`). The drawing
+    is not changed. Returns `{cp, seq, tool, rev, kb, label}`.
+
+    Refused: `checkpoints` (unsupported) when there is no state folder
+    (JOURNAL_DURABLE=off, or a refused ACADMCP_STATE_DIR). Live: the document is
+    exported with Document.Export.
+    """
+    return await _backend(ctx).checkpoint_create(label)
+
+
+@cad_tool(summary="List the drawing's durable checkpoints, newest first.", cost="read")
+@mcp.tool(
+    annotations={"title": "List Checkpoints", "readOnlyHint": True},
+    tags={"transaction"},
+)
+async def checkpoint_list(
+    limit: Annotated[int, Field(description="How many, newest first (1-200).", ge=1, le=200)] = 10,
+    ctx: Context = None,
+) -> dict:
+    """The active drawing's checkpoints, newest first, across restarts.
+
+    Each row is `{cp, seq, tool, rev, kb, label, evicted}`: `rev` is the content
+    revision it holds (compare with system_status / drawing_info), `tool` what
+    took it (drawing_save, drawing_open, drawing_new, transaction_commit,
+    checkpoint_create, ...). A row the CHECKPOINT_KEEP / CHECKPOINT_BUDGET_MB /
+    CHECKPOINT_MAX_DOC_MB budget evicted stays listed with `evicted: true`; its
+    bytes are gone and restoring it is refused `checkpoint_evicted`.
+
+    Refused: `checkpoints` (unsupported) when there is no state folder.
+    """
+    return await _backend(ctx).checkpoint_list(limit)
+
+
+@cad_tool(
+    summary="Bring a checkpoint back: in place (undoable) or as a new document.",
+    cost="destructive",
+)
+@mcp.tool(
+    annotations={"title": "Restore Checkpoint", "readOnlyHint": False, "destructiveHint": True},
+    tags={"transaction"},
+)
+async def checkpoint_restore(
+    checkpoint: Annotated[
+        str,
+        "Which one: its id ('cp-3'), its seq ('3') or its label (the newest with that label).",
+    ],
+    expected_revision: Annotated[
+        int | None,
+        "Restore only if the drawing is still at this revision; otherwise refused "
+        "stale_revision with nothing changed.",
+    ] = None,
+    mode: Annotated[
+        str,
+        "in_place: replace the active drawing's contents (drawing_undo undoes it); "
+        "new_document: open the checkpoint as <stem>-cp<seq> and make it active.",
+    ] = "in_place",
+    ctx: Context = None,
+) -> dict:
+    """Restore a durable checkpoint (see checkpoint_list).
+
+    `in_place` first stores the current drawing as a checkpoint
+    (`checkpoint_before`), so the restore is itself undoable: drawing_undo
+    returns to it. The result names `restored` and the new `revision`.
+    `new_document` leaves the active drawing alone and opens the checkpoint as
+    its own document, which becomes the bound/active one.
+
+    Refused by kind: `checkpoint_not_found` (no such id, seq or label - the
+    message names the newest ones), `checkpoint_evicted` (the budget dropped its
+    bytes), `stale_revision` (expected_revision no longer holds), and on live
+    AutoCAD `mode="in_place"` with capability `checkpoint_restore_in_place`
+    (ActiveX cannot replace an open drawing's database - use new_document).
+    """
+    backend = _backend(ctx)
+    if expected_revision is not None:
+        from engineering.changes.preview import check_preconditions
+
+        await check_preconditions(backend, expected_revision=expected_revision)
+    return await backend.checkpoint_restore(checkpoint, mode=mode)
 
 
 # ---------------------------------------------------------------------------

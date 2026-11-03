@@ -90,9 +90,19 @@ class OperationRecord:
     ended: float | None = None
     error_kind: str | None = None
     client_supplied: bool = False
+    #: 1.8-08: the document's newest checkpoint when the call began and when it
+    #: ended (``backends/checkpoints.py``); the same id when the call wrote none.
+    checkpoint_before: str | None = None
+    checkpoint_after: str | None = None
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        row = asdict(self)
+        # Shown only when a checkpoint exists: a record without one stays the
+        # 1.7 row, byte for byte.
+        for key in ("checkpoint_before", "checkpoint_after"):
+            if row[key] is None:
+                del row[key]
+        return row
 
 
 def request_hash(tool: str, arguments: dict | None) -> str:
@@ -122,6 +132,42 @@ def validate_operation_id(value: Any) -> str:
     if not value.isprintable():
         raise ValueError("operation_id: printable characters only")
     return value
+
+
+def _lost(row: dict, document_id: str, saved_revision: int, saved_at: float | None = None) -> bool:
+    if row.get("document_id") != document_id:
+        return False
+    state = row.get("state")
+    after, before = row.get("revision_after"), row.get("revision_before")
+    if state in ("committed", "partial"):
+        return (
+            after is not None and before is not None and after > before and after > saved_revision
+        )
+    if state == "unknown_commit":
+        # No revision_after: the server died before the row was closed. It
+        # counts when it started at the saved revision *after* the save was
+        # recorded - the save's own row, killed before its final state was
+        # flushed, started before that and wrote nothing the file lacks.
+        if before is None or before < saved_revision:
+            return False
+        return saved_at is None or float(row.get("started") or 0.0) > float(saved_at)
+    return False
+
+
+def _lost_summary(rows: list[dict]) -> dict:
+    """``{count, last_operation}`` over the rows ``_lost`` kept, oldest first."""
+    if not rows:
+        return {"count": 0, "last_operation": None}
+    last = max(rows, key=lambda r: r.get("started") or 0.0)
+    return {
+        "count": len(rows),
+        "last_operation": {
+            "operation_id": last.get("operation_id"),
+            "tool": last.get("tool"),
+            "state": last.get("state"),
+            "revision_after": last.get("revision_after"),
+        },
+    }
 
 
 class OperationConflictError(RuntimeError):
@@ -245,6 +291,7 @@ class OperationJournal:
             revision_after=None,
             started=time.time(),
             client_supplied=client_supplied,
+            checkpoint_before=identity.get("checkpoint"),
         )
         self._store(record)
         return record, None
@@ -266,11 +313,32 @@ class OperationJournal:
         record.ended = time.time()
         if document:
             record.revision_after = document.get("revision")
+            record.checkpoint_after = document.get("checkpoint")
             if record.document_id is None:
                 record.document_id = document.get("document_id")
         if result is not None and record.client_supplied:
             if self._records.get(record.operation_id) is record:
                 self._results[record.operation_id] = result
+
+    def lost_since_save(
+        self, document_id: str, saved_revision: int, saved_at: float | None = None
+    ) -> dict:
+        """Operations on ``document_id`` past ``saved_revision`` (1.8-08).
+
+        What a reopen of the saved file no longer holds: every call that moved
+        the revision beyond the one the file was saved at (``committed`` /
+        ``partial``), and every call left ``unknown_commit`` that started at that
+        revision after the save was recorded (``saved_at``) - its write may have
+        landed in the document that is gone. ``{count, last_operation}``;
+        ``last_operation`` is None when count is 0.
+        """
+        return _lost_summary(
+            [
+                record.to_dict()
+                for record in list(self._records.values())
+                if _lost(record.to_dict(), document_id, saved_revision, saved_at)
+            ]
+        )
 
     def get(self, operation_id: str) -> OperationRecord | None:
         return self._records.get(operation_id)

@@ -48,6 +48,7 @@ from .base import (
     rad2deg,
     shoelace_area,
 )
+from .com_checkpoints import IN_PLACE_REASON, ComCheckpoints
 from .contracts.entity_modification import TEXT_SEARCH_SCOPE
 from .contracts.settings import SUMMARY_FIELDS, validate_drawing_properties
 from .document_guard import ActiveDocumentChangedError
@@ -2520,7 +2521,7 @@ def _mutating(method):
     return wrapper
 
 
-class ComBackend(AutoCADBackend):
+class ComBackend(ComCheckpoints, AutoCADBackend):
     """Live AutoCAD control via COM API."""
 
     #: How long ``_ensure_document_state`` waits out ``RPC_E_CALL_REJECTED``
@@ -2621,6 +2622,18 @@ class ComBackend(AutoCADBackend):
                     False, reason="audit_result_not_readable_over_com"
                 ),
                 "undo_history": FeatureCapability(True, "autocad_native"),
+                # 1.8-08: Document.Export checkpoints in the state folder; an
+                # in-place restore has no ActiveX member (com_checkpoints.py).
+                "checkpoints": (
+                    FeatureCapability(
+                        True, "export", reason="label_batch_and_destructive_boundaries"
+                    )
+                    if self._cp_store() is not None
+                    else FeatureCapability(
+                        False, reason="no_state_folder:JOURNAL_DURABLE_off_or_STATE_DIR_refused"
+                    )
+                ),
+                "checkpoint_restore_in_place": FeatureCapability(False, reason=IN_PLACE_REASON),
                 "chspace": FeatureCapability(False, reason="unverified_against_live_autocad"),
                 "revcloud": FeatureCapability(False, reason="no_activex_member_command_only"),
                 "wipeout": FeatureCapability(
@@ -8633,6 +8646,9 @@ class ComBackend(AutoCADBackend):
     async def transaction_begin(self) -> dict:
         if self._transaction_active:
             return {"ok": False, "error": "A transaction is already active"}
+        # 1.8-08: the batch / transaction boundary is a durable checkpoint
+        # (Document.Export, before the mark); never a reason to refuse the begin.
+        checkpoint = await self.checkpoint_before("transaction_begin")
 
         def _sync():
             doc = _acad_doc()
@@ -8686,7 +8702,10 @@ class ComBackend(AutoCADBackend):
             doc.StartUndoMark()
             return {"ok": True, "message": "Transaction begun (AutoCAD undo mark set)"}
 
-        return await self._run(_sync)
+        result = await self._run(_sync)
+        if checkpoint and isinstance(result, dict) and result.get("ok"):
+            result["checkpoint"] = checkpoint
+        return result
 
     async def transaction_commit(self) -> dict:
         def _sync():

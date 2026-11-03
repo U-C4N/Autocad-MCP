@@ -122,6 +122,8 @@ async def test_drawing_after_an_undo_discards_the_redo_branch(undoable):
 
 
 async def test_history_is_bounded_by_the_configured_depth(monkeypatch):
+    # Without the checkpoint store (1.8-08), so only the in-memory steps count.
+    monkeypatch.setenv("JOURNAL_DURABLE", "off")
     monkeypatch.setattr(config.settings, "ezdxf_undo_depth", 2)
     backend = EzdxfBackend()
     await backend.connect()
@@ -138,11 +140,32 @@ async def test_history_is_bounded_by_the_configured_depth(monkeypatch):
         await backend.disconnect()
 
 
-# ── off by default, and honest about it ─────────────────────────────────────
+async def test_the_in_memory_steps_are_consumed_first_then_the_checkpoints(monkeypatch):
+    """1.8-08: EZDXF_UNDO_DEPTH's per-call steps, then the store (S0 here)."""
+    monkeypatch.setattr(config.settings, "ezdxf_undo_depth", 2)
+    backend = EzdxfBackend()
+    await backend.connect()
+    await backend.drawing_new()
+    try:
+        for i in range(5):
+            await backend.entity_create_line(0, i, 10, i)
+        sources = []
+        while (result := await backend.drawing_undo())["ok"]:
+            sources.append(result.get("source", "memory"))
+        assert sources == ["memory", "memory", "checkpoint"]
+        assert await _count(backend) == 0, "S0: the drawing as drawing_new made it"
+    finally:
+        await backend.disconnect()
 
 
-async def test_undo_is_off_by_default_and_refuses_with_the_setting_named(backend):
+# ── without a state folder, honest about it ─────────────────────────────────
+
+
+async def test_undo_without_history_or_checkpoints_refuses_with_the_setting_named(
+    backend, monkeypatch
+):
     assert config.settings.ezdxf_undo_depth == 0
+    monkeypatch.setenv("JOURNAL_DURABLE", "off")  # no state folder: no checkpoints
 
     with pytest.raises(UnsupportedCapabilityError) as excinfo:
         await backend.drawing_undo()
@@ -151,15 +174,27 @@ async def test_undo_is_off_by_default_and_refuses_with_the_setting_named(backend
     assert "EZDXF_UNDO_DEPTH" in str(excinfo.value), "the refusal must name the way in"
 
 
-async def test_redo_refuses_the_same_way_when_history_is_off(backend):
+async def test_redo_refuses_the_same_way_when_history_is_off(backend, monkeypatch):
+    monkeypatch.setenv("JOURNAL_DURABLE", "off")
     with pytest.raises(UnsupportedCapabilityError) as excinfo:
         await backend.drawing_redo()
     assert excinfo.value.capability == "undo_history"
 
 
-async def test_the_capability_is_declared_on_both_backends():
+async def test_by_default_undo_answers_from_the_checkpoint_store(backend):
+    """1.8-08: no setting needed - a fresh drawing has nothing below S0."""
+    assert config.settings.ezdxf_undo_depth == 0
+    result = await backend.drawing_undo()
+    assert result["ok"] is False and result["source"] == "checkpoint"
+
+
+async def test_the_capability_is_declared_on_both_backends(monkeypatch):
     from backends.com_backend import ComBackend
 
+    default = EzdxfBackend().capabilities().features["undo_history"]
+    assert (default.supported, default.mode) == (True, "checkpoint")
+    assert "EZDXF_UNDO_DEPTH" in (default.reason or "")
+    monkeypatch.setenv("JOURNAL_DURABLE", "off")
     ezdxf_feature = EzdxfBackend().capabilities().features["undo_history"]
     assert ezdxf_feature.supported is False
     assert "EZDXF_UNDO_DEPTH" in (ezdxf_feature.reason or "")

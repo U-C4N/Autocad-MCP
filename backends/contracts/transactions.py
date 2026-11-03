@@ -20,6 +20,40 @@ class TransactionContract(ABC):
     @abstractmethod
     async def transaction_rollback(self) -> dict: ...
 
+    # ── durable checkpoints (1.8-08, ``backends/checkpoints.py``) ──
+
+    @abstractmethod
+    async def checkpoint_create(self, label: str | None = None) -> dict:
+        """A checkpoint of the active document now, under ``label``."""
+
+    @abstractmethod
+    async def checkpoint_list(self, limit: int = 10) -> dict:
+        """The active document's checkpoints, newest first:
+        ``{checkpoints: [{cp, seq, tool, rev, kb, label, evicted}], ...}``."""
+
+    @abstractmethod
+    async def checkpoint_restore(self, checkpoint, mode: str = "in_place") -> dict:
+        """Restore a checkpoint (``cp-<seq>``, a seq or a label).
+
+        ``in_place`` replaces the active document's contents and is itself
+        undoable; ``new_document`` opens the checkpoint as ``<stem>-cp<seq>``
+        and binds it. The live engine refuses ``in_place`` with capability
+        ``checkpoint_restore_in_place``.
+        """
+
+    def latest_checkpoint(self) -> str | None:
+        """The active document's newest checkpoint id, read without a backend call."""
+        return None
+
+    async def checkpoint_before(self, tool: str) -> str | None:
+        """A checkpoint before a destructive tool; the id, or None when none is taken.
+
+        The live engine exports one (``Document.Export``). The headless engine
+        takes none here: its checkpoints are anchored on saves and on the
+        transaction snapshot a batch already writes, at no per-call cost.
+        """
+        return None
+
     def transaction_depth(self) -> int | None:
         """How many checkpoints are open now, read without a backend call.
 
