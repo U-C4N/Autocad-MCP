@@ -127,8 +127,12 @@ def freeze(mapping: Mapping | None) -> Pairs:
 
 
 def _thaw_value(value):
+    from engineering.dimtext import StyleVars
+
     if isinstance(value, FrozenMap):
         return {key: _thaw_value(item) for key, item in value}
+    if isinstance(value, StyleVars):  # a DIMENSION's style (1.8-15)
+        return {key: item for key, item in value.pairs}
     if isinstance(value, tuple):
         return [_thaw_value(item) for item in value]
     return value

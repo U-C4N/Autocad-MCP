@@ -563,6 +563,10 @@ from .property_override import check_property_override  # noqa: E402  (imports _
 
 _FOCUS_DISPATCH["property_override"] = check_property_override
 
+from .dimension_truth import check_dimension_truth  # noqa: E402  (imports _records lazily)
+
+_FOCUS_DISPATCH["dimension_truth"] = check_dimension_truth
+
 from .pid.critique import PID_DISPATCH  # noqa: E402  (registered after the mechanical focuses)
 
 _FOCUS_DISPATCH.update(PID_DISPATCH)

@@ -42,12 +42,12 @@ from __future__ import annotations
 
 import json
 import math
-import re
 
 from engineering.verification.types import Binding, FeatureRef
 
 __all__ = [
     "WILSON_Z",
+    "DimensionIndex",
     "bind",
     "bind_dimension",
     "feature_of",
@@ -59,7 +59,6 @@ __all__ = [
 WILSON_Z = 1.959963984540054
 _COUNTING = ("count", "absence")
 _RADIAL = ("radius", "diameter")
-_NUMBER = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
 
 
 def wilson_interval(successes: int, trials: int, z: float = WILSON_Z) -> tuple[float, float]:
@@ -324,7 +323,200 @@ def feature_points(feature) -> list:
     return []
 
 
-def _at(point, observed, epsilon: float) -> list:
+class DimensionIndex:
+    """A grid over every feature point, for binding many DIMENSIONs (1.8-15).
+
+    ``bind_dimension`` used to walk every feature for every defpoint - fine
+    for the handful of dimensions a requirement names, quadratic for the
+    ``dimension_truth`` focus, which binds every DIMENSION of the drawing.
+    The cell is ``epsilon`` (widened by one part in a million), so a point's
+    partners lie in the nine cells around it; the answers are exactly the
+    walk's, in the same order (``_order``).
+    """
+
+    def __init__(self, observed, epsilon: float):
+        self.epsilon = float(epsilon)
+        self._cell = max(self.epsilon * (1.0 + 1e-6), 1e-12)
+        self._points: dict[tuple[int, int], list] = {}
+        self._centres: dict[tuple[int, int], list] = {}
+        for feature in observed.features:
+            if feature.type == "dimension":
+                continue
+            for point in feature_points(feature):
+                self._points.setdefault(self._key(point), []).append((feature, point))
+            if feature.type in ("circle", "arc"):
+                centre = dict(feature.geometry)["center"]
+                self._centres.setdefault(self._key(centre), []).append(feature)
+
+    def _key(self, point) -> tuple[int, int]:
+        return (math.floor(point[0] / self._cell), math.floor(point[1] / self._cell))
+
+    def _near(self, grid: dict, point) -> list:
+        kx, ky = self._key(point)
+        out = []
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                out.extend(grid.get((kx + dx, ky + dy), ()))
+        return out
+
+    def at(self, point, epsilon: float) -> list:
+        found = {}
+        for feature, p in self._near(self._points, point):
+            if math.dist(point, p) <= epsilon:
+                found[id(feature)] = feature
+        return sorted(found.values(), key=_order)
+
+    def circles_at(self, centre, radius, epsilon: float) -> list:
+        found = {}
+        for feature in self._near(self._centres, centre):
+            g = dict(feature.geometry)
+            if (
+                math.dist(g["center"], centre) <= epsilon
+                and abs(float(g["radius"]) - radius) <= epsilon
+            ):
+                found[id(feature)] = feature
+        return sorted(found.values(), key=_order)
+
+    def lines_through(self, a, epsilon: float) -> list:
+        return [f for f, _p in self._near(self._points, a) if f.type == "line"]
+
+    def on_curve(self, point, observed, epsilon: float) -> list:
+        """The features whose curve passes within ``epsilon`` of ``point``
+        (:func:`_on_curve`), from a coarse grid of their boxes built on first use."""
+        if not hasattr(self, "_boxes"):
+            self._build_boxes(observed)
+        kx = math.floor(point[0] / self._box_cell)
+        ky = math.floor(point[1] / self._box_cell)
+        candidates = {id(f): f for f in self._boxes.get((kx, ky), ())}
+        return sorted((f for f in candidates.values() if _point_on(point, f, epsilon)), key=_order)
+
+    def _build_boxes(self, observed) -> None:
+        curves = [f for f in observed.features if f.type in _CURVE_TYPES]
+        boxes = [(f, _curve_box(f, self.epsilon)) for f in curves]
+        span = max([max(b[2] - b[0], b[3] - b[1]) for _f, b in boxes if b is not None] or [1.0])
+        self._box_cell = max(span / 256.0, self.epsilon * 4.0, 1e-9)
+        self._boxes: dict[tuple[int, int], list] = {}
+        for feature, box in boxes:
+            if box is None:
+                continue
+            x0, y0 = math.floor(box[0] / self._box_cell), math.floor(box[1] / self._box_cell)
+            x1, y1 = math.floor(box[2] / self._box_cell), math.floor(box[3] / self._box_cell)
+            for kx in range(x0, x1 + 1):
+                for ky in range(y0, y1 + 1):
+                    self._boxes.setdefault((kx, ky), []).append(feature)
+
+
+#: Features a dimension's measured point may lie *on* (not only at an end).
+_CURVE_TYPES = ("line", "polyline", "circle", "arc")
+
+
+def _segment_distance(p, a, b) -> float:
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    length = dx * dx + dy * dy
+    t = (
+        0.0
+        if length == 0
+        else max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / length))
+    )
+    return math.dist(p, (a[0] + t * dx, a[1] + t * dy))
+
+
+def _on_arc(p, centre, radius, start_deg, end_deg, epsilon) -> bool:
+    if abs(math.dist(p, centre) - radius) > epsilon:
+        return False
+    angle = math.degrees(math.atan2(p[1] - centre[1], p[0] - centre[0])) % 360.0
+    sweep = (end_deg - start_deg) % 360.0 or 360.0
+    return (angle - start_deg) % 360.0 <= sweep + 1e-9
+
+
+def _on_bulge(p, a, b, bulge, epsilon) -> bool:
+    """On the arc segment ``a -> b`` of a polyline with ``bulge`` (counter-clockwise > 0)."""
+    chord = math.dist(a, b)
+    if chord == 0:
+        return math.dist(p, a) <= epsilon
+    theta = 4.0 * math.atan(bulge)
+    radius = chord / (2.0 * abs(math.sin(theta / 2.0)))
+    mx, my = (a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0
+    # The centre sits on the chord's normal, at the sagitta's complement.
+    offset = radius * math.cos(theta / 2.0) * (1.0 if bulge > 0 else -1.0)
+    nx, ny = -(b[1] - a[1]) / chord, (b[0] - a[0]) / chord
+    centre = (mx + nx * offset, my + ny * offset)
+    start = math.degrees(math.atan2(a[1] - centre[1], a[0] - centre[0]))
+    end = math.degrees(math.atan2(b[1] - centre[1], b[0] - centre[0]))
+    if bulge < 0:
+        start, end = end, start
+    return _on_arc(p, centre, radius, start % 360.0, end % 360.0, epsilon)
+
+
+def _point_on(point, feature, epsilon: float) -> bool:
+    g = dict(feature.geometry)
+    if feature.type == "line":
+        return _segment_distance(point, g["start"], g["end"]) <= epsilon
+    if feature.type == "circle":
+        return abs(math.dist(point, g["center"]) - float(g["radius"])) <= epsilon
+    if feature.type == "arc":
+        return _on_arc(
+            point, g["center"], float(g["radius"]), g["start_angle"], g["end_angle"], epsilon
+        )
+    if feature.type == "polyline":
+        points = list(g["points"])
+        bulges = list(g["bulges"]) or [0.0] * len(points)
+        pairs = list(zip(points, points[1:], bulges, strict=False))
+        if g["closed"] and len(points) > 2:
+            pairs.append((points[-1], points[0], bulges[-1]))
+        for a, b, bulge in pairs:
+            if abs(bulge) <= 1e-12:
+                if _segment_distance(point, a, b) <= epsilon:
+                    return True
+            elif _on_bulge(point, a, b, bulge, epsilon):
+                return True
+    return False
+
+
+def _curve_box(feature, pad: float):
+    g = dict(feature.geometry)
+    if feature.type == "line":
+        xs, ys = (g["start"][0], g["end"][0]), (g["start"][1], g["end"][1])
+    elif feature.type in ("circle", "arc"):
+        (cx, cy), r = g["center"], float(g["radius"])
+        xs, ys = (cx - r, cx + r), (cy - r, cy + r)
+    elif feature.type == "polyline" and g["points"]:
+        xs = [p[0] for p in g["points"]]
+        ys = [p[1] for p in g["points"]]
+        if any(abs(b) > 1e-12 for b in g["bulges"]):
+            # A bulge can bow a segment out by up to half its chord.
+            extra = (
+                max(math.dist(a, b) for a, b in zip(g["points"], g["points"][1:], strict=False))
+                if len(g["points"]) > 1
+                else 0.0
+            )
+            return (
+                min(xs) - extra - pad,
+                min(ys) - extra - pad,
+                max(xs) + extra + pad,
+                max(ys) + extra + pad,
+            )
+    else:
+        return None
+    return (min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad)
+
+
+def _on_curve(point, observed, epsilon: float, index: DimensionIndex | None = None) -> list:
+    """The features whose curve - a line, a polyline segment (bulges as arcs),
+    a circle, an arc - passes within ``epsilon`` of ``point``: a dimension
+    measured to a point *on* an edge, not at its end (1.8-15). The fallback of
+    :func:`_at` when no feature point is there."""
+    if index is not None and epsilon <= index.epsilon:
+        return index.on_curve(point, observed, epsilon)
+    return sorted(
+        (f for f in observed.features if f.type in _CURVE_TYPES and _point_on(point, f, epsilon)),
+        key=_order,
+    )
+
+
+def _at(point, observed, epsilon: float, index: DimensionIndex | None = None) -> list:
+    if index is not None and epsilon <= index.epsilon:
+        return index.at(point, epsilon)
     return sorted(
         (
             f
@@ -336,7 +528,9 @@ def _at(point, observed, epsilon: float) -> list:
     )
 
 
-def _circles_at(centre, radius, observed, epsilon: float) -> list:
+def _circles_at(centre, radius, observed, epsilon: float, index=None) -> list:
+    if index is not None and epsilon <= index.epsilon:
+        return index.circles_at(centre, radius, epsilon)
     return sorted(
         (
             f
@@ -349,9 +543,14 @@ def _circles_at(centre, radius, observed, epsilon: float) -> list:
     )
 
 
-def _legs(a, b, observed, epsilon: float) -> list:
+def _legs(a, b, observed, epsilon: float, index=None) -> list:
     out = []
-    for f in observed.features:
+    pool = observed.features
+    if index is not None and epsilon <= index.epsilon:
+        # Only the count of legs is read (one, or not a single line), so the
+        # order of the pool does not matter.
+        pool = list({id(f): f for f in index.lines_through(a, epsilon)}.values())
+    for f in pool:
         if f.type != "line":
             continue
         g = dict(f.geometry)
@@ -367,28 +566,11 @@ def _line_angle(a, b) -> float:
     return math.degrees(math.atan2(b[1] - a[1], b[0] - a[0])) % 180.0
 
 
-def _displayed(override: str, measurement, dimlfac) -> tuple[str, float | None]:
-    """What the sheet shows: the override (``<>`` standing for the value), else
-    the measurement times DIMLFAC; and the value it shows.
-
-    An override that keeps ``<>`` shows the measured value (``"4x <>"``,
-    ``"<> H7"``): the value is that measurement, never the first number of the
-    text, which may be a count. An override without ``<>`` replaces the value:
-    its first number is what the sheet claims."""
-    if measurement is None or dimlfac is None:
-        value = None
-        text = ""
-    else:
-        value = float(measurement) * float(dimlfac)
-        text = f"{value:.10g}"
-    if override and override != "<>":
-        if "<>" in override:
-            text = override.replace("<>", text)
-        else:
-            text = override
-            found = _NUMBER.search(text.replace("\\P", " "))
-            value = float(found.group().replace(",", ".")) if found else None
-    return text, value
+def _style_vars(dimension_record):
+    """The record's effective dimension style variables, or None (unknown)."""
+    if hasattr(dimension_record, "dimension"):
+        return getattr(dimension_record, "dim_vars", None)
+    return dict(dimension_record.geometry).get("style_vars")
 
 
 def _fields(dimension_record) -> tuple:
@@ -406,7 +588,14 @@ def _fields(dimension_record) -> tuple:
     )
 
 
-def bind_dimension(dimension_record, observed, *, epsilon: float) -> dict:
+def bind_dimension(
+    dimension_record,
+    observed,
+    *,
+    epsilon: float,
+    index: DimensionIndex | None = None,
+    across_edges: bool = False,
+) -> dict:
     """What a DIMENSION is drawn to, and whether what it shows is what is there.
 
     ``dimension_record`` is a ``dimension`` :class:`ObservedFeature` (or an
@@ -414,22 +603,43 @@ def bind_dimension(dimension_record, observed, *, epsilon: float) -> dict:
     feature points within ``epsilon``. ``geometric_value`` is measured on the
     matched geometry, ``dimension_measurement`` is the dimension's own
     measurement (before DIMLFAC), ``displayed_text`` / ``displayed_value`` what
-    the sheet shows. A text override or a DIMLFAC that makes the sheet disagree
-    with the geometry is a finding - ``mismatch`` - never a pass.
+    the sheet shows - formatted by ``engineering/dimtext.py`` with the
+    dimension's own style (DIMDEC, DIMRND, DIMZIN, DIMDSEP, DIMPOST, the Ø / R
+    prefix; 1.8-15), so a 19.6 under DIMDEC 0 shows "20".
+    ``display_rounding`` is what that formatting moved the value (0.4 there);
+    a value shown from the measurement may sit that far from the geometry
+    (up to half the last shown unit) without being a finding. A text override
+    or a DIMLFAC that makes the sheet disagree with the geometry is a finding
+    - ``mismatch`` - never a pass.
 
     Linear (type 0, measured along DXF angle 50) and aligned (1) dimensions
     are matched by their two measured points; diameter (3) and radius (4) by
     the one circle or arc their chord points describe; two-line angular (2) by
-    its two legs. Other types answer ``unsupported``.
+    its two legs. Other types answer ``unsupported``. ``index`` (a
+    :class:`DimensionIndex` over the same ``observed``) makes binding many
+    dimensions linear; the answer is the same. ``across_edges`` (the
+    ``dimension_truth`` focus) also binds a diameter drawn across two edges -
+    a side view's silhouette, with no circle under it - to those edges; a
+    requirement keeps the circle-only rule, because its diameter is measured
+    on the circle the dimension names.
     """
+    from engineering.dimtext import display
+
     fields = _fields(dimension_record)
     dimtype, defpoints, measurement, override, _style, dimlfac, angle = fields
     refs: list = []
     geometric = None
     status = "bound"
     if dimtype in (0, 1):
-        first = _at(defpoints[1], observed, epsilon) if defpoints[1] else []
-        second = _at(defpoints[2], observed, epsilon) if defpoints[2] else []
+        first = _at(defpoints[1], observed, epsilon, index) if defpoints[1] else []
+        second = _at(defpoints[2], observed, epsilon, index) if defpoints[2] else []
+        # A point measured *on* an edge rather than at its end (a step drawn to
+        # a silhouette, a wall face) binds to that edge (1.8-15).
+        on_edge = False
+        if defpoints[1] and not first:
+            first, on_edge = _on_curve(defpoints[1], observed, epsilon, index), True
+        if defpoints[2] and not second:
+            second, on_edge = _on_curve(defpoints[2], observed, epsilon, index), True
         if not first or not second:
             status, reason = "unknown", "a measured point lies on no feature"
         else:
@@ -441,6 +651,8 @@ def bind_dimension(dimension_record, observed, *, epsilon: float) -> dict:
             else:
                 geometric = math.dist(p1, p2)
             reason = "both measured points lie on features"
+            if on_edge:
+                reason += " (at least one on an edge, not at its end)"
     elif dimtype in (3, 4):
         if dimtype == 3:
             a, b = defpoints[0], defpoints[3]
@@ -448,8 +660,22 @@ def bind_dimension(dimension_record, observed, *, epsilon: float) -> dict:
             radius = math.dist(a, b) / 2.0
         else:
             centre, radius = defpoints[0], math.dist(defpoints[0], defpoints[3])
-        found = _circles_at(centre, radius, observed, epsilon)
-        if not found:
+        found = _circles_at(centre, radius, observed, epsilon, index)
+        if not found and dimtype == 3 and across_edges:
+            # A diameter drawn across a side view's two silhouette edges: its
+            # chord ends lie on edges and the chord is the measured diameter.
+            a, b = defpoints[0], defpoints[3]
+            ends = [
+                _at(p, observed, epsilon, index) or _on_curve(p, observed, epsilon, index)
+                for p in (a, b)
+            ]
+            if all(ends):
+                refs = [_ref(f, observed) for f in dict.fromkeys(ends[0] + ends[1])]
+                geometric = math.dist(a, b)
+                reason = "the diameter is drawn across two edges (a side view)"
+            else:
+                status, reason = "unknown", "no circle, arc or pair of edges under the dimension"
+        elif not found:
             status, reason = "unknown", "no circle or arc under the dimension"
         elif len(found) > 1:
             status, reason = "ambiguous", f"{len(found)} coincident circles under the dimension"
@@ -460,8 +686,8 @@ def bind_dimension(dimension_record, observed, *, epsilon: float) -> dict:
             geometric = 2.0 * r if dimtype == 3 else r
             reason = "the dimension is drawn on one circle"
     elif dimtype == 2:
-        first = _legs(defpoints[1], defpoints[2], observed, epsilon)
-        second = _legs(defpoints[3], defpoints[0], observed, epsilon)
+        first = _legs(defpoints[1], defpoints[2], observed, epsilon, index)
+        second = _legs(defpoints[3], defpoints[0], observed, epsilon, index)
         if len(first) != 1 or len(second) != 1:
             status, reason = "unknown", "the angle's legs are not single lines"
         else:
@@ -474,10 +700,16 @@ def bind_dimension(dimension_record, observed, *, epsilon: float) -> dict:
             reason = "both legs are lines"
     else:
         status, reason = "unsupported", f"dimension type {dimtype} is not bound"
-    text, shown = _displayed(override, measurement, dimlfac)
+    shown_by = display(fields, _style_vars(dimension_record))
+    text, shown = shown_by.text, shown_by.value
     findings: list[str] = []
+    # Limits and alternate units show no single number to hold to the geometry.
+    unclaimed = shown_by.source in ("limits", "alternate_units")
     if geometric is not None:
-        if shown is None or abs(shown - geometric) > epsilon:
+        allowance = epsilon + (shown_by.tolerance if shown_by.source == "measurement" else 0.0)
+        if unclaimed:
+            pass
+        elif shown is None or abs(shown - geometric) > allowance:
             if override and override != "<>":
                 findings.append("text_override_disagrees_with_geometry")
             elif dimlfac not in (None, 1.0):
@@ -496,6 +728,8 @@ def bind_dimension(dimension_record, observed, *, epsilon: float) -> dict:
         "dimlfac": dimlfac,
         "displayed_text": text,
         "displayed_value": shown,
+        "display_rounding": shown_by.display_rounding,
+        "display_source": shown_by.source,
         "text_override": override if override not in ("", "<>") else None,
         "findings": findings,
         "mismatch": bool(findings),

@@ -45,6 +45,14 @@ FOCUS_CATALOG: dict[str, tuple[str, str, str | None]] = {
         "(lineweight_not_bylayer, color_not_bylayer, linetype_not_bylayer)",
         None,
     ),
+    "dimension_truth": (
+        "core",
+        "a DIMENSION whose sheet text is not its geometry (dim_override_disagrees, "
+        "dim_dimlfac_scaled), whose *D block or group 42 is stale (dim_render_stale, "
+        "dim_group42_stale), that shows ØØ (dim_double_prefix) or hides its value "
+        "(dim_value_hidden); dim_unbound (info) is a dimension not checked",
+        None,
+    ),
     "gdt": (
         "core",
         "a datum a feature control frame cites with no datum feature",

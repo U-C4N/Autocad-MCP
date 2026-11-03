@@ -83,7 +83,10 @@ def test_the_runner_and_the_chart_read_the_current_matrix():
     from benchmarks import render_matrix_chart, run_competitors
 
     assert run_competitors.DEFAULT_MATRIX == "v8"
-    assert run_competitors.MATRICES is MATRICES
+    # 1.8.0 adds v9 beside the earlier matrices (benchmarks/tasks_v9.py); the
+    # default stays v8 until 1.8-25, and every earlier matrix is the same object.
+    assert all(run_competitors.MATRICES[name] is tasks for name, tasks in MATRICES.items())
+    assert set(run_competitors.MATRICES) == {*MATRICES, "v9"}
     assert render_matrix_chart.CURRENT_TASKS == TASKS_V8
     assert "environment_blocked" in render_matrix_chart.STATUS_COLORS
 
@@ -337,12 +340,15 @@ async def test_damaged_dxf_refusal_fails_loudly_on_a_silent_empty_document(tmp_p
 
 @pytest.mark.asyncio
 async def test_dimension_binding_fails_loudly_when_the_override_is_believed(tmp_path, monkeypatch):
-    from engineering.verification import binding
+    from engineering import dimtext
 
-    def believe_the_geometry(override, measurement, dimlfac):
-        return ("<>", measurement)
+    # 1.8-15: binding formats the shown text with engineering/dimtext.py; a
+    # formatter that believes the geometry must make the task fail.
+    def believe_the_geometry(fields, style_vars):
+        measurement = fields[2]
+        return dimtext.Display("<>", measurement, measurement, 0.0, 0.0, "measurement", True)
 
-    monkeypatch.setattr(binding, "_displayed", believe_the_geometry)
+    monkeypatch.setattr(dimtext, "display", believe_the_geometry)
     passed, metrics, _artifacts = await _run("dimension_binding", tmp_path)
     assert passed is False
     assert metrics["findings"] == {}
@@ -351,10 +357,11 @@ async def test_dimension_binding_fails_loudly_when_the_override_is_believed(tmp_
 @pytest.mark.asyncio
 async def test_a_live_lane_reports_the_headless_only_tasks_as_not_run():
     from benchmarks.adapters.autocad_mcp_pro import HEADLESS_ONLY, AutoCADMCPProAdapter
+    from benchmarks.tasks_v9 import task_by_id as task_by_id_v9
 
     adapter = AutoCADMCPProAdapter(backend="com")
-    for task_id in sorted(HEADLESS_ONLY):
-        result = await adapter.run_task(task_by_id(task_id))
+    for task_id in sorted(HEADLESS_ONLY):  # the v8 tasks and the headless v9 ones
+        result = await adapter.run_task(task_by_id_v9(task_id, "v9"))
         assert result.status == "not_run", task_id
         assert "headless" in result.message
 

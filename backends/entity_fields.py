@@ -44,6 +44,8 @@ __all__ = [
     "acadmcp_xdata",
     "dimension_fields",
     "dimension_props",
+    "dimension_rendered",
+    "dimension_style_vars",
     "filled_area",
     "hatch_loops",
     "hatch_props",
@@ -399,6 +401,90 @@ def dimension_fields(entity) -> tuple:
         dimlfac,
         float(dxf.get("angle", 0.0)),
     )
+
+
+#: The dimension variables ``engineering/dimtext.py`` formats with and the
+#: ``dimension_truth`` focus reads, with the fallback ezdxf's renderer uses
+#: when neither the entity's DSTYLE override nor its style stores one
+#: (``ezdxf/render/dim_base.py``). A file AutoCAD wrote stores every one.
+_STYLE_VAR_DEFAULTS: tuple[tuple[str, object], ...] = (
+    ("dimdec", 2),
+    ("dimrnd", None),
+    ("dimzin", 8),
+    ("dimpost", ""),
+    ("dimlfac", 1.0),
+    ("dimadec", 2),
+    ("dimazin", 2),
+    ("dimaunit", 0),
+    ("dimalt", 0),
+    ("dimtol", 0),
+    ("dimlim", 0),
+    ("dimtxt", 1.0),
+    ("dimtfill", 0),
+    ("dimtfillclr", 1),
+    ("dimclrt", None),
+)
+
+
+def dimension_style_vars(entity) -> tuple[tuple[str, object], ...] | None:
+    """The DIMENSION's effective style variables as ``((name, value), ...)``.
+
+    Read through ezdxf's ``DimStyleOverride`` - the entity's own DSTYLE XDATA
+    first, then its dimension style - with the renderer's own fallbacks, so
+    the formatter sees exactly what the headless renderer sees, and on a file
+    AutoCAD exported (the live engine's snapshot) exactly what AutoCAD stored.
+    ``dimdsep`` is the decimal marker as a character (``get_decimal_separator``:
+    code 0 is a comma); ``dimrnd`` 0 / absent is 0.0 (no rounding);
+    ``dimclrt`` None means "the entity's colour". None when the style cannot
+    be read at all.
+    """
+    from ezdxf.entities import DimStyleOverride
+
+    try:
+        override = DimStyleOverride(entity)
+        out = []
+        for name, default in _STYLE_VAR_DEFAULTS:
+            value = override.get(name, default)
+            if name == "dimrnd":
+                value = float(value or 0.0)
+            elif isinstance(value, bool):
+                value = int(value)
+            out.append((name, value))
+        out.append(("dimdsep", override.get_decimal_separator()))
+        return tuple(sorted(out))
+    except Exception:  # noqa: BLE001 - an unreadable style is "unknown", never a guess
+        return None
+
+
+def dimension_rendered(entity) -> tuple[str | None, float | None]:
+    """``(rendered_text, group42)`` of a DIMENSION.
+
+    ``rendered_text`` is the plain text of every TEXT / MTEXT of its geometry
+    block (the anonymous ``*D`` block the sheet actually displays), joined by
+    one space in block order; None when it has no block or no text in it.
+    ``group42`` is DXF group 42, the measurement AutoCAD stored when it last
+    rendered the dimension (an angle in radians); None when absent - ezdxf
+    does not write it.
+    """
+    from engineering.understand.labels import plain
+
+    group42 = entity.dxf.get("actual_measurement")
+    group42 = None if group42 is None else float(group42)
+    try:
+        block = entity.get_geometry_block()
+    except Exception:  # noqa: BLE001 - a dimension without a document has no block
+        block = None
+    if block is None:
+        return None, group42
+    parts = []
+    for item in block:
+        kind = item.dxftype()
+        if kind == "MTEXT":
+            parts.append(plain(item.text))
+        elif kind == "TEXT":
+            parts.append(plain(item.dxf.get("text", "")))
+    text = " ".join(p for p in parts if p)
+    return (text or None), group42
 
 
 def dimension_props(fields) -> dict:

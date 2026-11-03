@@ -69,7 +69,13 @@ from ezdxf import bbox as ezbbox
 
 import config
 from backends.capability import UnsupportedCapabilityError
-from backends.entity_fields import acadmcp_xdata, dimension_fields, hatch_loops
+from backends.entity_fields import (
+    acadmcp_xdata,
+    dimension_fields,
+    dimension_rendered,
+    dimension_style_vars,
+    hatch_loops,
+)
 from backends.ocs import is_flat_frame, to_wcs_2d, wcs_arc_angles, wcs_bulge
 from engineering.measure import polygon_area_perimeter
 from engineering.understand.labels import plain
@@ -158,6 +164,16 @@ class EntityRecord:
     linetype: str = "BYLAYER"
     #: Group 440 raw (flags + alpha), None when absent (ByLayer).
     transparency: int | None = None
+    #: DIMENSION (1.8-15): the plain text its ``*D`` geometry block shows -
+    #: what the sheet displays, which may be stale against its fields
+    #: (``backends/entity_fields.py::dimension_rendered``); None without one.
+    rendered_text: str | None = None
+    #: DIMENSION (1.8-15): DXF group 42, the measurement stored at the last
+    #: render (an angle in radians); None when absent.
+    group42: float | None = None
+    #: DIMENSION (1.8-15): the effective style variables the text is formatted
+    #: with, ``((name, value), ...)`` (``dimension_style_vars``); None unread.
+    dim_vars: tuple | None = None
 
 
 @dataclass(frozen=True)
@@ -346,7 +362,16 @@ def _record(entity, space: str, *, insert_boxes: bool = True) -> EntityRecord | 
         text = plain(override) if override not in ("", "<>") else None
         middle = dxf.get("text_midpoint", dxf.defpoint)
         points = (_xy(dxf.defpoint), tuple(to_wcs_2d(extrusion, middle.x, middle.y, middle.z)))
-        return EntityRecord(**base, points=points, text=text, dimension=dimension_fields(entity))
+        rendered, group42 = dimension_rendered(entity)
+        return EntityRecord(
+            **base,
+            points=points,
+            text=text,
+            dimension=dimension_fields(entity),
+            rendered_text=rendered,
+            group42=group42,
+            dim_vars=dimension_style_vars(entity),
+        )
     if kind == "LEADER":
         return EntityRecord(**base, points=tuple(_xy(v) for v in entity.vertices))
     if kind == "POINT":
@@ -473,6 +498,13 @@ def records_from_doc(
     own blocks, not the ``*D`` blocks holding a DIMENSION's rendering, no
     ATTDEF - into ``Snapshot.blocks``, in the block's own coordinates, for the
     observed-geometry reader. ``records`` is the same either way.
+
+    The ``*D`` blocks stay out of ``Snapshot.blocks`` on purpose: their lines
+    and arrows are a dimension's picture, and exploding them would turn every
+    extension line into a feature a requirement could bind to. What the
+    picture *says* reaches the DIMENSION's own record instead
+    (``rendered_text``, ``group42``; 1.8-15) - every other reader ignores
+    those fields, so its input is unchanged.
     """
     records: list[EntityRecord] = []
     layouts = tuple(doc.layouts.names_in_taborder())

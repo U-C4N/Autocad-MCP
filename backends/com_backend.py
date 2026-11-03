@@ -1246,6 +1246,50 @@ def _wcmatch_literal(text: str) -> str:
     return "".join("`" + char if char in _WCMATCH_SPECIALS else char for char in text)
 
 
+def _com_require_dimensions(doc, handles) -> list:
+    """The live DIMENSION objects of ``handles``; a handle that is not one is
+    refused by name before any of them is touched."""
+    objects = []
+    for handle in handles:
+        entity = _handle_to_object(doc, str(handle))
+        if not str(entity.ObjectName).endswith("Dimension"):
+            raise ValueError(
+                f"dimension_rerender: {handle} is a {_com_dxf_type(entity)}, not a DIMENSION"
+            )
+        objects.append(entity)
+    return objects
+
+
+def _rerender_report(handles, before: dict, after: dict) -> dict:
+    """What a live redraw did, read back (1.8-15; spike S4 pending).
+
+    ``after`` / ``before`` map a handle to ``(rendered_text, matches)`` - the
+    ``*D`` text read through ``Document.Export`` and whether it says what the
+    fields and style say (``engineering/dimtext.py::rendered_matches``).
+    ``rerendered``: the text changed and is now right; ``already_current``: it
+    did not change and was right already; ``stale``: it is not right after
+    ``Update()`` - the live regen claim is not confirmed for it.
+    """
+    rerendered, current, stale = [], [], []
+    for handle in handles:
+        key = str(handle).upper()
+        text, ok = after.get(key, (None, None))
+        if ok is False or (ok is None and text is None):
+            stale.append(str(handle))
+        elif text != before.get(key, (None, None))[0]:
+            rerendered.append(str(handle))
+        else:
+            current.append(str(handle))
+    return {
+        "ok": True,
+        "rerendered": rerendered,
+        "already_current": current,
+        "stale": stale,
+        "text_kept": [],
+        "verified": not stale,
+    }
+
+
 def _com_dimensions_using(doc, style_name: str) -> list[str]:
     """Handles of every DIMENSION, in every layout, whose style is ``style_name``.
 
@@ -6822,9 +6866,17 @@ class ComBackend(AutoCADBackend):
             doc = _acad_doc()
             ent = _handle_to_object(doc, handle)
             ent.ScaleEntity(_apoint(base_x, base_y), float(factor))
-            return {"ok": True, "handle": handle}
+            dimension = str(ent.ObjectName).endswith("Dimension")
+            if dimension:
+                ent.Update()  # 1.8-15; whether AutoCAD redraws on its own is S4
+            return {"ok": True, "handle": handle}, dimension
 
-        return await self._run(_sync)
+        result, dimension = await self._run(_sync)
+        if dimension:
+            report = _rerender_report([handle], {}, await self._dimension_display([handle]))
+            result["rerendered"] = report["rerendered"] + report["already_current"]
+            result["stale"] = report["stale"]
+        return result
 
     async def entity_mirror(
         self,
@@ -7135,6 +7187,31 @@ class ComBackend(AutoCADBackend):
                 )
             if route == "text":
                 _com_move_text(ent, handle, tx, ty, "entity_edit_geometry")
+                _regen()
+                return _entity_info(ent)
+            if route == "dimension":
+                # 1.8-15: AcadDimRotated / AcadDimAligned expose their measured
+                # points as ExtLine1Point / ExtLine2Point (read / write); the
+                # live write and Update() are S4 / smoke_settings_com territory.
+                kind = str(ent.ObjectName)
+                if kind not in ("AcDbRotatedDimension", "AcDbAlignedDimension"):
+                    raise RuntimeError(
+                        f"entity_edit_geometry: DIMENSION {handle} is a {kind}; only a linear "
+                        "or aligned dimension's measured points (x1, y1, x2, y2) can be edited."
+                    )
+                for prop, px, py in (("ExtLine1Point", x1, y1), ("ExtLine2Point", x2, y2)):
+                    if px is None and py is None:
+                        continue
+                    old = getattr(ent, prop)
+                    setattr(
+                        ent,
+                        prop,
+                        _apoint(
+                            float(px) if px is not None else old[0],
+                            float(py) if py is not None else old[1],
+                        ),
+                    )
+                ent.Update()
                 _regen()
                 return _entity_info(ent)
             name = ent.ObjectName.replace("AcDb", "").upper()
@@ -9007,12 +9084,54 @@ class ComBackend(AutoCADBackend):
 
         return await self._run(_sync)
 
-    async def dimstyle_modify(self, name: str, values: dict) -> dict:
+    async def _dimension_display(self, handles=None) -> dict:
+        """``{HANDLE: (rendered_text, matches)}`` of the DIMENSIONs ``handles``
+        (every one when None), read back through the ``Document.Export``
+        snapshot - the ``*D`` blocks AutoCAD actually holds (1.8-15)."""
+        from engineering.dimtext import rendered_matches
+        from engineering.understand.snapshot import take_snapshot
+
+        snap = await take_snapshot(self)
+        wanted = None if handles is None else {str(h).upper() for h in handles}
+        out: dict = {}
+        for record in snap.records:
+            if record.type != "DIMENSION" or record.dimension is None:
+                continue
+            key = record.handle.upper()
+            if wanted is None or key in wanted:
+                matches = rendered_matches(record.rendered_text, record.dimension, record.dim_vars)
+                out[key] = (record.rendered_text, matches)
+        return out
+
+    async def dimension_rerender(self, handles=None, force: bool = False) -> dict:
+        # ``force`` is accepted for the contract: AutoCAD's Update() redraws a
+        # dimension in place and never moves a text its author placed.
+        before = await self._dimension_display(handles)
+        targets = [str(h) for h in handles] if handles is not None else sorted(before)
+
+        def _sync():
+            doc = _acad_doc()
+            for entity in _com_require_dimensions(doc, targets):
+                entity.Update()
+            _regen()
+
+        await self._run(_sync)
+        after = await self._dimension_display(targets)
+        return _rerender_report(targets, before, after)
+
+    async def dimstyle_modify(
+        self, name: str, values: dict, rerender: bool = True, force: bool = False
+    ) -> dict:
         from engineering.standards.dimstyles import validate_overrides
 
         typed = validate_overrides(values)
         if not typed:
             raise ValueError("dimstyle_modify: overrides is empty; name at least one DIM* variable")
+        before: dict = {}
+        if rerender:
+            users = await self._run(lambda: _com_dimensions_using(_acad_doc(), str(name)))
+            if users:
+                before = await self._dimension_display(users)
 
         def _sync():
             doc = _acad_doc()
@@ -9051,6 +9170,11 @@ class ComBackend(AutoCADBackend):
             if switched:
                 doc.ActiveDimStyle = previous
             using = _com_dimensions_using(doc, str(style.Name))
+            if changed and using and rerender:
+                # S4 pending: "AutoCAD re-renders on regen" is not measured, so
+                # each dimension is Update()d and its *D text read back below.
+                for entity in _com_require_dimensions(doc, using):
+                    entity.Update()
             if changed:
                 _regen()
             return {
@@ -9058,10 +9182,20 @@ class ComBackend(AutoCADBackend):
                 "name": str(style.Name),
                 "changed": changed,
                 "dimensions_using_style": using,
-                "rerender_required": False,  # AutoCAD re-renders on regen
+                "rerendered": [],
+                "text_kept": [],
+                "rerender_required": bool(changed and using and not rerender),
             }
 
-        return await self._run(_sync)
+        result = await self._run(_sync)
+        if rerender and result["changed"] and result["dimensions_using_style"]:
+            using = result["dimensions_using_style"]
+            report = _rerender_report(using, before, await self._dimension_display(using))
+            result["rerendered"] = report["rerendered"]
+            result["already_current"] = report["already_current"]
+            result["stale"] = report["stale"]
+            result["rerender_required"] = bool(report["stale"])
+        return result
 
     async def dimstyle_set_current(self, name: str) -> dict:
         def _sync():
@@ -9557,6 +9691,7 @@ _MUTATING_METHODS: frozenset[str] = frozenset(
         "dimension_diameter",
         "dimension_linear",
         "dimension_radius",
+        "dimension_rerender",
         "dimstyle_create",
         "dimstyle_modify",
         "dimstyle_set_current",

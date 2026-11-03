@@ -3341,6 +3341,8 @@ async def entity_edit_geometry(
     LWPOLYLINE: points/bulges · TEXT/MTEXT: x/y.
     Any argument left out is unchanged; the handle, layer and XDATA are preserved.
     An argument the entity's type does not take is refused by name, never ignored.
+    A linear or aligned DIMENSION takes x1/y1/x2/y2 - its two measured points - and
+    is redrawn, so its number follows them (1.8.0); any other dimension type is refused.
 
     On the live engine, if AutoCAD will not take a vertex list of a different
     length in place, the polyline is recreated with its layer, colour, linetype,
@@ -6960,8 +6962,8 @@ async def drawing_finalize(
 ) -> dict:
     """Premium completion gate: runs BOTH the 8-step validator AND the premium critique focuses
     (iso128, layer_color, dim_overlap, untrimmed_corner, duplicate_entities, construction_left,
-    property_override, gdt, plus the P&ID focuses pid_dangling_line, pid_duplicate_tag,
-    pid_incompatible_connection, pid_untagged_instrument, pid_illegal_tag,
+    property_override, dimension_truth, gdt, plus the P&ID focuses pid_dangling_line,
+    pid_duplicate_tag, pid_incompatible_connection, pid_untagged_instrument, pid_illegal_tag,
     pid_unconnected_equipment — silent on a sheet with no P&ID symbols, plus the
     mechanical focuses mech_missing_centreline, mech_unhatched_section,
     mech_view_misaligned, mech_duplicate_dimension, mech_thread_unrepresented,
@@ -7503,7 +7505,11 @@ async def drawing_critique(
     one issue per layer and code (lineweight_not_bylayer - an explicit non-ISO 128 value
     is an error; color_not_bylayer; linetype_not_bylayer) on the engineering layers and
     the applied layer set, title block and block members exempt, other layers at info;
-    lineweight -3 is Default, not ByLayer. Refusals and failures are issues, never
+    lineweight -3 is Default, not ByLayer. dimension_truth binds every DIMENSION to its
+    geometry and reports, per dimension, dim_override_disagrees (NTS: info),
+    dim_dimlfac_scaled, dim_render_stale (*D block text is not what the style formats;
+    drawing_refine redraws it), dim_group42_stale, dim_double_prefix, dim_value_hidden
+    and dim_unbound (info: not checked, never a pass). Refusals and failures are issues, never
     silence: a check that raises returns an `error` issue of its focus with
     detail.code `check_failed`; a read that could not cover the drawing (more than
     MAX_QA_ENTITIES entities, default 2,000,000; or a live export whose per-layout
@@ -8860,15 +8866,22 @@ async def dimstyle_create(
 async def dimstyle_modify(
     name: Annotated[str, "Existing dimension style name"],
     overrides: Annotated[dict, "DIM* variables to change, e.g. {DIMDEC: 3, DIMTXT: 3.5}"],
+    rerender: Annotated[
+        bool, "Redraw the dimensions using the style (False: the 1.7 behaviour, left stale)"
+    ] = True,
+    force: Annotated[bool, "Let the redraw re-place a text its author positioned"] = False,
     ctx: Context = None,
 ) -> dict:
     """Change variables on an existing dimension style.
 
     `changed` names only the variables that actually moved — re-setting a
     value to itself is not a change. `dimensions_using_style` lists the
-    dimensions already drawn with it; headlessly `rerender_required: true`
-    says they still show the old style until redrawn (AutoCAD re-renders on
-    the next regen). Refuses a missing style, an empty `overrides`, a key
+    dimensions already drawn with it, and since 1.8.0 they are redrawn
+    (`rerendered`; live: Update() on each, confirmed by reading the *D text
+    back - one that did not change is in `stale`). A text its author placed
+    keeps its position (`text_kept`) unless `force`. `rerender_required: true`
+    means a dimension still shows the old style: `rerender=False`, or a live
+    redraw the read-back did not confirm. Refuses a missing style, an empty `overrides`, a key
     outside the whitelist, a value outside its range, a DIMTXSTY that does
     not exist, a user arrowhead block the drawing does not define — all
     before any write. On the live engine, editing a non-current style makes
@@ -8877,7 +8890,7 @@ async def dimstyle_modify(
     discarded, which is AutoCAD's own DIMSTYLE rule).
     """
     await ctx.info(f"Modifying dimension style {name!r}")
-    return await _backend(ctx).dimstyle_modify(name, overrides)
+    return await _backend(ctx).dimstyle_modify(name, overrides, rerender=rerender, force=force)
 
 
 @cad_tool(summary="Make a dimension style current so new dimensions use it.", cost="safe")

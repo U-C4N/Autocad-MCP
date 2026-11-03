@@ -479,7 +479,9 @@ async def test_the_correctness_check_passes_and_is_appended(monkeypatch):
 
     from benchmarks.correctness_suite import CHECKS
 
-    assert list(CHECKS)[-1] == "qa_coverage_not_checked"
+    # Appended after the W1 checks; later W2 items append after it (1.8-15).
+    names = list(CHECKS)
+    assert names.index("qa_coverage_not_checked") > names.index("region_render_applied")
     check, category = CHECKS["qa_coverage_not_checked"]
     assert category == "Quality gate"
     monkeypatch.chdir(Path(__file__).resolve().parents[1])

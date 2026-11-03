@@ -2295,6 +2295,84 @@ async def qa_coverage_not_checked():
     )
 
 
+async def dimension_display_truth():
+    """A dimension shows what its style formats, and its block shows it too (1.8-15).
+
+    A 19.6 mm dimension drawn under DIMDEC 2, then the style changed to
+    DIMDEC 0: the sheet must show "20" - in the ``*D`` block the drawing
+    carries (the headless ``dimstyle_modify`` redraws) and in what
+    ``bind_dimension`` reports (``displayed_text`` "20", ``display_rounding``
+    0.4, no mismatch: rounding is not a lie). v1.7.0 reported "19.6" and left
+    the block saying "19.6" behind ``rerender_required``.
+    """
+    from engineering.understand.snapshot import records_from_doc
+    from engineering.verification.binding import bind_dimension
+    from engineering.verification.observe import observe
+
+    b = await _b()
+    msp = b._doc.modelspace()
+    msp.add_line((0, 0), (0, 20))
+    msp.add_line((19.6, 0), (19.6, 20))
+    dim = await b.dimension_linear(0, 0, 19.6, 0, 10, -10)
+    await b.dimstyle_modify("Standard", {"DIMDEC": 0})
+    entity = b._doc.entitydb[dim.handle]
+    shown = [e.plain_text() for e in entity.get_geometry_block() if e.dxftype() == "MTEXT"]
+    observed = observe(records_from_doc(b._doc, source="check"))
+    (feature,) = [f for f in observed.features if f.type == "dimension"]
+    result = bind_dimension(feature, observed, epsilon=1e-6)
+    rounding = result.get("display_rounding")
+    return (
+        shown == ["20"]
+        and result["displayed_text"] == "20"
+        and rounding is not None
+        and abs(rounding - 0.4) < 1e-9
+        and result["mismatch"] is False
+    )
+
+
+async def dimension_truth_focus():
+    """Every way a dimension lies is one ``dimension_truth`` finding (1.8-15).
+
+    Three dimensions on real geometry: a "42" override over 40 mm, a diameter
+    whose override ``%%c<>`` doubles the sign, and one whose DSTYLE override
+    says DIMDEC 0 while its ``*D`` block still says "19.6". The focus must
+    report exactly ``dim_override_disagrees``, ``dim_double_prefix`` and
+    ``dim_render_stale`` on those three, and ``drawing_refine`` must redraw
+    the stale one and leave the two lies to a person. v1.7.0 has no such
+    focus (the name is an unknown focus there).
+    """
+    from ezdxf.entities import DimStyleOverride
+
+    from engineering.critique import run_critique
+    from engineering.refiner import refine_drawing
+
+    b = await _b()
+    msp = b._doc.modelspace()
+    for x in (0, 40, 100, 119.6):
+        msp.add_line((x, 0), (x, 20))
+    msp.add_circle((200, 0), 10)
+    lie = await b.dimension_linear(0, 0, 40, 0, 20, -10, text_override="42")
+    double = await b.dimension_diameter(190, 0, 210, 0, text_override="%%c<>")
+    stale = await b.dimension_linear(100, 0, 119.6, 0, 110, -10)
+    override = DimStyleOverride(b._doc.entitydb[stale.handle])
+    override.dimstyle_attribs["dimdec"] = 0
+    override.commit()
+    issues = await run_critique(b, ["dimension_truth"])
+    got = sorted((str(i.detail.get("code")), i.handles[0]) for i in issues)
+    want = sorted(
+        [
+            ("dim_override_disagrees", lie.handle),
+            ("dim_double_prefix", double.handle),
+            ("dim_render_stale", stale.handle),
+        ]
+    )
+    if got != want:
+        return False
+    refined = await refine_drawing(b, focus=["dimension_truth"], min_score=100.0)
+    left = sorted((str(i["detail"].get("code")), i["handles"][0]) for i in refined.remaining_issues)
+    return left == [("dim_double_prefix", double.handle), ("dim_override_disagrees", lie.handle)]
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -2379,6 +2457,8 @@ CHECKS = {
     "lineage_revision_continues": (lineage_revision_continues, "Durability"),
     "region_render_applied": (region_render_applied, "Render"),
     "qa_coverage_not_checked": (qa_coverage_not_checked, "Quality gate"),
+    "dimension_display_truth": (dimension_display_truth, "Dimensions"),
+    "dimension_truth_focus": (dimension_truth_focus, "Quality gate"),
 }
 
 

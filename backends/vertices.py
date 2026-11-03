@@ -92,7 +92,9 @@ def edit_geometry_route(entity_type: str, classic: dict, points, bulges, x, y) -
     """Which vocabulary ``entity_edit_geometry`` applies to an entity type.
 
     ``"vertices"`` (an LWPOLYLINE: points / bulges), ``"text"`` (TEXT / MTEXT:
-    x / y) or ``"classic"`` (CIRCLE / LINE / ARC and the 1.7 arguments).
+    x / y), ``"dimension"`` (a DIMENSION - any live ``*DIMENSION`` object
+    name: x1 / y1 / x2 / y2, its measured points; 1.8-15) or ``"classic"``
+    (CIRCLE / LINE / ARC and the 1.7 arguments).
     ``entity_type`` is the DXF name. An argument the type does not take is
     refused by name rather than ignored: a polyline handed ``cx`` that came
     back unchanged would read as an edit that happened.
@@ -125,6 +127,20 @@ def edit_geometry_route(entity_type: str, classic: dict, points, bulges, x, y) -
                 f"entity_edit_geometry: a {entity_type} takes x / y; none was given."
             )
         return "text"
+    if entity_type.endswith("DIMENSION"):
+        # 1.8-15: a linear / aligned DIMENSION takes its two measured points
+        # (x1, y1) / (x2, y2) and is redrawn, so its number follows them.
+        stray = sorted(set(given) - {"x1", "y1", "x2", "y2"}) + vertex + position
+        if stray:
+            raise RuntimeError(
+                "entity_edit_geometry: a DIMENSION takes x1 / y1 / x2 / y2 (its two measured "
+                f"points); {', '.join(stray)} does not apply to it."
+            )
+        if not given:
+            raise RuntimeError(
+                "entity_edit_geometry: a DIMENSION takes x1 / y1 / x2 / y2; none was given."
+            )
+        return "dimension"
     if vertex:
         raise RuntimeError(
             f"entity_edit_geometry: {', '.join(vertex)} apply to an LWPOLYLINE, "

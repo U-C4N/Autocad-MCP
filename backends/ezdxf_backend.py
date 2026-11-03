@@ -57,6 +57,7 @@ from .contracts.settings import (
 )
 from .dxf_recover import read_dxf, recover_dxf, recovered_source_refusal
 from .entity_fields import (
+    DIMTYPE_NAMES,
     dimension_fields,
     dimension_props,
     hatch_loops,
@@ -1096,6 +1097,90 @@ def _dimensions_using(doc, style_name: str) -> list[str]:
             if str(entity.dxf.get("dimstyle", "")).lower() == wanted:
                 handles.append(entity.dxf.handle)
     return handles
+
+
+#: DXF group 70 bit: the dimension text sits where its author put it.
+_DIMTYPE_USER_TEXT = 128
+
+
+def _dimension_geometry_counts(doc) -> collections.Counter:
+    """How many DIMENSIONs (any layout, any block) reference each ``*D`` block."""
+    counts: collections.Counter = collections.Counter()
+    for entity in doc.entitydb.values():
+        if entity.is_alive and entity.dxftype() == "DIMENSION":
+            name = entity.dxf.get("geometry")
+            if name:
+                counts[str(name)] += 1
+    return counts
+
+
+def _text_inserts(block) -> list:
+    return [e for e in block if e.dxftype() in ("MTEXT", "TEXT")] if block is not None else []
+
+
+def _rerender_dimension(doc, ent, *, force: bool, references: collections.Counter) -> dict:
+    """Redraw one DIMENSION's ``*D`` block from its fields and style (1.8-15).
+
+    * ``DIMRND`` stored as 0 means "no rounding" (AutoCAD); ezdxf's renderer
+      would round to an integer, so the render runs with it neutralised - on
+      this render only: the entity's DSTYLE override is not rewritten.
+    * Group 42 (``actual_measurement``) is written with the measurement the
+      new block shows (an angle in radians, as AutoCAD stores it).
+    * A text its author placed (group 70 bit 128) stays where it was: the new
+      block's text is moved back onto the old position and ``text_midpoint``
+      restored - unless ``force``, which lets the renderer place it.
+    * The old ``*D`` block is deleted once no other DIMENSION references it
+      (``references`` is the caller's running count; a copied dimension may
+      share its block).
+
+    Returns ``{handle, mode}`` (``full`` / ``text_kept``).
+    """
+    from ezdxf.entities import DimStyleOverride
+
+    dxf = ent.dxf
+    old_name = dxf.get("geometry")
+    old_block = doc.blocks.get(old_name) if old_name else None
+    user_text = bool(int(dxf.get("dimtype", 0)) & _DIMTYPE_USER_TEXT)
+    keep_text = user_text and not force
+    old_texts = [t.dxf.insert for t in _text_inserts(old_block)]
+    old_midpoint = dxf.get("text_midpoint")
+
+    override = DimStyleOverride(ent)
+    stored_rnd = override.get("dimrnd", None)
+    if stored_rnd is not None and not float(stored_rnd):
+        override.dimstyle_attribs["dimrnd"] = None
+    renderer = override.get_renderer(None)
+    block = doc.blocks.new_anonymous_block(type_char="D")
+    dxf.geometry = block.name
+    renderer.render(block)
+    renderer.finalize()
+
+    mode = "full"
+    new_texts = _text_inserts(block)
+    if keep_text and old_texts and len(old_texts) == len(new_texts):
+        delta = old_texts[0] - new_texts[0].dxf.insert
+        for text in new_texts:
+            text.translate(delta.x, delta.y, delta.z)
+        if old_midpoint is not None:
+            dxf.text_midpoint = old_midpoint
+        mode = "text_kept"
+
+    try:
+        measured = ent.get_measurement()
+        if isinstance(measured, (int, float)):
+            value = float(measured)
+            if (int(dxf.get("dimtype", 0)) & 0x0F) in (2, 5):
+                value = math.radians(value)
+            dxf.actual_measurement = value
+    except Exception:  # noqa: BLE001 - an ordinate measures no scalar; group 42 stays as it was
+        pass
+
+    if old_name and old_name != block.name:
+        references[str(old_name)] -= 1
+        if references[str(old_name)] <= 0 and doc.blocks.get(old_name) is not None:
+            doc.blocks.delete_block(old_name, safe=False)
+    references[block.name] += 1
+    return {"handle": str(dxf.handle), "mode": mode}
 
 
 def _style_table_references(doc) -> tuple[set[str], set[str]]:
@@ -6440,6 +6525,39 @@ class EzdxfBackend(AutoCADBackend):
 
         return await self._async(_sync)
 
+    def _rerender_sync(self, handles, force: bool) -> dict:
+        """Redraw the DIMENSIONs ``handles`` (every DIMENSION when None); in a job."""
+        doc = self._require_doc()
+        if handles is None:
+            targets = [e for layout in doc.layouts for e in layout.query("DIMENSION") if e.is_alive]
+        else:
+            targets = []
+            for handle in handles:
+                ent = self._get_entity(str(handle))
+                if ent.dxftype() != "DIMENSION":
+                    raise ValueError(
+                        f"dimension_rerender: {handle} is a {ent.dxftype()}, not a DIMENSION"
+                    )
+                targets.append(ent)
+        references = _dimension_geometry_counts(doc)
+        rerendered: list[str] = []
+        text_kept: list[str] = []
+        for ent in targets:
+            done = _rerender_dimension(doc, ent, force=force, references=references)
+            rerendered.append(done["handle"])
+            if done["mode"] == "text_kept":
+                text_kept.append(done["handle"])
+        return {"ok": True, "rerendered": rerendered, "text_kept": text_kept, "verified": True}
+
+    async def dimension_rerender(self, handles=None, force: bool = False) -> dict:
+        def _sync():
+            result = self._rerender_sync(handles, bool(force))
+            if result["rerendered"]:
+                self._mark_dirty()
+            return result
+
+        return await self._async(_sync)
+
     # ── entity modification ───────────────────────────────────────────────────
 
     def _get_entity(self, handle: str):
@@ -6503,6 +6621,12 @@ class EzdxfBackend(AutoCADBackend):
                 @ Matrix44.translate(bx, by, 0),
             )
             self._mark_dirty()
+            if ent.dxftype() == "DIMENSION":
+                # 1.8-15: the transform scaled the *D block's picture, not its
+                # number - "40" over 80. Redrawn from the new defpoints; the
+                # other transforms follow in 1.8.1.
+                done = self._rerender_sync([handle], False)
+                return {"ok": True, "handle": handle, "rerendered": done["rerendered"]}
             return {"ok": True, "handle": handle}
 
         return await self._async(_sync)
@@ -7018,6 +7142,29 @@ class EzdxfBackend(AutoCADBackend):
                 return _entity_info_dxf(ent)
             if route == "text":
                 self._move_text(ent, handle, x, y, "entity_edit_geometry")
+                self._mark_dirty()
+                return _entity_info_dxf(ent)
+            if route == "dimension":
+                kind = int(ent.dxf.get("dimtype", 0)) & 0x0F
+                if kind not in (0, 1):
+                    raise RuntimeError(
+                        f"entity_edit_geometry: DIMENSION {handle} is "
+                        f"{DIMTYPE_NAMES.get(kind, kind)}; only a linear or aligned "
+                        "dimension's measured points (x1, y1, x2, y2) can be edited."
+                    )
+                for name, px, py in (("defpoint2", x1, y1), ("defpoint3", x2, y2)):
+                    if px is None and py is None:
+                        continue
+                    old = ent.dxf.get(name)
+                    ent.dxf.set(
+                        name,
+                        (
+                            float(px) if px is not None else old[0],
+                            float(py) if py is not None else old[1],
+                            old[2] if len(old) > 2 else 0.0,
+                        ),
+                    )
+                self._rerender_sync([handle], False)
                 self._mark_dirty()
                 return _entity_info_dxf(ent)
             # cx/cy arrive in WCS, because that is what entity_get reports. For a
@@ -9257,7 +9404,9 @@ class EzdxfBackend(AutoCADBackend):
 
         return await self._async(_sync)
 
-    async def dimstyle_modify(self, name: str, values: dict) -> dict:
+    async def dimstyle_modify(
+        self, name: str, values: dict, rerender: bool = True, force: bool = False
+    ) -> dict:
         from engineering.standards.dimstyles import validate_overrides
 
         typed = validate_overrides(values)
@@ -9287,14 +9436,22 @@ class EzdxfBackend(AutoCADBackend):
             using = _dimensions_using(doc, style.dxf.name)
             if changed:
                 self._mark_dirty()
+            rerendered: list[str] = []
+            text_kept: list[str] = []
+            if changed and using and rerender:
+                # 1.8-15: a headless DIMENSION carries its rendered block and
+                # shows the old style until redrawn - so it is redrawn here.
+                done = self._rerender_sync(using, bool(force))
+                rerendered, text_kept = done["rerendered"], done["text_kept"]
             return {
                 "ok": True,
                 "name": style.dxf.name,
                 "changed": changed,
                 "dimensions_using_style": using,
-                # A headless DIMENSION carries its rendered block; it shows the
-                # old style until redrawn. Stated, not silent.
-                "rerender_required": bool(changed and using),
+                "rerendered": rerendered,
+                "text_kept": text_kept,
+                # Only rerender=False (the 1.7 behaviour) leaves them stale.
+                "rerender_required": bool(changed and using and not rerender),
             }
 
         return await self._async(_sync)
