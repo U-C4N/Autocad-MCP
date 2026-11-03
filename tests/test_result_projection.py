@@ -50,7 +50,17 @@ from backends.base import BlockInfo, EntityInfo, LayerInfo
 pytestmark = pytest.mark.asyncio
 
 
-ENTITY_FIELDS = ("handle", "type", "layer", "color", "linetype", "visible", "properties")
+#: v1.8.0 (plan 1.8-01) appended ``lineweight_name`` to the entity record.
+ENTITY_FIELDS = (
+    "handle",
+    "type",
+    "layer",
+    "color",
+    "linetype",
+    "visible",
+    "properties",
+    "lineweight_name",
+)
 
 
 @pytest_asyncio.fixture

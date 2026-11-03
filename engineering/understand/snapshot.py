@@ -143,6 +143,17 @@ class EntityRecord:
     cells: tuple = ()
     #: Every ``ACADMCP_*`` application on the entity, as ``(app id, json)``.
     xdata: tuple[tuple[str, str], ...] = ()
+    #: v1.8.0: the entity's own display properties as DXF stores them, so the
+    #: ``property_override`` focus reads one snapshot on both engines.
+    #: Lineweight is group 370: -1 ByLayer (also when absent), -2 ByBlock,
+    #: -3 Default (LWDEFAULT - not ByLayer), else hundredths of a mm.
+    lineweight: int = -1
+    #: ACI, group 62: 256 ByLayer (also when absent), 0 ByBlock.
+    color: int = 256
+    #: Group 6, as stored; "BYLAYER" when absent.
+    linetype: str = "BYLAYER"
+    #: Group 440 raw (flags + alpha), None when absent (ByLayer).
+    transparency: int | None = None
 
 
 @dataclass(frozen=True)
@@ -236,6 +247,21 @@ def _polyline(entity) -> tuple[tuple[Pt, ...], tuple[float, ...], bool]:
     return points, bulges, bool(entity.is_closed)
 
 
+def _display_properties(dxf) -> dict:
+    """Lineweight, colour, linetype and transparency as stored (see EntityRecord)."""
+    out: dict = {}
+    for key, default, cast in (
+        ("lineweight", -1, int),
+        ("color", 256, int),
+        ("linetype", "BYLAYER", str),
+    ):
+        if dxf.is_supported(key):
+            out[key] = cast(dxf.get(key, default))
+    if dxf.is_supported("transparency") and dxf.hasattr("transparency"):
+        out["transparency"] = int(dxf.get("transparency"))
+    return out
+
+
 def _record(entity, space: str, *, insert_boxes: bool = True) -> EntityRecord | None:
     kind = entity.dxftype()
     dxf = entity.dxf
@@ -247,6 +273,7 @@ def _record(entity, space: str, *, insert_boxes: bool = True) -> EntityRecord | 
         "bbox": None if kind == "INSERT" and not insert_boxes else _box(entity),
         "visible": not bool(dxf.get("invisible", 0)),
         "xdata": acadmcp_xdata(entity),
+        **_display_properties(dxf),
     }
     extrusion = _extrusion(entity)
     if kind in _PLANAR_TYPES and not is_flat_frame(extrusion):
@@ -441,6 +468,12 @@ def records_from_doc(
         str(layer.dxf.name): {
             "color": int(layer.dxf.get("color", 7)),
             "linetype": str(layer.dxf.get("linetype", "Continuous")),
+            # v1.8.0: group 370 (-3 Default when absent), group 290 (plot),
+            # and the on / frozen state ezdxf reads off the colour sign and flags.
+            "lineweight": int(layer.dxf.get("lineweight", -3)),
+            "plot": bool(layer.dxf.get("plot", 1)),
+            "on": bool(layer.is_on()),
+            "frozen": bool(layer.is_frozen()),
         }
         for layer in doc.layers
     }
