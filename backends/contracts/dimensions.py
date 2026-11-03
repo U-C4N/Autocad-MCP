@@ -15,6 +15,13 @@ if TYPE_CHECKING:
 
 
 class DimensionContract(ABC):
+    # ``xdata={app: values}`` (v1.8.0, plan item 1.8-06; the B17 pattern of
+    # ``EntityCreationContract``): linear, aligned, radius and diameter - the
+    # four the mechanical drawer calls - write XDATA onto the DIMENSION entity
+    # itself (never its anonymous ``*D`` block) inside the create call's own
+    # job, validated by ``backends/xdata_specs.py::prepare_xdata`` before the
+    # dimension exists, so a refused tag creates nothing.
+
     @abstractmethod
     async def dimension_linear(
         self,
@@ -30,6 +37,7 @@ class DimensionContract(ABC):
         tol_lower: float | None = None,
         tol_mode: str = "none",
         text_override: str | None = None,
+        xdata: dict[str, list] | None = None,
     ) -> EntityInfo: ...
 
     @abstractmethod
@@ -42,6 +50,7 @@ class DimensionContract(ABC):
         dim_x: float,
         dim_y: float,
         layer: str | None = None,
+        xdata: dict[str, list] | None = None,
     ) -> EntityInfo: ...
 
     @abstractmethod
@@ -71,6 +80,7 @@ class DimensionContract(ABC):
         tol_lower: float | None = None,
         tol_mode: str = "none",
         text_override: str | None = None,
+        xdata: dict[str, list] | None = None,
     ) -> EntityInfo: ...
 
     @abstractmethod
@@ -86,4 +96,5 @@ class DimensionContract(ABC):
         tol_lower: float | None = None,
         tol_mode: str = "none",
         text_override: str | None = None,
+        xdata: dict[str, list] | None = None,
     ) -> EntityInfo: ...

@@ -21,7 +21,11 @@ The fourth (v1.7.0, B17) is small and rides on every entity a mechanical
 generator draws, written in the create call itself; ``part`` is the part's
 anchor handle ("" for a standalone hole pattern), ``feature`` the feature id
 ("" for the body) and ``view`` the view kind, ``"<kind>:<label>"`` when the
-view has a label.
+view has a label. Since v1.8.0 (plan item 1.8-06) it may carry two more keys:
+``i``, a drawn primitive's ordinal in its ``draw_prims`` call, and ``role`` on
+the annotation a generator adds - ``"dim"`` on every DIMENSION
+``mech_dimension_part`` draws, ``"hole_table"`` on the hole table (on the
+native TABLE live, on every child of the headless composite).
 
 The codec is shared: ``app_id=`` / ``kinds=`` let another application write
 its own payloads through the same chunking and the same refusals (track F

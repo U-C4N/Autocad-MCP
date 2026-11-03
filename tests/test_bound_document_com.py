@@ -362,7 +362,7 @@ def test_every_content_changing_method_is_mutating_on_the_live_engine():
         "system_run_lisp",
     }
     assert cb._MUTATING_METHODS == expected
-    assert len(cb._MUTATING_METHODS) == 98
+    assert len(cb._MUTATING_METHODS) == 99  # + entity_set_vertices (1.8-06)
     for name in cb._MUTATING_METHODS:
         assert getattr(vars(cb.ComBackend)[name], "__acadmcp_mutating__", False) is True, name
     never = {

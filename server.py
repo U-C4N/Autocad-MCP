@@ -1953,14 +1953,20 @@ async def entity_create_polyline(
     closed: Annotated[bool, "Whether to close the polyline"] = False,
     layer: Annotated[str | None, "Layer name"] = None,
     color: Annotated[int | None, "ACI color code"] = None,
+    bulges: Annotated[
+        list[float] | None,
+        "Optional arc bulge per vertex (tan(sweep/4) of the segment leaving that vertex, "
+        "CCW positive; 1 = semicircle, 0 = straight). One per point.",
+    ] = None,
     ctx: Context = None,
 ) -> dict:
     """Create a lightweight 2D polyline through the given points.
 
     Example: points=[[0,0],[100,0],[100,100],[0,100]], closed=true → rectangle
+    Example: points=[[0,0],[40,0]], bulges=[1, 0] → a semicircular arc edge
     """
     await ctx.debug(f"Creating polyline with {len(points)} points, closed={closed}")
-    result = await _backend(ctx).entity_create_polyline(points, closed, layer, color)
+    result = await _backend(ctx).entity_create_polyline(points, closed, layer, color, bulges=bulges)
     return _dc(result)
 
 
@@ -2900,15 +2906,20 @@ async def entity_edit_text(
     text: Annotated[str | None, "New text content (unchanged if omitted)"] = None,
     height: Annotated[float | None, "New text height (unchanged if omitted)"] = None,
     rotation: Annotated[float | None, "New rotation in degrees (unchanged if omitted)"] = None,
+    x: Annotated[float | None, "New insertion X, WCS (unchanged if omitted)"] = None,
+    y: Annotated[float | None, "New insertion Y, WCS (unchanged if omitted)"] = None,
     ctx: Context = None,
 ) -> dict:
-    """Edit an existing text label in place — change its content, height, or rotation.
+    """Edit an existing text label in place — change its content, height, rotation or position.
 
-    Use this to rename/relabel without deleting and recreating (which would lose
-    the handle). Works on both TEXT and MTEXT.
+    Use this to rename/relabel/move without deleting and recreating (which would
+    lose the handle and its XDATA). Works on both TEXT and MTEXT. ``x``/``y``
+    move the label so its reported ``insertion`` lands there; an aligned TEXT's
+    alignment point moves with it. A TEXT in a plane tilted out of WCS XY is
+    refused (capability ``ocs_tilted_plane``) — use ``entity_move``.
     """
     await ctx.debug(f"Editing text entity {handle}")
-    result = await _backend(ctx).entity_edit_text(handle, text, height, rotation)
+    result = await _backend(ctx).entity_edit_text(handle, text, height, rotation, x=x, y=y)
     return _dc(result)
 
 
@@ -3089,12 +3100,30 @@ async def entity_edit_geometry(
     y2: Annotated[float | None, "New end Y (LINE)"] = None,
     start_angle: Annotated[float | None, "New start angle in degrees (ARC)"] = None,
     end_angle: Annotated[float | None, "New end angle in degrees (ARC)"] = None,
+    points: Annotated[
+        list[list[float]] | None,
+        "New vertices [[x, y], ...] in WCS (LWPOLYLINE); the count may change",
+    ] = None,
+    bulges: Annotated[
+        list[float] | None,
+        "Arc bulge per vertex (LWPOLYLINE; CCW positive, 0 = straight). Omitted: kept when "
+        "the vertex count is unchanged, straight otherwise",
+    ] = None,
+    x: Annotated[float | None, "New insertion X, WCS (TEXT/MTEXT)"] = None,
+    y: Annotated[float | None, "New insertion Y, WCS (TEXT/MTEXT)"] = None,
     ctx: Context = None,
 ) -> dict:
     """Edit the defining geometry of an existing entity in place (no delete/recreate).
 
-    CIRCLE: cx/cy/radius · LINE: x1/y1/x2/y2 · ARC: cx/cy/radius/start_angle/end_angle.
-    Any argument left out is unchanged; the handle is preserved.
+    CIRCLE: cx/cy/radius · LINE: x1/y1/x2/y2 · ARC: cx/cy/radius/start_angle/end_angle ·
+    LWPOLYLINE: points/bulges · TEXT/MTEXT: x/y.
+    Any argument left out is unchanged; the handle, layer and XDATA are preserved.
+    An argument the entity's type does not take is refused by name, never ignored.
+
+    On the live engine, if AutoCAD will not take a vertex list of a different
+    length in place, the polyline is recreated with its layer, colour, linetype,
+    lineweight and XDATA and the result says so in ``properties.replaced``
+    ``[{old, new}]`` — use the new handle from then on.
     """
     await ctx.debug(f"Editing geometry of entity {handle}")
     result = await _backend(ctx).entity_edit_geometry(
@@ -3108,6 +3137,10 @@ async def entity_edit_geometry(
         y2,
         start_angle,
         end_angle,
+        points=points,
+        bulges=bulges,
+        x=x,
+        y=y,
     )
     return _dc(result)
 
