@@ -73,6 +73,39 @@ jobs:
           AUTOCAD_MCP_BACKEND: ezdxf
         run: uv run --no-sync python scripts/check_doc_numbers.py
 
+  token-budget:
+    # 1.8-14 (T3): the deterministic token and call budgets, on every PR. The
+    # idle and task lanes against benchmarks/token_budget.json: a ci-gated
+    # ceiling breached, a row grown more than 5 % over the published report
+    # (benchmarks/results/published/token-cost.json) or an arm that did not do
+    # its job exits 1. Release-gated cells and pending oracles are printed,
+    # never passed. Ratio estimates, so offline and reproducible.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: "3.11"
+      - run: pip install "uv==${{ env.LOCKED_UV_VERSION }}"
+      - run: uv sync --locked --python "${{ steps.python.outputs.python-path }}"
+      - name: Token budget
+        env:
+          AUTOCAD_MCP_BACKEND: ezdxf
+        run: >-
+          uv run --no-sync python -m benchmarks.token_suite --lanes idle,task
+          --budget benchmarks/token_budget.json --out out/token-budget.json
+      - name: Call budget
+        env:
+          AUTOCAD_MCP_BACKEND: ezdxf
+        run: uv run --no-sync python -m benchmarks.call_budget --out out/call-budget.json
+      - name: Upload the budget reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: token-budget
+          path: out/
+
   plugin-validate:
     # The marketplace (repository root) and the plugin, through Claude Code's
     # own validator - the manifests the runtime reads, read by the runtime.
