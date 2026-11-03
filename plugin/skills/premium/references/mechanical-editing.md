@@ -34,6 +34,14 @@ geometry in place (`entity_edit_geometry` keeps the handle, `entity_move`,
 `entity_set_properties`) and accept that the stored model now lags - then
 verify the geometry.
 
+In-place edits keep the handle, layer and XDATA (feature tags included):
+`entity_edit_geometry` takes `points` / `bulges` for a polyline (the vertex
+count may change) and `x` / `y` for TEXT and MTEXT; `entity_edit_text` takes
+`x` / `y` beside content, height and rotation. An argument the type does not
+take is refused by name. On a live seat a polyline whose vertex count AutoCAD
+will not change in place is recreated with everything carried over, and the
+result lists `replaced` `[{old, new}]` - use the new handle from then on.
+
 ## Change existing drawings under a guard
 
 An edit to a drawing someone else may be touching goes preview -> apply:
@@ -63,6 +71,14 @@ and `point_intersection` / `point_tangent`; never compute them in your head.
 - `drawing_apply_iso_layers("mech")` sets ISO 128 lineweights (0.13, 0.18,
   0.25, 0.35, 0.50, 0.70, 1.00, 1.40, 2.00 mm only). Scaffolding goes on
   `CONSTRUCTION` and is removed with `construction_clear()` before critique.
+- Entities follow their layer: lineweight `"ByLayer"` (-1), never -3, which
+  is *Default* (LWDEFAULT). The `property_override` focus reports an entity on
+  an engineering layer whose lineweight, colour or linetype is not ByLayer
+  (an explicit non-ISO-128 lineweight is an error and fails finalize);
+  `drawing_refine` sets them back to ByLayer.
+- `mech_dimension_part` tags every DIMENSION it draws in `ACADMCP_MECH` XDATA
+  with its part, feature and view (`role: "dim"`; the hole table
+  `role: "hole_table"`).
 - `mech_dimension_part(part_id=...)` dimensions a part model (ISO 129, ISO 286
   fits). Elsewhere `dimension_linear` / `dimension_radius` /
   `dimension_diameter` take read-back feature points, `fit="H7"` (from the

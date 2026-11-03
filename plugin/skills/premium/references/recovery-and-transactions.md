@@ -34,14 +34,30 @@ two of your steps.
 Give a write an `operation_id` (`cad_batch(operation_id=...)`, or the request's
 `_meta.operation_id` on any tool). Sent again with the same request it returns
 the recorded result (`replayed: true`) instead of drawing twice; with a
-different request it is refused `operation_conflict`. The journal lives in
-memory: a server restart forgets it (durable journals are a 1.8.0 item).
+different request it is refused `operation_conflict`. The journal is durable
+(`system_status.state_store`): the same id replays after a server restart, and
+a call that was running when its server died answers `requires_reconcile`
+(`error_kind: "process_exit"`). If `state_store.degraded` is set, the journal is
+in memory only and a restart forgets it.
 
 ## Outcomes and what to do
+
+Every error is one envelope: `ok: false`, `kind`, `category`, `retryable`,
+`hint`, `tool`, `backend`, `operation_id`, `message`. Branch on `kind`, never
+on the sentence. `retryable: true` only when nothing was written; a retryable
+refusal is not replayed by its `operation_id`, so the same request runs again.
 
 | `kind` | Meaning | Do |
 |---|---|---|
 | `invalid_args` | refused before work, path named | fix the argument |
+| `not_found` | the handle names no entity | `entity_list` / `entity_select_smart` for live handles |
+| `path_refused`, `file_not_found` | outside `ALLOWED_PATHS`, or no file there | use an allowed path; check the name |
+| `policy_refused` | a raw command or LISP the denylist refuses | use a tool from `alternatives` |
+| `application_busy` | live: AutoCAD at a prompt or dialog, nothing written | wait (ESC in AutoCAD), then the same call |
+| `command_incomplete` | live: a command stopped at `last_prompt` and was cancelled | inspect what landed; never resend blindly |
+| `damaged_drawing`, `recover_unsupported`, `recovered_source_protected` | the file does not parse, a DWG cannot be recovered here, or a save onto a recovered source; nothing opened or written | see *Damaged files* below |
+| `save_locked`, `save_verify_failed`, `save_failed` | the save did not land; the target is the file it was before | `save_locked`: another program holds the file - close it, save again; the other two: report it, do not loop |
+| `"validation_failed"`, `"critique_gate_failed"`, `"failed_acceptance"` | the finalize / deliver gate | fix the `blocking` rows (`detail="full"` lists all) |
 | `unsupported` | engine boundary, `capability` named | report it; use the named route |
 | `stale_revision` | the drawing moved since the preview | new preview, explain, re-decide |
 | `active_document_changed` | live: the operator switched drawings | stop; ask |
@@ -59,6 +75,17 @@ revision before and after each.
 
 ## Damaged files
 
-A DXF that does not parse is refused by name. Automatic recovery of damaged
-DXF files is not in this release (1.7.1); do not hand-repair the file text and
+A DXF that does not parse is refused by name (`damaged_drawing`). Recovery
+happens only when asked: `drawing_open(path, recover=True)` reports
+`recovered` (`fixes`, `errors`, `messages`, `entities_read`) - the reader drops
+what it cannot parse, so compare `entities_read` with what the drawing should
+hold and report the losses. The recovered drawing will not save over the
+damaged file unless `drawing_save(overwrite_source=True)`; save it under a new
+name with `drawing_save_as` instead. Never hand-repair the file text and
 present the result as the original drawing.
+
+Headless saves are atomic (a checked temporary file renamed over the target);
+a save a dead process left half done is resolved at the next start or open of
+that path (`save_recovery`). Reopening a file this server saved continues its
+document id and `revision`; a file changed outside it says
+`external_change: true`.
