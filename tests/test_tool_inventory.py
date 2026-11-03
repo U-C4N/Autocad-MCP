@@ -170,6 +170,19 @@ def test_every_tool_row_carries_a_usable_cost_and_summary():
     assert not bad, f"unusable tool rows: {bad}"
 
 
+def test_every_tool_row_carries_its_aliases_from_the_corpus():
+    """1.8-14: the alias lists left meta["cad"]; the inventory is where they are read."""
+    from discovery.aliases import aliases_for
+
+    bad: list[str] = []
+    for row in _committed()["tools"]:
+        record = aliases_for(row["name"])
+        expected = (list(record.acad), list(record.synonyms)) if record else ([], [])
+        if (row.get("acad"), row.get("synonyms")) != expected:
+            bad.append(row["name"])
+    assert not bad, f"inventory rows whose aliases differ from discovery.aliases: {bad}"
+
+
 def test_tool_rows_are_sorted_by_name():
     """A generated file whose order wobbles produces unreviewable diffs."""
     names = [row["name"] for row in _committed()["tools"]]

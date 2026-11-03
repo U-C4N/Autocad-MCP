@@ -47,7 +47,7 @@ INVENTORY_REL_PATH = "docs/tool-inventory.json"
 REGENERATE_COMMAND = "python scripts/generate_tool_inventory.py"
 
 #: Bump when the document's shape changes (not when its contents change).
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2 (1.8-14): each tool row carries its acad / synonyms
 
 _FILE_COMMENT = (
     "GENERATED FILE - do not edit by hand. Derived from the live FastMCP "
@@ -101,19 +101,26 @@ def _tool_rows(tools: list[Any], groups: dict[str, list[str]]) -> list[dict[str,
 
     ``cost`` and ``summary`` come from the ``meta["cad"]`` card that ``@cad_tool``
     writes; ``group`` from ``server._tool_groups()``, i.e. from the tool's own
-    tags. Aliases are deliberately *not* copied here — ``discovery/aliases.py``
-    is their single source of truth and already has its own coverage gate.
+    tags. ``acad`` and ``synonyms`` are read from ``discovery/aliases.py``
+    (``aliases_for``), their single source of truth: since 1.8-14 they no
+    longer ride on every tools/list entry's ``meta["cad"]``, so this snapshot
+    and ``describe_tool`` are where a reader finds them.
     """
+    from discovery.aliases import aliases_for
+
     group_of = {name: label for label, names in groups.items() for name in names}
     rows = []
     for tool in tools:
         cad = (getattr(tool, "meta", None) or {}).get("cad") or {}
+        record = aliases_for(tool.name)
         rows.append(
             {
                 "name": tool.name,
                 "group": group_of.get(tool.name),
                 "cost": cad.get("cost"),
                 "summary": cad.get("summary"),
+                "acad": list(record.acad) if record else [],
+                "synonyms": list(record.synonyms) if record else [],
                 "tags": sorted(getattr(tool, "tags", None) or ()),
                 "annotations": _annotations(tool),
             }
