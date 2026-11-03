@@ -76,6 +76,14 @@ from .quarantine import (
     real_call_name,
 )
 from .region_render import DEFAULT_MAX_PX, check_max_px, normalize_region, render_layout
+from .vertices import (
+    edit_geometry_route,
+    prepare_bulges,
+    prepare_points,
+    prepare_position,
+    prepare_vertices,
+    resolved_bulges,
+)
 from .xdata_specs import prepare_xdata
 
 __all__ = [
@@ -5552,13 +5560,24 @@ class EzdxfBackend(AutoCADBackend):
         layer=None,
         color=None,
         xdata=None,
+        bulges=None,
     ) -> EntityInfo:
         prepared = prepare_xdata(xdata)
+        checked_bulges = None
+        if bulges is not None:
+            pts, checked_bulges = prepare_vertices(points, bulges, "entity_create_polyline")
 
         def _sync():
             msp = self._msp()
-            pts_2d = [(float(p[0]), float(p[1])) for p in points]
-            ent = msp.add_lwpolyline(pts_2d, close=closed)
+            if checked_bulges is None:
+                pts_2d = [(float(p[0]), float(p[1])) for p in points]
+                ent = msp.add_lwpolyline(pts_2d, close=closed)
+            else:
+                ent = msp.add_lwpolyline(
+                    [(x, y, b) for (x, y), b in zip(pts, checked_bulges, strict=True)],
+                    format="xyb",
+                    close=closed,
+                )
             self._apply_attrs(ent, layer, color)
             self._attach_xdata(ent, prepared)
             self._mark_dirty()
@@ -5638,9 +5657,11 @@ class EzdxfBackend(AutoCADBackend):
         text_height=2.5,
         title=None,
         layer="TEXT",
+        xdata=None,
     ) -> EntityInfo:
         from engineering.annotation import prepare_table_layout
 
+        prepared = prepare_xdata(xdata)
         layout = prepare_table_layout(rows, headers, column_widths, row_height, text_height, title)
 
         def _sync():
@@ -5694,6 +5715,9 @@ class EzdxfBackend(AutoCADBackend):
                     self._apply_attrs(text_entity, layer, None)
                     children.append(text_entity)
 
+            # the composite has no one entity to carry a tag: every child does
+            for child in children:
+                self._attach_xdata(child, prepared)
             self._mark_dirty()
             child_handles = [str(entity.dxf.handle) for entity in children]
             group_id = f"table:{uuid.uuid4().hex}"
@@ -6210,7 +6234,10 @@ class EzdxfBackend(AutoCADBackend):
         tol_lower=None,
         tol_mode="none",
         text_override=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             from engineering.tolerances import build_dim_override
 
@@ -6230,6 +6257,7 @@ class EzdxfBackend(AutoCADBackend):
             ent = dim.dimension
             if layer:
                 ent.dxf.layer = layer
+            self._attach_xdata(ent, prepared)
             self._mark_dirty()
             return _entity_info_dxf(ent)
 
@@ -6244,7 +6272,10 @@ class EzdxfBackend(AutoCADBackend):
         dim_x,
         dim_y,
         layer=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             msp = self._msp()
             dim = msp.add_aligned_dim(
@@ -6260,6 +6291,7 @@ class EzdxfBackend(AutoCADBackend):
             ent = dim.dimension
             if layer:
                 ent.dxf.layer = layer
+            self._attach_xdata(ent, prepared)
             self._mark_dirty()
             return _entity_info_dxf(ent)
 
@@ -6309,7 +6341,10 @@ class EzdxfBackend(AutoCADBackend):
         tol_lower=None,
         tol_mode="none",
         text_override=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             from engineering.tolerances import build_dim_override
 
@@ -6337,6 +6372,7 @@ class EzdxfBackend(AutoCADBackend):
             ent = dim.dimension
             if layer:
                 ent.dxf.layer = layer
+            self._attach_xdata(ent, prepared)
             self._mark_dirty()
             return _entity_info_dxf(ent)
 
@@ -6354,7 +6390,10 @@ class EzdxfBackend(AutoCADBackend):
         tol_lower=None,
         tol_mode="none",
         text_override=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             from engineering.tolerances import build_dim_override
 
@@ -6395,6 +6434,7 @@ class EzdxfBackend(AutoCADBackend):
             ent = dim.dimension
             if layer:
                 ent.dxf.layer = layer
+            self._attach_xdata(ent, prepared)
             self._mark_dirty()
             return _entity_info_dxf(ent)
 
@@ -6726,10 +6766,15 @@ class EzdxfBackend(AutoCADBackend):
         text=None,
         height=None,
         rotation=None,
+        x=None,
+        y=None,
     ) -> EntityInfo:
         def _sync():
             ent = self._get_entity(handle)
             et = ent.dxftype()
+            if et in ("TEXT", "MTEXT"):
+                # refused (tilted plane) before anything else is written
+                self._move_text(ent, handle, x, y, "entity_edit_text")
             if et == "TEXT":
                 if text is not None:
                     ent.dxf.text = str(text)
@@ -6938,10 +6983,43 @@ class EzdxfBackend(AutoCADBackend):
         y2=None,
         start_angle=None,
         end_angle=None,
+        points=None,
+        bulges=None,
+        x=None,
+        y=None,
     ) -> EntityInfo:
+        classic = {
+            "cx": cx,
+            "cy": cy,
+            "radius": radius,
+            "x1": x1,
+            "y1": y1,
+            "x2": x2,
+            "y2": y2,
+            "start_angle": start_angle,
+            "end_angle": end_angle,
+        }
+        if points is not None:
+            prepare_points(points, "entity_edit_geometry")  # refused before the job
+
         def _sync():
             ent = self._get_entity(handle)
             et = ent.dxftype()
+            route = edit_geometry_route(et, classic, points, bulges, x, y)
+            if route == "vertices":
+                if points is None:
+                    current = _entity_info_dxf(ent).properties.get("points") or []
+                    pts = prepare_points(current, "entity_edit_geometry")
+                else:
+                    pts = prepare_points(points, "entity_edit_geometry")
+                checked = prepare_bulges(bulges, len(pts), "entity_edit_geometry")
+                self._write_vertices(ent, handle, pts, checked, None, "entity_edit_geometry")
+                self._mark_dirty()
+                return _entity_info_dxf(ent)
+            if route == "text":
+                self._move_text(ent, handle, x, y, "entity_edit_geometry")
+                self._mark_dirty()
+                return _entity_info_dxf(ent)
             # cx/cy arrive in WCS, because that is what entity_get reports. For a
             # mirrored entity the stored attribute is not WCS, so the value has to
             # be mapped back into the entity's own frame before it is written.
@@ -7005,12 +7083,90 @@ class EzdxfBackend(AutoCADBackend):
                     ent.dxf.end_angle = float(end_angle)
             else:
                 raise RuntimeError(
-                    f"entity_edit_geometry: {et} not supported (use CIRCLE, LINE, or ARC)."
+                    f"entity_edit_geometry: {et} not supported "
+                    "(use CIRCLE, LINE, ARC, LWPOLYLINE, TEXT or MTEXT)."
                 )
             self._mark_dirty()
             return _entity_info_dxf(ent)
 
         return await self._async(_sync)
+
+    async def entity_set_vertices(self, handle, points, bulges=None, closed=None) -> EntityInfo:
+        pts, checked = prepare_vertices(points, bulges, "entity_set_vertices")
+
+        def _sync():
+            ent = self._get_entity(handle)
+            self._write_vertices(ent, handle, pts, checked, closed, "entity_set_vertices")
+            self._mark_dirty()
+            return _entity_info_dxf(ent)
+
+        return await self._async(_sync)
+
+    @staticmethod
+    def _write_vertices(ent, handle, pts, bulges, closed, where: str) -> None:
+        """Rewrite an LWPOLYLINE's vertices in its own frame: same entity, same handle.
+
+        ``pts`` / ``bulges`` are WCS (validated by ``backends/vertices.py``). A
+        mirrored frame stores x unnegated and reverses every arc's sense, so
+        both are translated through ``backends/ocs.py`` - the inverse of what
+        ``entity_get`` does on the way out. A tilted frame is refused before
+        anything is written.
+        """
+        et = ent.dxftype()
+        if et != "LWPOLYLINE":
+            raise RuntimeError(
+                f"{where}: handle {handle} is {et}, expected LWPOLYLINE (a lightweight "
+                "polyline); edit a LINE / CIRCLE / ARC with entity_edit_geometry."
+            )
+        extrusion = tuple(ent.dxf.get("extrusion", _IDENTITY_EXTRUSION))
+        framed = not ocs.is_wcs_frame(extrusion)
+        if framed and not ocs.is_flat_frame(extrusion):
+            raise UnsupportedCapabilityError(
+                "ocs_tilted_plane",
+                f"{where}: polyline {handle} lies in a plane tilted out of WCS XY "
+                f"(normal={tuple(round(float(v), 4) for v in extrusion)}). WCS [x, y] "
+                "vertices do not determine points in that plane, so writing them would "
+                "move the polyline out of its own plane by an amount this server cannot "
+                "infer. Use entity_move, or edit it in AutoCAD.",
+            )
+        stored = [float(b) for _x, _y, b in ent.get_points(format="xyb")]
+        old = [ocs.wcs_bulge(extrusion, b) for b in stored] if framed else stored
+        final = resolved_bulges(bulges, len(pts), old)
+        if framed:
+            rows = [
+                (*ocs.from_wcs(extrusion, px, py)[:2], ocs.wcs_bulge(extrusion, b))
+                for (px, py), b in zip(pts, final, strict=True)
+            ]
+        else:
+            rows = [(px, py, b) for (px, py), b in zip(pts, final, strict=True)]
+        ent.set_points(rows, format="xyb")
+        if closed is not None:
+            ent.closed = bool(closed)
+
+    @staticmethod
+    def _move_text(ent, handle, x, y, where: str) -> None:
+        """Translate a TEXT / MTEXT so its reported ``insertion`` lands on (x, y).
+
+        A translation of the whole entity, not a write of ``insert``: an aligned
+        TEXT keeps its alignment point in step, and the frame (a mirrored TEXT's
+        OCS) is ezdxf's ``transform`` business. A TEXT in a tilted plane is
+        refused by the repository rule - an xy is never written into one.
+        """
+        tx, ty = prepare_position(x, y, where)
+        if tx is None and ty is None:
+            return
+        extrusion = tuple(ent.dxf.get("extrusion", _IDENTITY_EXTRUSION))
+        if ent.dxftype() == "TEXT" and not ocs.is_flat_frame(extrusion):
+            raise UnsupportedCapabilityError(
+                "ocs_tilted_plane",
+                f"{where}: text {handle} lies in a plane tilted out of WCS XY "
+                f"(normal={tuple(round(float(v), 4) for v in extrusion)}); an (x, y) does "
+                "not determine a point in it. Use entity_move, which keeps the plane.",
+            )
+        current = _entity_info_dxf(ent).properties["insertion"]
+        dx = tx - float(current[0]) if tx is not None else 0.0
+        dy = ty - float(current[1]) if ty is not None else 0.0
+        ent.translate(dx, dy, 0.0)
 
     # ── selection filters (M8 / F1) ──────────────────────────────────────────
 

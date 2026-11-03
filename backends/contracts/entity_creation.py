@@ -70,7 +70,12 @@ class EntityCreationContract(ABC):
         layer: str | None = None,
         color: int | None = None,
         xdata: dict[str, list] | None = None,
-    ) -> EntityInfo: ...
+        bulges: list[float] | None = None,
+    ) -> EntityInfo:
+        """``bulges`` (v1.8.0): one per vertex, WCS counter-clockwise positive,
+        set in the same create call; validated by ``backends/vertices.py``
+        before anything is drawn."""
+        ...
 
     @abstractmethod
     async def entity_create_text(
@@ -110,7 +115,13 @@ class EntityCreationContract(ABC):
         text_height: float = 2.5,
         title: str | None = None,
         layer: str = "TEXT",
-    ) -> EntityInfo: ...
+        xdata: dict[str, list] | None = None,
+    ) -> EntityInfo:
+        """``xdata`` (v1.8.0) is written in the create call: on the native
+        TABLE live, and on every child of the headless composite (its lines and
+        cell texts), so a reader finds all of the table by its tag rather than
+        only the handle the result names."""
+        ...
 
     @abstractmethod
     async def leader_create_mleader(

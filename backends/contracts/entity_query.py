@@ -97,10 +97,17 @@ class EntityQueryContract(ABC):
         text: str | None = None,
         height: float | None = None,
         rotation: float | None = None,
+        x: float | None = None,
+        y: float | None = None,
     ) -> EntityInfo:
         """Edit an existing TEXT or MTEXT entity in place. Any argument left
         None is unchanged. Returns the updated EntityInfo. Raises if the handle
-        is not a TEXT/MTEXT entity."""
+        is not a TEXT/MTEXT entity.
+
+        ``x`` / ``y`` (v1.8.0) move the label so its reported ``insertion``
+        lands there (WCS): the whole entity is translated, so an aligned TEXT's
+        alignment point moves with it and the handle and XDATA stay. A TEXT in a
+        plane tilted out of WCS XY is refused with ``ocs_tilted_plane``."""
         ...
 
     @abstractmethod
@@ -116,12 +123,51 @@ class EntityQueryContract(ABC):
         y2: float | None = None,
         start_angle: float | None = None,
         end_angle: float | None = None,
+        points: list[list[float]] | None = None,
+        bulges: list[float] | None = None,
+        x: float | None = None,
+        y: float | None = None,
     ) -> EntityInfo:
         """Edit the defining geometry of an existing entity in place.
         - CIRCLE: cx / cy / radius
         - LINE: x1 / y1 (start), x2 / y2 (end)
         - ARC: cx / cy / radius / start_angle / end_angle (degrees)
-        Any argument left None is unchanged. Raises for unsupported types."""
+        - LWPOLYLINE (v1.8.0): points / bulges, exactly ``entity_set_vertices``
+        - TEXT / MTEXT (v1.8.0): x / y, exactly ``entity_edit_text(x=, y=)``
+        Any argument left None is unchanged. Raises for unsupported types, and
+        for an argument the entity's type does not take - a polyline handed
+        ``cx`` or a circle handed ``points`` is refused, never ignored."""
+        ...
+
+    @abstractmethod
+    async def entity_set_vertices(
+        self,
+        handle: str,
+        points: list[list[float]],
+        bulges: list[float] | None = None,
+        closed: bool | None = None,
+    ) -> EntityInfo:
+        """Rewrite an LWPOLYLINE's vertices in place (v1.8.0, plan item 1.8-06).
+
+        ``points`` are WCS ``[x, y]`` (at least two); ``bulges`` one per vertex,
+        counter-clockwise positive in WCS - the spelling ``entity_get`` reports.
+        Omitted bulges keep the polyline's own when the vertex count is
+        unchanged and are straight otherwise; ``closed=None`` keeps the flag.
+        The vertex count may change. The handle, layer and XDATA are kept.
+
+        A mirrored polyline (extrusion -Z) is written in its own frame; one in
+        a plane tilted out of WCS XY is refused with ``ocs_tilted_plane``.
+        Anything else than an LWPOLYLINE raises. Validation happens before the
+        first write (``backends/vertices.py``), so a refusal changes nothing.
+
+        Live: ``Coordinates`` + ``SetBulge`` + ``Closed``. If AutoCAD refuses or
+        ignores a ``Coordinates`` write with a different vertex count (S4,
+        unmeasured), the polyline is recreated in its owner with its layer,
+        colour, linetype, linetype scale, lineweight and XDATA and the old one
+        deleted; the result then carries ``properties["replaced"] =
+        [{"old", "new"}]`` and the new handle - decided at runtime, so the
+        contract holds whichever way the seat answers.
+        """
         ...
 
     @abstractmethod

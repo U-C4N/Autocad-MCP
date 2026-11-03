@@ -62,6 +62,14 @@ from .region_render import (
     png_size,
     render_dxf_file,
 )
+from .vertices import (
+    edit_geometry_route,
+    prepare_bulges,
+    prepare_points,
+    prepare_position,
+    prepare_vertices,
+    resolved_bulges,
+)
 from .xdata_specs import prepare_xdata
 
 log = logging.getLogger(__name__)
@@ -976,6 +984,174 @@ def _attach_xdata(entity, prepared) -> None:
             _ai(codes),
             win32com.client.VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_VARIANT, payload),
         )
+
+
+# ── in-place edits (v1.8.0, plan item 1.8-06) ───────────────────────────────
+
+
+def _com_dxf_type(entity) -> str:
+    """The DXF name of a live entity: ``AcDbPolyline`` is an LWPOLYLINE."""
+    name = str(entity.ObjectName)
+    if name in _COM_LWPOLYLINE_NAMES:
+        return "LWPOLYLINE"
+    return name.replace("AcDb", "").upper()
+
+
+def _com_normal(entity) -> tuple[float, float, float]:
+    """``entity.Normal``; an entity that exposes none lies in WCS XY."""
+    try:
+        return tuple(float(v) for v in entity.Normal)
+    except Exception as exc:
+        log.debug("Normal unreadable on %s, taken as WCS: %s", entity.ObjectName, exc)
+        return (0.0, 0.0, 1.0)
+
+
+def _refuse_tilted(where: str, kind: str, handle, normal) -> None:
+    raise UnsupportedCapabilityError(
+        "ocs_tilted_plane",
+        f"{where}: {kind} {handle} lies in a plane tilted out of WCS XY "
+        f"(normal={tuple(round(float(v), 4) for v in normal)}); WCS [x, y] values do not "
+        "determine points in that plane, so writing them would move the entity out of its "
+        "own plane by an amount this server cannot infer. Use entity_move, which keeps the "
+        "plane, or edit it in AutoCAD.",
+    )
+
+
+#: What a polyline recreated by :func:`_com_replace_polyline` takes over from
+#: the one it replaces, besides its XDATA (the typelib spellings - see the
+#: note above ``_layer_info``).
+_POLYLINE_CARRIED = ("Layer", "color", "Linetype", "LinetypeScale", "Lineweight")
+
+
+def _com_write_vertices(doc, ent, handle, pts, bulges, closed, where: str) -> EntityInfo:
+    """Rewrite a live LWPOLYLINE's vertices: ``Coordinates`` + ``SetBulge`` + ``Closed``.
+
+    ``Coordinates`` is OCS on a lightweight polyline (the one ActiveX point
+    property that is), so a mirrored frame is written through ``backends/ocs.py``
+    and a tilted one refused before any write. Whether ActiveX takes a vertex
+    list of a different length in place is unmeasured (spike S4): the write is
+    tried, and when AutoCAD refuses it - or answers without changing the count -
+    the polyline is recreated by :func:`_com_replace_polyline` and the result
+    says so in ``replaced``. A failure at an unchanged count is raised: it is
+    not the S4 question and replacing would hide it.
+    """
+    if _com_dxf_type(ent) != "LWPOLYLINE":
+        raise RuntimeError(
+            f"{where}: handle {handle} is {_com_dxf_type(ent)}, expected LWPOLYLINE (a "
+            "lightweight polyline); edit a LINE / CIRCLE / ARC with entity_edit_geometry."
+        )
+    normal = _com_normal(ent)
+    framed = not ocs.is_wcs_frame(normal)
+    if framed and not ocs.is_flat_frame(normal):
+        _refuse_tilted(where, "polyline", handle, normal)
+    old_count = len(list(ent.Coordinates)) // 2
+    keep = bulges is None and old_count == len(pts)
+    final = None if keep else resolved_bulges(bulges, len(pts), [])
+    flat: list[float] = []
+    for px, py in pts:
+        ox, oy = ocs.from_wcs(normal, px, py)[:2] if framed else (px, py)
+        flat.extend([ox, oy])
+    try:
+        ent.Coordinates = _av(flat)
+    except Exception as exc:
+        if old_count == len(pts):
+            raise
+        log.info(
+            "%s: Coordinates refused a %d -> %d vertex write on %s (%s); recreating it",
+            where,
+            old_count,
+            len(pts),
+            handle,
+            exc,
+        )
+        return _com_replace_polyline(doc, ent, handle, pts, final, closed, normal, where)
+    if old_count != len(pts) and len(list(ent.Coordinates)) // 2 != len(pts):
+        log.info(
+            "%s: Coordinates kept %d vertices on %s after a %d-vertex write; recreating it",
+            where,
+            old_count,
+            handle,
+            len(pts),
+        )
+        return _com_replace_polyline(doc, ent, handle, pts, final, closed, normal, where)
+    if final is not None:
+        for index, bulge in enumerate(final):
+            ent.SetBulge(index, ocs.wcs_bulge(normal, bulge) if framed else bulge)
+    if closed is not None:
+        ent.Closed = bool(closed)
+    _regen()
+    return _entity_info(ent)
+
+
+def _com_replace_polyline(doc, old, handle, pts, bulges, closed, normal, where) -> EntityInfo:
+    """The S4 fallback: the same polyline, recreated in the old one's owner.
+
+    Drawn in WCS from the WCS points and bulges (so a mirrored frame becomes a
+    plain one with the same geometry), at the old elevation, with the old
+    layer, colour, linetype, linetype scale, lineweight, closed flag and XDATA.
+    The old polyline is deleted only after all of that landed; anything that
+    could not be carried deletes the new one and raises, leaving the drawing as
+    it was - a replacement without its feature tag is the loss this whole item
+    exists to prevent. Groups, hyperlinks and draw order are not carried.
+    """
+    owner = doc.ObjectIdToObject(old.OwnerID)
+    new = owner.AddLightWeightPolyline(_av([c for p in pts for c in p]))
+    try:
+        new.Closed = bool(old.Closed) if closed is None else bool(closed)
+        elevation = float(old.Elevation)
+        if elevation:
+            new.Elevation = elevation if float(normal[2]) > 0 else -elevation
+        for index, bulge in enumerate(bulges or ()):
+            if bulge:
+                new.SetBulge(index, float(bulge))
+        for name in _POLYLINE_CARRIED:
+            setattr(new, name, getattr(old, name))
+        # GetXData("") hands back every app's stream with its 1001 markers
+        # inline (see entity_get_xdata), which is exactly what SetXData takes.
+        codes, values = old.GetXData("")
+        codes, values = list(codes or []), list(values or [])
+        if codes:
+            new.SetXData(
+                _ai(codes),
+                win32com.client.VARIANT(
+                    pythoncom.VT_ARRAY | pythoncom.VT_VARIANT,
+                    [_apoint(*v) if isinstance(v, (tuple, list)) else v for v in values],
+                ),
+            )
+        old.Delete()
+    except Exception as exc:
+        try:
+            new.Delete()
+        except Exception as cleanup:  # pragma: no cover - the cause is the error to raise
+            log.error("%s: could not remove the half-made replacement: %s", where, cleanup)
+        raise RuntimeError(
+            f"{where}: AutoCAD would not take {len(pts)} vertices on polyline {handle} in "
+            f"place, and recreating it failed ({type(exc).__name__}: {exc}); the polyline "
+            "was left as it was."
+        ) from exc
+    _regen()
+    info = _entity_info(new)
+    info.properties["replaced"] = [{"old": str(handle), "new": info.handle}]
+    return info
+
+
+def _com_move_text(ent, handle, tx, ty, where: str) -> None:
+    """Move a live TEXT / MTEXT so its ``InsertionPoint`` lands on (tx, ty).
+
+    ``Move`` translates the whole entity, so an aligned TEXT keeps its
+    alignment point in step; ``InsertionPoint`` is WCS over ActiveX. A TEXT in
+    a tilted plane is refused, as headlessly.
+    """
+    if tx is None and ty is None:
+        return
+    if _com_dxf_type(ent) == "TEXT":
+        normal = _com_normal(ent)
+        if not ocs.is_flat_frame(normal):
+            _refuse_tilted(where, "text", handle, normal)
+    at = ent.InsertionPoint
+    dx = tx - float(at[0]) if tx is not None else 0.0
+    dy = ty - float(at[1]) if ty is not None else 0.0
+    ent.Move(_apoint(0.0, 0.0, 0.0), _apoint(dx, dy, 0.0))
 
 
 def _regen():
@@ -6159,8 +6335,12 @@ class ComBackend(AutoCADBackend):
         layer=None,
         color=None,
         xdata=None,
+        bulges=None,
     ) -> EntityInfo:
         prepared = prepare_xdata(xdata)
+        checked_bulges = None
+        if bulges is not None:
+            _pts, checked_bulges = prepare_vertices(points, bulges, "entity_create_polyline")
 
         def _sync():
             mspace = _msp()
@@ -6169,6 +6349,9 @@ class ComBackend(AutoCADBackend):
                 flat.extend([float(pt[0]), float(pt[1])])
             pline = mspace.AddLightWeightPolyline(_av(flat))
             pline.Closed = closed
+            for index, bulge in enumerate(checked_bulges or ()):
+                if bulge:  # a new polyline's segments are straight already
+                    pline.SetBulge(index, bulge)
             _apply_entity_attrs(pline, layer, color, None)
             _attach_xdata(pline, prepared)
             _regen()
@@ -6234,9 +6417,11 @@ class ComBackend(AutoCADBackend):
         text_height=2.5,
         title=None,
         layer="TEXT",
+        xdata=None,
     ) -> EntityInfo:
         from engineering.annotation import prepare_table_layout
 
+        prepared = prepare_xdata(xdata)
         layout = prepare_table_layout(rows, headers, column_widths, row_height, text_height, title)
 
         def _sync():
@@ -6260,6 +6445,7 @@ class ComBackend(AutoCADBackend):
                     table.SetText(row_index, column_index, value)
                     table.SetCellTextHeight(row_index, column_index, layout.text_height)
             _apply_entity_attrs(table, layer, None, None)
+            _attach_xdata(table, prepared)
             _regen()
             info = _entity_info(table)
             info.type = "TABLE"
@@ -6469,7 +6655,10 @@ class ComBackend(AutoCADBackend):
         tol_lower=None,
         tol_mode="none",
         text_override=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             mspace = _msp()
             # The ActiveX API has no AddDimLinear — rotated linear dims are
@@ -6483,6 +6672,7 @@ class ComBackend(AutoCADBackend):
             if layer:
                 dim.Layer = layer
             _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode, text_override)
+            _attach_xdata(dim, prepared)
             _regen()
             return _entity_info(dim)
 
@@ -6497,12 +6687,16 @@ class ComBackend(AutoCADBackend):
         dim_x,
         dim_y,
         layer=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             mspace = _msp()
             dim = mspace.AddDimAligned(_apoint(x1, y1), _apoint(x2, y2), _apoint(dim_x, dim_y))
             if layer:
                 dim.Layer = layer
+            _attach_xdata(dim, prepared)
             _regen()
             return _entity_info(dim)
 
@@ -6547,7 +6741,10 @@ class ComBackend(AutoCADBackend):
         tol_lower=None,
         tol_mode="none",
         text_override=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             mspace = _msp()
             dim = mspace.AddDimRadial(
@@ -6556,6 +6753,7 @@ class ComBackend(AutoCADBackend):
             if layer:
                 dim.Layer = layer
             _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode, text_override)
+            _attach_xdata(dim, prepared)
             _regen()
             return _entity_info(dim)
 
@@ -6573,13 +6771,17 @@ class ComBackend(AutoCADBackend):
         tol_lower=None,
         tol_mode="none",
         text_override=None,
+        xdata=None,
     ) -> EntityInfo:
+        prepared = prepare_xdata(xdata)
+
         def _sync():
             mspace = _msp()
             dim = mspace.AddDimDiametric(_apoint(x1, y1), _apoint(x2, y2), float(leader_length))
             if layer:
                 dim.Layer = layer
             _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode, text_override)
+            _attach_xdata(dim, prepared)
             _regen()
             return _entity_info(dim)
 
@@ -6859,7 +7061,11 @@ class ComBackend(AutoCADBackend):
         text=None,
         height=None,
         rotation=None,
+        x=None,
+        y=None,
     ) -> EntityInfo:
+        tx, ty = prepare_position(x, y, "entity_edit_text")
+
         def _sync():
             doc = _acad_doc()
             ent = _handle_to_object(doc, handle)
@@ -6868,6 +7074,8 @@ class ComBackend(AutoCADBackend):
                 raise RuntimeError(
                     f"entity_edit_text: handle {handle} is {name}, expected TEXT or MTEXT."
                 )
+            # refused (tilted plane) before anything else is written
+            _com_move_text(ent, handle, tx, ty, "entity_edit_text")
             if text is not None:
                 ent.TextString = str(text)
             if height is not None:
@@ -6892,10 +7100,43 @@ class ComBackend(AutoCADBackend):
         y2=None,
         start_angle=None,
         end_angle=None,
+        points=None,
+        bulges=None,
+        x=None,
+        y=None,
     ) -> EntityInfo:
+        classic = {
+            "cx": cx,
+            "cy": cy,
+            "radius": radius,
+            "x1": x1,
+            "y1": y1,
+            "x2": x2,
+            "y2": y2,
+            "start_angle": start_angle,
+            "end_angle": end_angle,
+        }
+        if points is not None:
+            prepare_points(points, "entity_edit_geometry")  # refused before the job
+        tx, ty = prepare_position(x, y, "entity_edit_geometry")
+
         def _sync():
             doc = _acad_doc()
             ent = _handle_to_object(doc, handle)
+            route = edit_geometry_route(_com_dxf_type(ent), classic, points, bulges, x, y)
+            if route == "vertices":
+                current = points
+                if current is None:
+                    current = _entity_info(ent).properties.get("points") or []
+                pts = prepare_points(current, "entity_edit_geometry")
+                checked = prepare_bulges(bulges, len(pts), "entity_edit_geometry")
+                return _com_write_vertices(
+                    doc, ent, handle, pts, checked, None, "entity_edit_geometry"
+                )
+            if route == "text":
+                _com_move_text(ent, handle, tx, ty, "entity_edit_geometry")
+                _regen()
+                return _entity_info(ent)
             name = ent.ObjectName.replace("AcDb", "").upper()
             if name == "CIRCLE":
                 c = ent.Center
@@ -6929,10 +7170,23 @@ class ComBackend(AutoCADBackend):
                     ent.EndAngle = deg2rad(float(end_angle))
             else:
                 raise RuntimeError(
-                    f"entity_edit_geometry: {name} not supported (use CIRCLE, LINE, or ARC)."
+                    f"entity_edit_geometry: {name} not supported "
+                    "(use CIRCLE, LINE, ARC, LWPOLYLINE, TEXT or MTEXT)."
                 )
             _regen()
             return _entity_info(ent)
+
+        return await self._run(_sync)
+
+    async def entity_set_vertices(self, handle, points, bulges=None, closed=None) -> EntityInfo:
+        pts, checked = prepare_vertices(points, bulges, "entity_set_vertices")
+
+        def _sync():
+            doc = _acad_doc()
+            ent = _handle_to_object(doc, handle)
+            return _com_write_vertices(
+                doc, ent, handle, pts, checked, closed, "entity_set_vertices"
+            )
 
         return await self._run(_sync)
 
@@ -9338,6 +9592,7 @@ _MUTATING_METHODS: frozenset[str] = frozenset(
         "entity_rotate",
         "entity_scale",
         "entity_set_properties",
+        "entity_set_vertices",
         "entity_set_xdata",
         "entity_trim",
         "hatch_add_boundary",

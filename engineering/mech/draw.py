@@ -84,8 +84,16 @@ def _xdata_payload(values) -> dict:
     return decode(values)
 
 
-def _feature_xdata(prim, feature_tag: Mapping[str, str] | None) -> dict | None:
-    """``{ACADMCP_MECH: chunks}`` for one primitive, or None without a tag."""
+def _feature_xdata(
+    prim, feature_tag: Mapping[str, str] | None, index: int | None = None
+) -> dict | None:
+    """``{ACADMCP_MECH: chunks}`` for one primitive, or None without a tag.
+
+    ``index`` (v1.8.0) is the primitive's ordinal ``i`` in its ``draw_prims``
+    call: the entities of one feature share part, feature and view, and the
+    ordinal is what tells the bore circle from its two centre lines when a
+    revision edits one of them in place.
+    """
     if feature_tag is None:
         return None
     payload = {
@@ -94,6 +102,26 @@ def _feature_xdata(prim, feature_tag: Mapping[str, str] | None) -> dict | None:
         "part": str(feature_tag.get("part", "")),
         "feature": str(getattr(prim, "feature", "") or ""),
         "view": str(feature_tag.get("view", "")),
+    }
+    if index is not None:
+        payload["i"] = int(index)
+    return {APP_ID: to_values(payload)}
+
+
+def _annotation_xdata(feature_tag: Mapping[str, str], feature: str, role: str) -> dict:
+    """The tag a dimension (``role="dim"``) or hole table (``"hole_table"``) carries.
+
+    v1.8.0, plan item 1.8-06: the B17 feature record plus ``role``, so a reader
+    can tell the DIMENSION that measures a feature from the feature's own
+    geometry, and find a part's hole table without trusting a stored handle.
+    """
+    payload = {
+        "v": PAYLOAD_VERSION,
+        "kind": "feature",
+        "part": str(feature_tag.get("part", "")),
+        "feature": str(feature or ""),
+        "view": str(feature_tag.get("view", "")),
+        "role": role,
     }
     return {APP_ID: to_values(payload)}
 
@@ -183,7 +211,8 @@ async def draw_prims(
     "view"}``, the feature being the primitive's own ``feature`` - onto every
     entity in its create call: no extra round trip per entity. A copy of the
     entity carries the tag, which is how a binder sees two candidates for one
-    feature.
+    feature. Since v1.8.0 the record also carries ``i``, the primitive's
+    ordinal in this call.
     """
     placed = tuple(prims)
     _refuse_islands_without_edge_paths(backend, placed)
@@ -200,8 +229,8 @@ async def draw_prims(
     handles: list[str] = []
     counts: dict[str, int] = {}
 
-    for prim, layer in zip(placed, targets, strict=True):
-        tag = _feature_xdata(prim, feature_tag)
+    for index, (prim, layer) in enumerate(zip(placed, targets, strict=True)):
+        tag = _feature_xdata(prim, feature_tag, index)
         extra = {"xdata": tag} if tag else {}
         if isinstance(prim, Line):
             info = await backend.entity_create_line(
@@ -419,7 +448,11 @@ def _full_size(scale, where: str) -> float:
 
 
 async def _draw_dimension(
-    backend, intent, *, linear_angle: float | None = None
+    backend,
+    intent,
+    *,
+    linear_angle: float | None = None,
+    tag: Mapping[str, str] | None = None,
 ) -> tuple[str | None, dict]:
     """One laid-out intent as a real DIMENSION. Returns (handle, the resolved row).
 
@@ -427,7 +460,12 @@ async def _draw_dimension(
     caller knows it better than the points do: a part turned by its placement
     rotation measures along its own axes, which the WCS points alone no longer
     reveal. ``None`` reads it from the points (horizontal or vertical).
+
+    ``tag`` (``{"part", "view"}``, v1.8.0) writes ``{kind: "feature", part,
+    feature: intent.feature, view, role: "dim"}`` onto the DIMENSION in its
+    create call (``xdata=`` on the dimension contracts).
     """
+    extra = {"xdata": _annotation_xdata(tag, intent.feature, "dim")} if tag is not None else {}
     resolved = resolve_tolerance(intent)
     row = {
         "feature": intent.feature,
@@ -461,6 +499,7 @@ async def _draw_dimension(
             float(linear_angle),
             ROLE_LAYER["dim"],
             **tol,
+            **extra,
         )
     elif intent.kind == "aligned":
         if tol["tol_mode"] != "none" or tol["text_override"]:
@@ -480,6 +519,7 @@ async def _draw_dimension(
                 angle,
                 ROLE_LAYER["dim"],
                 **tol,
+                **extra,
             )
         else:
             info = await backend.dimension_aligned(
@@ -490,6 +530,7 @@ async def _draw_dimension(
                 text_at[0],
                 text_at[1],
                 ROLE_LAYER["dim"],
+                **extra,
             )
     elif intent.kind == "diameter":
         info = await backend.dimension_diameter(
@@ -500,6 +541,7 @@ async def _draw_dimension(
             10.0,
             ROLE_LAYER["dim"],
             **tol,
+            **extra,
         )
     elif intent.kind == "radius":
         info = await backend.dimension_radius(
@@ -510,6 +552,7 @@ async def _draw_dimension(
             10.0,
             ROLE_LAYER["dim"],
             **tol,
+            **extra,
         )
     else:
         return None, {
@@ -989,6 +1032,7 @@ async def dimension_part(
     for index, view, placed in planned:
         record = records[index]
         offset = record["offset"]
+        tag = {"part": part_id, "view": _view_tag(view)}
         for intent in placed:
             frame = intent._replace(
                 p1=(intent.p1[0] + offset[0], intent.p1[1] + offset[1]),
@@ -1006,7 +1050,7 @@ async def dimension_part(
                 p2=_turn(frame.p2, origin, rotation),
                 text_at=_turn(frame.text_at, origin, rotation),
             )
-            handle, row = await _draw_dimension(backend, moved, linear_angle=angle)
+            handle, row = await _draw_dimension(backend, moved, linear_angle=angle, tag=tag)
             if handle is None:
                 skipped.append(row)
                 continue
@@ -1025,6 +1069,7 @@ async def dimension_part(
                 2.5,
                 "HOLE TABLE",
                 ROLE_LAYER["text"],
+                xdata=_annotation_xdata(tag, "", "hole_table"),
             )
             table_handle = info.handle
             handles.append(info.handle)
@@ -1142,6 +1187,7 @@ async def draw_hole_pattern(
                 text_override=f"{len(expansion)}x ⌀{float(first.diameter):g}",
                 feature="pattern",
             ),
+            tag={"part": "", "view": ""},
         )
         if handle:
             result["handles"].append(handle)
