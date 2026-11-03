@@ -2499,6 +2499,83 @@ async def dimension_auto_one_call_part():
     )
 
 
+async def property_override_focus():
+    """An entity overriding its layer is named, and refine puts it back (1.8-01).
+
+    Through the real server, on the engineering layer GEOMETRY that
+    ``drawing_new`` bootstraps: a plain line must leave
+    ``drawing_critique(focus=["property_override"])`` empty; a second line
+    given colour 1 and lineweight 30 (0.30 mm, not ISO 128) must be named by
+    exactly two issues, each listing only its handle - ``lineweight_not_bylayer``
+    at ``error`` and ``color_not_bylayer`` at ``warning``.
+    ``drawing_refine(focus=["property_override"])`` must apply one repair per
+    issue, meet its threshold with nothing left, and leave the line on its
+    layer at colour 256 and lineweight ByLayer, the focus empty again. v1.7.0
+    has no such focus (the name is an unknown focus there), so nothing is named.
+    """
+
+    def _rows(result) -> list:
+        content = result.structured_content or {}
+        rows = content.get("result", content)
+        return rows if isinstance(rows, list) else []
+
+    focus = {"focus": ["property_override"]}
+    async with _served_headless() as client:
+        await client.call_tool("drawing_new", {})
+        await client.call_tool(
+            "entity_create_line", {"x1": 0, "y1": 0, "x2": 50, "y2": 0, "layer": "GEOMETRY"}
+        )
+        clean = _rows(await client.call_tool("drawing_critique", focus, raise_on_error=False))
+        line = await client.call_tool(
+            "entity_create_line", {"x1": 0, "y1": 10, "x2": 50, "y2": 10, "layer": "GEOMETRY"}
+        )
+        handle = (line.structured_content or {}).get("handle")
+        await client.call_tool(
+            "entity_set_properties", {"handle": handle, "color": 1, "lineweight": 30}
+        )
+        found = _rows(await client.call_tool("drawing_critique", focus, raise_on_error=False))
+        refined = await client.call_tool(
+            "drawing_refine", {**focus, "min_score": 100}, raise_on_error=False
+        )
+        after = _rows(await client.call_tool("drawing_critique", focus, raise_on_error=False))
+        entity = (await client.call_tool("entity_get", {"handle": handle})).structured_content
+    named = sorted(
+        (
+            row.get("focus"),
+            (row.get("detail") or {}).get("code"),
+            row.get("severity"),
+            tuple(row.get("handles") or ()),
+        )
+        for row in found
+    )
+    want = [
+        ("property_override", "color_not_bylayer", "warning", (handle,)),
+        ("property_override", "lineweight_not_bylayer", "error", (handle,)),
+    ]
+    report = refined.structured_content or {}
+    actions = [a for r in report.get("rounds") or [] for a in r.get("actions") or []]
+    repaired = sorted(
+        (a.get("focus"), (a.get("detail") or {}).get("code"), a.get("status")) for a in actions
+    )
+    entity = entity or {}
+    return (
+        clean == []
+        and named == want
+        and not refined.is_error
+        and report.get("status") == "threshold_met"
+        and report.get("remaining_issues") == []
+        and repaired
+        == [
+            ("property_override", "color_not_bylayer", "applied"),
+            ("property_override", "lineweight_not_bylayer", "applied"),
+        ]
+        and after == []
+        and entity.get("layer") == "GEOMETRY"
+        and entity.get("color") == 256
+        and entity.get("lineweight_name") == "ByLayer"
+    )
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -2588,6 +2665,7 @@ CHECKS = {
     "policy_read_only_batch": (policy_read_only_batch, "Security"),
     "write_path_autoload_refused": (write_path_autoload_refused, "Security"),
     "dimension_auto_one_call_part": (dimension_auto_one_call_part, "Dimensions"),
+    "property_override_focus": (property_override_focus, "Quality gate"),
 }
 
 
