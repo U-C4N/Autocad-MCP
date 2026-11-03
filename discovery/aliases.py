@@ -1795,6 +1795,16 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "loop number",
         ),
     ),
+    "pid_project": ToolAliases(
+        acad=(),
+        synonyms=(
+            "multi sheet p&id",
+            "off-page connector check",
+            "continuation sheets",
+            "cross sheet duplicate tag",
+            "project instrument index",
+        ),
+    ),
     # ── Styles (track E, group S) ───────────────────────────────────────────
     "dimstyle_create": ToolAliases(
         acad=("DIMSTYLE", "DDIM"),

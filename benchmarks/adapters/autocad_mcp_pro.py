@@ -2254,3 +2254,130 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
             },
             [],
         )
+
+    async def _task_pid_project_offpage(self):
+        """Three sheet files, four cross-sheet defects, each once (1.8-21).
+
+        The sheets are drawn by ``pid_from_spec`` on a fresh drawing each and
+        saved; the truth (which connector and which pump carry each defect) is
+        the handle map ``pid_from_spec`` returned, never the checker's output.
+        ``pid_project`` reads the files through the real server with
+        ``include_current=False``. The broken-input twins: a manifest naming a
+        file that does not exist (``file_not_found``) and 51 sheets
+        (``invalid_args``), both before anything is read.
+        """
+        work = self.artifact_dir / "pid_project_offpage"
+        work.mkdir(parents=True, exist_ok=True)
+        sheet = {"layer_set": "pid", "sheet_size": "A3", "scale": 1.0}
+
+        def pump(item_id, y):
+            return {"id": item_id, "symbol": "centrifugal_pump", "x": 100, "y": y, "tag": item_id}
+
+        def conn(item_id, direction, link, port, number, y):
+            end = {"from": port} if direction == "out" else {"to": port}
+            return {
+                "id": item_id,
+                "direction": direction,
+                "x": 200 if direction == "out" else 20,
+                "y": y + (40 if direction == "out" else 0),
+                "tag": "CONTINUATION",
+                "link": link,
+                "number": number,
+                **end,
+            }
+
+        specs = {
+            "P-001": {
+                "sheet": sheet,
+                "equipment": [pump("P-101", 100), pump("P-102", 200), pump("P-103", 300)],
+                "connectors": [
+                    conn("A1", "out", "L-1", "P-101.discharge", "100-P-1", 100),
+                    conn("A2", "out", "L-2", "P-102.discharge", "100-P-2", 200),
+                    conn("A3", "out", "L-3", "P-103.discharge", "100-P-3", 300),
+                ],
+            },
+            "P-002": {
+                "sheet": sheet,
+                "equipment": [pump("P-201", 100), pump("P-202", 200)],
+                "connectors": [
+                    conn("B1", "in", "L-1", "P-201.suction", "100-P-1", 100),
+                    conn("B2", "in", "L-2", "P-202.suction", "100-P-9", 200),
+                    conn("B4", "out", "L-4", "P-202.discharge", "100-P-4", 200),
+                ],
+            },
+            "P-003": {
+                "sheet": sheet,
+                "equipment": [pump("P-101", 100)],
+                "connectors": [conn("C1", "out", "L-3", "P-101.discharge", "100-P-3", 100)],
+            },
+        }
+        handles: dict[str, dict] = {}
+        manifest = {"project": "offpage", "sheets": []}
+        async with self._served() as client:
+            for number, spec in specs.items():
+                await client.call_tool("drawing_new", {})
+                drawn = await client.call_tool("pid_from_spec", {"spec": spec})
+                handles[number] = (drawn.structured_content or {}).get("handles") or {}
+                path = work / f"{number}.dxf"
+                await client.call_tool("drawing_save_as", {"path": str(path)})
+                manifest["sheets"].append({"path": str(path), "number": number})
+            checked = await client.call_tool(
+                "pid_project",
+                {"action": "check", "manifest": manifest, "include_current": False},
+                raise_on_error=False,
+            )
+            missing = await client.call_tool(
+                "pid_project",
+                {
+                    "manifest": {"sheets": [*manifest["sheets"], {"path": str(work / "gone.dxf")}]},
+                    "include_current": False,
+                },
+                raise_on_error=False,
+            )
+            many = await client.call_tool(
+                "pid_project",
+                {"sheets": [str(work / f"s{i}.dxf") for i in range(51)]},
+                raise_on_error=False,
+            )
+        result = checked.structured_content or {}
+        links = {
+            row["link"]: (row["status"], [(c["sheet"], c["handle"]) for c in row["connectors"]])
+            for row in result.get("links") or []
+        }
+        want_links = {
+            "L-1": ("matched", [("P-001", handles["P-001"].get("A1")), ("P-002", handles["P-002"].get("B1"))]),
+            "L-2": ("matched", [("P-001", handles["P-001"].get("A2")), ("P-002", handles["P-002"].get("B2"))]),
+            "L-3": ("direction_mismatch", [("P-001", handles["P-001"].get("A3")), ("P-003", handles["P-003"].get("C1"))]),
+            "L-4": ("orphan", [("P-002", handles["P-002"].get("B4"))]),
+        }  # fmt: skip
+        dups = [
+            (row["tag"], [(o["sheet"], o["handle"]) for o in row["occurrences"]])
+            for row in result.get("duplicate_tags") or []
+        ]
+        want_dups = [
+            ("P-101", [("P-001", handles["P-001"].get("P-101")), ("P-003", handles["P-003"].get("P-101"))])
+        ]  # fmt: skip
+        mismatches = [
+            (row["link"], row["out"]["handle"], row["in"]["handle"])
+            for row in result.get("line_continuity") or []
+            if row["status"] == "mismatch"
+        ]
+        summary = result.get("summary") or {}
+        twins = {
+            "missing": (missing.structured_content or {}).get("kind") if missing.is_error else None,
+            "many": (many.structured_content or {}).get("kind") if many.is_error else None,
+        }
+        passed = (
+            not checked.is_error
+            and links == want_links
+            and dups == want_dups
+            and mismatches == [("L-2", handles["P-001"].get("A2"), handles["P-002"].get("B2"))]
+            and summary.get("orphan") == 1
+            and summary.get("direction_mismatch") == 1
+            and twins == {"missing": "file_not_found", "many": "invalid_args"}
+        )
+        return (
+            passed,
+            {"summary": summary, "twins": twins, "sheets": len(result.get("sheets") or [])},
+            [],
+        )

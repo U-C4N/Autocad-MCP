@@ -1656,6 +1656,7 @@ PACK_TOOL_NAMES: dict[str, frozenset[str]] = {
             "pid_line_list",
             "pid_equipment_list",
             "pid_from_spec",
+            "pid_project",
         }
     ),
     # SECTION 20 — the 22 environment tools (spec §7, §8.2).
@@ -8701,7 +8702,7 @@ async def solid_boolean(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 17: P&ID (9 tools) ──────────────────────────────────────────────
+# ── SECTION 17: P&ID (10 tools) ─────────────────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -9181,6 +9182,36 @@ async def pid_tag_parse(
     from engineering.pid.tags import parse_tag
 
     return parse_tag(tag, kind, equipment_prefixes)
+
+
+@cad_tool(
+    summary="Check a multi-sheet P&ID: off-page links, cross-sheet tags, line numbers; or index it.",
+    cost="safe",
+)
+@mcp.tool(
+    annotations={"title": "P&ID: Project", "readOnlyHint": False, "destructiveHint": False},
+    tags={"pid", "query"},
+)
+async def pid_project(
+    action: Annotated[str, "check | index"] = "check",
+    sheets: Annotated[list[str] | None, "Sheet files (.dxf; .dwg live only)"] = None,
+    manifest: Annotated[dict | None, "{project, sheets: [{path, number, title}]}"] = None,
+    write: Annotated[str | None, "Write the result: .json, .csv or .xlsx"] = None,
+    include_current: Annotated[bool, "Also read the active document"] = True,
+    ctx: Context = None,
+) -> dict:
+    """Read every sheet of a P&ID project with the pid_graph reader; nothing is modified.
+
+    check: `links` per LINK id (matched / orphan / direction_mismatch /
+    duplicate, each connector with sheet + handle), cross-sheet
+    `duplicate_tags` (connectors never count), `line_continuity` of every
+    matched pair. index: instrument index, line list and equipment list
+    with a `sheet` column. Refused by name: over 50 sheets, a missing file,
+    a .dwg headless (`dwg`), .xlsx without openpyxl (`xlsx_write`).
+    """
+    from engineering.pid.project import run_project
+
+    return await run_project(_backend(ctx), action, sheets, manifest, write, include_current)
 
 
 # ---------------------------------------------------------------------------
@@ -13787,6 +13818,28 @@ async def resource_isa51() -> str:
     from engineering.pid.tags import describe_tables
 
     return json.dumps(describe_tables(), indent=2)
+
+
+@mcp.resource(
+    "autocad://pid/project/last",
+    name="Last P&ID Project Result",
+    description=(
+        "The last pid_project result of this server process (check or index), or "
+        "available: false when none has run"
+    ),
+    mime_type="application/json",
+    annotations={"readOnlyHint": True},
+    tags={"pid"},
+)
+async def resource_pid_project_last() -> str:
+    from engineering.pid.project import last_result
+
+    last = last_result()
+    if last is None:
+        return json.dumps(
+            {"available": False, "hint": "run pid_project(action='check' or 'index') first"}
+        )
+    return json.dumps({"available": True, **last}, indent=2, ensure_ascii=False)
 
 
 @mcp.resource(
