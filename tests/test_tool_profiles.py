@@ -94,7 +94,7 @@ class _AboutCtx:
         self.lifespan_context = {"backend": None}
 
 
-async def test_core_env_value_still_serves_the_full_surface(monkeypatch):
+async def test_core_env_value_still_serves_the_full_surface(full_catalog, monkeypatch):
     """The removal must not brick an existing TOOL_PROFILE=core deployment."""
     monkeypatch.setenv("AUTOCAD_MCP_BACKEND", "ezdxf")  # setattr here was a no-op (T0.8-B)
     monkeypatch.setattr(config.settings, "tool_profile", "core")
@@ -106,7 +106,7 @@ async def test_core_env_value_still_serves_the_full_surface(monkeypatch):
     assert "system_run_command" in visible
 
 
-async def test_lean_profile_filters_client_view(monkeypatch):
+async def test_lean_profile_filters_client_view(full_catalog, monkeypatch):
     monkeypatch.setenv("AUTOCAD_MCP_BACKEND", "ezdxf")  # setattr here was a no-op (T0.8-B)
     monkeypatch.setattr(config.settings, "tool_profile", "lean")
     async with Client(server.mcp) as client:
@@ -122,7 +122,9 @@ async def test_profile_switch_is_idempotent():
     assert lean_again["enabled_count"] == len(server.LEAN_TOOL_NAMES)
 
 
-async def test_reapplying_a_profile_replaces_its_visibility_instead_of_stacking(monkeypatch):
+async def test_reapplying_a_profile_replaces_its_visibility_instead_of_stacking(
+    full_catalog, monkeypatch
+):
     # fastmcp 3 appends a Visibility transform on every enable/disable call, and a
     # tool lookup walks the whole stack as nested calls. The lifespan re-applies
     # the profile on every client connection, so the stack grew by two per

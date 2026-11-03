@@ -139,6 +139,6 @@ async def test_a_truncated_revision_is_refused_not_hung(client, tmp_path):
     assert "old_path:" in text and "not a readable DXF" in text
 
 
-async def test_the_diff_is_advertised_as_non_destructive(client):
+async def test_the_diff_is_advertised_as_non_destructive(full_catalog, client):
     tools = {tool.name: tool for tool in await client.list_tools()}
     assert tools["drawing_diff"].annotations.destructiveHint is False

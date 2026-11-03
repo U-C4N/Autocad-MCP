@@ -68,19 +68,34 @@ def private_state_dir(state_root, monkeypatch):
 
 
 @pytest.fixture
-def full_catalog():
+def full_catalog(request):
     """``DISCOVERY_MODE=off`` for a test that reads the whole catalog off ``list_tools``.
 
     Since 1.8.0 the server's default is ``search`` (plan 1.8-11): a client lists
     the synthetic tools and the pins, every tool stays callable. A test about a
     tool's advertised schema or annotations asks for the full catalog by
     name; the configured mode is put back afterwards.
-    """
-    import server
 
-    server._apply_discovery_mode("off")
+    Applied to the ``server`` module the test module imported AND the one
+    ``sys.modules`` holds now: ``tests/test_http_auth.py`` re-imports server.py
+    and drops it from ``sys.modules``, so the two can be different objects (and
+    a bare ``import server`` here would build a third).
+    """
+    import sys
+
+    modules = []
+    for candidate in (getattr(request.module, "server", None), sys.modules.get("server")):
+        if hasattr(candidate, "_apply_discovery_mode") and candidate not in modules:
+            modules.append(candidate)
+    if not modules:
+        import server
+
+        modules.append(server)
+    for module in modules:
+        module._apply_discovery_mode("off")
     yield
-    server._apply_discovery_mode()
+    for module in modules:
+        module._apply_discovery_mode()
 
 
 def pytest_configure(config):

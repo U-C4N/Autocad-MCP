@@ -67,7 +67,9 @@ async def _handle(client, tool: str, args: dict) -> str:
     return data.get("handle") or data.get("result", {}).get("handle")
 
 
-async def test_every_read_cost_tool_reaches_the_engine_readonly(client, monkeypatch, tmp_path):
+async def test_every_read_cost_tool_reaches_the_engine_readonly(
+    full_catalog, client, monkeypatch, tmp_path
+):
     calls: list[tuple[str, str, bool]] = []
     current = {"tool": "setup"}
     real_async = ezdxf_backend.EzdxfBackend._async

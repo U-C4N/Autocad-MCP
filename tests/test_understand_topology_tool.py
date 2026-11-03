@@ -96,6 +96,6 @@ async def test_gap_must_exceed_tol(client, pipe_layer):
     assert "gap (0.005) must exceed tol (0.01)" in result.content[0].text
 
 
-async def test_the_check_is_advertised_read_only(client):
+async def test_the_check_is_advertised_read_only(full_catalog, client):
     tools = {tool.name: tool for tool in await client.list_tools()}
     assert tools["drawing_topology_check"].annotations.readOnlyHint is True

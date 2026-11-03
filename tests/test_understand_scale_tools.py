@@ -95,6 +95,6 @@ async def test_a_non_positive_floor_is_refused(client, tmp_path):
     assert "min_pair_mm" in result.content[0].text
 
 
-async def test_drawing_scale_check_is_advertised_read_only(client):
+async def test_drawing_scale_check_is_advertised_read_only(full_catalog, client):
     tools = {tool.name: tool for tool in await client.list_tools()}
     assert tools["drawing_scale_check"].annotations.readOnlyHint is True

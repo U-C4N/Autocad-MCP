@@ -49,7 +49,7 @@ def test_correctness_suite_has_the_settings_checks():
     ):
         assert CHECKS[name][1] == "Settings"
     # v4 left the suite at 32; tracks B + G grew it to 39 (tests/test_benchmark_v5.py).
-    assert len(CHECKS) == 68
+    assert len(CHECKS) == 69
 
 
 async def _pid_roundtrip(tmp_path):

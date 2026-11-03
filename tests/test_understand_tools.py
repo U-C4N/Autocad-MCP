@@ -77,6 +77,6 @@ async def test_a_file_the_engine_cannot_parse_is_refused(client, tmp_path):
     assert "not_a_drawing.dxf" in result.content[0].text
 
 
-async def test_drawing_understand_is_advertised_read_only(client):
+async def test_drawing_understand_is_advertised_read_only(full_catalog, client):
     tools = {tool.name: tool for tool in await client.list_tools()}
     assert tools["drawing_understand"].annotations.readOnlyHint is True
