@@ -41,7 +41,8 @@ from .base import (
     LayerInfo,
     UnsupportedCapabilityError,
     _unsupported,
-    normalize_lineweight,
+    lineweight_name,
+    parse_lineweight,
     shoelace_area,
 )
 from .contracts.entity_modification import TEXT_SEARCH_SCOPE
@@ -1423,6 +1424,11 @@ def _entity_info_dxf(ent, *, detail: bool = False) -> EntityInfo:
         linetype=linetype,
         visible=visible,
         properties=props,
+        lineweight_name=(
+            lineweight_name(ent.dxf.get("lineweight", -1))
+            if ent.dxf.is_supported("lineweight")
+            else None
+        ),
     )
 
 
@@ -5587,8 +5593,11 @@ class EzdxfBackend(AutoCADBackend):
 
         def _sync():
             msp = self._msp()
-            hatch = msp.add_hatch()
-            hatch.set_pattern_fill(pattern, scale=float(scale), angle=float(angle))
+            # ByLayer (256), as ActiveX AddHatch leaves it: ezdxf's add_hatch and
+            # set_pattern_fill both default to an explicit ACI 7, which the
+            # property_override focus would rightly report on every hatch.
+            hatch = msp.add_hatch(color=256)
+            hatch.set_pattern_fill(pattern, color=256, scale=float(scale), angle=float(angle))
             pts = [(float(p[0]), float(p[1])) for p in boundary_points]
             hatch.paths.add_polyline_path(pts, is_closed=True)
             self._apply_attrs(hatch, layer, color)
@@ -6471,6 +6480,8 @@ class EzdxfBackend(AutoCADBackend):
         lineweight=None,
         visible=None,
     ) -> dict:
+        code = parse_lineweight(lineweight)  # refused by name before any write
+
         def _sync():
             ent = self._get_entity(handle)
             if layer is not None:
@@ -6480,8 +6491,8 @@ class EzdxfBackend(AutoCADBackend):
             if linetype is not None:
                 _ensure_linetype_loaded(self._require_doc(), linetype)
                 ent.dxf.linetype = linetype
-            if lineweight is not None:
-                ent.dxf.lineweight = normalize_lineweight(lineweight)
+            if code is not None:
+                ent.dxf.lineweight = code
             if visible is not None:
                 ent.dxf.invisible = not bool(visible)
             self._mark_dirty()
@@ -7000,6 +7011,10 @@ class EzdxfBackend(AutoCADBackend):
         linetype="Continuous",
         lineweight=-3,
     ) -> LayerInfo:
+        code = parse_lineweight(lineweight, target="layer")
+        if code is None:
+            code = -3
+
         def _sync():
             doc = self._require_doc()
             _ensure_linetype_loaded(doc, linetype)
@@ -7007,7 +7022,7 @@ class EzdxfBackend(AutoCADBackend):
                 name,
                 color=int(color),
                 linetype=linetype,
-                lineweight=normalize_lineweight(lineweight),
+                lineweight=code,
             )
             self._mark_dirty()
             return _layer_info_dxf(lyr, self._current_layer)
@@ -7046,6 +7061,8 @@ class EzdxfBackend(AutoCADBackend):
         linetype=None,
         lineweight=None,
     ) -> LayerInfo:
+        code = parse_lineweight(lineweight, target="layer")
+
         def _sync():
             doc = self._require_doc()
             lyr = doc.layers.get(name)
@@ -7056,8 +7073,8 @@ class EzdxfBackend(AutoCADBackend):
             if linetype is not None:
                 _ensure_linetype_loaded(doc, linetype)
                 lyr.dxf.linetype = linetype
-            if lineweight is not None:
-                lyr.dxf.lineweight = normalize_lineweight(lineweight)
+            if code is not None:
+                lyr.dxf.lineweight = code
             self._mark_dirty()
             return _layer_info_dxf(lyr, self._current_layer)
 

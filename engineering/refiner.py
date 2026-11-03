@@ -14,6 +14,7 @@ import anyio
 from .changes.preview import RevisionWatch, check_preconditions, make_preview
 from .critique import CHECK_FAILED, SCAN_INCOMPLETE
 from .plan_spec import Issue
+from .property_override import repair_property_override
 from .repairs import (
     repair_construction_left,
     repair_dim_overlap,
@@ -111,6 +112,7 @@ class RepairRegistry:
             self.register("iso128", repair_iso128)
             self.register("untrimmed_corner", repair_untrimmed_corner)
             self.register("dim_overlap", repair_dim_overlap)
+            self.register("property_override", repair_property_override)
 
     def register(self, focus: str, handler: RepairHandler) -> None:
         self._handlers[focus] = handler

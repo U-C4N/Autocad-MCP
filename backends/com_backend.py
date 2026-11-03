@@ -39,7 +39,8 @@ from .base import (
     LayerInfo,
     UnsupportedCapabilityError,
     deg2rad,
-    normalize_lineweight,
+    lineweight_name,
+    parse_lineweight,
     rad2deg,
     shoelace_area,
 )
@@ -1867,6 +1868,14 @@ def _entity_info(entity) -> EntityInfo:
     except Exception as exc:
         log.debug("Linetype read failed, using ByLayer: %s", exc)
         linetype = "ByLayer"
+    # The same DXF integers as headless (acLnWtByLayer -1, ByBlock -2,
+    # ByLwDefault -3); the typelib spelling, see the note below.
+    try:
+        weight = entity.Lineweight
+        weight_name = lineweight_name(weight) if isinstance(weight, (int, float)) else None
+    except Exception as exc:
+        log.debug("Lineweight read failed: %s", exc)
+        weight_name = None
 
     return EntityInfo(
         handle=entity.Handle,
@@ -1876,6 +1885,7 @@ def _entity_info(entity) -> EntityInfo:
         linetype=linetype,
         visible=bool(entity.Visible),
         properties=props,
+        lineweight_name=weight_name,
     )
 
 
@@ -6366,6 +6376,8 @@ class ComBackend(AutoCADBackend):
         lineweight=None,
         visible=None,
     ) -> dict:
+        code = parse_lineweight(lineweight)  # refused by name before the job
+
         def _sync():
             doc = _acad_doc()
             ent = doc.HandleToObject(handle)
@@ -6376,8 +6388,8 @@ class ComBackend(AutoCADBackend):
             if linetype is not None:
                 _ensure_linetype_loaded(linetype)
                 ent.Linetype = linetype
-            if lineweight is not None:
-                ent.Lineweight = normalize_lineweight(lineweight)
+            if code is not None:
+                ent.Lineweight = code
             if visible is not None:
                 ent.Visible = bool(visible)
             return {"ok": True, "handle": handle}
@@ -6553,6 +6565,10 @@ class ComBackend(AutoCADBackend):
         linetype="Continuous",
         lineweight=-3,
     ) -> LayerInfo:
+        code = parse_lineweight(lineweight, target="layer")
+        if code is None:
+            code = -3
+
         def _sync():
             doc = _acad_doc()
             lyr = doc.Layers.Add(name)
@@ -6562,7 +6578,7 @@ class ComBackend(AutoCADBackend):
                 lyr.Linetype = linetype
             except Exception as exc:
                 log.warning("Failed to set linetype '%s' on layer '%s': %s", linetype, name, exc)
-            lyr.Lineweight = normalize_lineweight(lineweight)
+            lyr.Lineweight = code
             return _layer_info(lyr, doc.ActiveLayer.Name)
 
         return await self._run(_sync)
@@ -6592,6 +6608,8 @@ class ComBackend(AutoCADBackend):
         linetype=None,
         lineweight=None,
     ) -> LayerInfo:
+        code = parse_lineweight(lineweight, target="layer")
+
         def _sync():
             doc = _acad_doc()
             lyr = doc.Layers.Item(name)
@@ -6600,8 +6618,8 @@ class ComBackend(AutoCADBackend):
             if linetype is not None:
                 _ensure_linetype_loaded(linetype)
                 lyr.Linetype = linetype
-            if lineweight is not None:
-                lyr.Lineweight = normalize_lineweight(lineweight)
+            if code is not None:
+                lyr.Lineweight = code
             return _layer_info(lyr, doc.ActiveLayer.Name)
 
         return await self._run(_sync)

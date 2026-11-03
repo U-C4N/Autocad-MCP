@@ -39,8 +39,9 @@ _EXPECTED_LAYER_COLOR: dict[str, int] = {
 
 
 async def _check_iso128(backend: AutoCADBackend) -> list[Issue]:
-    """Layer lineweights must be in ISO_128_LINEWEIGHTS_MM (or -3=ByLayer
-    sentinel meaning 'inherit')."""
+    """Layer lineweights must be in ISO_128_LINEWEIGHTS_MM (or the -3 Default
+    sentinel, which a layer may carry; -1 ByLayer and -2 ByBlock are entity
+    values - an entity's own lineweight is the ``property_override`` focus)."""
     issues: list[Issue] = []
     layers = await backend.layer_list()
     allowed = set(ISO_128_LINEWEIGHTS_MM)
@@ -50,7 +51,7 @@ async def _check_iso128(backend: AutoCADBackend) -> list[Issue]:
         if "CONST" in lyr.name.upper():
             continue
         lw = float(lyr.lineweight)
-        # AutoCAD sentinels: -1 (Default), -2 (ByBlock), -3 (ByLayer);
+        # DXF sentinels: -1 (ByLayer), -2 (ByBlock), -3 (Default, LWDEFAULT);
         # 0.0 = ezdxf's "use default" — not an ISO 128 violation.
         if lw <= 0:
             continue
@@ -478,6 +479,10 @@ _FOCUS_DISPATCH = {
     "construction_left": _check_construction_left,
     "gdt": _check_gdt,
 }
+
+from .property_override import check_property_override  # noqa: E402  (imports _records lazily)
+
+_FOCUS_DISPATCH["property_override"] = check_property_override
 
 from .pid.critique import PID_DISPATCH  # noqa: E402  (registered after the mechanical focuses)
 

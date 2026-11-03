@@ -81,7 +81,15 @@ def test_records_carry_wcs_geometry_plain_text_and_the_space():
     assert snap.source == "memory"
     assert snap.insunits == 4
     assert snap.layouts == ("Model", "Layout1")
-    assert snap.layers["PIPE"] == {"color": 3, "linetype": "Continuous"}
+    # v1.8.0 (plan 1.8-01): lineweight, plot, on and frozen joined colour and linetype.
+    assert snap.layers["PIPE"] == {
+        "color": 3,
+        "linetype": "Continuous",
+        "lineweight": -3,
+        "plot": True,
+        "on": True,
+        "frozen": False,
+    }
     (line_model,) = [r for r in kinds["LINE"] if r.space == "Model"]
     (line_paper,) = [r for r in kinds["LINE"] if r.space == "Layout1"]
     assert line_model.points == ((0.0, 0.0), (3.0, 4.0))

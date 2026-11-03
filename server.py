@@ -34,7 +34,16 @@ from fastmcp.tools.tool import ToolResult
 from pydantic import Field
 
 import config
-from backends.base import BlockInfo, EntityInfo, LayerInfo
+from backends.base import (
+    LINEWEIGHT_HELP,
+    LINEWEIGHT_LAYER_NOTE,
+    BlockInfo,
+    EntityInfo,
+    LayerInfo,
+    Lineweight,
+    lineweight_name,
+    parse_lineweight,
+)
 from backends.operations import (
     CURRENT_OPERATION,
     OperationConflictError,
@@ -2876,7 +2885,7 @@ async def entity_set_properties(
     linetype: Annotated[
         str | None, "New linetype name (e.g. 'DASHED', 'CENTER', 'ByLayer')"
     ] = None,
-    lineweight: Annotated[int | None, "Lineweight in 0.01mm units (-3=ByLayer, -2=ByBlock)"] = None,
+    lineweight: Annotated[Lineweight | None, LINEWEIGHT_HELP] = None,
     visible: Annotated[bool | None, "Set entity visibility"] = None,
     ctx: Context = None,
 ) -> dict:
@@ -3449,9 +3458,7 @@ async def layer_create(
     name: Annotated[str, "New layer name"],
     color: Annotated[int, "ACI color code (1=Red, 2=Yellow, 3=Green, 4=Cyan, 5=Blue, 7=White)"] = 7,
     linetype: Annotated[str, "Linetype name"] = "Continuous",
-    lineweight: Annotated[
-        int, "Lineweight (-3=ByLayer, 0=0.00mm, 13=0.13mm, 25=0.25mm, 50=0.50mm)"
-    ] = -3,
+    lineweight: Annotated[Lineweight, LINEWEIGHT_HELP + LINEWEIGHT_LAYER_NOTE] = -3,
     ctx: Context = None,
 ) -> dict:
     """Create a new layer with specified properties."""
@@ -3497,7 +3504,7 @@ async def layer_modify(
     name: Annotated[str, "Layer name to modify"],
     color: Annotated[int | None, "New ACI color code"] = None,
     linetype: Annotated[str | None, "New linetype name"] = None,
-    lineweight: Annotated[int | None, "New lineweight value"] = None,
+    lineweight: Annotated[Lineweight | None, LINEWEIGHT_HELP + LINEWEIGHT_LAYER_NOTE] = None,
     ctx: Context = None,
 ) -> dict:
     """Modify an existing layer's color, linetype, and/or lineweight."""
@@ -5646,7 +5653,8 @@ async def cad_batch(
 async def entity_batch_create(
     entities: Annotated[
         list[dict],
-        "List of entity definitions. Each dict must have 'type' and type-specific params. Types: line, circle, arc, polyline, rectangle, text, point",
+        "List of entity definitions. Each dict must have 'type' and type-specific params. Types: line, circle, arc, polyline, rectangle, text, point. "
+        "Any definition may add 'lineweight' (hundredths of a mm, or 'ByLayer' = -1, 'ByBlock' = -2, 'Default' = -3 - not ByLayer)",
     ],
     ctx: Context = None,
 ) -> dict:
@@ -5689,7 +5697,12 @@ async def entity_batch_create(
             errors.append({"index": i, "error": f"Unknown type: {ent_type}"})
             continue
         try:
+            # Parsed before the create, so a refused lineweight draws nothing.
+            weight = parse_lineweight(ent_def.pop("lineweight", None))
             info = await creator(**ent_def)
+            if weight is not None:
+                await b.entity_set_properties(info.handle, lineweight=weight)
+                info.lineweight_name = lineweight_name(weight)
             results.append(_dc(info))
         except Exception as exc:
             errors.append({"index": i, "type": ent_type, "error": str(exc)})
@@ -5709,7 +5722,8 @@ async def entity_batch_create(
 async def entity_batch_modify(
     operations: Annotated[
         list[dict],
-        "List of operations. Each dict: {handle, action, ...params}. Actions: move(dx,dy), rotate(base_x,base_y,angle_deg), scale(base_x,base_y,factor), delete, set_properties(layer,color,...)",
+        "List of operations. Each dict: {handle, action, ...params}. Actions: move(dx,dy), rotate(base_x,base_y,angle_deg), scale(base_x,base_y,factor), delete, set_properties(layer,color,linetype,lineweight,visible). "
+        "lineweight: hundredths of a mm, or 'ByLayer' = -1, 'ByBlock' = -2, 'Default' = -3 - not ByLayer",
     ],
     ctx: Context = None,
 ) -> dict:
@@ -6717,7 +6731,7 @@ async def drawing_finalize(
 ) -> dict:
     """Premium completion gate: runs BOTH the 8-step validator AND the premium critique focuses
     (iso128, layer_color, dim_overlap, untrimmed_corner, duplicate_entities, construction_left,
-    gdt, plus the P&ID focuses pid_dangling_line, pid_duplicate_tag,
+    property_override, gdt, plus the P&ID focuses pid_dangling_line, pid_duplicate_tag,
     pid_incompatible_connection, pid_untagged_instrument, pid_illegal_tag,
     pid_unconnected_equipment — silent on a sheet with no P&ID symbols, plus the
     mechanical focuses mech_missing_centreline, mech_unhatched_section,
@@ -7142,7 +7156,8 @@ async def drawing_critique(
         Field(
             default=None,
             description="Subset of: iso128, layer_color, dim_overlap, untrimmed_corner, "
-            "duplicate_entities, construction_left, gdt, the P&ID focuses "
+            "duplicate_entities, construction_left, property_override (an entity's own "
+            "lineweight / colour / linetype instead of ByLayer), gdt, the P&ID focuses "
             "pid_dangling_line, pid_duplicate_tag, pid_incompatible_connection, "
             "pid_untagged_instrument, pid_illegal_tag, pid_unconnected_equipment "
             "(silent on a drawing with no P&ID symbols), and the mechanical focuses "
@@ -7163,8 +7178,12 @@ async def drawing_critique(
     Standard production gate: must return [] before `drawing_finalize`.
 
     The entity checks (construction_left, untrimmed_corner, duplicate_entities,
-    dim_overlap) read every entity of every space - model and every paper layout -
-    and compare pairs only within one space. Refusals and failures are issues, never
+    dim_overlap, property_override) read every entity of every space - model and every
+    paper layout - and compare pairs only within one space. property_override reports
+    one issue per layer and code (lineweight_not_bylayer - an explicit non-ISO 128 value
+    is an error; color_not_bylayer; linetype_not_bylayer) on the engineering layers and
+    the applied layer set, title block and block members exempt, other layers at info;
+    lineweight -3 is Default, not ByLayer. Refusals and failures are issues, never
     silence: a check that raises returns an `error` issue of its focus with
     detail.code `check_failed`; a read that could not cover the drawing (more than
     MAX_QA_ENTITIES entities, default 2,000,000; or a live export whose per-layout
