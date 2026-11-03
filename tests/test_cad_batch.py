@@ -989,6 +989,24 @@ async def test_a_literal_handle_after_a_document_switch_is_checked_when_it_runs(
     assert result["results"][1]["error"]["kind"] == "not_found"
 
 
+async def test_drawing_close_is_a_pre_check_barrier_and_auto_runs_it_as_stop(client):
+    """After drawing_close no document is left to judge a literal handle against,
+    and a checkpoint of the closed document cannot undo the close."""
+    result = await _batch(
+        client,
+        [
+            _line(),
+            {"tool": "drawing_close", "args": {"save": False}},
+            {"tool": "entity_get", "args": {"handle": "DEAD"}},
+        ],
+    )
+    assert "kind" not in result, "not refused before the run"
+    assert [row["status"] for row in result["results"]] == ["ok", "ok", "error"]
+    assert result["atomicity"]["mode"] == "stop"
+    assert result["atomicity"]["default_applied"] is False
+    assert "drawing_close" in result["atomicity"]["note"]
+
+
 async def test_a_reference_is_not_pre_checked(client):
     """A '$ref' resolves only when its step runs; the entity may not exist yet."""
     result = await _batch(

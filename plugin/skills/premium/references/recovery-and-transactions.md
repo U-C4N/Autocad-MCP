@@ -7,10 +7,17 @@ report a write you cannot prove happened.
 
 - **`cad_batch(steps=[...])`** runs many calls in one round trip; `bind`
   passes a result to a later step (`"$edge"`, `"$mid.x"`). Validation runs
-  first: an unknown tool, a schema-invalid argument or an unresolved reference
-  refuses the whole batch before anything runs. `on_error="rollback"` opens a
-  checkpoint - read the returned `atomicity` block: headless rollback restores
-  a snapshot; live rollback sends an UNDO whose landing AutoCAD never confirms.
+  first: an unknown tool, a schema-invalid argument, an unresolved reference or
+  a literal handle that names no entity (`unknown_handle`, each step index and
+  handle in `missing`) refuses the whole batch before anything runs. The
+  default `on_error="auto"` makes a batch that writes all or nothing: a step
+  that fails rolls back the steps before it (headless: a snapshot; live: an
+  UNDO judged by before/after fingerprints). Read the returned `atomicity`
+  block (`default_applied`, `rolled_back`, `verified`); pass
+  `on_error="stop"` only when you want the steps before a failure kept.
+- **`entity_delete_many`** deletes all of its handles or none: a missing handle
+  refuses the call, and a delete that fails rolls the others back
+  (`ok: false`, `rolled_back`).
 - **`transaction_begin` / `transaction_commit` / `transaction_rollback`** wrap
   hand-made sequences. Always close what you open. The whole-sheet tools
   (`pid_from_spec`, `arch_plan_from_spec`, `mech_part_draw`) already run in
@@ -51,6 +58,7 @@ refusal is not replayed by its `operation_id`, so the same request runs again.
 |---|---|---|
 | `invalid_args` | refused before work, path named | fix the argument |
 | `not_found` | the handle names no entity | `entity_list` / `entity_select_smart` for live handles |
+| `unknown_handle` | a batch or list call named a handle that does not exist; nothing ran (`missing`) | fix the handles in `missing`, then the same call |
 | `path_refused`, `file_not_found` | outside `ALLOWED_PATHS`, or no file there | use an allowed path; check the name |
 | `policy_refused` | a raw command or LISP the denylist refuses | use a tool from `alternatives` |
 | `application_busy` | live: AutoCAD at a prompt or dialog, nothing written | wait (ESC in AutoCAD), then the same call |

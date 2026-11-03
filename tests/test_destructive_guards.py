@@ -90,6 +90,37 @@ async def test_a_failure_mid_loop_rolls_every_delete_back(client, monkeypatch):
         assert await _exists(client, handle), f"{handle} must be back after the rollback"
 
 
+async def test_a_rollback_whose_evidence_cannot_be_read_is_not_claimed_verified(
+    client, monkeypatch
+):
+    """The rollback landed; the handles could not be read again. That is
+    `verified: None`, never True, and never an error raised over the rollback."""
+    from backends.ezdxf_backend import EzdxfBackend
+    from engineering.changes import precheck
+
+    handles = [await _line(client, y) for y in (0.0, 5.0)]
+    real = EzdxfBackend.entity_delete
+
+    async def flaky(self, handle):
+        if handle == handles[1]:
+            raise RuntimeError("the entity is on a locked layer")
+        return await real(self, handle)
+
+    async def unreadable(backend, before, *, exact):
+        raise RuntimeError("the export broke")
+
+    monkeypatch.setattr(EzdxfBackend, "entity_delete", flaky)
+    monkeypatch.setattr(precheck, "changed_since", unreadable)
+    payload = (
+        await client.call_tool("entity_delete_many", {"handles": handles})
+    ).structured_content
+    assert payload["ok"] is False
+    assert payload["rolled_back"] is True
+    assert payload["verified"] is None
+    for handle in handles:
+        assert await _exists(client, handle)
+
+
 async def test_a_clean_delete_commits_and_answers_ok(client):
     handles = [await _line(client, y) for y in (0.0, 5.0)]
     payload = (
@@ -219,6 +250,8 @@ async def test_a_live_delete_failing_mid_loop_is_undone_back_to_the_mark(monkeyp
     assert payload["rolled_back"] is True
     assert payload["deleted"] == 0
     assert payload["verified"] is True
+    # best_effort_undo: judged only once AutoCAD is idle, exactly, on every handle.
+    assert payload["cmdactive"] == 0 and payload["handles_checked"] == 3
     assert [row["handle"] for row in payload["errors"]] == [handles[1]]
     assert [entity.Handle for entity in space._items] == handles, "every entity is back"
     assert any(text.startswith("_.UNDO _B") for text in doc.sent), "rolled back to the mark"

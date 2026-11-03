@@ -3606,7 +3606,7 @@ async def entity_delete_many(
     # handles again) and answers ok: false, errors, deleted: 0. A handle listed
     # twice is deleted once (`duplicates_ignored`). The docstring stays short:
     # it is what the discovery index ranks.
-    from engineering.changes.precheck import changed_since, normalise, require_handles
+    from engineering.changes.precheck import normalise, require_handles
 
     await ctx.info(f"Deleting {len(handles)} entities")
     b = _backend(ctx)
@@ -3683,11 +3683,17 @@ async def entity_delete_many(
             result["rolled_back"] = rolled_back
             if rolled_back:
                 result["deleted"] = 0
-                live = getattr(b, "name", None) == "com"
-                changed = await changed_since(b, before, exact=live)
-                result["verified"] = not changed
-                if changed:
-                    result["handles_changed"] = changed
+                # The handles read before the first delete, read again - the
+                # same evidence as cad_batch's: live exact and only once AutoCAD
+                # is idle (CMDACTIVE 0), headless presence. Unreadable or busy
+                # is `verified: None`, never a claim, and never raised over a
+                # rollback that landed.
+                guarantee, _note = _batch_rollback_guarantee(b)
+                verified, evidence = await _batch_rollback_evidence(b, guarantee, True, before)
+                if "handles_checked" not in evidence:
+                    verified = None
+                result["verified"] = verified
+                result.update(evidence)
         else:
             await b.transaction_commit()
     await anyio.lowlevel.checkpoint_if_cancelled()
@@ -4624,6 +4630,7 @@ _BATCH_PRECHECK_BARRIERS = frozenset(
     {
         "drawing_new",
         "drawing_open",
+        "drawing_close",
         "document_activate",
         "document_close",
         "checkpoint_restore",
@@ -4637,7 +4644,14 @@ _BATCH_PRECHECK_BARRIERS = frozenset(
 #: document's, so it cannot undo them: on_error="auto" runs such a batch as
 #: stop (an explicit "rollback" is still honoured as before).
 _BATCH_DOCUMENT_SWITCHES = frozenset(
-    {"drawing_new", "drawing_open", "document_activate", "document_close", "checkpoint_restore"}
+    {
+        "drawing_new",
+        "drawing_open",
+        "drawing_close",
+        "document_activate",
+        "document_close",
+        "checkpoint_restore",
+    }
 )
 
 #: Every ``error.kind`` a step row (and, since 1.8-02, every error envelope)
