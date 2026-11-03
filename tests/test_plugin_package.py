@@ -211,6 +211,16 @@ def test_mcp_json_runs_the_pinned_package_with_its_extras() -> None:
     assert server["args"][-1] == "autocad-mcp"
 
 
+def test_mcp_json_starts_the_server_in_search_mode_unless_overridden() -> None:
+    """1.8-11 (e): unconditionally, whatever the server's own default - the
+    plugin user's idle catalog is the search surface; AUTOCAD_MCP_DISCOVERY=off
+    is the way back to the full catalog."""
+    server = _json(PLUGIN_MCP)["mcpServers"]["autocad"]
+    assert server["env"] == {"DISCOVERY_MODE": "${AUTOCAD_MCP_DISCOVERY:-search}"}
+    readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
+    assert "AUTOCAD_MCP_DISCOVERY" in readme, "the README does not name the discovery override"
+
+
 def test_plugin_readme_documents_the_local_source_override() -> None:
     readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
     mcp_text = PLUGIN_MCP.read_text(encoding="utf-8")
@@ -616,8 +626,14 @@ REQUIRED_SCENARIOS = {
     "prompt-injection",
 }
 #: Spec §6 Task 22: "20 cases" - the named scenarios above and the rest of the
-#: suite's negative scenarios - plus 1.8-02's ``lisp-refused-routes-typed``.
-SUITE_SIZE = 21
+#: suite's negative scenarios - plus 1.8-02's ``lisp-refused-routes-typed`` and
+#: 1.8-11's two call-budget cases, which fail above 6 server calls.
+SUITE_SIZE = 23
+#: 1.8-11: the plugin runs in search mode, so a grader may name the synthetic
+#: tools a search-mode client calls (they are not in the inventory).
+SYNTHETIC_TOOLS = {"search_tools", "call_tool", "describe_tool"}
+#: The call-budget cases (plan section 4: <= 6 calls a case).
+BUDGET_CASES = {"layer-cleanup-budget", "dimension-budget"}
 #: The grader types spec §6 Task 22 names; the suite uses each at least once.
 SPEC_GRADER_TYPES = {"tool_used", "tool_order", "regex", "file_exists", "llm"}
 
@@ -700,14 +716,44 @@ def _check_tool_ref(grader: str, ref: dict, inventory: set[str]) -> None:
     tool = ref["tool"]
     if tool.startswith("mcp__"):
         assert tool.startswith(MCP_PREFIX), f"{grader}: {tool} is not the plugin's server"
-        assert tool[len(MCP_PREFIX) :] in inventory, f"{grader}: no tool {tool}"
+        name = tool[len(MCP_PREFIX) :]
+        assert name in inventory or name in SYNTHETIC_TOOLS, f"{grader}: no tool {tool}"
     if ref.get("input_match"):
         re.compile(ref["input_match"])
+        if tool.endswith("__call_tool"):
+            # a call_tool grader matches the proxied tool's name: it must exist
+            named = set(re.findall(r"[a-z]+(?:_[a-z]+)+", ref["input_match"]))
+            expanded = {
+                f"{stem}_{alt}"
+                for stem, alts in re.findall(r"([a-z_]+)_\(([a-z|]+)\)", ref["input_match"])
+                for alt in alts.split("|")
+            }
+            assert (named | expanded) & inventory, f"{grader}: matches no tool"
 
 
 def test_the_suite_has_twenty_cases() -> None:
     names = [case.name for case in _cases()]
     assert len(names) == SUITE_SIZE, f"{len(names)} cases: {names}"
+
+
+def test_the_call_budget_cases_fail_above_six_calls() -> None:
+    """1.8-11 (k): each budget case counts the server calls after its setup -
+    discovery calls included - and fails above 6; and it names the per-entity
+    tools whose repetition is the missed batch."""
+    names = {case.name for case in _cases()}
+    assert BUDGET_CASES <= names
+    for name in BUDGET_CASES:
+        graders = {
+            path.stem: _front_matter(path) for path in (EVALS / name / "graders").glob("*.md")
+        }
+        data, body = graders["call-budget"]
+        assert (data["type"], data.get("focus")) == ("llm", "trace")
+        assert "6 or fewer" in body and "more than 6" in body
+        assert "search_tools, describe_tool and call_tool count" in body
+        per_call = [
+            d for d, _ in graders.values() if d.get("type") == "tool_used" and d.get("input_match")
+        ]
+        assert per_call and all(d["max"] <= 2 for d in per_call), name
 
 
 def test_the_suite_uses_every_grader_type_the_spec_names() -> None:

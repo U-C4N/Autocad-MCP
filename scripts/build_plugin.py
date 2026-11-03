@@ -147,13 +147,15 @@ def build_variant(variant: str, out: Path, *, python: str | None = None) -> list
         if keep is None or rel in keep:
             copy(path, f"skills/premium/{rel}")
     shipped = json.loads((PLUGIN / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]
+    # The shipped env (1.8-11: DISCOVERY_MODE) rides along, so an arm measures
+    # the surface a plugin user gets; the backend is pinned headless on top.
     servers = {
         name: {
             "command": Path(python or sys.executable).as_posix(),
             "args": [(ROOT / "server.py").as_posix()],
-            "env": {"AUTOCAD_MCP_BACKEND": "ezdxf"},
+            "env": {**(entry.get("env") or {}), "AUTOCAD_MCP_BACKEND": "ezdxf"},
         }
-        for name in shipped
+        for name, entry in shipped.items()
     }
     (out / ".mcp.json").write_text(
         json.dumps({"mcpServers": servers}, indent=2) + "\n", encoding="utf-8"

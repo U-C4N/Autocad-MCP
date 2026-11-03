@@ -136,6 +136,34 @@ def _read_csv(path: Path) -> list[list[str]]:
         return list(csv.reader(handle))
 
 
+def _search_mode() -> bool:
+    """True while the server advertises the search surface (DISCOVERY_MODE=search)."""
+    import server
+
+    return server._discovery_transform is not None
+
+
+class _ProxiedClient:
+    """A client that reaches every tool through the ``call_tool`` proxy.
+
+    What a search-mode client that only calls listed tools does: ``call_tool``
+    with the tool's name and arguments. Everything else is the wrapped client.
+    """
+
+    def __init__(self, client):
+        self._client = client
+        self.proxied_calls = 0
+
+    async def call_tool(self, name: str, arguments: dict | None = None, **kwargs):
+        self.proxied_calls += 1
+        return await self._client.call_tool(
+            "call_tool", {"name": name, "arguments": arguments or {}}, **kwargs
+        )
+
+    def __getattr__(self, attr):
+        return getattr(self._client, attr)
+
+
 class AutoCADMCPProAdapter(BenchmarkAdapter):
     name = "autocad-mcp-pro"
 
@@ -169,6 +197,8 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
         return {
             "backend": self.backend_name,
             "capabilities": self.backend.capabilities().to_dict() if self.backend else None,
+            # 1.8-11: in search mode the in-process client tasks call through call_tool
+            "discovery_mode": "search" if _search_mode() else "off",
         }
 
     async def _reset(self) -> None:
@@ -327,11 +357,14 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
             return counter.count(_wire_payload(tools), FORMAT_JSON_SCHEMA), len(tools)
 
         counter = build_counter("ratio")
+        applied = "search" if _search_mode() else "off"
         try:
             full, catalog_count = await _advertised("off")
             discovery, advertised_count = await _advertised("search")
         finally:
-            server._apply_discovery_mode("off")
+            # the mode the run started in, not "off": a search-mode run of the
+            # matrix must stay in search mode for the tasks after this one
+            server._apply_discovery_mode(applied)
 
         passed = discovery < TOKEN_CEILING and discovery < full
         return (
@@ -1064,7 +1097,10 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
         server._make_backend, server._disconnect_backend = _make, _keep
         try:
             async with Client(server.mcp) as client:
-                yield client
+                # 1.8-11: under DISCOVERY_MODE=search every call goes through the
+                # call_tool proxy, as a client that sees only the listed tools
+                # makes it - the evidence the server default flips on.
+                yield _ProxiedClient(client) if _search_mode() else client
         finally:
             server._make_backend, server._disconnect_backend = make, disconnect
 

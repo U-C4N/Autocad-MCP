@@ -67,6 +67,22 @@ def private_state_dir(state_root, monkeypatch):
     monkeypatch.setenv("ACADMCP_STATE_DIR", str(folder))
 
 
+@pytest.fixture
+def full_catalog():
+    """``DISCOVERY_MODE=off`` for a test that reads the whole catalog off ``list_tools``.
+
+    Since 1.8.0 the server's default is ``search`` (plan 1.8-11): a client lists
+    the synthetic tools and the pins, every tool stays callable. A test about a
+    tool's advertised schema or annotations asks for the full catalog by
+    name; the configured mode is put back afterwards.
+    """
+    import server
+
+    server._apply_discovery_mode("off")
+    yield
+    server._apply_discovery_mode()
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",

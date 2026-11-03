@@ -795,48 +795,49 @@ _auth = (
 # FastMCP server
 # ---------------------------------------------------------------------------
 
+def _server_instructions(
+    mode: str | None = None, profile: str | None = None, packs: set[str] | None = None
+) -> str:
+    """The ``instructions`` for one surface (1.8-11, ``discovery/instructions.py``).
+
+    ``mode`` / ``profile`` / ``packs`` default to what is applied (or configured);
+    every tool the text names is advertised under them. Before any tool is
+    registered (the FastMCP constructor below) nothing is filtered; the lifespan
+    rebuilds the text through ``_refresh_server_instructions`` once the profile
+    is applied, before any client is initialised.
+    """
+    from discovery.instructions import build_instructions
+
+    mode = mode or ("search" if globals().get("_discovery_transform") is not None else "off")
+    advertised: set[str] | None = None
+    components = globals().get("_local_tool_components")
+    try:
+        registered = {tool.name for tool in components()} if components is not None else set()
+    except Exception as exc:  # a registry layout change must not take the server down
+        log.debug("instructions: registry unavailable, nothing filtered: %s", exc)
+        registered = set()
+    if registered:
+        applied = _active_tool_profile or {}
+        profile = profile or applied.get("profile") or "full"
+        if packs is None:
+            # the packs the last profile apply resolved (and warned about), else
+            # a fresh resolve
+            enabled = (applied.get("tool_packs") or {}).get("enabled")
+            packs = set(enabled) if enabled is not None else _enabled_packs()[0]
+        advertised = _profile_enabled_names(profile, registered, packs)
+    return build_instructions(mode, advertised, config.settings.discovery_pinned)
+
+
+def _refresh_server_instructions() -> str:
+    """Rebuild ``mcp.instructions`` for the surface now applied; returns the text."""
+    mcp.instructions = _server_instructions()
+    return mcp.instructions
+
+
 mcp = FastMCP(
     name="AutoCAD MCP Pro",
     auth=_auth,
-    instructions="""
-AutoCAD MCP Pro provides complete AutoCAD automation through a large tool surface.
-
-DUAL ENGINE:
-  - COM backend: Live AutoCAD control (requires AutoCAD running on Windows)
-  - ezdxf backend: Headless DXF file operations (no AutoCAD needed)
-
-WORKFLOW:
-  1. drawing_open / drawing_new  → open or create a drawing
-  2. layer_create               → set up layers
-  3. entity_create_*            → draw geometry
-  4. analysis_entity_stats      → inspect drawing
-  5. view_screenshot            → see current state
-  6. drawing_save               → save your work
-
-ENGINEERING WORKFLOW (parts requiring real production drawings):
-  1. drawing_new           → auto-bootstraps engineering layers + linetypes
-  2. titleblock_apply_iso_a3 → standard ISO 7200 border + title (NEVER hand-draw the title)
-  3. gear_draw_helical_front_view / gear_draw_spur_front_view
-                           → parametric gear front view (NEVER hand-draw teeth or invent the title)
-  4. gear_draw_section_aa  → parametric cross-section
-  5. dimension_*           → real DIMENSION entities (NEVER use text+leader fakes)
-  6. drawing_finalize      → 8-step validator + save + screenshot;
-                             cannot complete without this; raises if invalid.
-
-CRITICAL: For engineering drawings, NEVER manually draw gear teeth, keyways,
-or section hatches with primitive line/circle calls. Use the gear_*, keyway_*,
-and titleblock_* tools — they are deterministic and produce production-quality
-output. The title text is whatever you pass to titleblock_apply_iso_a3 — do
-not invent variants like "HELICAL SPUR GEAR".
-
-HANDLES: Every entity has a unique handle (hex string). Use it for
-entity_get, entity_move, entity_delete, entity_set_properties, etc.
-
-TRANSACTIONS: Use transaction_begin / transaction_commit / transaction_rollback
-to group operations with undo support.
-
-Set AUTOCAD_MCP_BACKEND=com|ezdxf|auto environment variable to force a backend.
-""",
+    instructions=_server_instructions("off"),
     lifespan=autocad_lifespan,
 )
 
@@ -907,12 +908,24 @@ def _apply_discovery_mode(mode: str | None = None) -> str:
         # modules are kept out of import time.
         from discovery.transform import CadSearchTransform
 
-        _discovery_transform = CadSearchTransform(pack_of=_tool_pack)
+        # 1.8-11: DISCOVERY_PINNED stays listed beside the synthetic tools (as a
+        # shortened card; describe_tool has the rest). A pin the profile or packs
+        # hide is not listed; a name nothing registers is said once, here.
+        pinned = list(config.settings.discovery_pinned)
+        # At import this runs before any tool is registered: nothing to check yet.
+        components = globals().get("_local_tool_components")
+        registered = {tool.name for tool in components()} if components is not None else set()
+        unknown = [name for name in pinned if registered and name not in registered]
+        if unknown:
+            log.warning("DISCOVERY_PINNED names no registered tool: %s", ", ".join(unknown))
+        _discovery_transform = CadSearchTransform(pack_of=_tool_pack, always_visible=pinned)
         mcp.add_transform(_discovery_transform)
         log.info(
             "Tool discovery: search transform attached "
-            "(clients see search_tools/call_tool/describe_tool)"
+            "(clients see search_tools/call_tool/describe_tool, pinned: %s)",
+            ", ".join(pinned) or "none",
         )
+    _refresh_server_instructions()
     return selected
 
 
@@ -1777,6 +1790,8 @@ async def _apply_tool_profile(profile: str | None = None) -> dict:
         len(enabled),
         len(disabled),
     )
+    # 1.8-11: the instructions name only tools this surface advertises.
+    _refresh_server_instructions()
     return _active_tool_profile
 
 
@@ -6492,8 +6507,10 @@ async def system_status(
     Returns backend name, connection status, capabilities, document info, and
     the document's `document_id` and content `revision` (headless: the active
     registry entry; live: the bound document, plus `bound_document` and
-    `active_document_changed`). Live, the revision counts this server's own
-    writes; edits the operator makes in AutoCAD are not counted.
+    `active_document_changed`). Live, the revision counts this server's writes
+    and the operator's object edits between two calls (an AutoLISP reactor;
+    `operator_edits` says whether it runs); without Visual LISP, this server's
+    writes only.
 
     `operations` lists the last 20 operation records, newest last: one per
     tool call (and per cad_batch step), with `operation_id`, `tool`,

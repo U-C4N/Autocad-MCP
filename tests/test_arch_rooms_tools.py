@@ -71,7 +71,7 @@ async def test_a_point_outside_every_room_is_refused_over_the_wire(client):
     assert "room.at: (9000, 9000) lies in no closed face" in result.content[0].text
 
 
-async def test_the_detector_is_advertised_read_only(client):
+async def test_the_detector_is_advertised_read_only(full_catalog, client):
     tools = {tool.name: tool for tool in await client.list_tools()}
     assert tools["arch_rooms_detect"].annotations.readOnlyHint is True
     assert tools["arch_room"].annotations.destructiveHint is False

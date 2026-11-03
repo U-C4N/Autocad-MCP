@@ -175,19 +175,26 @@ def test_the_idle_lane_covers_the_advertised_surfaces_and_the_instructions(repor
         "packs_core_mech",
         "packs_core_arch",
         "search",
+        "search_pinned",
         "instructions",
     }
     assert variants["default"]["advertised_tools"] > 100
     assert variants["lean"]["advertised_tools"] == len(server.LEAN_TOOL_NAMES)
     # search_tools + call_tool + describe_tool
     assert variants["search"]["advertised_tools"] == 3
+    # 1.8-11: + the three default pins (cad_batch, drawing_info, entity_list)
+    assert variants["search_pinned"]["advertised_tools"] == 6
+    assert variants["search"]["chars"] < variants["search_pinned"]["chars"]
     packs = server.PACK_TOOL_NAMES
     assert variants["packs_core"]["advertised_tools"] == (
         variants["default"]["advertised_tools"]
         - sum(len(packs[name]) for name in ("pid", "settings", "mech", "arch", "plant"))
     )
     assert variants["instructions"]["kind"] == "instructions"
-    assert variants["instructions"]["chars"] == len(server.mcp.instructions)
+    # measured on the full-catalog surface (the longest text the builder writes)
+    assert variants["instructions"]["chars"] == len(
+        server._server_instructions("off", "full", set(server.TOOL_PACK_NAMES))
+    )
     assert variants["packs_core_mech"]["advertised_tools"] == (
         variants["default"]["advertised_tools"]
         - len(packs["pid"])
@@ -339,7 +346,9 @@ def test_a_live_autocad_backend_is_refused_rather_than_measured():
 
 def test_the_suite_leaves_the_shared_server_as_it_found_it(report):
     assert config.settings.tool_profile == "full"
-    assert config.settings.discovery_mode == "off"
+    # 1.8-11: the configured mode (search by default) is put back, never "off"
+    mode = config.settings.discovery_mode
+    assert ("search" if server._discovery_transform is not None else "off") == mode
     # Restored to whatever it was, rather than asserted absent: exporting
     # AUTOCAD_MCP_BACKEND=ezdxf is exactly what a developer on a Windows box with
     # AutoCAD open should do, and that must not fail this test.
@@ -352,8 +361,12 @@ def test_the_suite_leaves_the_shared_server_as_it_found_it(report):
             return {tool.name for tool in await client.list_tools()}
 
     names = asyncio.run(_names())
-    assert len(names) > 100
-    assert "search_tools" not in names
+    if mode == "search":
+        synthetic = {"search_tools", "call_tool", "describe_tool"}
+        assert names == synthetic | set(config.settings.discovery_pinned)
+    else:
+        assert len(names) > 100
+        assert "search_tools" not in names
 
 
 # -- lane 4: task cost (1.8-14) ---------------------------------------------

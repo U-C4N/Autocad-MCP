@@ -55,9 +55,54 @@ EXPECTED_IDS = (
     "revision_takeoff_delta",
     "a3_sheet_delivery",
     "foreign_drawing_audit",
+    "layer_cleanup",
+    "dimension_part",
 )
 
 # ── synthetic fixtures ──────────────────────────────────────────────────────
+
+#: layer_cleanup's fixture: three misnamed layers that all mean GEOMETRY.
+MISNAMED = ("geom", "Outline_old", "contour")
+CLEANUP_ENTITIES = 30
+
+
+def _messy_part(path: Path) -> str:
+    """Three misnamed layers holding 30 entities with colour overrides and
+    lineweight -3 (Default, not ByLayer); GEOMETRY exists as drawing_new makes it."""
+    from engineering.layers import ENGINEERING_LAYERS
+
+    doc = ezdxf.new("R2018", units=4)
+    doc.header["$DIMDSEP"] = ord(".")
+    standard = {row[0]: row for row in ENGINEERING_LAYERS}
+    _name, color, _linetype, weight, _what = standard["GEOMETRY"]
+    doc.layers.add("GEOMETRY", color=color, lineweight=round(weight * 100))
+    for index, name in enumerate(MISNAMED):
+        doc.layers.add(name, color=index + 2)
+    msp = doc.modelspace()
+    for index in range(CLEANUP_ENTITIES):
+        attribs = {"layer": MISNAMED[index % 3], "color": (index % 6) + 1, "lineweight": -3}
+        x, y = float(index % 10) * 10.0, float(index // 10) * 10.0
+        if index % 2:
+            msp.add_circle((x + 4.0, y + 4.0), 2.0, dxfattribs=attribs)
+        else:
+            msp.add_line((x, y), (x + 8.0, y + 6.0), dxfattribs=attribs)
+    doc.saveas(path)
+    return str(path)
+
+
+def _plain_plate(path: Path) -> str:
+    """A 100 x 60 plate on GEOMETRY: closed outline, two Ø10 holes, in mm."""
+    doc = ezdxf.new("R2018", units=4)
+    doc.layers.add("GEOMETRY")
+    doc.layers.add("DIM")
+    msp = doc.modelspace()
+    msp.add_lwpolyline(
+        [(0, 0), (100, 0), (100, 60), (0, 60)], close=True, dxfattribs={"layer": "GEOMETRY"}
+    )
+    for x in (25.0, 75.0):
+        msp.add_circle((x, 30.0), 5.0, dxfattribs={"layer": "GEOMETRY"})
+    doc.saveas(path)
+    return str(path)
 
 PLATE = {
     "kind": "prismatic",
@@ -354,6 +399,12 @@ def _sample_inputs(recipe_id: str, tmp_path: Path) -> dict:
             "delivery_dir": str(tmp_path / "bundle"),
         },
         "foreign_drawing_audit": {"drawing": str(tmp_path / "foreign.dxf")},
+        "layer_cleanup": {
+            "drawing": str(tmp_path / "messy.dxf"),
+            "sources": list(MISNAMED),
+            "target": "GEOMETRY",
+        },
+        "dimension_part": {"drawing": str(tmp_path / "plate.dxf")},
     }[recipe_id]
 
 
@@ -521,6 +572,65 @@ async def test_foreign_drawing_audit_reports_what_the_drawing_hides_and_writes_n
     outliers = {row["handle"] for row in understand["extents"]["outliers"]}
     assert truth["outlier_handle"] in outliers
     assert Path(truth["layout"]).read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_layer_cleanup_leaves_standard_layers_and_bylayer_in_one_batch(client, tmp_path):
+    """1.8-11 (h): the H4 job as a recipe - and as ONE cad_batch call."""
+    _messy_part(tmp_path / "messy.dxf")
+    recipe = get_recipe("layer_cleanup")
+    inputs = _sample_inputs("layer_cleanup", tmp_path)
+    run = await run_recipe(recipe, inputs, _caller(client))
+    assert run["ok"] is True, _failed(run)
+    layers = {row["name"] for row in run["bindings"]["layers"]["result"]}
+    assert not (set(MISNAMED) & layers) and "GEOMETRY" in layers
+    rows = (await client.call_tool("entity_list", {"limit": 1000})).structured_content["result"]
+    assert len(rows) == CLEANUP_ENTITIES
+    assert {row["layer"] for row in rows} == {"GEOMETRY"}
+    assert all(row["color"] == 256 and row["lineweight_name"] == "ByLayer" for row in rows)
+
+    # the same job in one call: the instantiated steps are one cad_batch
+    _messy_part(tmp_path / "messy.dxf")
+    steps = instantiate(recipe, inputs)
+    batch = (
+        await client.call_tool("cad_batch", {"steps": steps, "verbose": True})
+    ).structured_content
+    assert batch["ok"] is True, batch
+    critique = next(row for row in batch["results"] if row.get("tool") == "drawing_critique")
+    assert critique["result"] in ([], {"result": []}), critique
+
+
+@pytest.mark.asyncio
+async def test_dimension_part_dimensions_every_feature_once(client, tmp_path):
+    """1.8-11 (h): the H5 job as a recipe; its second dimension_auto draws nothing."""
+    _plain_plate(tmp_path / "plate.dxf")
+    run = await run_recipe(
+        get_recipe("dimension_part"), _sample_inputs("dimension_part", tmp_path), _caller(client)
+    )
+    assert run["ok"] is True, _failed(run)
+    dims = run["bindings"]["dims"]
+    # four edges, two Ø10 holes; overall size may add its own
+    assert len(dims["created"]) >= 6
+    assert run["bindings"]["again"]["created"] == []
+    rows = (
+        await client.call_tool("entity_list", {"type_filter": "DIMENSION", "limit": 1000})
+    ).structured_content["result"]
+    assert len(rows) == len(dims["created"])
+
+
+@pytest.mark.asyncio
+async def test_dimension_part_names_what_it_cannot_dimension(client, tmp_path):
+    path = Path(_plain_plate(tmp_path / "plate.dxf"))
+    doc = ezdxf.readfile(path)
+    doc.modelspace().add_ellipse((50, 30), (10, 0), 0.5, dxfattribs={"layer": "GEOMETRY"})
+    doc.saveas(path)
+    run = await run_recipe(
+        get_recipe("dimension_part"), _sample_inputs("dimension_part", tmp_path), _caller(client)
+    )
+    assert run["ok"] is False
+    (failed,) = [row for row in run["postconditions"] if not row["ok"]]
+    assert failed["id"] == "nothing_omitted"
+    assert [row["type"] for row in run["bindings"]["dims"]["omitted"]] == ["ELLIPSE"]
 
 
 @pytest.mark.asyncio

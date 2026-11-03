@@ -49,6 +49,7 @@ import pytest_asyncio
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
+import config
 import server
 from discovery.aliases import aliases_for
 
@@ -480,21 +481,22 @@ async def test_the_refusal_points_at_the_direct_tool(client):
 
 @pytest_asyncio.fixture
 async def search_mode(monkeypatch):
-    """The real search surface, restored to ``off`` afterwards."""
+    """The real search surface, restored to the configured mode afterwards."""
     monkeypatch.setenv("AUTOCAD_MCP_BACKEND", "ezdxf")
     server._apply_discovery_mode("search")
     try:
         async with Client(server.mcp) as connected:
             yield connected
     finally:
-        server._apply_discovery_mode("off")
+        server._apply_discovery_mode()
 
 
 async def test_search_mode_advertises_the_proxy_that_makes_this_a_risk(search_mode):
     names = {tool.name for tool in await search_mode.list_tools()}
-    assert names == {"search_tools", "call_tool", "describe_tool"}, (
-        "if the search surface changed, the laundering test below is aiming at the wrong target"
-    )
+    # 1.8-11: plus the DISCOVERY_PINNED tools, listed beside the synthetic three
+    assert names == {"search_tools", "call_tool", "describe_tool"} | set(
+        config.settings.discovery_pinned
+    ), "if the search surface changed, the laundering test below is aiming at the wrong target"
 
 
 async def test_cad_batch_refuses_describe_tool_as_a_step(search_mode):

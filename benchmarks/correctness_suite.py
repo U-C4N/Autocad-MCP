@@ -2280,6 +2280,51 @@ async def dimension_auto_one_call_part():
     )
 
 
+async def search_default_lists_pins_and_batch_first():
+    """The idle surface a client meets by default (1.8-11).
+
+    With neither DISCOVERY_MODE nor DISCOVERY_PINNED set, a client must list
+    exactly search_tools, call_tool, describe_tool and the three pins
+    (cad_batch, drawing_info, entity_list); a tool it does not see must still
+    run on a direct call; ``describe_tool(names=[...])`` must answer two cards
+    in one call; and the server instructions must teach cad_batch and name no
+    tool the client cannot see (1.7.0 advertised the whole catalog, its
+    instructions taught one call per entity and named titleblock_apply_iso_a3).
+    """
+    import re
+
+    # the shipped defaults: nothing set, read when this fresh process first
+    # imports the server
+    for name in ("DISCOVERY_MODE", "DISCOVERY_PINNED"):
+        os.environ.pop(name, None)
+    import server
+
+    server._apply_discovery_mode()
+    expected = {"search_tools", "call_tool", "describe_tool"}
+    expected |= {"cad_batch", "drawing_info", "entity_list"}
+    async with _served_headless() as client:
+        listed = {tool.name for tool in await client.list_tools()}
+        text = client.initialize_result.instructions or ""
+        line = await client.call_tool(
+            "entity_create_line", {"x1": 0, "y1": 0, "x2": 10, "y2": 0}, raise_on_error=False
+        )
+        cards = await client.call_tool(
+            "describe_tool", {"names": ["entity_fillet", "layer_list"]}, raise_on_error=False
+        )
+    registered = {tool.name for tool in await server._registered_tools()}
+    named = set(re.findall(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+", text)) & (registered | expected)
+    tools = (cards.structured_content or {}).get("tools") if not cards.is_error else None
+    return (
+        listed == expected
+        and not line.is_error
+        and isinstance(tools, list)
+        and [card.get("name") for card in tools] == ["entity_fillet", "layer_list"]
+        and "cad_batch" in named
+        and named <= listed
+        and "titleblock_apply_iso_a3" not in text
+    )
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -2364,6 +2409,10 @@ CHECKS = {
     "lineage_revision_continues": (lineage_revision_continues, "Durability"),
     "region_render_applied": (region_render_applied, "Render"),
     "dimension_auto_one_call_part": (dimension_auto_one_call_part, "Dimensions"),
+    "search_default_lists_pins_and_batch_first": (
+        search_default_lists_pins_and_batch_first,
+        "Discovery",
+    ),
 }
 
 

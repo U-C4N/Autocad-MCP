@@ -311,7 +311,7 @@ async def test_cad_tool_leaves_the_aliases_in_the_discovery_corpus(name):
     assert record.synonyms, "the transaction tools do carry synonyms"
 
 
-async def test_cad_tool_meta_reaches_the_wire(monkeypatch):
+async def test_cad_tool_meta_reaches_the_wire(full_catalog, monkeypatch):
     monkeypatch.setenv("AUTOCAD_MCP_BACKEND", "ezdxf")
     async with Client(server.mcp) as client:
         tools = {tool.name: tool for tool in await client.list_tools()}

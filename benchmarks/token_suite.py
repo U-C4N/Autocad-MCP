@@ -551,6 +551,8 @@ async def idle_lane(counter: Any, turns: int = SESSION_TURNS) -> list[dict[str, 
     srv = _load_server()
     previous_profile = config.settings.tool_profile
     previous_packs = config.settings.tool_packs
+    previous_pinned = config.settings.discovery_pinned
+    previous_mode = "search" if srv._discovery_transform is not None else "off"
     rows: list[dict[str, Any]] = []
     try:
         config.settings.tool_profile = "full"
@@ -558,7 +560,8 @@ async def idle_lane(counter: Any, turns: int = SESSION_TURNS) -> list[dict[str, 
         rows.append(
             await _idle_row(
                 "default",
-                "TOOL_PROFILE=full, DISCOVERY_MODE=off - the shipped default.",
+                "TOOL_PROFILE=full, DISCOVERY_MODE=off - the full catalog (the shipped "
+                "default up to 1.7.0; DISCOVERY_MODE=search is since 1.8.0).",
                 counter,
                 turns,
             )
@@ -603,21 +606,41 @@ async def idle_lane(counter: Any, turns: int = SESSION_TURNS) -> list[dict[str, 
             )
         )
         config.settings.tool_packs = previous_packs
+        # 1.8-11: `search` is the three synthetic tools alone (DISCOVERY_PINNED
+        # empty); `search_pinned` adds the default pins, as a plugin user sees it.
+        from discovery.transform import DEFAULT_PINNED
+
+        config.settings.discovery_pinned = ()
         srv._apply_discovery_mode("search")
         rows.append(
             await _idle_row(
                 "search",
-                "DISCOVERY_MODE=search - search_tools, the call_tool proxy and "
-                "describe_tool; the catalog is reached through the search tool "
-                "instead of advertised.",
+                "DISCOVERY_MODE=search, DISCOVERY_PINNED empty - search_tools, the "
+                "call_tool proxy and describe_tool; the catalog is reached through the "
+                "search tool instead of advertised.",
                 counter,
                 turns,
             )
         )
+        config.settings.discovery_pinned = DEFAULT_PINNED
+        srv._apply_discovery_mode("search")
+        rows.append(
+            await _idle_row(
+                "search_pinned",
+                "DISCOVERY_MODE=search with the default DISCOVERY_PINNED "
+                f"({', '.join(DEFAULT_PINNED)}) listed as shortened cards - the plugin's "
+                "surface.",
+                counter,
+                turns,
+            )
+        )
+        config.settings.discovery_pinned = previous_pinned
+        # the full-catalog surface's instructions: the longest the builder writes
         srv._apply_discovery_mode("off")
         rows.append(await _instructions_row(counter, turns))
     finally:
-        srv._apply_discovery_mode("off")
+        config.settings.discovery_pinned = previous_pinned
+        srv._apply_discovery_mode(previous_mode)
         config.settings.tool_profile = previous_profile
         # restored here too, so a failed measurement cannot leave the process
         # on a narrowed surface
@@ -1249,6 +1272,7 @@ async def run_suite(
     counter = counter or RatioTokenCounter()
     previous_env = os.environ.get(BACKEND_ENV)
     previous_profile = config.settings.tool_profile
+    previous_mode = "search" if srv._discovery_transform is not None else "off"
     os.environ[BACKEND_ENV] = "ezdxf"
     idle = discovery = result = task = None
     try:
@@ -1265,7 +1289,7 @@ async def run_suite(
         if "task" in lanes:
             task = await task_lane(counter, turns)
     finally:
-        srv._apply_discovery_mode("off")
+        srv._apply_discovery_mode(previous_mode)
         config.settings.tool_profile = previous_profile
         await srv._apply_tool_profile(previous_profile)
         if previous_env is None:
