@@ -84,4 +84,112 @@ def test_the_harness_passes_its_own_budget_on_this_tree(monkeypatch, capsys):
     assert cb.main([]) == 0
     out = capsys.readouterr().out
     assert "sketch_20_entities" in out
-    assert "PENDING task.layer_cleanup_300" in out
+    assert "PENDING task.history_value_lookup" in out
+    assert "PENDING task.layer_cleanup_300" not in out
+    assert "PENDING task.dimension_plate" not in out
+
+
+# -- the 1.8-13 oracles can fail ------------------------------------------------
+
+
+async def _served(func):
+    """Run ``func(client, work)`` against the real in-memory server, headless."""
+    import tempfile
+    from pathlib import Path
+
+    from fastmcp import Client
+
+    import server
+
+    async with Client(server.mcp) as client:
+        status = (await client.call_tool("system_status", {})).structured_content or {}
+        assert status.get("backend") == "ezdxf", "these tests must never touch live AutoCAD"
+        with tempfile.TemporaryDirectory(prefix="acadmcp_cb_test_") as folder:
+            return await func(client, Path(folder))
+
+
+class _Lying(cb.Recorder):
+    """A recorder that writes one edge dimension's text as a number the edge is not."""
+
+    async def call(self, tool, arguments):
+        if tool == "dimension_linear" and not getattr(self, "_lied", False):
+            self._lied = True
+            arguments = {**arguments, "text_override": "130"}
+        return await super().call(tool, arguments)
+
+
+@pytest.mark.asyncio
+async def test_the_plate_oracle_fails_a_dimension_that_lies(monkeypatch):
+    monkeypatch.setenv("AUTOCAD_MCP_BACKEND", "ezdxf")
+
+    async def run(client, work):
+        ctx = await cb._setup_plate(client, work)
+        await cb._plate_naive(_Lying(client), ctx)
+        return await cb._plate_verify(client, ctx, None)
+
+    ok, detail = await _served(run)
+    assert ok is False
+    assert "dimension_mismatch" in detail
+
+
+@pytest.mark.asyncio
+async def test_the_plate_oracle_holds_the_batched_arm_to_a_second_run(monkeypatch):
+    monkeypatch.setenv("AUTOCAD_MCP_BACKEND", "ezdxf")
+
+    async def run(client, work):
+        ctx = await cb._setup_plate(client, work)
+        rec = cb.Recorder(client)
+        answer = await cb._plate_batched(rec, ctx)
+        verdict = await cb._plate_verify(client, ctx, answer)
+        return [call.tool for call in rec.calls], verdict
+
+    calls, (ok, detail) = await _served(run)
+    assert calls == ["dimension_auto", "drawing_critique"]
+    assert ok is True, detail
+    assert "12 features" not in detail and "9 features bound" in detail
+
+
+@pytest.mark.asyncio
+async def test_the_cleanup_oracle_fails_a_half_done_job(monkeypatch):
+    """Merging the layers without clearing the overrides is not the job."""
+    monkeypatch.setenv("AUTOCAD_MCP_BACKEND", "ezdxf")
+
+    async def run(client, work):
+        ctx = await cb._setup_messy(client, work)
+        steps = [
+            {"tool": "layer_merge", "args": {"sources": [old], "target": new}}
+            for old, new in cb.MESSY_LAYERS.items()
+        ]
+        await client.call_tool("cad_batch", {"steps": steps})
+        return await cb._cleanup_verify(client, ctx, None)
+
+    ok, detail = await _served(run)
+    assert ok is False
+    assert "300 with an override" in detail
+
+
+@pytest.mark.asyncio
+async def test_the_cleanup_oracle_refuses_a_stale_count_with_nothing_changed(monkeypatch):
+    """The broken-input twin: an ``expect_count`` the drawing does not hold is
+    refused ``stale_revision`` before anything is written."""
+    monkeypatch.setenv("AUTOCAD_MCP_BACKEND", "ezdxf")
+
+    async def run(client, work):
+        await cb._setup_messy(client, work)
+        before = (await client.call_tool("drawing_info", {})).structured_content["revision"]
+        result = await client.call_tool(
+            "entity_modify_where",
+            {
+                "where": {"type": "*"},
+                "set": {"color": 256},
+                "space": "all",
+                "expect_count": cb.MESSY_ENTITIES + 1,
+            },
+            raise_on_error=False,
+        )
+        after = (await client.call_tool("drawing_info", {})).structured_content["revision"]
+        return result, before, after
+
+    result, before, after = await _served(run)
+    assert result.is_error and result.structured_content["kind"] == "stale_revision"
+    assert before == after

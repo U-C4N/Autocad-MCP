@@ -104,15 +104,22 @@ HISTORY_ROUND = 2
 def build_messy_layers(path: Path) -> Path:
     """Six misnamed layers, colour overrides, 300 entities at lineweight -3 (Default).
 
-    The ISO layers exist already (a ``drawing_new`` would have made them); the
-    job is to move every entity onto them, clear each entity's colour and
-    lineweight to ByLayer and remove the misnamed layers.
+    The ISO layers exist already, with the colour and lineweight a
+    ``drawing_new`` would have given them (``engineering.layers.ENGINEERING_LAYERS``,
+    1.8-13: so the oracle's ``drawing_critique`` judges the clean-up, not the
+    fixture); the job is to move every entity onto them, clear each entity's
+    colour and lineweight to ByLayer and remove the misnamed layers.
     """
     import ezdxf
 
+    from engineering.layers import ENGINEERING_LAYERS
+
+    standard = {row[0]: row for row in ENGINEERING_LAYERS}
     doc = ezdxf.new("R2018")
+    doc.header["$DIMDSEP"] = ord(".")  # ISO 129's decimal point: the fixture is about layers
     for name in MESSY_LAYERS.values():
-        doc.layers.add(name)
+        _name, color, _linetype, weight, _what = standard[name]
+        doc.layers.add(name, color=color, lineweight=round(weight * 100))
     for index, name in enumerate(MESSY_LAYERS):
         doc.layers.add(name, color=index + 1)
     msp = doc.modelspace()
@@ -130,9 +137,13 @@ def build_messy_layers(path: Path) -> Path:
 
 
 def build_plate(path: Path) -> Path:
+    """The plate, in millimetres (``$INSUNITS`` 4): the oracle holds every
+    dimension to the drawing's declared unit through ``drawing_verify_requirements``."""
     import ezdxf
+    from ezdxf import units
 
     doc = ezdxf.new("R2018")
+    doc.units = units.MM
     doc.layers.add("GEOMETRY")
     doc.layers.add("DIM")
     msp = doc.modelspace()
@@ -349,7 +360,46 @@ async def _cleanup_naive(rec: Recorder, _ctx: dict[str, Any]) -> Any:
         await rec.call("layer_delete", {"name": name})
 
 
-async def _cleanup_verify(client: Any, _ctx: dict[str, Any], _answer: Any) -> tuple[bool, str]:
+#: The critique the clean-up must come back empty from (plan 1.8-12 / 1.8-13 gate).
+CLEANUP_FOCUS = ["iso128", "layer_color", "property_override"]
+#: Layers that may stay empty: AutoCAD's own.
+_SYSTEM_LAYERS = frozenset({"0", "defpoints"})
+
+
+async def _cleanup_batched(rec: Recorder, _ctx: dict[str, Any]) -> Any:
+    """The least-call oracle (1.8-13): one ``cad_batch`` with the 1.8-12 verbs -
+    a ``layer_merge`` per misnamed layer onto its ISO layer, then one
+    ``entity_modify_where`` clearing colour and lineweight to ByLayer, its count
+    pinned by ``expect_count`` - and the critique that must come back empty."""
+    steps: list[dict[str, Any]] = [
+        {"tool": "layer_merge", "args": {"sources": [old], "target": new}}
+        for old, new in MESSY_LAYERS.items()
+    ]
+    steps.append(
+        {
+            "tool": "entity_modify_where",
+            "args": {
+                "where": {"type": "*"},
+                "set": {"color": 256, "lineweight": "ByLayer"},
+                "space": "all",
+                "expect_count": MESSY_ENTITIES,
+            },
+        }
+    )
+    batch = await rec.call("cad_batch", {"steps": steps})
+    if not (isinstance(batch, dict) and batch.get("ok")):
+        raise ArmError(f"cad_batch did not commit: {batch!r}"[:300])
+    issues = await rec.call("drawing_critique", {"focus": CLEANUP_FOCUS})
+    return {"critique": issues}
+
+
+def _issues(answer: Any) -> list:
+    if isinstance(answer, dict) and "result" in answer:
+        answer = answer["result"]
+    return list(answer or [])
+
+
+async def _cleanup_verify(client: Any, _ctx: dict[str, Any], answer: Any) -> tuple[bool, str]:
     rows = await _all_entities(client)
     layers = {row["name"] for row in await _quiet(client, "layer_list", {})}
     misplaced = [row["handle"] for row in rows if row["layer"] not in MESSY_LAYERS.values()]
@@ -359,10 +409,24 @@ async def _cleanup_verify(client: Any, _ctx: dict[str, Any], _answer: Any) -> tu
         if row.get("color") != 256 or row.get("lineweight_name") != "ByLayer"
     ]
     leftover = sorted(set(MESSY_LAYERS) & layers)
-    ok = len(rows) == MESSY_ENTITIES and not misplaced and not overridden and not leftover
+    used = {row["layer"].lower() for row in rows}
+    empty = sorted(n for n in layers if n.lower() not in used and n.lower() not in _SYSTEM_LAYERS)
+    # read again outside the count, so both arms are held to the same critique
+    issues = _issues(await _quiet(client, "drawing_critique", {"focus": CLEANUP_FOCUS}))
+    counted = _issues(answer.get("critique")) if isinstance(answer, dict) else []
+    ok = (
+        len(rows) == MESSY_ENTITIES
+        and not misplaced
+        and not overridden
+        and not leftover
+        and not empty
+        and not issues
+        and not counted
+    )
     return ok, (
         f"{len(rows)} entities, {len(misplaced)} off the ISO layers, "
-        f"{len(overridden)} with an override, misnamed layers left: {leftover}"
+        f"{len(overridden)} with an override, misnamed layers left: {leftover}, "
+        f"empty layers: {empty}, critique {CLEANUP_FOCUS}: {len(issues)} issue(s)"
     )
 
 
@@ -418,9 +482,109 @@ async def _plate_naive(rec: Recorder, _ctx: dict[str, Any]) -> Any:
     await rec.call("drawing_critique", {"focus": ["dim_overlap"]})
 
 
-async def _plate_verify(client: Any, _ctx: dict[str, Any], _answer: Any) -> tuple[bool, str]:
+#: The plate's sizes, worked out from the fixture rather than read back: the
+#: edges' lengths, the holes' diameter and the arcs' radius.
+PLATE_EDGES = sorted(
+    math.dist(PLATE_OUTLINE[i], PLATE_OUTLINE[(i + 1) % len(PLATE_OUTLINE)])
+    for i in range(len(PLATE_OUTLINE))
+)
+PLATE_SIZES = {"diameter": 2.0 * PLATE_HOLE_RADIUS, "radius": PLATE_ARCS[0][2]}
+_DIMTYPE_QUANTITY = {3: "diameter", 4: "radius"}
+
+
+async def _plate_batched(rec: Recorder, _ctx: dict[str, Any]) -> Any:
+    """The least-call oracle (1.8-13): ``dimension_auto`` v2 on the part's layer,
+    then the ``dim_overlap`` critique - two calls."""
+    auto = await rec.call("dimension_auto", {"selector": {"layer": "GEOMETRY"}})
+    issues = await rec.call("drawing_critique", {"focus": ["dim_overlap"]})
+    return {"auto": auto, "critique": issues}
+
+
+async def _plate_bindings(client: Any, dims: list[dict[str, Any]]) -> tuple[list[str], dict]:
+    """Every dimension bound through ``drawing_verify_requirements``: the problems
+    found, and what was bound."""
+    items = []
+    for row in dims:
+        entity = await _quiet(client, "entity_get", {"handle": row["handle"]})
+        fields = entity["properties"]["dimension"]
+        quantity = _DIMTYPE_QUANTITY.get(fields["dimtype_code"], "distance")
+        if quantity == "distance":
+            # a single polyline edge is not a two-feature distance; its
+            # dimension's own evidence carries the measured value
+            a, b = fields["defpoints"][1], fields["defpoints"][2]
+            nominal = math.dist(a, b)
+        else:
+            nominal = PLATE_SIZES[quantity]
+        items.append(
+            {
+                "id": f"{quantity[0].upper()}{row['handle']}",
+                "quantity": quantity,
+                "target": {"nominal": nominal, "unit": "mm"},
+                "features": [{"kind": "dimension", "handle": row["handle"]}],
+                "provenance": "explicit",
+            }
+        )
+    report = await _quiet(
+        client, "drawing_verify_requirements", {"requirements": {"units": "mm", "items": items}}
+    )
+    problems: list[str] = []
+    mismatches = [f for f in report.get("findings", []) if f.get("kind") == "dimension_mismatch"]
+    if mismatches:
+        problems.append(f"{len(mismatches)} dimension_mismatch finding(s)")
+    edges: list[float] = []
+    bound: set[str] = set()
+    for row in report["rows"]:
+        evidence = row.get("dimension") or {}
+        if evidence.get("status") != "bound" or evidence.get("mismatch"):
+            problems.append(f"{row['id']}: {evidence.get('status')} {evidence.get('reason')}")
+            continue
+        bound.update(h for ref in evidence.get("refs") or [] for h in ref.get("handles", []))
+        if row["quantity"] == "distance":
+            edges.append(round(float(evidence["geometric_value"]), 6))
+        elif row["status"] != "pass":
+            problems.append(f"{row['id']}: {row['status']}")
+    if sorted(edges) != PLATE_EDGES:
+        problems.append(f"edge dimensions measure {sorted(edges)}, the plate's edges {PLATE_EDGES}")
+    return problems, {"bound_features": len(bound), "rows": len(report["rows"])}
+
+
+def _duplicate_dimensions(dims: list[dict[str, Any]]) -> list:
+    """``mech_duplicate_dimension``'s own test, run on every dimension (the
+    focus itself is silent on a drawing that carries no part model)."""
+    from types import SimpleNamespace
+
+    from engineering.mech.critique import _duplicate_dimension
+
+    entities = [
+        SimpleNamespace(type=row["type"], handle=row["handle"], properties=row["properties"])
+        for row in dims
+    ]
+    return _duplicate_dimension({"entities": entities})
+
+
+async def _plate_verify(client: Any, _ctx: dict[str, Any], answer: Any) -> tuple[bool, str]:
     dims = await _all_entities(client, type_filter="DIMENSION")
-    return len(dims) == PLATE_DIMENSIONS, f"{len(dims)} of {PLATE_DIMENSIONS} dimensions"
+    if len(dims) != PLATE_DIMENSIONS:
+        return False, f"{len(dims)} of {PLATE_DIMENSIONS} dimensions"
+    problems, bound = await _plate_bindings(client, dims)
+    duplicates = _duplicate_dimensions(dims)
+    if duplicates:
+        problems.append(f"{len(duplicates)} mech_duplicate_dimension issue(s)")
+    if isinstance(answer, dict) and "auto" in answer:
+        auto = answer["auto"] or {}
+        if auto.get("omitted"):
+            problems.append(f"omitted: {auto['omitted']}")
+        if _issues(answer.get("critique")):
+            problems.append(f"dim_overlap: {_issues(answer['critique'])}")
+        again = await _quiet(client, "dimension_auto", {"selector": {"layer": "GEOMETRY"}})
+        if again.get("created"):
+            problems.append(f"a second run drew {len(again['created'])} more")
+        if len(await _all_entities(client, type_filter="DIMENSION")) != PLATE_DIMENSIONS:
+            problems.append("a second run changed the dimension count")
+    detail = (
+        f"{len(dims)} of {PLATE_DIMENSIONS} dimensions, {bound['bound_features']} features bound"
+    )
+    return not problems, detail + ("; " + "; ".join(problems) if problems else "")
 
 
 # -- inspect_foreign ---------------------------------------------------------
@@ -521,8 +685,12 @@ SCENARIOS: tuple[Scenario, ...] = (
         _setup_messy,
         _cleanup_naive,
         _cleanup_verify,
-        requires=("entity_modify_where", "layer_merge"),
-        batched_label="layer_merge per misnamed layer + one entity_modify_where (1.8-12)",
+        batched=_cleanup_batched,
+        requires=("cad_batch", "entity_modify_where", "layer_merge"),
+        batched_label=(
+            "cad_batch: a layer_merge per misnamed layer + one entity_modify_where "
+            "(1.8-12), then drawing_critique"
+        ),
         owner="1.8-12 / 1.8-13",
     ),
     Scenario(
@@ -532,6 +700,7 @@ SCENARIOS: tuple[Scenario, ...] = (
         _setup_plate,
         _plate_naive,
         _plate_verify,
+        batched=_plate_batched,
         requires=("dimension_auto_v2",),
         batched_label="dimension_auto(selector={'layer': 'GEOMETRY'}) + drawing_critique (1.8-13)",
         owner="1.8-13",

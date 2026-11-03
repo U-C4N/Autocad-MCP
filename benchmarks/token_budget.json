@@ -153,18 +153,20 @@
     "layer_cleanup_300": {
       "metric": "batched_calls",
       "ceiling": 3,
-      "gate": "release",
+      "gate": "ci",
       "owner": "1.8-12 (entity_modify_where, layer_merge) and 1.8-13 (the call_budget oracle)",
       "source": "plan section 4: H4 layer cleanup <= 3 calls",
+      "measured": "1.8-13, 2026-11-03: 2 calls (one cad_batch of six layer_merge + one entity_modify_where, then drawing_critique == []); flipped to ci",
       "v1_7_0": "124 calls",
       "rival": {"calls": 11, "input_tokens": 315000}
     },
     "dimension_plate": {
       "metric": "batched_calls",
       "ceiling": 2,
-      "gate": "release",
+      "gate": "ci",
       "owner": "1.8-13 (dimension_auto v2)",
       "source": "plan section 4: H5 part dimensioning <= 2 calls",
+      "measured": "1.8-13, 2026-11-03: 2 calls (dimension_auto(selector={'layer': 'GEOMETRY'}) + drawing_critique); flipped to ci",
       "v1_7_0": "89 calls",
       "rival": {"calls": 10, "input_tokens": 350000}
     },

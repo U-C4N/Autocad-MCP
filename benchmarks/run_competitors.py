@@ -31,7 +31,7 @@ from benchmarks.adapters.base import (
     EnvironmentBlocked,
     TaskResult,
 )
-from benchmarks.tasks_v8 import (
+from benchmarks.tasks_v9 import (
     DEFAULT_MATRIX,
     EVALUATOR_VERSION,
     FIXTURE_SOURCES,

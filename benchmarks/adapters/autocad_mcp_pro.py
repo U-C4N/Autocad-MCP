@@ -19,6 +19,7 @@ from pathlib import Path
 
 from benchmarks.adapters.base import BenchmarkAdapter, EnvironmentBlocked, TaskResult
 from benchmarks.tasks_v8 import NEW_TASKS_V8, TaskSpec
+from benchmarks.tasks_v9 import HEADLESS_ONLY_V9
 from engineering.delivery import deliver_drawing
 from engineering.layers import ensure_engineering_layers, ensure_standard_linetypes
 from engineering.refiner import refine_drawing
@@ -61,7 +62,7 @@ ROUNDTRIP_AREAS_MM2: dict[str, float] = {
 #: files) to stage what an operator or a damaged file would do. On the live
 #: engine they report ``not_run``; the live evidence is the COM harness
 #: (``scripts/live``, spec §6 Task 21), never a zero here.
-HEADLESS_ONLY: frozenset[str] = frozenset(task.task_id for task in NEW_TASKS_V8)
+HEADLESS_ONLY: frozenset[str] = frozenset(task.task_id for task in NEW_TASKS_V8) | HEADLESS_ONLY_V9
 
 #: ``requirements_roundtrip``: a 120 x 80 plate, a Ø20 bore at (60, 40) and four
 #: Ø8 holes 15 mm in from the corners. Every target below is worked out by hand.
@@ -1907,4 +1908,131 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
             passed,
             {"rows": rows, "findings": findings, "accepted": report["accepted"]},
             [str(path)],
+        )
+
+    # ── v9 (v1.8.0) ───────────────────────────────────────────────────────────
+
+    async def _call_budget_arm(self, scenario_id: str, work: Path):
+        """One least-call oracle of ``benchmarks/call_budget.py`` through the real
+        server on this adapter's backend: ``(counted tools, answer, verified,
+        detail)``. The verifier reads the drawing back outside the count."""
+        from benchmarks import call_budget as cb
+
+        scenario = cb.scenario_by_id(scenario_id)
+        work.mkdir(parents=True, exist_ok=True)
+        async with self._served() as client:
+            ctx = await scenario.setup(client, work)
+            rec = cb.Recorder(client)
+            try:
+                answer = await scenario.batched(rec, ctx)
+                verified, detail = await scenario.verify(client, ctx, answer)
+            except Exception as exc:  # an arm that errors did not do the job
+                answer, verified, detail = None, False, f"{type(exc).__name__}: {exc}"[:500]
+        return [call.tool for call in rec.calls], answer, verified, detail
+
+    async def _task_layer_cleanup_budget(self):
+        """The rival's H4 in at most 3 calls (1.8-12 verbs, 1.8-13 oracle).
+
+        The ceiling is plan section 4's, fixed before the measurement. The
+        verifier holds the drawing to ISO names, ByLayer, no empty layer and an
+        empty iso128 / layer_color / property_override critique. The
+        broken-input twin: a reopened copy, an ``entity_modify_where`` whose
+        ``expect_count`` is one more than the 300 placed on purpose - refused
+        ``stale_revision``, the revision and every colour unchanged.
+        """
+        from benchmarks import call_budget as cb
+
+        ceiling = 3
+        work = self.artifact_dir / "layer_cleanup_budget"
+        calls, _answer, verified, detail = await self._call_budget_arm("layer_cleanup_300", work)
+        (work / "twin").mkdir(parents=True, exist_ok=True)
+        async with self._served() as client:
+            await cb._setup_messy(client, work / "twin")
+            before = (await client.call_tool("drawing_info", {})).structured_content["revision"]
+            refused = await client.call_tool(
+                "entity_modify_where",
+                {
+                    "where": {"type": "*"},
+                    "set": {"color": 256, "lineweight": "ByLayer"},
+                    "space": "all",
+                    "expect_count": cb.MESSY_ENTITIES + 1,
+                },
+                raise_on_error=False,
+            )
+            after = (await client.call_tool("drawing_info", {})).structured_content["revision"]
+            rows = await cb._all_entities(client)
+        overridden = sum(1 for row in rows if row.get("color") != 256)
+        twin_ok = (
+            refused.is_error
+            and (refused.structured_content or {}).get("kind") == "stale_revision"
+            and before == after
+            and overridden == cb.MESSY_ENTITIES
+        )
+        passed = verified and len(calls) <= ceiling and twin_ok
+        return (
+            passed,
+            {
+                "calls": len(calls),
+                "ceiling": ceiling,
+                "tools": calls,
+                "detail": detail,
+                "twin": {
+                    "kind": (refused.structured_content or {}).get("kind"),
+                    "revision": [before, after],
+                    "still_overridden": overridden,
+                },
+            },
+            [],
+        )
+
+    async def _task_call_count_dimension_part(self):
+        """The rival's H5 in at most 2 calls (``dimension_auto`` v2, 1.8-13).
+
+        The plate's sizes come from the fixture (four edges, six Ø11 holes, two
+        R8 arcs), not from the server. The verifier binds every dimension
+        through ``drawing_verify_requirements`` (no ``dimension_mismatch``),
+        runs ``mech_duplicate_dimension``'s own test and a second
+        ``dimension_auto`` that must draw nothing. The broken-input twin: an
+        ELLIPSE and a SPLINE on the part's layer must come back in ``omitted``
+        with their reasons.
+        """
+        import ezdxf
+
+        ceiling = 2
+        work = self.artifact_dir / "call_count_dimension_part"
+        calls, answer, verified, detail = await self._call_budget_arm("dimension_plate", work)
+        twin_path = work / "twin.dxf"
+        doc = ezdxf.new("R2018")
+        doc.layers.add("GEOMETRY")
+        msp = doc.modelspace()
+        msp.add_lwpolyline([(0, 0), (40, 0), (40, 20), (0, 20)], close=True,
+                           dxfattribs={"layer": "GEOMETRY"})  # fmt: skip
+        ellipse = msp.add_ellipse((20, 10), major_axis=(6, 0), ratio=0.5,
+                                  dxfattribs={"layer": "GEOMETRY"})  # fmt: skip
+        spline = msp.add_spline([(50, 0), (55, 8), (60, 0)], dxfattribs={"layer": "GEOMETRY"})
+        doc.saveas(twin_path)
+        async with self._served() as client:
+            await client.call_tool("drawing_open", {"path": str(twin_path)})
+            twin = (
+                await client.call_tool("dimension_auto", {"selector": {"layer": "GEOMETRY"}})
+            ).structured_content or {}
+        omitted = {row["handle"]: row for row in twin.get("omitted") or []}
+        twin_ok = (
+            set(omitted) == {ellipse.dxf.handle, spline.dxf.handle}
+            and all(row.get("reason") for row in omitted.values())
+            and len(twin.get("created") or []) == 4
+        )
+        created = len((answer or {}).get("auto", {}).get("created") or [])
+        passed = verified and len(calls) <= ceiling and twin_ok
+        return (
+            passed,
+            {
+                "calls": len(calls),
+                "ceiling": ceiling,
+                "tools": calls,
+                "created": created,
+                "detail": detail,
+                "twin_omitted": sorted(row["type"] for row in omitted.values()),
+            },
+            [],
         )
