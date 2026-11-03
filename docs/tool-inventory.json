@@ -1230,7 +1230,7 @@
       "name": "dimension_auto",
       "group": "premium",
       "cost": "mutate",
-      "summary": "Dimension a set of entities at once, as a chain, baseline or ordinate run.",
+      "summary": "Dimension a part in one call: edges, hole diameters, arc radii, overall size.",
       "acad": [
         "QDIM",
         "DIMCONTINUE",
@@ -1249,7 +1249,7 @@
         "premium"
       ],
       "annotations": {
-        "title": "Dimension: Auto (chain / baseline / ordinate)",
+        "title": "Dimension: Auto (a whole part, one call)",
         "destructiveHint": false
       }
     },

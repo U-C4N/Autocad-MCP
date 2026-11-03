@@ -7891,31 +7891,66 @@ async def drawing_apply_iso_layers(
 
 
 @cad_tool(
-    summary="Dimension a set of entities at once, as a chain, baseline or ordinate run.",
+    summary="Dimension a part in one call: edges, hole diameters, arc radii, overall size.",
     cost="mutate",
 )
 @mcp.tool(
     annotations={
-        "title": "Dimension: Auto (chain / baseline / ordinate)",
+        "title": "Dimension: Auto (a whole part, one call)",
         "destructiveHint": False,
     },
     tags={"premium", "dimension"},
 )
 async def dimension_auto(
-    handles: Annotated[list[str], "List of entity handles to dimension"],
+    handles: Annotated[list[str] | None, Field(default=None, description="Entity handles")] = None,
+    selector: Annotated[
+        dict | None,
+        Field(
+            default=None, description="entity_select_smart predicate, e.g. {'layer': 'GEOMETRY'}"
+        ),
+    ] = None,
     style: Annotated[
-        str, Field(default="chain", description="chain | baseline | ordinate")
+        str, Field(default="chain", description="LINE run: chain | baseline | ordinate")
     ] = "chain",
     offset: Annotated[
         float, Field(default=10.0, gt=0, description="Dimension-line offset from the geometry (mm)")
     ] = 10.0,
+    layer: Annotated[
+        str | None, Field(default=None, description="Default: the layer set's DIM")
+    ] = None,
+    include: Annotated[
+        list[str] | None,
+        Field(default=None, description="linear, diameter, radius, overall (default: all)"),
+    ] = None,
+    group_equal: Annotated[
+        bool, Field(default=False, description="Equal circles: one '6× Ø11'")
+    ] = False,
+    skip_existing: Annotated[bool, Field(default=True)] = True,
+    dry_run: Annotated[bool, Field(default=False, description="Plan only")] = False,
     ctx: Context = None,
-) -> list[dict]:
-    """Generate ISO 129 dimensions across the listed entities in the chosen style.
-    V1 supports LINE entities only.
+) -> dict:
+    """Dimension a part in one call: LINE runs, LWPOLYLINE edges per side, CIRCLE
+    diameters, ARC radii, overall size; text outside the part. A rerun skips
+    what is dimensioned.
+
+    Returns {created, skipped_existing, omitted: [{handle, type, reason}],
+    dim_overlap}; ELLIPSE, SPLINE etc. are omitted, never dropped.
+
+    Refused by name: neither or both of handles / selector, an unknown selector
+    key, style or include kind.
     """
-    result = await _backend(ctx).dimension_auto(handles, style, offset)
-    return [_dc(e) for e in result]
+    result = await _backend(ctx).dimension_auto(
+        handles,
+        style,
+        offset,
+        layer,
+        selector=selector,
+        include=include,
+        group_equal=group_equal,
+        skip_existing=skip_existing,
+        dry_run=dry_run,
+    )
+    return result.to_dict()
 
 
 @cad_tool(

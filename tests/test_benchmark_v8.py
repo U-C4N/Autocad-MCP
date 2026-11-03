@@ -143,7 +143,7 @@ def test_the_suite_carries_the_nine_verification_checks():
 
     for name in VERIFICATION_CHECKS:
         assert CHECKS[name][1] == "Verification"
-    assert len(CHECKS) == 67
+    assert len(CHECKS) == 68
 
 
 # -- the new tasks, headlessly --------------------------------------------------------
@@ -351,10 +351,12 @@ async def test_dimension_binding_fails_loudly_when_the_override_is_believed(tmp_
 @pytest.mark.asyncio
 async def test_a_live_lane_reports_the_headless_only_tasks_as_not_run():
     from benchmarks.adapters.autocad_mcp_pro import HEADLESS_ONLY, AutoCADMCPProAdapter
+    from benchmarks.tasks_v9 import task_by_id as task_by_id_v9
 
     adapter = AutoCADMCPProAdapter(backend="com")
     for task_id in sorted(HEADLESS_ONLY):
-        result = await adapter.run_task(task_by_id(task_id))
+        # v9 (1.8.0) adds its own headless-only tasks; v9 holds every v8 task too
+        result = await adapter.run_task(task_by_id_v9(task_id, "v9"))
         assert result.status == "not_run", task_id
         assert "headless" in result.message
 

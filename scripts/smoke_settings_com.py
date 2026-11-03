@@ -17,6 +17,8 @@ backend methods the tools call:
     entity_modify_where (dry run, model / paper / block filters, a stale
         expect_count, ByLayer read back) -> layer_rename (+ layer 0 refused)
         -> layer_merge (model, sheet, block definition; sources deleted)
+    dimension_auto(selector=) on a plate -> 12 dimensions, the ellipse omitted,
+        a second call draws nothing (1.8-13)
     view_named_save / view_named_list / view_named_restore
     ucs_set / ucs_list / ucs_restore("world") + a non-orthogonal refusal
     preferences_get + ONE reversible preferences_set (Display.CursorSize)
@@ -336,6 +338,66 @@ async def _set_edits(h: LiveHarness) -> dict:
     return {"dry_run": dry, "applied": applied, "renamed": renamed, "merged": merged}
 
 
+async def _dimension_auto(h: LiveHarness) -> dict:
+    """1.8-13: ``dimension_auto`` v2 on the seat - a plate in one call, not twice.
+
+    Measures what tests/test_dimension_auto_v2.py's fake seat assumes: that
+    ``entity_select_smart`` finds the AcDbPolyline / circles / arcs by layer
+    (the POLYLINE spelling read as an LWPOLYLINE), that AddDimRotated /
+    AddDimDiametric / AddDimRadial land on the ensured DIM layer with every
+    diameter's text beyond its FIRST chord point (outside the part), that the
+    snapshot ``Document.Export`` binds every one of them for ``skip_existing``
+    - a second call draws nothing - and that an ellipse is named in
+    ``omitted``.
+    """
+    backend = h.backend
+    await backend.layer_create("SMOKE-GEOM", color=7)
+    outline = await backend.entity_create_polyline(
+        [[0.0, 0.0], [120.0, 0.0], [120.0, 80.0], [0.0, 80.0]], True, layer="SMOKE-GEOM"
+    )
+    holes = [
+        await backend.entity_create_circle(x, y, 5.5, layer="SMOKE-GEOM")
+        for x in (15.0, 60.0, 105.0)
+        for y in (15.0, 65.0)
+    ]
+    arcs = [
+        await backend.entity_create_arc(40.0, 40.0, 8.0, 0.0, 180.0, layer="SMOKE-GEOM"),
+        await backend.entity_create_arc(80.0, 40.0, 8.0, 180.0, 360.0, layer="SMOKE-GEOM"),
+    ]
+    ellipse = await backend.entity_create_ellipse(60.0, 40.0, 6.0, 0.0, 0.5, layer="SMOKE-GEOM")
+    first = await backend.dimension_auto(selector={"layer": "SMOKE-GEOM"}, layer="SMOKE-DIM")
+    report = first.to_dict()
+    h.check("dimension_auto: twelve dimensions in one call", len(first) == 12, observed=report)
+    h.check(
+        "dimension_auto: the ellipse is omitted by name",
+        [row["handle"] for row in report["omitted"]] == [ellipse.handle],
+        observed=report["omitted"],
+    )
+    h.check(
+        "dimension_auto: every dimension on the ensured layer",
+        all(info.layer == "SMOKE-DIM" for info in first),
+        observed=[info.layer for info in first],
+    )
+    h.check(
+        "dimension_auto: the self-check read the drawing",
+        report["dim_overlap"]["checked"] is True and report["dim_overlap"]["issues"] == [],
+        observed=report["dim_overlap"],
+    )
+    again = (await backend.dimension_auto(selector={"layer": "SMOKE-GEOM"})).to_dict()
+    h.check(
+        "dimension_auto: a second call draws nothing (skip_existing through Document.Export)",
+        again["created"] == [] and len(again["skipped_existing"]) == 12,
+        observed=again,
+    )
+    return {
+        "outline": outline.handle,
+        "holes": [hole.handle for hole in holes],
+        "arcs": [arc.handle for arc in arcs],
+        "first": report,
+        "again": again,
+    }
+
+
 async def _view_and_ucs(h: LiveHarness) -> dict:
     backend = h.backend
     view = await backend.view_named_save("SMOKE_VIEW", center=[100.0, 50.0], height=80.0)
@@ -432,6 +494,8 @@ def make_body(*, build: bool = False, interactive: bool = False):
         report["layer_state"] = await _layer_state(h)
         h.stage("set edits")
         report["set_edits"] = await _set_edits(h)
+        h.stage("dimension auto")
+        report["dimension_auto"] = await _dimension_auto(h)
         h.stage("view and ucs")
         report.update(await _view_and_ucs(h))
         h.stage("preferences")
