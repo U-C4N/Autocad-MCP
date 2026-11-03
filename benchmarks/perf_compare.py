@@ -20,6 +20,11 @@ head/base is at most ``1 + max(0.05, 2 × aa_spread)``. Without ``--aa`` the
 spread is taken as 0 and the bound is 1.05; the phase gate runs with ``--aa``.
 
     python -m benchmarks.perf_compare --base v1.6.0 --aa --out out/perf/compare.json
+    python -m benchmarks.perf_compare --aa      # --base auto: the previous release tag
+
+``--base auto`` (the default since 1.8-14; it was a hard-coded ``v1.6.0``)
+resolves to the newest tag reachable from HEAD, or from HEAD's parent when HEAD
+is itself the tag being released.
 """
 
 from __future__ import annotations
@@ -189,6 +194,30 @@ def _git(*args: str) -> str:
     ).stdout.strip()
 
 
+#: ``--base`` value that resolves to the previous release tag (1.8-14).
+AUTO_BASE = "auto"
+
+
+def resolve_base(base: str, git=_git) -> str:
+    """``auto`` -> the previous release tag; anything else is used as given.
+
+    The previous tag is the newest tag reachable from HEAD, or - when HEAD is
+    itself tagged (a release run) - the newest one reachable from its parent,
+    so a tag is never compared with itself. No tag at all is refused by name.
+    """
+    if base != AUTO_BASE:
+        return base
+    try:
+        exact = git("tag", "--points-at", "HEAD")
+        start = "HEAD^" if exact.strip() else "HEAD"
+        return git("describe", "--tags", "--abbrev=0", start)
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(
+            "--base auto: no release tag is reachable from HEAD (git describe --tags failed); "
+            "fetch the tags (actions/checkout fetch-depth: 0) or pass --base <tag>"
+        ) from exc
+
+
 def compare(
     base_ref: str, *, warmup: int, rounds: int, aa: bool, workloads: list[str], scratch: Path
 ) -> dict:
@@ -227,7 +256,11 @@ def compare(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--base", default="v1.6.0", help="git ref to compare against")
+    parser.add_argument(
+        "--base",
+        default=AUTO_BASE,
+        help="git ref to compare against; 'auto' (default) = the previous release tag",
+    )
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--rounds", type=int, default=20)
     parser.add_argument("--aa", action="store_true", help="measure base twice per round")
@@ -248,8 +281,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.worker:
         print(json.dumps(asyncio.run(measure(workloads, args.scratch.resolve()))))
         return 0
+    base = resolve_base(args.base)
+    print(f"base: {base}", file=sys.stderr, flush=True)
     report = compare(
-        args.base,
+        base,
         warmup=args.warmup,
         rounds=args.rounds,
         aa=args.aa,
