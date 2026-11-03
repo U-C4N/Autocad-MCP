@@ -379,6 +379,413 @@ puts the rival's circle in paper space on 1.7.0) are not yet run either:
 `spikes-1.8.0.json` records both as `pending`. Every COM path above is
 covered by fake-COM tests only.
 
+1.8.0, second phase (W2, "call economy, QA truth, security"), first
+documentation pass: the seven items merged so far, 1.8-14, 1.8-16, 1.8-15,
+1.8-17, 1.8-18, 1.8-12 and 1.8-13. 1.8-08 (durable checkpoints), 1.8-09
+(atomic `cad_batch` default), 1.8-10 (`drawing_history`) and 1.8-11 (search
+default, instruction builder) are still on their branches and are not
+described here. A layer clean-up and a part's dimensions are now one or two
+calls instead of hundreds. A QA lane that did not run is named, never read as
+clean. A dimension is judged by the text the sheet really shows. A server can be
+narrowed to reads, a writer cannot leave an AutoCAD autoload file, and the HTTP
+transport checks Origin, Host and body size. `system_run_lisp` runs the AutoLISP
+read tier. Three tools are added (`entity_modify_where`, `layer_rename`,
+`layer_merge`) and one resource (`autocad://critique/focuses`); `system_about`
+is the authority for the counts. The correctness suite has 74 checks on this
+branch; the published A/B report is still the W1 run over 67 and is
+regenerated at the W2 integration.
+
+### W2: Added
+
+- **Set-based edits (1.8-12, core pack).** Three new tools; a layer
+  clean-up is one `cad_batch`, not one call per entity.
+  - `entity_modify_where(where, set, space="model", dry_run=False,
+    expect_count=None)` is AutoCAD's QSELECT + CHPROP. `where` filters by
+    `layer` (a name or a list; `*` and `?` are the only wildcards,
+    case-insensitive), `type`, `color`, `linetype`, `lineweight`, `region`
+    `[x0, y0, x1, y1]` and `block`. `set` writes `layer` (created when
+    missing), `color`, `linetype`, `lineweight` (the 1.8-01 parser) and
+    `visible`. `space` is `model`, `paper` (every paper layout) or `all`;
+    block definitions are never searched. The dry run reports `count`,
+    `would_change`, the first 20 `handles`, `truncated`, `skipped_locked` and
+    a `preview` (the revision, plus the region fingerprint when `where` has a
+    region) that `cad_batch(expected_revision=, preconditions=)` accepts. An
+    `expect_count` the drawing no longer matches is refused `stale_revision`
+    with nothing changed. Entities on a locked layer are skipped and reported
+    in `skipped_locked`, never counted as matched; `changed` counts only
+    entities whose value really moved. An empty `where` or `set` is
+    `invalid_args` (select everything with `{type: "*"}`).
+  - `layer_rename(old, new)` renames the table entry and every reference:
+    headless, every layout, block definition, attribute, viewport freeze list
+    and the current layer (`entities`, `by_space`, `blocks_touched`); live,
+    `AcadLayer.Name` (`entities: null`, because AutoCAD references a layer by
+    object id). Refused by name before anything changes: `0`, `DEFPOINTS`, an
+    xref-dependent layer, a missing `old`, an existing `new`, a case-only
+    change and a DXF-illegal name.
+  - `layer_merge(sources, target, delete_sources=True)` is LAYMRG: the
+    sources' entities in model space, every paper layout and every block
+    definition move to `target`, then the sources are deleted. It names the
+    touched block definitions (`blocks_touched`, with a `note`), because an
+    edited definition changes every INSERT of that block. The current layer
+    moves to the target when it was a source, and a source's viewport freezes
+    are dropped. Live, a locked source or target is unlocked for the move and
+    the target relocked; a source AutoCAD will not delete is listed in
+    `layers_not_deleted`. Refused by name: a missing source or target
+    (`layer_create` it first), `0` / `DEFPOINTS` / an xref-dependent source,
+    the target among the sources, a duplicate source.
+  - All three carry `changes: {added, deleted, counts, complete}` on both
+    engines. Costs: `entity_modify_where` and `layer_merge` `destructive`,
+    `layer_rename` `mutate`. The alias corpus gains LAYMRG; RENAME
+    (`layout_rename` + `layer_rename`) and CHPROP (`entity_set_properties` +
+    `entity_modify_where`) become shared commands. Live, the selection is one
+    `ssget "X"`-style SelectionSet filter (group codes 0 / 8 / 2 / 410, 62
+    only for ACI 1-255) inside one STA job through `_acad_doc()`; ByLayer and
+    ByBlock colour, linetype, lineweight and region are checked per entity.
+- **`dimension_auto` v2: a part in one call (1.8-13).** No new tool and no
+  new capability: `dimension_auto(handles=None, selector=None, style="chain",
+  offset=10.0, layer=None, include=None, group_equal=False,
+  skip_existing=True, dry_run=False)`. Exactly one of `handles` /
+  `selector` (an `entity_select_smart` predicate, e.g. `{"layer":
+  "GEOMETRY"}`). A selection of LINEs alone is planned exactly as in 1.7;
+  otherwise LWPOLYLINE straight edges are chained per side (an oblique edge
+  aligned), CIRCLEs get diameters and ARCs radii with the text outside the
+  part box, and the overall width and height are drawn unless an edge
+  already measures them (listed under `redundant`). `include` takes
+  `linear`, `diameter`, `radius`, `overall` (default: all); `group_equal`
+  draws one `n× <>` diameter for equal circles; `skip_existing` binds the
+  existing DIMENSIONs through `bind_dimension` and skips a feature already
+  dimensioned, so a rerun draws nothing; `dry_run` returns the plan. Every
+  entity not dimensioned (ELLIPSE, SPLINE, a bulged segment, anything
+  `include` leaves out) is in `omitted: [{handle, type, reason}]`, never
+  dropped, and the `dim_overlap` self-check over what was drawn is reported.
+  A source carrying a 1.8-06 feature tag gives its dimension a `role: "dim"`
+  feature record. Refused by name (`invalid_args`): neither or both of
+  `handles` / `selector`, an unknown or empty selector, an unknown or empty
+  `include`.
+- **QA coverage ledger (1.8-16).** Every critique check writes
+  `checked(focus, layout, n)` or `not_checked(focus, layout, reason)`
+  (`engineering/qa_coverage.py`). The reasons are a closed vocabulary:
+  `domain_absent`, `engine_live_document_template`, `no_viewport_scale`,
+  `viewport_scale_deferred`, `font_unresolved` (declared, no emitter until
+  1.8.1), `scan_incomplete`, `check_failed`, `check_unreported` (a check that
+  wrote no row - a server bug, reported). `drawing_critique(report=True)`
+  returns `{issues, coverage: {layouts, complete}}`. `drawing_finalize`,
+  `drawing_deliver`, their gate failure and the delivery manifest carry
+  `qa_coverage: {complete, records, spaces, reason, not_checked: [{focus,
+  layout, reason, lane}], domain_absent}`. On a paper layout (headless):
+  nothing but its own viewport is checked; a model viewport onto lettered
+  model space is `viewport_scale_deferred` (text at plot scale is 1.8.1); a
+  layout with content and no model viewport is `no_viewport_scale`.
+- **Compact QA answers (1.8-16).** `drawing_critique`, `validation_check`
+  and `drawing_topology_check` take `summary` and `limit` and then return
+  `{total, by_focus, by_severity, issues[:limit]}` (`summary=True`: compact
+  rows, messages cut to 160 characters, 5 handles plus `handle_count`, 5
+  rows unless `limit` says otherwise). `total` and the counts always cover
+  every issue; there is no cursor. Without these arguments each tool answers
+  as in 1.7. `drawing_topology_check(summary=True)` flattens its findings
+  with the `topo_*` severities (near miss error, dangling warning, crossing
+  info).
+- **The `autocad://critique/focuses` resource (1.8-16).** One row per focus
+  in `ALL_CRITIQUE_FOCUSES` order (`{focus, domain, reports, silent?}`), the
+  `not_checked` reasons and which of them strict mode exempts.
+  `drawing_critique`'s `focus` description no longer carries the
+  ~1,000-character enum (now 195 characters); an unknown focus is still a
+  warning issue.
+- **Dimension truth (1.8-15).**
+  - `engineering/dimtext.py` formats a dimension's displayed text the way
+    the drawing does: DIMDEC, DIMRND, DIMZIN, DIMDSEP, DIMPOST, DIMLFAC, the
+    automatic Ø / R prefix, and DIMADEC / DIMAZIN / DIMAUNIT for angles
+    (DIMLFAC never scales an angle). `bind_dimension` uses it and reports
+    `display_rounding`: on a DIMDEC 0 sheet a 19.6 mm dimension shows "20"
+    with `display_rounding` 0.4, and a shown value within half its last
+    unit of the geometry is not a finding.
+  - The QA snapshot's DIMENSION records carry `rendered_text` (the plain
+    text of the `*D` block), `group42` and the style variables, on both
+    engines (live through the same `Document.Export` reader).
+  - The new critique focus **`dimension_truth`** binds every DIMENSION in
+    every space to its geometry and reports, one issue per dimension and
+    code: `dim_override_disagrees` (an override marked NTS is info),
+    `dim_dimlfac_scaled`, `dim_render_stale` (the `*D` block shows another
+    text than the style formats), `dim_group42_stale`, `dim_double_prefix`
+    (a warning until the live ØØ check), `dim_value_hidden` (an empty or
+    digitless override, DIMTXT 0, 90 % or more transparency, the text in
+    its own fill colour, a layer off, frozen or not plotted) and
+    `dim_unbound` (info: not checked, never a pass). It runs under
+    `focus=None` and inside `drawing_finalize`. Only `dim_render_stale` and
+    `dim_group42_stale` are repairable: `drawing_refine` redraws them
+    through the new backend contract method `dimension_rerender(handles,
+    force)` (not a tool); every other code is `manual_required`.
+  - `entity_edit_geometry` edits a linear or aligned DIMENSION's measured
+    points (`x1` / `y1` / `x2` / `y2`) and redraws it; any other dimension
+    type or argument is refused by name. `entity_scale` redraws a
+    DIMENSION's number and group 42 (the other transforms follow in 1.8.1).
+    Old `*D` blocks are purged; a text its author placed keeps its position
+    (`text_kept`) unless `dimstyle_modify(force=True)`.
+- **Tool policy (1.8-17).** `READ_ONLY=true` runs only `read` tools and
+  writes no file. `TOOL_ALLOWLIST` / `TOOL_DENYLIST` take comma-separated
+  names or globs; an entry naming no tool is warned about at startup and
+  listed under `system_about.policy.unmatched`. `MAX_TOOL_COST=read|safe|
+  mutate|destructive|escape` caps the `@cad_tool` cost a call may carry. A
+  refused tool is not advertised, and a call to it - directly, through the
+  search proxy's `call_tool`, or as any `cad_batch` step - is refused before
+  anything runs with kind `policy_refused` `{policy, tool, allowed_cost,
+  cost}`. `cad_batch` is judged per step: one refused step refuses the whole
+  batch, `cad_batch refused all N steps - nothing was executed`. A tool
+  hidden by the profile is still refused by name, never "unknown tool". The
+  defaults are 1.7's: every tool runs. `system_status` and `system_about`
+  report `policy` (`read_only`, `max_tool_cost`, `ceiling`, `allowlist`,
+  `denylist`; `system_about` adds `unmatched` and an `http` block).
+- **Write-path policy (1.8-17).** `security.validate_path(path, *,
+  allow_write=False, kinds=None)`: every writer passes its extensions -
+  `drawing_save` / `drawing_save_as` / `drawing_finalize(save_path)`
+  `.dxf/.dwg/.dwt`; `drawing_export_dxf` `.dxf`; `drawing_export_pdf` and
+  each `batch_plot` file `.pdf`; `drawing_export_dwg` `.dwg`;
+  `drawing_template_save` `.dxf/.dwt`; `data_extract`, `pipe_takeoff`,
+  `cable_takeoff` `.csv/.xlsx`; the P&ID lists' `csv_path` `.csv`;
+  `drawing_finalize(screenshot_path)` `.png/.jpg`;
+  `drawing_verify_requirements(report_path)` `.json/.md`; `drawing_deliver`
+  and `batch_plot` take a directory. A file write is `mutate`-class whatever
+  its tool's label, so under a ceiling below `mutate` (`READ_ONLY`,
+  `MAX_TOOL_COST=read|safe`, a read-only token) every writer is refused
+  `policy_refused` with cost `mutate`.
+- **HTTP transport guard (1.8-17, `http_guard.py`).** A request whose Origin
+  is not in `HTTP_ALLOWED_ORIGINS` is refused 403 (default: none listed); a
+  Host that is not the bound host:port (loopback names always) or in
+  `HTTP_ALLOWED_HOSTS` 421; a body over `MAX_HTTP_BODY_BYTES` (8 MiB; `0`
+  disables) 413, by Content-Length and counted on a chunked body; two
+  different Origin or Host headers 400. `*` in either list allows all. The
+  refusal body is `{ok: false, error, message}`. Bearer tokens are compared
+  in constant time against every configured token. `MCP_AUTH_TOKEN_READONLY`
+  issues a token with only the `mcp:read` scope: its requests run under the
+  `read` ceiling and its `tools/list` shows only what that ceiling allows.
+  stdio is unaffected.
+- **The AutoLISP read tier (1.8-18, F08).** `system_run_lisp` reads its
+  expression (`security_lisp.py`: escaped strings, `;` and `;| |;`
+  comments, quote, numbers, symbols, dotted pairs) and walks it. The read
+  tier: arithmetic and geometry (`angle`, `distance`, `polar`, `inters`,
+  `trans`), lists and control (`car` / `cdr`, `cons`, `list`, `mapcar`,
+  `foreach`, `if`, `cond`, `progn`, `lambda`, `setq`), strings (`strcat`,
+  `substr`, `rtos`, `vl-string-*`) and database reads (`entget`,
+  `entnext`, `entlast`, `handent`, `tblsearch`, `tblnext`, `getvar`,
+  `dictsearch`, `namedobjdict`, `sslength`, `ssname`, `ssget` with a literal
+  `_X` / `_W` / `_C` / `_CP` mode, `vlax-ename->vla-object`, `vla-get-*`,
+  `vlax-get-property`, `vlax-curve-get*`). All of these were refused by the
+  1.7 denylist. `while`, `repeat` and `defun` are outside the tier, so a
+  read-tier form always terminates; a higher-order function takes only a
+  literal function. The docstring example is now
+  `(vla-get-Area (vlax-ename->vla-object (handent "2A")))`. COM only: the
+  headless engine still answers that it has no LISP.
+- **Session metrics (1.8-14).** `system_status(metrics=True)` adds
+  `metrics.session` - this connection's `calls`, `by_tool`, `result_bytes`,
+  `errors_by_kind`, `p50_ms`, `p95_ms` - and, on the live engine,
+  `metrics.com_run`: each COM job's queue / guard / work / refresh /
+  counter ms. In memory and bounded (64 connections, 2,048 latencies). Off
+  by default, so the status payload and the idle catalog are unchanged; no
+  tool is added.
+- **Token and call budgets (1.8-14, 1.8-13).** `benchmarks/token_budget.json`
+  fixes the 1.8.0 ceilings, written before W2, each with a gate (`ci` or
+  `release`) and an owner. `python -m benchmarks.token_suite --budget
+  benchmarks/token_budget.json` exits 1 on a breached `ci` ceiling or an idle
+  row grown more than 5 % over `benchmarks/results/published/token-cost.json`;
+  `--release` also fails a release-gated cell over its ceiling or
+  unmeasured. token_suite has a fourth lane, `task`: five scripted jobs
+  (`sketch_20_entities`, `layer_cleanup_300`, `dimension_plate`,
+  `inspect_foreign`, `history_value_lookup`), each run naive (one tool per
+  entity, labelled as such) and batched (the least-call oracle in the new
+  `benchmarks/call_budget.py`), with calls, characters and the modelled
+  session input cached and uncached. An oracle whose verb is not on the tree
+  reports `pending_tool`, never a pass. A new CI job, `token-budget`, runs
+  the idle and task lanes against the budget and `python -m
+  benchmarks.call_budget` on every PR. The H4 (`layer_cleanup_300`) and H5
+  (`dimension_plate`) oracles are measured and gated in CI.
+- **Matrix v9 (registered, not the default).** `benchmarks/tasks_v9.py` adds
+  five tasks to v8's 31 in the one `MATRICES` registry; `DEFAULT_MATRIX`
+  stays `v8`: `dimension_lie_detect`, `policy_read_only`, `lisp_read_tier`
+  (COM; headless `environment_blocked`), `layer_cleanup_budget` and
+  `call_count_dimension_part`.
+- **Seven W2 correctness checks** (each imports its 1.8.0 modules inside the
+  check): `qa_coverage_not_checked`, `dimension_truth_focus` and
+  `property_override_focus` (Quality gate), `dimension_display_truth` and
+  `dimension_auto_one_call_part` (Dimensions), `policy_read_only_batch` and
+  `write_path_autoload_refused` (Security): 67 → 74 checks.
+  `property_override_focus` is the plan's section-8 check W1 did not add: a
+  line on GEOMETRY given colour 1 and lineweight 30 is named by exactly two
+  issues listing only its handle (`lineweight_not_bylayer` error,
+  `color_not_bylayer` warning), a clean drawing yields none, and
+  `drawing_refine` applies one repair per issue and leaves the line at
+  colour 256 and lineweight ByLayer. All seven fail or miss on v1.7.0 and
+  pass here.
+- **Environment variables:** `READ_ONLY` (false), `TOOL_ALLOWLIST` /
+  `TOOL_DENYLIST` (empty), `MAX_TOOL_COST` (`escape`), `LISP_POLICY`
+  (`read`; an unknown value falls back to `read` with a warning),
+  `HTTP_ALLOWED_ORIGINS` / `HTTP_ALLOWED_HOSTS` (empty),
+  `MAX_HTTP_BODY_BYTES` (8 MiB), `MCP_AUTH_TOKEN_READONLY` (empty).
+
+### W2: Changed
+
+- **A lane the critique did not check is named (1.8-16).** The live
+  engine's dimension-legibility lane reports `not_checked`
+  (`engine_live_document_template`) instead of a silent `[]` that read as
+  checked and clean. A check that writes no ledger row is recorded
+  `check_unreported`.
+- **A dimension is read as the sheet shows it (1.8-15).** A count prefix
+  (`4x Ø13.5`, `4x M8`) is not the claimed size; `40x20` stays a size. A
+  dimension measured to a point on an edge (not at its end) binds to that
+  edge, which changes requirement verification only for dimensions that
+  were `unknown`. A dimension text's MTEXT codes (`<>\PTYP`, `<>\XTYP`,
+  `{\H0.7x;<>}`) are formatting: the displayed text is read through the same
+  reader as the `*D` block. A headless redraw is all or nothing: a DIMPOST
+  without `<>` renders as a suffix, as AutoCAD shows it, and a dimension the
+  renderer cannot redraw is refused (kind `refused`) with the style, the
+  scale or the edit put back and the revision unmoved.
+- **`dimstyle_modify(rerender=True, force=False)` (1.8-15).** Headless, it
+  redraws every dimension using the style (`rerendered`, `text_kept`). Live,
+  each such dimension is `Update()`d and its `*D` text read back
+  (`rerendered`, `already_current`, `stale`); the read costs two
+  `Document.Export` reads per modify of a style in use. `rerender_required`
+  now means a dimension still shows the old style: `rerender=False`, or a
+  live redraw the read-back did not confirm.
+- **`LISP_POLICY=read` (1.8-18).** A form outside the read tier goes to the
+  1.7 denylist unchanged, and the denylist also re-scans every read-tier
+  verdict: a match outside a symbol the reader approved is refused
+  `denylist_second_pass`. Refused whatever the tier: interactive `get*`
+  (all but `getvar`, `getenv`, `getcfg`, `getpropertyvalue`), `entsel`,
+  `grread`, a mode-less or interactive `ssget` (they hold AutoCAD's single
+  COM thread), `load` / `autoload` / `arxload`, `startapp`, `dos_*`,
+  `vl-file-*`, `read`, a non-literal `eval` / `apply` / `mapcar` function,
+  `vlax-create-object`, `vla-SendCommand`, `vlr-*`, `defun`, `c:*`, and
+  unreadable text: unbalanced parentheses, an unterminated string or
+  comment, a trailing `;` comment, a comment holding a parenthesis or a
+  quote, a control character other than tab / CR / LF, nesting deeper than
+  200. A refusal is `policy_refused` with `policy` (`lisp_allowlist`, or
+  `lisp_denylist` under `LISP_POLICY=denylist`), `symbol`, `line` and
+  `column` (1-based), `tier_needed` (`write` / `none` / `unclassified`;
+  `read` when only the denylist mode refused a read form), `reason`
+  (`never_runs`, `unreadable`, `outside_read_tier`, `denylist_second_pass`,
+  `denylist`), `symbols`, `verbs` and `alternatives`. Refused symbols map to
+  typed tools: `entdel` / `vla-delete` → ERASE, `entmod` / `vla-put-*` /
+  `vlax-put-property` → PROPERTIES, `setvar` → SETVAR, `getpoint` /
+  `getcorner` → ID (`user_pick_point`), `entsel` / `nentsel` / `ssget` →
+  SELECT (`user_select`). The write tier is 1.8.1.
+- **`TOOL_PROFILE=lean` gains `entity_modify_where`:** 67 tools (57 with
+  `TOOL_PACKS=core`). `layer_rename` and `layer_merge` are full-profile.
+- **token_suite's idle headline is the prompt payload (1.8-14)** - the tools
+  array a client forwards to the model. The tools/list wire payload, the
+  basis of 1.7.0's 89,226 and 503, is the `wire` column beside it. The idle
+  lane gains `packs_core` and `instructions` rows (report schema
+  `token/2.0`). `docs/tool-inventory.json` is schema 2 and carries `acad` /
+  `synonyms` per row.
+- **`perf_compare.py --base` defaults to `auto` (1.8-14):** the previous
+  release tag (`git describe --tags --abbrev=0`, from `HEAD^` when a tag
+  points at HEAD), refused by name when no tag is reachable, instead of a
+  fixed v1.6.0.
+- **The wheel and the Docker image ship `policy.py`, `http_guard.py` and
+  `security_lisp.py`.**
+
+### W2: Fixed
+
+- **`data_extract` checked no extension (1.8-17).** It, and `drawing_save_as`,
+  could write `acaddoc.lsp` or `acad.lsp`. No tool writes a file AutoCAD or
+  Windows loads or runs - `*.lsp` (`acad*.lsp`, `acaddoc*.lsp`), `.fas`,
+  `.vlx`, `.mnl`, `.scr`, `.arx`, `.dbx`, `.dll`, `.exe`, `.bat`, `.cmd`,
+  `.ps1`, `.vbs`, `.js` and `acad.pgp` - even inside `ALLOWED_PATHS`
+  (`path_refused`, reason `executable_name`); trailing dots and spaces are
+  stripped first, and a `:` in the name (an NTFS alternate data stream) is
+  refused. Reads of these names are not affected.
+- **The LISP denylist could be escaped (1.8-18).** In 1.7, `1)) ERASE ALL
+  ((` broke out of the server's `progn` wrapper and reached the command
+  line, because the denylist knows only LISP symbols; the reader refuses
+  unbalanced input. The denylist's `vla[xr]?-` pattern never matched
+  `vlr-*`, so 1.7 ran reactors; the read tier refuses them
+  (`LISP_POLICY=denylist` keeps the 1.7 gap, as the migration requires).
+- **A dimension's reported text was not the sheet's (1.8-15).** On a DIMDEC
+  0 sheet a 19.6 mm dimension was reported as showing "19.6" while it shows
+  "20", and v1.7.0 scaled an angle by DIMLFAC.
+
+### W2: Breaking - migration table
+
+| Change | 1.7.0 | 1.8.0 | Old behaviour |
+|---|---|---|---|
+| `strict_critique=True` (`drawing_finalize` opt-in, `drawing_deliver` default) | passes when the critique is empty | also fails on every `not_checked` lane except `domain_absent`, each a gate row with code `not_checked` (`critique_gate_failed`); on the live engine a default delivery is now `failed_validation`, because the legibility lane is `engine_live_document_template` | `strict_critique=False` |
+| `drawing_topology_check(limit=)` default | `200` | `None`: still 200 rows per list without `summary`; 5 rows with `summary=True` | `limit=200` |
+| `LISP_POLICY` | the 1.7 denylist | `read` (+ the denylist as a second pass) | `LISP_POLICY=denylist`; `LISP_POLICY=off` checks nothing |
+| `system_status` | no policy | always carries `policy` (`system_about` too, with `unmatched` and `http`) | ignore the key |
+| `meta["cad"]` on each tool | `summary`, `cost`, `acad`, `synonyms` | `summary`, `cost` (full-catalog tools/list 91,683 → 83,486 wire tokens, 1.8-14's measurement) | `describe_tool`, `docs/tool-inventory.json` (schema 2) |
+| Headless `dimstyle_modify` | `rerender_required: true`, dimensions left stale | redraws (`rerendered`, `text_kept`); `rerender_required` only when a dimension still shows the old style | `rerender=False` |
+| `dimension_auto` tool answer | a list of entity rows; a rerun duplicates | `{ok, created: [handles], skipped_existing, omitted, redundant?, layer, dim_overlap}`; `skip_existing=True` by default (the backend method still returns the list of drawn entities) | `skip_existing=False` for a rerun; `entity_get` on `created` for the rows |
+| HTTP bearer tokens | one token, every tool | `MCP_AUTH_TOKEN` carries `mcp:read` + `mcp:write`; `MCP_AUTH_TOKEN_READONLY` only `mcp:read` (the `read` ceiling); if both are the same string that token is read-only, with a warning | leave `MCP_AUTH_TOKEN_READONLY` unset |
+| HTTP Origin | not checked | a request with an Origin not in `HTTP_ALLOWED_ORIGINS` is 403 - a browser-based MCP inspector included | `HTTP_ALLOWED_ORIGINS=http://localhost:6274` (its origin), or `*` |
+| HTTP Host | not checked | not the bound host:port and not in `HTTP_ALLOWED_HOSTS` → 421; a wildcard bind (`0.0.0.0` / `::`) serves only `HTTP_ALLOWED_HOSTS` and the loopback names | `HTTP_ALLOWED_HOSTS=<host:port>`, or `*` |
+| Non-loopback HTTP bind | `ALLOW_REMOTE_HTTP=true` + a token | also requires `ALLOWED_PATHS` | set `ALLOWED_PATHS` |
+| A writer's output path | any extension, or none | only the tool's own extensions; none, another or a loadable name → `path_refused` (`extension_not_allowed`, `executable_name`) | name the file with the tool's extension |
+
+### W2: measurements
+
+Measured on this tree (`release/1.8.0` at `1d42556`, headless), unless a
+report is named:
+
+- **`python -m benchmarks.call_budget`** (exit 0): `sketch_20_entities` 20 →
+  1 call, `layer_cleanup_300` 311 → 2 (ceiling 3; 1.7.0 124, the rival
+  11), `dimension_plate` 23 → 2 (ceiling 2; 1.7.0 89, the rival 10),
+  `inspect_foreign` 5 → 1; `history_value_lookup` is `pending_tool`
+  (`drawing_history`, 1.8-10).
+- **`python -m benchmarks.token_suite --lanes idle,task --budget
+  benchmarks/token_budget.json`**, prompt basis: default 246 tools 67,230
+  tokens (wire 86,021), lean 67 tools 19,629 (wire 24,627), `TOOL_PACKS=core`
+  187 tools 46,661 (wire 60,805), search 3 tools 455 (wire 503), server
+  instructions 461. Task lane, modelled 30-turn session input:
+  `layer_cleanup_300` naive 27,961,921 uncached against batched 204,821
+  uncached / 99,344 cached; `dimension_plate` 1,657,975 against 203,297 /
+  98,312. **The budget exits 1 on this tree:** `idle.default` (67,230) is
+  over its `ci` ceiling of 65,594, and `packs_core` grew 5.24 % over the
+  published report (limit 5 %). `lean`, `packs_core`, `search` and
+  `instructions` are over their release-gated ceilings (owners W3 and
+  1.8-11), and the result-lane cells and `search_pinned` are not yet
+  measured. The integration decides the `idle.default` cell.
+- **QA answers** (1.8-16's report, `tests/test_qa_coverage.py`): a
+  500-issue `drawing_critique(summary=True)` is 747 characters against
+  79,096 for the full list (ceiling 2,500); finalize's `qa_coverage` is 136
+  tokens on a clean sheet and 216 with three not-checked layouts (ceiling
+  300).
+- **Dimension truth at 2,000 dimensions** (1.8-15's review): snapshot
+  0.68 s, `dimension_truth` 0.72 s, a `dimstyle_modify` redraw of all 2,000
+  0.73 s, `drawing_critique(focus=None)` 1.79 s.
+- **Correctness:** 74 checks here, each of the seven W2 checks failing or
+  missing on a v1.7.0 worktree and passing on this tree. The published
+  `ab-v1.7.0-vs-v1.8.0.json` is still over 67 checks.
+
+### W2: not in this pass, or not yet
+
+- **1.8-15:** headless, ezdxf 1.4.4 draws a two-line angular dimension's
+  reflex angle (315° for 45°); `dimension_truth` reports it
+  `dim_render_stale` with `repairable: false` and `reflex_render: true`
+  ("redraw it in AutoCAD"); a fix is proposed for 1.8.1. A DIMENSION inside
+  a block definition is not checked, and no `not_checked` row says so yet.
+  The live `dimstyle_modify` writes the style, then `Update()`s each
+  dimension in one job with no rollback if one fails. Redrawing after
+  move / rotate / mirror / copy / array, and inside block definitions, is
+  1.8.1.
+- **1.8-13:** `skip_existing` cannot match an existing DIMENSION that
+  `bind_dimension` cannot bind (a 1.7 ordinate dimension to a point on no
+  feature); a rerun duplicates such a one.
+
+**W2 live evidence pending.** AutoCAD 2026 was not running on 2026-11-03.
+Written, not run: the `scripts/smoke_settings_com.py` stages `set edits`
+(the ssget group codes, a proxy from a deleted SelectionSet staying
+writable, a rename rewriting no entity, a merge reaching a sheet and a block
+definition), `dimension truth` (whether a `*D` block is redrawn after DIMDEC
+changes and by `Update()`, `entity_scale`, `%%c<>` printing ØØ, the
+ExtLine1Point / ExtLine2Point read-back) and `dimension auto` (12 dimensions
+in one call, the ellipse omitted, a second call drawing nothing); and
+`scripts/smoke_lisp_com.py` (the LISP corpus in AutoCAD, `vla-get-Area`
+against `analysis_measure_entity`, `getvar` CLAYER / INSUNITS / LTSCALE
+against `system_get_variable`, no call left with CMDACTIVE set, the
+`(command "_ERASE" ...)` twin refused). The COM `metrics.com_run`
+breakdown, `dimension_rerender`, the live `dimstyle_modify` read-back and the
+set-edit COM paths are covered by fake-COM tests only; `READ_ONLY` and a
+read-only token on a live seat are unverified; the v9 `lisp_read_tier` COM
+lane has not run.
+
 ## [1.7.0] — 2026-10-26
 
 1.6 taught the server to draw whole sheets and to read other people's

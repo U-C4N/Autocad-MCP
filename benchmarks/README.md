@@ -165,6 +165,25 @@ The v8 tasks stage their inputs inside the headless engine; on the live engine t
 
 **Run manifest.** Every report carries `manifest`: the server's commit and whether tracked files were modified (`dirty`), the sha256 of the files that generate the fixtures (`FIXTURE_SOURCES`), `EVALUATOR_VERSION` and the installed versions of ezdxf, fastmcp, mcp, numpy, openpyxl, matplotlib and pywin32.
 
+### Matrix v9 (v1.8.0, in progress) — call economy, dimension truth, security
+
+`tasks_v9.py` keeps the v8 thirty-one unchanged and appends the 1.8.0 tasks per
+plan item, into the same `MATRICES` registry `run_competitors` imports
+(`--matrix v9`). `DEFAULT_MATRIX` stays `v8` until the release item 1.8-25 moves
+it. On the W2 branch so far, five tasks:
+
+| Task | Category | Verified against |
+|---|---|---|
+| `dimension_lie_detect` | qa | `tests/fixtures/lying_dims.py`: seven dimensions that each lie one way give exactly one `dimension_truth` finding each; DIMDEC 0 over 19.6 shows "20"; a redraw left stale by `rerender=False` is named and `drawing_refine` clears it |
+| `policy_read_only` | security | under `READ_ONLY`, a batch with one create step is refused before step 1 with the revision unchanged, and the same write sent through the search proxy's `call_tool` is `policy_refused` |
+| `lisp_read_tier` | security | three AutoLISP reads (`vla-get-Area`, `getvar`, a `mapcar` over a `lambda`) answer on the first try and `(command "_ERASE" ...)` is refused with its symbol, line and typed alternatives; live engine only (headless: `environment_blocked`) |
+| `layer_cleanup_budget` | ergonomics | six misnamed layers and 300 overridden entities reach ISO names, ByLayer and no empty layer in at most 3 calls, with the `iso128` / `layer_color` / `property_override` critique empty; a stale `expect_count` is refused `stale_revision` with nothing changed |
+| `call_count_dimension_part` | ergonomics | a plate (outline, six holes, two arcs) dimensioned in at most 2 calls, every dimension bound with no `dimension_mismatch` and no duplicate, a second run drawing nothing; an ELLIPSE and a SPLINE in the selection are `omitted` with their reasons |
+
+`dimension_lie_detect`, `layer_cleanup_budget` and `call_count_dimension_part`
+stage their inputs in the headless engine and are `not_run` on the live lane.
+The 1.8-08 / 1.8-09 / 1.8-10 tasks join when those items merge.
+
 ## Live competitor lane (v1.4)
 
 Two competitor adapters now execute the exact same task matrix, black-box over
@@ -260,7 +279,13 @@ v1.4.0's creation throughput; that is B10, 1.7.1.
 
 ```bash
 python -m benchmarks.perf_compare --base v1.6.0 --aa --out out/perf/compare.json
+python -m benchmarks.perf_compare --aa --out out/perf/compare.json   # --base auto (default since 1.8.0)
 ```
+
+Since 1.8.0 `--base` defaults to `auto`: the previous release tag, found with
+`git describe --tags --abbrev=0` from HEAD (from `HEAD^` when a tag points at
+HEAD itself). With no reachable tag it refuses by name - fetch the tags or pass
+`--base <tag>`. It is not yet wired into a nightly or release workflow.
 
 ### v1.4.0 against v1.6.0, and what the call-timeout guard costs
 
@@ -335,6 +360,47 @@ pr.disable()
 print(pstats.Stats(pr).total_calls)
 ```
 
+## Token and call budgets (1.8.0)
+
+`token_suite.py` measures what the server costs a model in tokens, offline (a
+characters-per-token ratio, labelled `ratio/v1`; `--tokenizer anthropic` counts
+for real). Four lanes: `idle` (the advertised catalog and the server
+instructions, per profile and pack set; the headline is the **prompt payload**
+a client forwards to the model, the tools/list wire payload is the `wire`
+column; report schema `token/2.0`), `discovery`, `result`, and since 1.8.0
+`task`. The task lane runs five scripted jobs - `sketch_20_entities`,
+`layer_cleanup_300`, `dimension_plate`, `inspect_foreign`,
+`history_value_lookup` - each two ways: **naive**, one tool per entity, labelled
+as the shape a rival was observed using and not as the least this server needs,
+and **batched**, the least-call oracle of `call_budget.py`. Each arm reports its
+calls, request and result characters, and a modelled 30-turn session input
+cached and uncached (turn *k* re-sends the prefix and every earlier request and
+result). An arm that does not finish its job fails; an oracle whose tool is not
+on the tree yet reports `pending_tool`, never a pass.
+
+`call_budget.py` owns the fixtures (plain ezdxf files), the scenarios and their
+verifiers; setup and verification calls are not counted. The plan's ceilings
+live in `token_budget.json`, written at the start of W2 before any token work,
+each cell with a gate and an owner: `ci` cells fail every PR, `release` cells
+(over their ceiling on the tree, or owned by a later item) are reported under
+`over_ceiling` / `pending` and fail only `--release`. Every idle row, and the
+instructions row, also fails when it grows more than 5 % over the published
+`results/published/token-cost.json`.
+
+```bash
+python -m benchmarks.token_suite --lanes idle,task --budget benchmarks/token_budget.json --out out/token-budget.json
+python -m benchmarks.token_suite --budget benchmarks/token_budget.json --release   # the release gate
+python -m benchmarks.call_budget --out out/call-budget.json
+```
+
+The CI job `token-budget` runs the first and the third on every PR. The call
+oracles measured so far: `sketch_20_entities` 1 call (naive 20),
+`layer_cleanup_300` 2 (one `cad_batch` of `layer_merge` + `entity_modify_where`,
+then `drawing_critique`; naive 311; 1.7.0 took 124, the rival 11),
+`dimension_plate` 2 (`dimension_auto(selector=...)` + `drawing_critique`; naive
+23; 1.7.0 89, the rival 10), `inspect_foreign` 1 (`drawing_understand`; naive
+5); `history_value_lookup` is `pending_tool` until `drawing_history` (1.8-10).
+
 ## Correctness A/B suite
 
 `correctness_suite.py` is a set of deterministic, headless (ezdxf-backend) checks
@@ -351,6 +417,28 @@ python benchmarks/compare_versions.py v1.0.0     # vs a tag/ref
 python benchmarks/compare_versions.py --json results.json
 python benchmarks/compare_versions.py v1.6.0 --fail-on-regression   # exit 1 on any regression
 ```
+
+The suite file under test is always the current one: the old tree runs it with
+its own code on `PYTHONPATH`, so a check imports anything newer than the
+baseline inside its function, and a check the baseline cannot pass records
+`fail` or `miss` there - an improvement, never a regression. A check is a
+function placed just before `CHECKS` (the file ends in `main()`) and an entry at
+the end of `CHECKS`.
+
+**On the 1.8.0 branch, after W2's first merges** the suite holds 74 checks: the
+67 below plus seven, each failing or missing on v1.7.0 and passing on the
+branch. The published report is still the W1 run and is regenerated over all
+of them at the W2 integration.
+
+| Check | Category | Item | Verified against |
+|---|---|---|---|
+| `qa_coverage_not_checked` | Quality gate | 1.8-16 | a paper layout with content and no model viewport is named `not_checked` (`no_viewport_scale`) by the critique report and by finalize's `qa_coverage`, and `strict_critique=True` fails on it |
+| `dimension_display_truth` | Dimensions | 1.8-15 | 19.6 mm after DIMDEC 2 → 0 shows "20" in the `*D` block and in `bind_dimension`, `display_rounding` 0.4, no mismatch |
+| `dimension_truth_focus` | Quality gate | 1.8-15 | an override lie, a doubled Ø and a stale render are exactly their three codes; `drawing_refine` redraws only the stale one |
+| `policy_read_only_batch` | Security | 1.8-17 | `READ_ONLY` refuses a one-create-step `cad_batch` (`policy_refused`, `read_only`) with the revision and the entity count unchanged |
+| `write_path_autoload_refused` | Security | 1.8-17 | `data_extract` → `acaddoc.lsp` and `drawing_save_as` → `acad.lsp` are `path_refused`, nothing written |
+| `dimension_auto_one_call_part` | Dimensions | 1.8-13 | one `dimension_auto(selector=...)` dimensions a plate (4 edges, six Ø11, two R8, sizes read off the DIMENSIONs), omits the ellipse, and a rerun draws nothing |
+| `property_override_focus` | Quality gate | 1.8-01 (the plan's section-8 check W1 did not add) | through the server: a clean GEOMETRY line yields nothing; one given colour 1 and lineweight 30 is named by exactly `lineweight_not_bylayer` (error) and `color_not_bylayer` (warning) with only its handle; `drawing_refine` applies both repairs and leaves it at colour 256 and ByLayer |
 
 ### Result — v1.8.0 vs v1.7.0 (release gate, W1 state)
 

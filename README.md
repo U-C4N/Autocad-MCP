@@ -19,8 +19,8 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 
 </div>
 
-> **v1.7 release snapshot:** 248 tools · 11 resources · 5 prompt templates · 6348 collected tests.
-> 248 is the **registered** count; a default install advertises 243 over `tools/list`,
+> **v1.7 release snapshot:** 251 tools · 12 resources · 5 prompt templates · 6348 collected tests.
+> 251 is the **registered** count; a default install advertises 246 over `tools/list`,
 > because `ENABLE_3D` is unset. `system_about` is the runtime authority.
 
 ## What's new in 1.7
@@ -92,7 +92,7 @@ Five tracks of one [roadmap](https://github.com/U-C4N/Autocad-MCP/blob/main/docs
 
 **A big MCP server is expensive to be connected to.** The full catalog costs a client **89,226 tokens** before it has asked for anything. Discovery mode replaces it with three tools and costs **503**.
 
-**A drafter searches for `FILLET`, not `entity_fillet`.** Before the corpus, those command names appeared in no tool name or description. That was `df = 0` against a stock index: the tools were not ranked badly, they were *absent*. The fix was data: an authored corpus of **206 AutoCAD command names and 1459 synonym phrases** covering all 248 tools. A test refuses to let a tool exist without one.
+**A drafter searches for `FILLET`, not `entity_fillet`.** Before the corpus, those command names appeared in no tool name or description. That was `df = 0` against a stock index: the tools were not ranked badly, they were *absent*. The fix was data: an authored corpus of **207 AutoCAD command names and 1475 synonym phrases** covering all 251 tools. A test refuses to let a tool exist without one.
 
 | Advertised surface | Tools seen | Idle cost |
 |---|---:|---:|
@@ -173,7 +173,8 @@ It works with Claude Desktop, Cursor, or any stdio MCP host. For HTTP, run `auto
 |---|---|
 | Drawing lifecycle | create, open (a damaged DXF with `drawing_open(recover=True)`, which reports every fix and protects the source), save *(atomic headlessly: a checked temporary file renamed over the target)*, export DXF/PDF, audit *(repairs)*, purge, undo/redo *(reporting `verified`)*. A reopened file continues its document id and revision; a file changed outside the server says `external_change` |
 | Geometry | lines, arcs, polylines (with `bulges`), splines, hatches, trim/extend/fillet/chamfer, handle-preserving edits: `entity_edit_geometry` moves circle, line and arc geometry, rewrites a polyline's `points` / `bulges` (the vertex count may change) and moves a TEXT/MTEXT by `x` / `y`; `entity_edit_text` edits content, height, rotation and position |
-| Annotation | ISO 129 toleranced dimensions, ISO 286 fits (`fit="H7"`, interference shafts r/s/t/u included), TABLE, MLEADER, GD&T frames and datums (ISO 1101) |
+| Set-based edits | `entity_modify_where(where, set)` restyles every entity a filter matches in one call (QSELECT + CHPROP: layer globs, type, colour, linetype, lineweight, region, block); `dry_run` returns the count, the first 20 handles and a `preview`, and an `expect_count` the drawing no longer matches is refused `stale_revision`. `layer_rename` renames a layer and every reference to it; `layer_merge` (LAYMRG) moves the sources' entities in model space, every sheet and every block definition onto a target and names the block definitions it touched. Entities on locked layers are skipped and reported |
+| Annotation | ISO 129 toleranced dimensions, ISO 286 fits (`fit="H7"`, interference shafts r/s/t/u included), TABLE, MLEADER, GD&T frames and datums (ISO 1101). `dimension_auto(selector={"layer": "GEOMETRY"})` dimensions a whole part in one call - polyline edges per side, hole diameters, arc radii, the overall size - with `include`, `group_equal` (`6× Ø11`), `skip_existing` (on by default: a rerun draws nothing) and `dry_run`; whatever it cannot dimension is listed in `omitted` with its reason. A headless `dimstyle_modify` redraws the dimensions using the style (`rerender=False` leaves them stale, as 1.7 did) |
 | Engineering generators | involute gears (front + section A-A), DIN 6885 keyed bores, ISO A3 title block |
 | Mechanical parts | one part model (segments or outline + typed features) and one view engine: front / side / top / section / detail with hidden lines, ISO 128-50 cut faces and ISO 129 dimensions. ISO 4014/4017/4032/7089/4762 fasteners and ISO 15 bearings insert as real blocks with attributes. DIN 471/472, DIN 509, DIN 332 and ISO 3601-2 features have their drawing code, but *their tables still ship empty in 1.7* (see [limits](#what-this-release-is-bad-at)). Also ISO 21920-1 surface texture, ISO 2553 welds and ISO 128-40 section lines |
 | Sheet & delivery | ISO 5457 frames A4-A0 with zones and trim marks, ISO 7200 title blocks for every size, revision blocks with clouds, ISO 7573 parts lists with ISO 6433 balloons linked by XDATA, CSV/XLSX extraction, xrefs and images on both engines, real `.dwg` on a live seat |
@@ -192,13 +193,15 @@ It works with Claude Desktop, Cursor, or any stdio MCP host. For HTTP, run `auto
 | Hatch depth | gradients, in-place edits, typed edge boundaries *(headless)*, island styles |
 | Annotation objects | WIPEOUT, REVCLOUD, MTEXT background masks *(headless)*, text find/replace |
 | 3D solids | `solid_box/cylinder/extrude/revolve/boolean` on live AutoCAD (`ENABLE_3D=true`) |
-| Quality loop | `drawing_preflight` → `drawing_plan` → `drawing_critique` → `drawing_refine` → `drawing_finalize` (0–100 score); the general focuses (`iso128`, `layer_color`, `dim_overlap`, `untrimmed_corner`, `duplicate_entities`, `construction_left`, `property_override` (an entity on an engineering layer that overrides the layer's lineweight, colour or linetype; `drawing_refine` sets it back to ByLayer), `gdt`) plus 18 domain critique focuses (P&ID 6, mechanical 6, architecture 3, topology 3), each silent on a drawing outside its domain. Every check reads every entity of every space, and a check that fails says so. A failed `drawing_finalize` returns its `score` and `blocking` rows (`detail="full"` for all of them) |
+| Quality loop | `drawing_preflight` → `drawing_plan` → `drawing_critique` → `drawing_refine` → `drawing_finalize` (0–100 score); the general focuses (`iso128`, `layer_color`, `dim_overlap`, `untrimmed_corner`, `duplicate_entities`, `construction_left`, `property_override` (an entity on an engineering layer that overrides the layer's lineweight, colour or linetype; `drawing_refine` sets it back to ByLayer), `dimension_truth` (a DIMENSION whose override, DIMLFAC, rendered block, group 42, prefix or visibility disagrees with its geometry or its style; `drawing_refine` redraws a stale block and leaves the lies to a person), `gdt`) plus 18 domain critique focuses (P&ID 6, mechanical 6, architecture 3, topology 3), each silent on a drawing outside its domain; `autocad://critique/focuses` lists every one with what it reports. Every check reads every entity of every space, and a check that fails says so. Every check also says what it looked at: `drawing_critique(report=True)` returns the coverage per layout, and `drawing_finalize` / `drawing_deliver` carry `qa_coverage`, naming each lane that was **not** checked and why (`no_viewport_scale`, `engine_live_document_template`, ...); `strict_critique=True` fails on those. `drawing_critique`, `validation_check` and `drawing_topology_check` take `summary` / `limit` and answer `{total, by_focus, by_severity, issues[:limit]}`, `total` always complete. A failed `drawing_finalize` returns its `score` and `blocking` rows (`detail="full"` for all of them) |
 | Verification | `drawing_verify_requirements` binds typed source requirements to the real features (handle, feature tag, geometry or DIMENSION) and measures them on the drawing or on a saved file: distance, radius, diameter, angle, concentric, parallel, perpendicular, tangent, counts and absence, each **pass / fail / unknown / unsupported / ambiguous** with its evidence, as JSON or Markdown. The set can be stored in the drawing itself |
 | Delivery | `drawing_deliver`: DXF/PDF/PNG + SHA-256 manifest, reopen parity against a second export over every space and block definition (its `scope` says what that can and cannot see), and with `requirements=` every requirement measured again on the reopened file; the open document is never re-pointed at the export |
 | Safe edits | documents carry an id and a content revision; `cad_batch` / `drawing_refine` / `text_find_replace` / `pid_from_spec` preview exactly and apply only against an unchanged revision; a client operation id replays a retried call instead of repeating it, also after a restart (the journal is durable, in `ACADMCP_STATE_DIR`) |
 | Errors | every failure on every route is one typed envelope: `{ok: false, kind, category, retryable, hint, tool, backend, operation_id, message}` beside the unchanged sentence. `retryable` is true only when nothing was written; a refused raw command lists the typed tools that do the same job (`alternatives`) |
+| Security | `READ_ONLY`, `TOOL_ALLOWLIST` / `TOOL_DENYLIST` and `MAX_TOOL_COST` narrow what a client may reach: a refused tool is not advertised, and a call to it - direct, through `call_tool`, or as a `cad_batch` step - is refused `policy_refused` before anything runs (`system_status.policy` says what is in force). Every writer accepts only its own extensions and none writes a file AutoCAD or Windows loads (`acad*.lsp`, `.fas`, `.scr`, `.dll`, `acad.pgp`, ...), even inside `ALLOWED_PATHS`. Over HTTP, an unknown Origin is 403, a foreign Host 421, a body over 8 MiB 413, tokens are compared in constant time, and `MCP_AUTH_TOKEN_READONLY` issues a read-only token. `system_run_lisp` runs the AutoLISP read tier (`vla-get-*`, `entget`, `mapcar` over a `lambda`, ...) under `LISP_POLICY=read`, and refuses the rest with `symbol`, `line`, `column` and the typed `alternatives` |
+| Session metrics | `system_status(metrics=True)` reports this connection's calls, `by_tool`, `result_bytes`, `errors_by_kind` and p50 / p95 ms, and on a live seat each COM job's queue / guard / work / refresh / counter ms; off by default |
 
-<sub>248 tools in 28 groups. <code>TOOL_PACKS=core</code> hides these from a client that needs none of them: the nine <code>pid_*</code> tools, the 22 environment tools, the 14 mechanical tools, the 12 architectural tools and the two plant takeoffs. <code>TOOL_PACKS=core,mech</code> keeps the mechanical ones, <code>TOOL_PACKS=core,arch</code> the architectural ones, and <code>TOOL_PACKS=core,plant</code> the takeoffs. There are also 11 resources that cost nothing in the tool budget (<code>autocad://drawing/info</code>, <code>layers</code>, <code>blocks</code>, <code>entities/stats</code>, <code>entities/{layer_name}</code>, <code>system/status</code>, <code>pid/symbols</code>, <code>standards/isa51</code>, <code>standards/coverage</code>, and the task recipes <code>recipes/index</code> and <code>recipes/{recipe_id}</code>) and 5 prompt templates.</sub>
+<sub>251 tools in 28 groups. <code>TOOL_PACKS=core</code> hides these from a client that needs none of them: the nine <code>pid_*</code> tools, the 22 environment tools, the 14 mechanical tools, the 12 architectural tools and the two plant takeoffs. <code>TOOL_PACKS=core,mech</code> keeps the mechanical ones, <code>TOOL_PACKS=core,arch</code> the architectural ones, and <code>TOOL_PACKS=core,plant</code> the takeoffs. There are also 12 resources that cost nothing in the tool budget (<code>autocad://drawing/info</code>, <code>layers</code>, <code>blocks</code>, <code>entities/stats</code>, <code>entities/{layer_name}</code>, <code>system/status</code>, <code>pid/symbols</code>, <code>standards/isa51</code>, <code>standards/coverage</code>, <code>critique/focuses</code>, and the task recipes <code>recipes/index</code> and <code>recipes/{recipe_id}</code>) and 5 prompt templates.</sub>
 
 **Three rules worth knowing.**
 
@@ -293,6 +296,18 @@ The 61 checks v1.7.0 was released on all still pass. Six rows are fixed, one per
 | `lineage_revision_continues` | open, add three lines, save, close, reopen the unchanged file in a fresh backend: the same `document_id` and the same revision, never back to 0 |
 | `region_render_applied` | `view_screenshot(region=[0,0,100,50], max_px=400)` answers `applied: true`, a 400 × 200 PNG (read from its own IHDR) and one `px_per_unit` on x and y; `view_zoom_and_screenshot` with four corners applies its window headlessly |
 
+The table is the W1 report. 1.8.0's second phase has since added seven checks, so the suite on the branch holds 74; each fails or misses on v1.7.0 and passes on the branch, and the published report is retaken over all of them at the W2 integration:
+
+| Check | Verified against |
+|---|---|
+| `qa_coverage_not_checked` | a frame line on `Layout1` with no viewport onto the model: the critique report names that layout's legibility lane `not_checked` (`no_viewport_scale`), finalize carries the row in `qa_coverage`, and `strict_critique=True` fails `critique_gate_failed` naming it |
+| `dimension_display_truth` | a 19.6 mm dimension after DIMDEC 2 → 0 shows "20" in its `*D` block and in `bind_dimension`, with `display_rounding` 0.4 and no mismatch |
+| `dimension_truth_focus` | an override lie, a doubled Ø and a stale render are exactly `dim_override_disagrees`, `dim_double_prefix` and `dim_render_stale`; `drawing_refine` redraws the stale one and leaves the other two |
+| `policy_read_only_batch` | under `READ_ONLY`, a one-step `entity_create_line` batch is `policy_refused` (`read_only`) and neither the revision nor the entity count moves |
+| `write_path_autoload_refused` | `data_extract` to `acaddoc.lsp` and `drawing_save_as` to `acad.lsp` are both `path_refused`, nothing written |
+| `dimension_auto_one_call_part` | one `dimension_auto(selector={"layer": "GEOMETRY"})` on a 120 × 80 plate draws 4 edge dimensions (120, 80, 120, 80), six Ø11 and two R8, names the ellipse in `omitted`, and a second call draws nothing |
+| `property_override_focus` | a line on GEOMETRY given colour 1 and lineweight 30 is named by exactly `lineweight_not_bylayer` (error) and `color_not_bylayer` (warning) with only its handle, a clean line by nothing, and `drawing_refine` puts it back to colour 256 and ByLayer |
+
 <details>
 <summary><b>The thirteen checks 1.7 added</b></summary>
 
@@ -355,6 +370,8 @@ An early matrix scored this server 10/10, which carried no information: every ta
 - `requirements_roundtrip`: a plate verified on the document; then its bore is moved 3 mm inside the saved file, with counts and extents unchanged. Exactly that requirement must fail on the reopened file;
 - `cancel_safety`, `qa_large_drawing` (offenders at the 5,001st entity, after the 10,000th and on a paper layout), `export_safety` and `stale_preview`;
 - `revision_guarded_edit` (beiming183's revision discipline), `pid_file_roundtrip` (puran-water's P&ID tools), `foreign_edit_verified`, `damaged_dxf_refusal` (refused by name; since 1.8.0, recovered only on request with `drawing_open(recover=True)`) and `dimension_binding`.
+
+The 1.8.0 branch registers matrix v9 beside it (`--matrix v9`; v8 stays the default until the release): `dimension_lie_detect`, `policy_read_only`, `lisp_read_tier` (live engine; `environment_blocked` headlessly), `layer_cleanup_budget` (six misnamed layers and 300 overridden entities clean in at most 3 calls) and `call_count_dimension_part` (a plate dimensioned in at most 2 calls). Two CI gates hold the call economy: `benchmarks/call_budget.py` runs each scripted job naive (one tool per entity, labelled) and with its least-call oracle - the layer clean-up takes 2 calls (1.7.0: 124, the rival: 11) and the plate 2 (1.7.0: 89, the rival: 10) - and `benchmarks/token_suite.py --budget benchmarks/token_budget.json` holds the idle catalog and the task lane to ceilings fixed before W2 began.
 
 The tasks added in 1.5 and 1.6, with what each is verified against:
 
@@ -429,7 +446,7 @@ The readers were tuned on the synthetic plant pair and on one real P&ID / layout
 
 **No REGION or 2D booleans headlessly.** `add_region()` produces a REGION with **zero ACIS bytes**, and the `greiner_hormann` substitute loses **28.2%** of the area on a square with one semicircular edge.
 
-**`system_run_command` / `system_run_lisp` are a guardrail, not a security boundary.** The rejection message says so in those words. A 36-verb denylist refuses the obvious cases (`policy_refused`, with the typed tools for the refused verbs in `alternatives`), but AutoCAD accepts hundreds of commands, and `DANGEROUS_COMMANDS_ENABLED=true` switches the list off entirely.
+**`system_run_command` / `system_run_lisp` are a guardrail, not a security boundary.** The rejection message says so in those words. A 36-verb denylist refuses the obvious cases (`policy_refused`, with the typed tools for the refused verbs in `alternatives`), but AutoCAD accepts hundreds of commands, and `DANGEROUS_COMMANDS_ENABLED=true` switches the list off entirely. LISP is narrower: under `LISP_POLICY=read` (the default) a real reader runs only the AutoLISP read tier and sends everything else to the same denylist, which also re-scans every read-tier verdict; there is no write tier before 1.8.1 (`LISP_POLICY=denylist` is the 1.7 behaviour, `off` checks nothing). To take the escape hatches away altogether, `TOOL_DENYLIST=system_run_command,system_run_lisp`.
 
 **Path validation is per-tool, and unscoped until you scope it.** With `ALLOWED_PATHS` empty (the default), the only positive bound is a ten-entry system-directory denylist that does not include `C:/Users`, `/home`, `/root` or `/var`. **Set `ALLOWED_PATHS`.**
 
@@ -460,7 +477,7 @@ On the live engine, an INSERT turned off a right angle has members ActiveX canno
 
 A `.dwt` template is the same case (`dwt_write`): a `.dwt` is a DWG container, so headlessly the template is saved as DXF. `mleaderstyle_create` is *not* such a case. ActiveX has no MLeaderStyle collection, but the `ACAD_MLEADERSTYLE` dictionary holds full `IAcadMLeaderStyle` objects, so both engines create leader styles.
 
-**A headless dimension does not re-render.** On the ezdxf engine, `dimstyle_modify` reports `dimensions_using_style` and `rerender_required: true`, and the DIMENSION keeps its rendered block until it is redrawn. AutoCAD regenerates on the next regen.
+**A dimension is redrawn on a style change, a scale and a point edit only.** Since 1.8.0, `dimstyle_modify` redraws every dimension using the style on both engines (`rerendered`; live through `Update()` and a read-back of the `*D` text), and `entity_scale` and `entity_edit_geometry` redraw the DIMENSION they change. A move, rotate, mirror, copy or array does not redraw it yet (1.8.1), and neither does a DIMENSION inside a block definition; `dimension_truth` reports a block that shows another text than its style formats as `dim_render_stale`. Headless, ezdxf 1.4.4 draws a two-line angular dimension's reflex angle, which that focus reports as not repairable here: redraw it in AutoCAD. The live redraw has not yet been run on a seat.
 
 ### Known limitations of the architecture track
 
@@ -471,13 +488,13 @@ A `.dwt` template is the same case (`dwt_write`): a `.dwt` is a DWG container, s
 Nothing loads a `.env` file — export these, or set them in your MCP client's `env` block.
 
 <details>
-<summary><b>All 32 environment variables</b></summary>
+<summary><b>All 41 environment variables</b></summary>
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `AUTOCAD_MCP_BACKEND` | `auto` | `auto`, `com`, or `ezdxf` |
 | `CAD_PROGID` | `AutoCAD.Application` | COM ProgID the live backend attaches to |
-| `TOOL_PROFILE` | `full` | `lean` (66 curated tools, 56 with `TOOL_PACKS=core`) or `full` |
+| `TOOL_PROFILE` | `full` | `lean` (67 curated tools, 57 with `TOOL_PACKS=core`) or `full` |
 | `TOOL_PACKS` | `all` | Vertical packs to advertise: `core,pid,settings,mech,arch,plant` (`core` always on) |
 | `DISCOVERY_MODE` | `off` | `search` replaces the catalog with `search_tools` + `call_tool` + `describe_tool` |
 | `ENABLE_3D` | `false` | Expose the opt-in `solid_*` tools (COM) |
@@ -504,9 +521,18 @@ Nothing loads a `.env` file — export these, or set them in your MCP client's `
 | `CHECKPOINT_BUDGET_MB` | `512` | Same: the checkpoint disk budget |
 | `CHECKPOINT_MAX_DOC_MB` | `32` | Same: the largest document a checkpoint is taken of |
 | `SAVE_BACKUP` | *(off)* | `1` copies the previous file to `<name>.bak` before a headless save replaces it |
+| `READ_ONLY` | `false` | `true` runs only `read` tools and writes no file; anything else is refused `policy_refused` before it runs |
+| `TOOL_ALLOWLIST` | *(empty)* | Comma-separated tool names or globs (`entity_*`); only these are advertised and callable. An entry naming no tool is warned about at startup (`system_about.policy.unmatched`) |
+| `TOOL_DENYLIST` | *(empty)* | Comma-separated tool names or globs that are neither advertised nor callable |
+| `MAX_TOOL_COST` | `escape` | The highest tool cost a call may carry: `read`, `safe`, `mutate`, `destructive` or `escape`. A file write is `mutate` whatever its tool is labelled |
 | `DANGEROUS_COMMANDS_ENABLED` | `false` | Allow blocked commands/LISP; reported as unsafe mode |
-| `ALLOW_REMOTE_HTTP` | `false` | Permit a non-loopback HTTP bind |
-| `MCP_AUTH_TOKEN` | *(empty)* | Bearer token required for remote HTTP |
+| `LISP_POLICY` | `read` | How `system_run_lisp` checks an expression (live only): `read` runs the AutoLISP read tier and sends the rest to the 1.7 denylist, `denylist` is the 1.7 behaviour, `off` checks nothing. An unknown value falls back to `read` with a warning |
+| `ALLOW_REMOTE_HTTP` | `false` | Permit a non-loopback HTTP bind (which also needs a token and `ALLOWED_PATHS`) |
+| `MCP_AUTH_TOKEN` | *(empty)* | Bearer token required for remote HTTP; scopes `mcp:read` and `mcp:write` |
+| `MCP_AUTH_TOKEN_READONLY` | *(empty)* | A second bearer token with only `mcp:read`: its requests run under the `read` ceiling and see only read tools. Alone it also enables auth |
+| `HTTP_ALLOWED_ORIGINS` | *(empty)* | Origins an HTTP request may carry; any other Origin is refused 403. A browser-based MCP inspector needs its own origin listed (e.g. `http://localhost:6274`); `*` allows all |
+| `HTTP_ALLOWED_HOSTS` | *(empty)* | Host headers accepted besides the bound host:port and the loopback names; any other is refused 421. `*` allows all |
+| `MAX_HTTP_BODY_BYTES` | `8388608` | An HTTP request body over this (8 MiB) is refused 413, counted on chunked bodies too; `0` disables |
 
 </details>
 
@@ -560,9 +586,9 @@ uv run pytest
 uv run ruff check . && uv run ruff format --check .
 ```
 
-`uv.lock` pins the whole transitive graph, so this reproduces CI exactly. CI runs Linux (3.11 / 3.12) and Windows (mocked COM), plus package, Docker and MCP-registry jobs. It also runs `claude plugin validate --strict` on the marketplace and the plugin, the generated-file gates (`build_plugin.py --check`, `generate_tool_inventory.py --check`, `check_doc_numbers.py`) and a contents check of the built wheel and sdist: the wheel holds the server and nothing else, and the sdist holds only what git tracks. The release gate runs the same three test lanes, plus a headless lane that runs the correctness suite against the previous tag with `--fail-on-regression`, before anything reaches PyPI. Releases are tag-driven: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+`uv.lock` pins the whole transitive graph, so this reproduces CI exactly. CI runs Linux (3.11 / 3.12) and Windows (mocked COM), plus package, Docker and MCP-registry jobs. It also runs `claude plugin validate --strict` on the marketplace and the plugin, the generated-file gates (`build_plugin.py --check`, `generate_tool_inventory.py --check`, `check_doc_numbers.py`), the `token-budget` job (`python -m benchmarks.token_suite --lanes idle,task --budget benchmarks/token_budget.json` and `python -m benchmarks.call_budget`: a `ci`-gated ceiling breached, an idle row grown more than 5 % over the published report or a scripted job not done fails the PR) and a contents check of the built wheel and sdist: the wheel holds the server and nothing else, and the sdist holds only what git tracks. The release gate runs the same three test lanes, plus a headless lane that runs the correctness suite against the previous tag with `--fail-on-regression`, before anything reaches PyPI. Releases are tag-driven: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 
-The live COM paths are checked on a running AutoCAD, never in CI: `python scripts/smoke_verify_com.py --json out/verify.json` (and the ten other `scripts/smoke_*_com.py`) attaches to the open seat, works only in documents it creates, and closes them. Three of them - `smoke_space_com.py`, `smoke_edit_com.py` and `smoke_render_com.py`, written for 1.8.0's first phase - have not been run on a live seat yet.
+The live COM paths are checked on a running AutoCAD, never in CI: `python scripts/smoke_verify_com.py --json out/verify.json` (and the eleven other `scripts/smoke_*_com.py`) attaches to the open seat, works only in documents it creates, and closes them. Four of them have not been run on a live seat yet: `smoke_space_com.py`, `smoke_edit_com.py` and `smoke_render_com.py`, written for 1.8.0's first phase, and `smoke_lisp_com.py` (the AutoLISP read tier), written for the second; neither have the `set edits`, `dimension truth` and `dimension auto` stages the second phase added to `smoke_settings_com.py`.
 
 ## Roadmap
 
@@ -573,7 +599,7 @@ The live COM paths are checked on a running AutoCAD, never in CI: `python script
 
 **1.8**
 
-- *On the 1.8.0 branch already (first phase, see the [changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md)):* the durable operation journal with idempotency across restarts, atomic saves, `drawing_open(recover=True)` (`ezdxf.recover`, first planned for 1.7.1), one typed error envelope, the `property_override` focus, in-place polyline and label edits, region screenshots, and the live engine's target space.
+- *On the 1.8.0 branch already (first phase, see the [changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md)):* the durable operation journal with idempotency across restarts, atomic saves, `drawing_open(recover=True)` (`ezdxf.recover`, first planned for 1.7.1), one typed error envelope, the `property_override` focus, in-place polyline and label edits, region screenshots, and the live engine's target space. *Second phase, merged so far:* set-based edits (`entity_modify_where`, `layer_rename`, `layer_merge`), `dimension_auto` for a whole part, the QA coverage ledger and compact QA answers, the `dimension_truth` focus with dimensions redrawn on a style change, the tool and write-path policy and the HTTP guard, the AutoLISP read tier, session metrics, and the token and call budgets in CI.
 - **Parametric edit and rebuild** of a part from its stored model.
 - **Obstacle-aware P&ID routing**, and P&ID projects across files.
 - **Transcribed rows** for DIN 471/472, DIN 509, DIN 332 and ISO 3601-2, each verified against the standard's own table.

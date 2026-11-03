@@ -572,9 +572,9 @@ def test_the_inventory_and_the_readme_count_the_two_resources():
     inventory = json.loads((root / "docs" / "tool-inventory.json").read_text(encoding="utf-8"))
     uris = {row["uri"] for row in inventory["resources"]}
     assert {"autocad://recipes/index", "autocad://recipes/{recipe_id}"} <= uris
-    assert inventory["totals"]["resources"] == len(inventory["resources"]) == 11
+    assert inventory["totals"]["resources"] == len(inventory["resources"]) == 12
     readme = (root / "README.md").read_text(encoding="utf-8")
-    assert "· 11 resources ·" in readme and "recipes/index" in readme
+    assert "· 12 resources ·" in readme and "recipes/index" in readme
 
 
 _TOOL_CALL = re.compile(r"\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\(")
