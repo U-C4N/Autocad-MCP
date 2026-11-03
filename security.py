@@ -9,6 +9,7 @@ import logging
 import os
 import re
 from pathlib import Path
+from typing import NamedTuple
 
 from fastmcp.exceptions import ToolError
 
@@ -26,6 +27,12 @@ class PathRefusedError(ToolError):
     """
 
     kind = "path_refused"
+
+    def __init__(self, message: str, **details):
+        super().__init__(message)
+        #: The refusal's own envelope fields (1.8-17: ``reason``, ``extension``,
+        #: ``allowed``); empty for the 1.7 traversal / directory refusals.
+        self.details = {key: value for key, value in details.items() if value is not None}
 
 
 class CommandRefusedError(ToolError):
@@ -45,6 +52,17 @@ class CommandRefusedError(ToolError):
         self.symbols = [str(s) for s in symbols]
         self.channel = channel
         self.alternatives: list[dict] = []
+
+    @property
+    def alternative_verbs(self) -> list[str]:
+        """The command verbs whose typed tools fill ``alternatives``: ``verbs``
+        here; a LISP refusal adds the verbs its symbols map to (1.8-18)."""
+        return list(self.verbs)
+
+    def fields(self) -> dict:
+        """The refusal's own envelope fields beyond channel / verbs / symbols
+        (1.8-18: ``security_lisp.LispPolicyRefusedError``'s location)."""
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -93,13 +111,119 @@ def _reject_non_local_anchor(original: str, resolved: Path) -> None:
     )
 
 
-def validate_path(path: str, *, allow_write: bool = False) -> Path:
+#: ``kinds=DIRECTORY``: the write target is a folder the tool writes fixed,
+#: named files into (``drawing_deliver``, ``batch_plot``), each of which is
+#: validated with its own extension set when the tool names it.
+DIRECTORY = "directory"
+
+#: File names AutoCAD (or Windows) loads or runs: never written by any tool,
+#: whatever ``kinds`` or ``ALLOWED_PATHS`` say (1.8-17). ``acad*.lsp`` and
+#: ``acaddoc*.lsp`` are the autoload names; every ``.lsp`` is refused, as is
+#: compiled LISP, menu LISP, scripts, ObjectARX / DBX modules and the
+#: Windows executables, and the command-alias file ``acad.pgp``.
+WRITE_REFUSED_SUFFIXES: frozenset[str] = frozenset(
+    {
+        ".lsp",
+        ".fas",
+        ".vlx",
+        ".mnl",
+        ".scr",
+        ".arx",
+        ".dbx",
+        ".dll",
+        ".exe",
+        ".bat",
+        ".cmd",
+        ".ps1",
+        ".vbs",
+        ".js",
+    }
+)
+WRITE_REFUSED_NAMES: frozenset[str] = frozenset({"acad.pgp"})
+
+#: The extension sets the writers pass as ``kinds`` (1.8-17).
+KINDS_DRAWING: tuple[str, ...] = (".dxf", ".dwg", ".dwt")
+KINDS_DXF: tuple[str, ...] = (".dxf",)
+KINDS_DWG: tuple[str, ...] = (".dwg",)
+KINDS_TEMPLATE: tuple[str, ...] = (".dxf", ".dwt")
+KINDS_PDF: tuple[str, ...] = (".pdf",)
+KINDS_TABLE: tuple[str, ...] = (".csv", ".xlsx")
+KINDS_CSV: tuple[str, ...] = (".csv",)
+KINDS_IMAGE: tuple[str, ...] = (".png", ".jpg")
+KINDS_REPORT: tuple[str, ...] = (".json", ".md")
+
+
+def _write_name(resolved: Path) -> str:
+    """The name Windows will actually create: trailing dots and spaces dropped."""
+    return resolved.name.rstrip(" .").lower()
+
+
+def _check_write_target(original: str, resolved: Path, kinds) -> None:
+    """The extension rules of a write (1.8-17); raises ``PathRefusedError``."""
+    name = _write_name(resolved)
+    if ":" in resolved.name:
+        # An NTFS alternate data stream (`report.csv:acaddoc.lsp`) is a second
+        # file the extension check below would never see.
+        raise PathRefusedError(
+            f"Path rejected: '{original}' names an alternate data stream (':' in the file "
+            "name); write a plain file.",
+            reason="alternate_data_stream",
+        )
+    suffix = Path(name).suffix
+    if suffix in WRITE_REFUSED_SUFFIXES or name in WRITE_REFUSED_NAMES:
+        log.warning("Blocked write of a loadable/executable file: %s", resolved)
+        raise PathRefusedError(
+            f"Path rejected: '{resolved.name}' is a file AutoCAD or Windows loads or runs "
+            f"({suffix or name}); no tool writes one, inside ALLOWED_PATHS or not.",
+            reason="executable_name",
+            extension=suffix or name,
+        )
+    if kinds is None:
+        return
+    if kinds == DIRECTORY:
+        if resolved.exists() and not resolved.is_dir():
+            raise PathRefusedError(
+                f"Path rejected: '{resolved}' is a file; name the folder to write into.",
+                reason="not_a_directory",
+            )
+        return
+    allowed = tuple(str(kind).lower() for kind in kinds)
+    names = [kind or "(no extension)" for kind in allowed]
+    shown = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " or " + names[-1]
+    if resolved.is_dir():
+        raise PathRefusedError(
+            f"Path rejected: '{resolved}' is a directory; name the {shown} file to write.",
+            reason="is_a_directory",
+            allowed=list(allowed),
+        )
+    if suffix not in allowed:
+        raise PathRefusedError(
+            f"Path rejected: '{resolved.name}' must end in {shown} - this tool "
+            f"writes only those (got {suffix or 'no extension'!r}).",
+            reason="extension_not_allowed",
+            extension=suffix,
+            allowed=list(allowed),
+        )
+
+
+def validate_path(path: str, *, allow_write: bool = False, kinds=None) -> Path:
     """Resolve and validate a file path against security rules.
 
     Raises ToolError if:
       - Path contains traversal sequences (..)
       - Path is outside ALLOWED_PATHS (when configured)
       - Path targets a system directory
+
+    With ``allow_write=True`` (1.8-17) also:
+      - the server's tool policy forbids writes (``READ_ONLY``, a ceiling below
+        ``mutate``, a read-only token) - ``PolicyRefusedError``, kind
+        ``policy_refused``, whatever the calling tool's label;
+      - the name is one AutoCAD or Windows loads or runs (``*.lsp``,
+        ``acad.pgp``, ...: :data:`WRITE_REFUSED_SUFFIXES`) - always, even
+        inside ``ALLOWED_PATHS``; kind ``path_refused``;
+      - ``kinds`` (the writer's extension set, e.g. ``(".pdf",)``, or
+        :data:`DIRECTORY`) does not admit the name - kind ``path_refused``.
+        Every writer passes its ``kinds`` (``tests/test_write_path_policy.py``).
     """
     if not path or not path.strip():
         raise ToolError("File path cannot be empty.")
@@ -161,6 +285,10 @@ def validate_path(path: str, *, allow_write: bool = False) -> Path:
             )
 
     if allow_write:
+        from policy import check_write
+
+        check_write(resolved)
+        _check_write_target(path, resolved, kinds)
         parent = resolved.parent
         if not parent.exists():
             raise ToolError(
@@ -363,11 +491,54 @@ def sanitize_command(command: str) -> str:
     return command
 
 
+class DenylistHit(NamedTuple):
+    """One match of the 1.7 LISP denylist: ``symbol`` (lower-cased; the
+    ``command`` of a ``(quote command`` match), its span in the expression and
+    the ``raw`` lower-cased match 1.7 reported in ``symbols``."""
+
+    symbol: str
+    start: int
+    end: int
+    raw: str
+
+
+_QUOTED_COMMAND = re.compile(r"command", re.IGNORECASE)
+
+
+def lisp_denylist_matches(expression: str) -> list[DenylistHit]:
+    """Every match of the 1.7 denylist, in order, string literals blanked.
+
+    The literals are blanked to spaces of the same length (1.7 blanked them to
+    ``""``; neither spelling holds a word character, so the matches are the
+    same) so a match's span is its span in ``expression``.
+    """
+    code_only = _LISP_STRING_LITERAL.sub(
+        lambda m: '"' + " " * (len(m.group(0)) - 2) + '"', expression or ""
+    )
+    hits: list[DenylistHit] = []
+    for match in _DANGEROUS_LISP_PATTERN.finditer(code_only):
+        raw = match.group(0).lower()
+        start, end = match.start(), match.end()
+        if raw.startswith("("):
+            inner = _QUOTED_COMMAND.search(raw)
+            if inner is not None:
+                start, end = match.start() + inner.start(), match.start() + inner.end()
+        hits.append(DenylistHit(code_only[start:end].lower(), start, end, raw))
+    return hits
+
+
 def sanitize_lisp(expression: str) -> str:
     """Validate an AutoLISP expression for safety.
 
     Raises ToolError if a dangerous LISP function is detected
     (unless DANGEROUS_COMMANDS_ENABLED is true).
+
+    1.8-18: under ``LISP_POLICY`` (``config.settings.lisp_policy``) -
+    ``read`` (default) runs what passes the read tier of ``security_lisp`` and
+    sends everything else to the 1.7 denylist unchanged; ``denylist`` is 1.7's
+    behaviour; ``off`` checks nothing. A refusal is
+    ``security_lisp.LispPolicyRefusedError`` (a ``CommandRefusedError``) with
+    the symbol, line and column.
     """
     if not expression or not expression.strip():
         raise ToolError("LISP expression cannot be empty.")
@@ -378,24 +549,11 @@ def sanitize_lisp(expression: str) -> str:
         )
         return expression
 
-    # Blank the literals, then scan. The ORIGINAL expression is returned:
-    # this decides whether to run it, it does not rewrite it.
-    code_only = _LISP_STRING_LITERAL.sub('""', expression)
-    if _DANGEROUS_LISP_PATTERN.search(code_only):
-        log.warning("Blocked dangerous LISP expression: %s", expression[:120])
-        symbols = sorted(
-            {match.group(0).lower() for match in _DANGEROUS_LISP_PATTERN.finditer(code_only)}
-        )
-        raise CommandRefusedError(
-            "LISP expression rejected: contains a restricted function. "
-            "Restricted functions include startapp, command, load, eval, file I/O, etc. "
-            "Set DANGEROUS_COMMANDS_ENABLED=true to allow all LISP expressions.",
-            verbs=lisp_command_verbs(expression),
-            symbols=symbols,
-            channel="lisp",
-        )
+    # Decides whether to run it, never rewrites it: the ORIGINAL expression is
+    # returned. String literals are data to both the reader and the denylist.
+    from security_lisp import check_expression
 
-    return expression
+    return check_expression(expression, getattr(config.settings, "lisp_policy", "read"))
 
 
 #: ``(command "_.ERASE" ...)`` / ``(command-s ...)`` / ``(vl-cmdf ...)``: the

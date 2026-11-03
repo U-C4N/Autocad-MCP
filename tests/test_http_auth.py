@@ -159,8 +159,10 @@ def test_validate_http_bind_remote_without_token_raises():
 
 
 def test_validate_http_bind_remote_with_token_logs_warning(caplog):
-    """Remote bind with both flag and token logs a warning but does not raise."""
+    """Remote bind with the flag, a token and ALLOWED_PATHS (1.8-17) logs a
+    warning but does not raise."""
     import logging
+    from pathlib import Path
 
     sys.modules.pop("server", None)
     import config as cfg
@@ -168,8 +170,10 @@ def test_validate_http_bind_remote_with_token_logs_warning(caplog):
 
     old_remote = cfg.settings.allow_remote_http
     old_token = cfg.settings.mcp_auth_token
+    old_paths = cfg.settings.allowed_paths
     cfg.settings.allow_remote_http = True
     cfg.settings.mcp_auth_token = "secure-token"
+    cfg.settings.allowed_paths = [Path.cwd().resolve()]
     try:
         with caplog.at_level(logging.WARNING, logger="server"):
             srv._validate_http_bind("0.0.0.0")  # should not raise
@@ -179,6 +183,7 @@ def test_validate_http_bind_remote_with_token_logs_warning(caplog):
     finally:
         cfg.settings.allow_remote_http = old_remote
         cfg.settings.mcp_auth_token = old_token
+        cfg.settings.allowed_paths = old_paths
 
 
 # ── the guard must read the host that will actually be bound ────────────────

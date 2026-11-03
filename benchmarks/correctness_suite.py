@@ -2373,6 +2373,79 @@ async def dimension_truth_focus():
     return left == [("dim_double_prefix", double.handle), ("dim_override_disagrees", lie.handle)]
 
 
+async def policy_read_only_batch():
+    """READ_ONLY refuses a write batch before step 1, revision unchanged (1.8-17).
+
+    ``config.settings.read_only`` is set on the settings object (1.7.0 has no
+    such setting and ignores it, so the batch draws its line there: the check
+    fails on 1.7.0 and passes from 1.8.0). Through the real server: a
+    ``cad_batch`` whose one step is ``entity_create_line`` must come back
+    ``policy_refused`` with policy ``read_only``, and the document's entity
+    count and content revision - read through the read tools the policy
+    still allows - must not move.
+    """
+    import config
+
+    saved = getattr(config.settings, "read_only", False)
+    try:
+        async with _served_headless() as client:
+            await client.call_tool("entity_create_line", {"x1": 0, "y1": 0, "x2": 10, "y2": 0})
+            config.settings.read_only = True
+            before = (await client.call_tool("system_status", {})).structured_content or {}
+            batch = await client.call_tool(
+                "cad_batch",
+                {
+                    "steps": [
+                        {
+                            "tool": "entity_create_line",
+                            "args": {"x1": 0, "y1": 0, "x2": 5, "y2": 5},
+                        }
+                    ]
+                },
+                raise_on_error=False,
+            )
+            after = (await client.call_tool("system_status", {})).structured_content or {}
+            info = (await client.call_tool("drawing_info", {})).structured_content or {}
+    finally:
+        config.settings.read_only = saved
+    payload = batch.structured_content or {}
+    return (
+        bool(batch.is_error)
+        and payload.get("kind") == "policy_refused"
+        and payload.get("policy") == "read_only"
+        and before.get("revision") is not None
+        and after.get("revision") == before.get("revision")
+        and info.get("entity_count") == 1
+    )
+
+
+async def write_path_autoload_refused():
+    """No tool writes a file AutoCAD autoloads (1.8-17).
+
+    ``data_extract`` to ``acaddoc.lsp`` and ``drawing_save_as`` to ``acad.lsp``
+    in a scratch folder must both be refused ``path_refused`` with nothing
+    written - 1.7.0 checked no extension on either.
+    """
+    from pathlib import Path
+
+    folder = Path(_scratch_dir("acadmcp_autoload_"))
+    targets = {
+        "data_extract": folder / "acaddoc.lsp",
+        "drawing_save_as": folder / "acad.lsp",
+    }
+    kinds = {}
+    async with _served_headless() as client:
+        await client.call_tool("entity_create_line", {"x1": 0, "y1": 0, "x2": 10, "y2": 0})
+        for tool, target in targets.items():
+            result = await client.call_tool(tool, {"path": str(target)}, raise_on_error=False)
+            kinds[tool] = (
+                (result.structured_content or {}).get("kind") if result.is_error else "written"
+            )
+    return all(kind == "path_refused" for kind in kinds.values()) and not any(
+        target.exists() for target in targets.values()
+    )
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -2459,6 +2532,8 @@ CHECKS = {
     "qa_coverage_not_checked": (qa_coverage_not_checked, "Quality gate"),
     "dimension_display_truth": (dimension_display_truth, "Dimensions"),
     "dimension_truth_focus": (dimension_truth_focus, "Quality gate"),
+    "policy_read_only_batch": (policy_read_only_batch, "Security"),
+    "write_path_autoload_refused": (write_path_autoload_refused, "Security"),
 }
 
 

@@ -266,9 +266,9 @@ def _csv_target(path: str):
     """
     from fastmcp.exceptions import ToolError
 
-    from security import validate_path
+    from security import KINDS_CSV, validate_path
 
-    target = validate_path(path, allow_write=True)
+    target = validate_path(path, allow_write=True, kinds=KINDS_CSV)
     if target.is_dir():
         raise ToolError(f"csv_path: '{target}' is a directory; name the .csv file to write")
     return target

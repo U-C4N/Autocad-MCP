@@ -187,7 +187,10 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
         handler = getattr(self, f"_task_{task.task_id}", None)
         if handler is None:
             return TaskResult(task.task_id, "unsupported", 0.0, "No adapter implementation")
-        passed, metrics, artifacts = await handler()
+        outcome = await handler()
+        if isinstance(outcome, TaskResult):  # a lane's own status (environment_blocked)
+            return outcome
+        passed, metrics, artifacts = outcome
         return TaskResult(
             task.task_id,
             "pass" if passed else "fail",
@@ -1971,3 +1974,158 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
             },
             [],
         )
+
+    async def _task_policy_read_only(self):
+        """READ_ONLY refuses a write before it runs, on both routes (1.8-17).
+
+        Through the real server: with ``READ_ONLY`` on, a ``cad_batch`` whose
+        one step is ``entity_create_line`` must be refused ``policy_refused``
+        (policy ``read_only``) before step 1 - the content revision and the
+        entity count read off the document itself stay what they were. The
+        broken-input twin sends the same write through the search proxy,
+        ``call_tool("entity_create_line")``, and must be refused the same way.
+        The expected values are fixed here, not read from the server: one
+        line drawn before the policy, revision unchanged by the refusals.
+        """
+        import config
+        import server
+
+        await self.backend.entity_create_line(0, 0, 10, 0)
+        before_revision = self.backend.document_identity()["revision"]
+        before_count = len(await self.backend.entity_list())
+        line = {"x1": 0.0, "y1": 0.0, "x2": 5.0, "y2": 5.0}
+        saved = config.settings.read_only
+        config.settings.read_only = True
+        try:
+            async with self._served() as client:
+                batch = await client.call_tool(
+                    "cad_batch",
+                    {"steps": [{"tool": "entity_create_line", "args": line}]},
+                    raise_on_error=False,
+                )
+            server._apply_discovery_mode("search")
+            try:
+                async with self._served() as client:
+                    proxied = await client.call_tool(
+                        "call_tool",
+                        {"name": "entity_create_line", "arguments": line},
+                        raise_on_error=False,
+                    )
+            finally:
+                server._apply_discovery_mode("off")
+        finally:
+            config.settings.read_only = saved
+            await server._apply_tool_profile("full")
+        after_revision = self.backend.document_identity()["revision"]
+        after_count = len(await self.backend.entity_list())
+        batch_payload = batch.structured_content or {}
+        proxy_payload = proxied.structured_content or {}
+        passed = (
+            batch.is_error
+            and batch_payload.get("kind") == "policy_refused"
+            and batch_payload.get("policy") == "read_only"
+            and proxied.is_error
+            and proxy_payload.get("kind") == "policy_refused"
+            and proxy_payload.get("tool") == "entity_create_line"
+            and after_revision == before_revision
+            and after_count == before_count == 1
+        )
+        return (
+            passed,
+            {
+                "batch_kind": batch_payload.get("kind"),
+                "batch_policy": batch_payload.get("policy"),
+                "proxy_kind": proxy_payload.get("kind"),
+                "revision": [before_revision, after_revision],
+                "entities": [before_count, after_count],
+            },
+            [],
+        )
+
+    async def _task_lisp_read_tier(self):
+        """Three AutoLISP reads run on the first try; a LISP erase is refused (1.8-18).
+
+        Through the real server, on this adapter's engine: a circle of radius 5
+        is drawn; ``(vla-get-Area (vlax-ename->vla-object (handent H)))`` must
+        answer the area ``analysis_measure_entity`` reads (25 pi, fixed here),
+        ``(getvar "CLAYER")`` the value ``system_get_variable`` reads, and
+        ``(mapcar (function (lambda (x) (* x 2))) (list 1 2 3))`` ``(2 4 6)`` -
+        each on its first call. The broken-input twin ``(command "_ERASE" "_L"
+        "")`` must be refused ``policy_refused`` with symbol ``command`` at line
+        1, column 2, and ``entity_delete`` among the alternatives. The reads
+        need AutoCAD: on the headless lane the task is ``environment_blocked``
+        and its metrics carry only the policy's verdicts.
+        """
+        import math
+
+        circle = await self.backend.entity_create_circle(0.0, 0.0, 5.0)
+        reads = {
+            "area": f'(vla-get-Area (vlax-ename->vla-object (handent "{circle.handle}")))',
+            "clayer": '(getvar "CLAYER")',
+            "mapcar": "(mapcar (function (lambda (x) (* x 2))) (list 1 2 3))",
+        }
+        twin = '(command "_ERASE" "_L" "")'
+        async with self._served() as client:
+            answers = {
+                key: await client.call_tool(
+                    "system_run_lisp", {"expression": form}, raise_on_error=False
+                )
+                for key, form in reads.items()
+            }
+            refused = await client.call_tool(
+                "system_run_lisp", {"expression": twin}, raise_on_error=False
+            )
+            measured = (
+                await client.call_tool(
+                    "analysis_measure_entity", {"handle": circle.handle}, raise_on_error=False
+                )
+            ).structured_content or {}
+            clayer = (
+                await client.call_tool(
+                    "system_get_variable", {"name": "CLAYER"}, raise_on_error=False
+                )
+            ).structured_content or {}
+        twin_payload = refused.structured_content or {}
+        twin_ok = (
+            refused.is_error
+            and twin_payload.get("kind") == "policy_refused"
+            and twin_payload.get("policy") == "lisp_allowlist"
+            and twin_payload.get("symbol") == "command"
+            and (twin_payload.get("line"), twin_payload.get("column")) == (1, 2)
+            and "entity_delete"
+            in {row.get("tool") for row in twin_payload.get("alternatives") or []}
+        )
+        policy_passed = {key: not result.is_error for key, result in answers.items()}
+        metrics = {
+            "policy_passed": policy_passed,
+            "twin": {k: twin_payload.get(k) for k in ("kind", "symbol", "line", "column")},
+        }
+        if self.backend_name == "ezdxf":
+            return TaskResult(
+                "lisp_read_tier",
+                "environment_blocked",
+                0.0,
+                "AutoLISP runs only in AutoCAD (COM); the headless engine has no LISP",
+                metrics={**metrics, "twin_ok": twin_ok},
+            )
+        values = {
+            key: (result.structured_content or {}).get("result") for key, result in answers.items()
+        }
+        area_expected = math.pi * 25.0
+
+        def _near(text, want) -> bool:
+            try:
+                return abs(float(text) - want) <= 1e-6 * max(1.0, abs(want))
+            except (TypeError, ValueError):
+                return False
+
+        clayer_value = clayer.get("value", clayer.get("result"))
+        passed = (
+            all(policy_passed.values())
+            and _near(values["area"], area_expected)
+            and _near(values["area"], float(measured.get("area") or 0.0))
+            and str(values["clayer"]) == str(clayer_value)
+            and values["mapcar"] == "(2 4 6)"
+            and twin_ok
+        )
+        return (passed, {**metrics, "values": values, "measured_area": measured.get("area")}, [])

@@ -48,7 +48,7 @@ async def batch_plot(
     The output folder is created, then every output path goes through
     ``security.validate_path(allow_write=True)`` before the first export.
     """
-    from security import validate_path
+    from security import DIRECTORY, KINDS_PDF, validate_path
 
     listing = await backend.layout_list()
     available = [str(name) for name in (listing.get("layouts") or [])]
@@ -86,7 +86,7 @@ async def batch_plot(
 
     info = await backend.drawing_info()
     drawing = safe_filename(Path(info.name).stem)
-    destination = Path(validate_path(output_dir, allow_write=True))
+    destination = Path(validate_path(output_dir, allow_write=True, kinds=DIRECTORY))
     planned = [
         (name, destination / pattern.format(drawing=drawing, layout=safe_filename(name)))
         for name in targets
@@ -96,7 +96,7 @@ async def batch_plot(
     # folder is the most a refused call leaves behind.
     destination.mkdir(parents=True, exist_ok=True)
     for _name, path in planned:
-        validate_path(str(path), allow_write=True)
+        validate_path(str(path), allow_write=True, kinds=KINDS_PDF)
 
     sheets: list[dict] = []
     for name, path in planned:

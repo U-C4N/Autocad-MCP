@@ -31,14 +31,17 @@ from benchmarks.adapters.base import (
     EnvironmentBlocked,
     TaskResult,
 )
-from benchmarks.tasks_v8 import (
+
+# v9 (1.8.0) is selectable; the default stays v8 until 1.8-25 (tasks_v9
+# re-exports the v8 constants and registers v9 in the one MATRICES registry).
+from benchmarks.tasks_v9 import (
+    DEFAULT_MATRIX,
     EVALUATOR_VERSION,
     FIXTURE_SOURCES,
+    MATRICES,
     TaskSpec,
+    task_by_id,
 )
-
-# v9 (1.8.0) is selectable; the default stays v8 until 1.8-25.
-from benchmarks.tasks_v9 import DEFAULT_MATRIX, MATRICES, task_by_id
 
 REPO = Path(__file__).resolve().parents[1]
 
