@@ -147,8 +147,8 @@ def _until(predicate, timeout: float = 30.0) -> None:
 
 
 @pytest.fixture
-def folders(tmp_path_factory) -> tuple[Path, Path]:
-    return tmp_path_factory.mktemp("state"), tmp_path_factory.mktemp("drawings")
+def folders(outside_repo_dir, tmp_path_factory) -> tuple[Path, Path]:
+    return outside_repo_dir, tmp_path_factory.mktemp("drawings")
 
 
 def test_a_client_id_replays_after_the_server_is_killed(folders):
@@ -208,10 +208,20 @@ def test_a_call_killed_mid_run_must_be_reconciled_after_the_restart(folders):
         drawings,
         log,
     )
+    # A client id's answer repeats its steps' arguments; under digest it must
+    # not reach the file either (review 1.8-03), yet it still replays.
+    echoed = {
+        "steps": [
+            {"tool": "layer_create", "args": {"name": marker + "-LAYER"}},
+            {"tool": "entity_create_text", "args": {"text": marker, "x": 0, "y": 5, "height": 2.5}},
+        ],
+        "operation_id": "op-2",
+    }
     try:
         first.call("drawing_new")
         typed = first.call("entity_create_text", {"text": marker, "x": 0, "y": 0, "height": 2.5})
         assert typed["is_error"] is False
+        assert first.call("cad_batch", echoed)["ok"] is True
         first.send("tools/call", {"name": "cad_batch", "arguments": batch})
         _until(lambda: _state_of(state_dir, "op-3") == "running")
     finally:
@@ -229,6 +239,9 @@ def test_a_call_killed_mid_run_must_be_reconciled_after_the_restart(folders):
         assert retry["operation_id"] == "op-3"
         assert retry["record"]["state"] == "unknown_commit"
         assert retry["record"]["error_kind"] == "process_exit"
+        replay = second.call("cad_batch", echoed)
+        assert replay["replayed"] is True and replay["result_truncated"] is True
+        assert replay["ok"] is True and replay["is_error"] is False
         assert second.call("drawing_info")["entity_count"] == 0, "nothing ran again"
     finally:
         second.kill()

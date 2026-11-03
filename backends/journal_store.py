@@ -13,9 +13,19 @@ and the ``cad_batch`` step loop do not change - writing every record through to
 * ``busy_timeout=5000``, autocommit mode (``isolation_level=None``) with an
   explicit ``BEGIN IMMEDIATE`` wherever a read decides a write (a client id's
   check-then-insert), so a lock upgrade cannot fail half way.
-* The hot path of a mutating call is one INSERT (its ``running`` row, committed
-  before the call runs) and one UPDATE (its final state). A read-only call
-  without a client id is one INSERT when it ends.
+* The hot path of a mutating call is one statement in one commit: its
+  ``running`` row's INSERT, committed before the call runs, appended to a table
+  whose only index covers client ids. Its final state (one UPDATE, by ``seq``)
+  and a read-only call's row (one INSERT, made when it ends) are queued and
+  committed together by a background flush ``FLUSH_DELAY_S`` later (or at a
+  client id's commit, or at close). A kill can lose only those queued writes: a
+  lost UPDATE leaves the row ``running``, which the next open turns into
+  ``unknown_commit`` - conservative, never a false ``committed``. A
+  client-supplied id's final state is never queued: its answer is what a retry
+  after a restart replays, so it is committed before the call returns. Measured
+  in the server on 2,000 ``entity_create_line`` calls (1.8-03 fix round): time
+  inside the journal went from about 450 us over the in-memory journal (two
+  commits, a unique text index) to about 125 us, under the B10 bound of 5 %.
 * At open, a ``running`` row whose owner is dead - a pid plus that process's
   start time, both on the row, so a reused pid is not mistaken for the owner -
   becomes ``unknown_commit`` with ``error_kind: "process_exit"`` (a read-only
@@ -30,16 +40,20 @@ and the ``cad_batch`` step loop do not change - writing every record through to
 What a row keeps: the request hash always; the arguments by ``JOURNAL_ARGS``
 (``bounded``: the canonical JSON up to 4096 bytes, longer ones cut with the
 full length and sha256; ``digest``: the sha256 only; ``off``: nothing); a
-client-supplied id's answer, so the same id replays after a restart (an answer
-over ``JOURNAL_RESULT_MAX_KB`` keeps only its sha256 and replays as
-``result_truncated: true`` with ``revision_after``). ``lineage_id``,
+client-supplied id's answer, so the same id replays after a restart. An answer
+over ``JOURNAL_RESULT_MAX_KB`` - and every answer under ``JOURNAL_ARGS=digest``
+or ``off``, because an answer repeats its arguments (a ``cad_batch`` echoes its
+steps' layer names and texts) - keeps only its sha256 and whether it was an
+error, and replays as ``result_truncated: true`` with ``revision_after``; no
+text of the call reaches the file in those modes. ``lineage_id``,
 ``checkpoint_*``, ``label`` and ``changes_json`` are columns for 1.8-04 / -08 /
 -10; ``CHECKPOINT_*`` settings are read and reported here and consumed by
 1.8-08.
 
 The folder is ``ACADMCP_STATE_DIR`` (default ``%LOCALAPPDATA%\\autocad-mcp-pro\\
-state``; elsewhere ``$XDG_STATE_HOME/autocad-mcp-pro``). A repository checkout
-or a folder holding drawings is refused at startup - the journal holds tool
+state``; elsewhere ``$XDG_STATE_HOME/autocad-mcp-pro``). A folder anywhere
+inside a repository checkout (or this server's source tree) or a folder holding
+drawings is refused at startup - the journal holds tool
 arguments and answers, which belong beside neither - and the server runs on in
 memory, saying so in ``system_status.state_store``.
 
@@ -90,16 +104,26 @@ ARGS_CAP_BYTES = 4096
 ARGS_MODES: tuple[str, ...] = ("bounded", "digest", "off")
 SYNC_MODES: tuple[str, ...] = ("normal", "full")
 BUSY_TIMEOUT_MS = 5000
+#: How long a queued final state (or read row) waits for the background flush,
+#: which commits everything queued by then in one transaction.
+FLUSH_DELAY_S = 0.1
+#: An open that fails outright is tried again after these pauses.
+OPEN_RETRY_DELAYS_S: tuple[float, ...] = (0.0, 0.25, 1.0)
 SCHEMA_VERSION = "1"
 DRAWING_SUFFIXES = frozenset({".dxf", ".dwg", ".dwt", ".dxb", ".dws"})
 TEST_HANG_ENV = "ACADMCP_TEST_HANG_AFTER_BEGIN"
 _DAY_S = 86400.0
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
+#: ``operation_id`` is unique: a client's id through the partial unique index
+#: (the only ids looked up in the file), a server's own by construction (a
+#: uuid4). A server id's row touches no index - its INSERT appends to the table
+#: and its final UPDATE finds it by ``seq`` - which keeps the one commit on a
+#: call's hot path to a page or two (the B10 perf gate).
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS operations (
-    seq INTEGER PRIMARY KEY AUTOINCREMENT,
-    operation_id TEXT NOT NULL UNIQUE,
+    seq INTEGER PRIMARY KEY,
+    operation_id TEXT NOT NULL,
     tool TEXT NOT NULL,
     request_hash TEXT NOT NULL,
     state TEXT NOT NULL,
@@ -122,8 +146,8 @@ CREATE TABLE IF NOT EXISTS operations (
     label TEXT,
     changes_json TEXT
 );
-CREATE INDEX IF NOT EXISTS operations_state ON operations(state);
-CREATE INDEX IF NOT EXISTS operations_ended ON operations(ended);
+CREATE UNIQUE INDEX IF NOT EXISTS operations_client_id
+    ON operations(operation_id) WHERE client_supplied = 1;
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
@@ -146,18 +170,23 @@ _COLUMNS = (
     "result_json",
     "result_sha256",
 )
-#: One statement for a new row and for a client id that runs again (its earlier
-#: run was ``cancelled``): the row is replaced in place.
+#: A server id's row.
+_INSERT = (
+    f"INSERT INTO operations ({', '.join(_COLUMNS)}) VALUES ({', '.join('?' for _ in _COLUMNS)})"
+)
+#: A client id's row; one that runs again (its earlier run was ``cancelled``)
+#: is replaced in place.
 _UPSERT = (
-    f"INSERT INTO operations ({', '.join(_COLUMNS)}) "
-    f"VALUES ({', '.join('?' for _ in _COLUMNS)}) "
-    "ON CONFLICT(operation_id) DO UPDATE SET "
+    f"{_INSERT} ON CONFLICT(operation_id) WHERE client_supplied = 1 DO UPDATE SET "
     + ", ".join(f"{column} = excluded.{column}" for column in _COLUMNS[1:])
 )
-_FINISH = (
+_SET_FINAL = (
     "UPDATE operations SET state = ?, error_kind = ?, ended = ?, revision_after = ?, "
     "document_id = ?, result_json = ?, result_sha256 = ? "
-    "WHERE operation_id = ? AND server_instance = ?"
+)
+_FINISH_SEQ = _SET_FINAL + "WHERE seq = ? AND server_instance = ?"
+_FINISH_CLIENT = (
+    _SET_FINAL + "WHERE operation_id = ? AND client_supplied = 1 AND server_instance = ?"
 )
 _RECORD_COLUMNS = (
     "operation_id, tool, request_hash, state, document_id, revision_before, revision_after, "
@@ -269,21 +298,25 @@ class JournalSettings:
 def check_state_dir(path: str | os.PathLike) -> Path:
     """The resolved folder, or ``StateDirRefusedError`` naming why not.
 
-    Refused: this server's own source tree, any git checkout (a ``.git`` entry -
+    Refused: a folder anywhere inside this server's own source tree or inside
+    any git checkout (a ``.git`` entry on the folder or on one of its parents -
     a worktree's is a file), and a folder that already holds drawings. The
-    journal keeps tool arguments and answers; neither belongs in a repository
-    or beside a client's drawings.
+    journal keeps tool arguments and answers; neither belongs in a repository,
+    where a ``git add -A`` would commit it, or beside a client's drawings.
     """
     resolved = Path(path).expanduser().resolve()
     hint = (
         f"Point ACADMCP_STATE_DIR at a private folder (default {default_state_dir()}), "
         "or set JOURNAL_DURABLE=off."
     )
-    if resolved == _PROJECT_ROOT or (resolved / ".git").exists():
-        raise StateDirRefusedError(
-            f"ACADMCP_STATE_DIR={resolved} is a repository checkout: the operation journal "
-            f"keeps tool arguments and answers, which must not land in a repository. {hint}"
-        )
+    for folder in (resolved, *resolved.parents):
+        if folder == _PROJECT_ROOT or (folder / ".git").exists():
+            where = "is" if folder == resolved else f"is inside {folder}, which is"
+            raise StateDirRefusedError(
+                f"ACADMCP_STATE_DIR={resolved} {where} a repository checkout: the operation "
+                "journal keeps tool arguments and answers, which must not land in a "
+                f"repository. {hint}"
+            )
     if resolved.is_dir():
         drawings = sorted(
             child.name
@@ -479,26 +512,46 @@ def _record_of(row: sqlite3.Row | tuple) -> OperationRecord:
     )
 
 
+#: Why a client id's answer was kept as its sha256 only (``_result_text``).
+_OMITTED_NOTES = {
+    "over_cap": "the recorded answer was larger than JOURNAL_RESULT_MAX_KB",
+    "journal_args": (
+        "JOURNAL_ARGS={mode} keeps no answer text in the journal (an answer repeats its arguments)"
+    ),
+    "unencodable": "the recorded answer could not be written as JSON",
+}
+
+
 def _rehydrate(record: OperationRecord, result_json: str | None, result_sha: str | None) -> Any:
     from fastmcp.tools.tool import ToolResult
 
-    if result_json is None:
+    data = json.loads(result_json) if result_json is not None else {"type": "omitted"}
+    kind = data.get("type")
+    if kind == "omitted":
+        reason = data.get("reason") or "over_cap"
+        why = _OMITTED_NOTES.get(reason, reason).format(mode=data.get("mode") or "digest")
+        note = f"{why}, so only its sha256 was kept. Nothing ran again; read the drawing."
+        if data.get("exception"):
+            return ReplayedFailure(
+                f"state {record.state}, error_kind {record.error_kind or 'failed'}; "
+                f"the message is not available: {note}"
+            )
+        is_error = bool(data.get("is_error"))
         payload = {
-            "ok": record.state == "committed",
+            "ok": record.state == "committed" and not is_error,
             "state": record.state,
             "result_truncated": True,
             "result_sha256": result_sha,
             "revision_after": record.revision_after,
-            "note": (
-                "The recorded answer was larger than JOURNAL_RESULT_MAX_KB, so the journal "
-                "kept only its sha256. Nothing ran again; read the drawing for the details."
-            ),
+            "note": note[0].upper() + note[1:],
         }
+        if record.error_kind:
+            payload["kind"] = record.error_kind
         return ToolResult(
-            content=json.dumps(payload, ensure_ascii=False), structured_content=payload
+            content=json.dumps(payload, ensure_ascii=False),
+            structured_content=payload,
+            is_error=is_error,
         )
-    data = json.loads(result_json)
-    kind = data.get("type")
     if kind == "exception":
         return ReplayedFailure(str(data.get("message") or data.get("class") or "failed"))
     if kind == "tool_result":
@@ -547,6 +600,13 @@ class DurableJournal(OperationJournal):
         self._lock = threading.RLock()
         self._connection: sqlite3.Connection | None = None
         self._deferred: dict[str, str | None] = {}
+        #: Final states and read rows waiting for the next commit (statement, params).
+        self._queue: list[tuple[str, tuple]] = []
+        #: A running server id's ``seq``, so its final UPDATE needs no index.
+        self._seq: dict[str, int] = {}
+        self._wake = threading.Event()
+        self._flusher: threading.Thread | None = None
+        self._stopped = threading.Event()
         self._hang = os.environ.get(TEST_HANG_ENV) or None
         self.degraded: dict | None = degraded
         self.write_failures = 0
@@ -556,7 +616,16 @@ class DurableJournal(OperationJournal):
             if self.path is None or self.settings is None:
                 self.degraded = {"kind": "unavailable", "reason": "no state folder was given"}
             else:
-                self._open()
+                # A file still held right after a kill (or an AV scan) can fail
+                # the first open with "disk I/O error": try again before giving
+                # up on durability for the whole process.
+                for delay in OPEN_RETRY_DELAYS_S:
+                    if delay:
+                        time.sleep(delay)
+                    self.degraded = None
+                    self._open()
+                    if self._connection is not None or self.degraded["kind"] != "open_failed":
+                        break
 
     @classmethod
     def unavailable(
@@ -648,18 +717,17 @@ class DurableJournal(OperationJournal):
             if instance == self.server_instance or owner_alive(pid, token):
                 continue
             running = connection.execute(
-                "SELECT operation_id, tool FROM operations "
-                "WHERE state = 'running' AND server_instance = ?",
+                "SELECT seq, tool FROM operations WHERE state = 'running' AND server_instance = ?",
                 (instance,),
             ).fetchall()
             connection.execute("BEGIN IMMEDIATE")
             try:
-                for operation_id, tool in running:
+                for seq, tool in running:
                     state = "cancelled" if self._read_only(tool) else "unknown_commit"
                     connection.execute(
                         "UPDATE operations SET state = ?, error_kind = 'process_exit', "
-                        "ended = ? WHERE operation_id = ? AND state = 'running'",
-                        (state, now, operation_id),
+                        "ended = ? WHERE seq = ? AND state = 'running'",
+                        (state, now, seq),
                     )
                 connection.execute("COMMIT")
             except BaseException:
@@ -694,6 +762,8 @@ class DurableJournal(OperationJournal):
     def _failed(self, exc: BaseException, during: str) -> None:
         """A write (or read) the file refused: recorded, then memory only."""
         self.write_failures += 1
+        self._queue.clear()
+        self._seq.clear()
         connection, self._connection = self._connection, None
         if connection is not None:
             try:
@@ -735,17 +805,43 @@ class DurableJournal(OperationJournal):
             ensure_ascii=False,
         )
 
-    def _result_text(self, result: Any) -> tuple[str | None, str]:
-        text = json.dumps(_serialise(result), ensure_ascii=False, default=str)
-        digest = _sha(text)
-        cap = self.settings.result_max_kb * 1024 if self.settings is not None else 0
-        if len(text.encode("utf-8")) > cap:
-            return None, digest
-        return text, digest
+    def _result_text(self, result: Any) -> tuple[str, str]:
+        """A client id's answer as stored: the full JSON, or a stub and its sha256.
 
-    def _upsert(self, record: OperationRecord, args_text: str | None, result=(None, None)):
-        self._connection.execute(
-            _UPSERT,
+        The stub keeps no text of the call - only whether it was an error or a
+        raised failure - so ``JOURNAL_ARGS=digest`` / ``off`` hold for answers too.
+        """
+        mode = self.settings.args if self.settings is not None else "off"
+        cap = self.settings.result_max_kb * 1024 if self.settings is not None else 0
+        try:
+            serialised = _serialise(result)
+            text = json.dumps(serialised, ensure_ascii=False, default=str)
+        except Exception:  # a journal never fails the call it records
+            serialised, text = {}, None
+        if text is None:
+            reason, digest = "unencodable", _sha(repr(type(result)))
+        else:
+            digest = _sha(text)
+            if mode != "bounded":
+                reason = "journal_args"
+            elif len(text.encode("utf-8")) > cap:
+                reason = "over_cap"
+            else:
+                return text, digest
+        stub = {
+            "type": "omitted",
+            "reason": reason,
+            "mode": mode,
+            "exception": isinstance(result, BaseException),
+            "is_error": isinstance(result, BaseException) or bool(serialised.get("is_error")),
+        }
+        return json.dumps(stub), digest
+
+    def _upsert(
+        self, record: OperationRecord, args_text: str | None, result=(None, None)
+    ) -> tuple[str, tuple]:
+        return (
+            _UPSERT if record.client_supplied else _INSERT,
             (
                 record.operation_id,
                 record.tool,
@@ -767,11 +863,90 @@ class DurableJournal(OperationJournal):
             ),
         )
 
-    def _row(self, operation_id: str):
+    def _finish_statement(self, record: OperationRecord, stored) -> tuple[str, tuple]:
+        final = (
+            record.state,
+            record.error_kind,
+            record.ended,
+            record.revision_after,
+            record.document_id,
+            stored[0],
+            stored[1],
+        )
+        if record.client_supplied:
+            return _FINISH_CLIENT, (*final, record.operation_id, self.server_instance)
+        seq = self._seq.pop(record.operation_id, None)
+        if seq is None:  # its running row was never written: nothing to update
+            return _FINISH_SEQ, (*final, -1, self.server_instance)
+        return _FINISH_SEQ, (*final, seq, self.server_instance)
+
+    def _commit(
+        self, statements: list[tuple[str, tuple]], during: str, *, drain: bool = True
+    ) -> int | None:
+        """``statements`` - after the queue, with ``drain`` - in one commit.
+
+        The caller holds the lock. Inside a transaction the caller opened (a
+        client id's ``BEGIN IMMEDIATE``) they are only executed; the caller
+        commits. Returns the ``lastrowid`` of the last statement (None when
+        nothing was written).
+        """
+        if drain:
+            work = self._queue + statements
+            self._queue = []
+        else:
+            work = statements
+        if not work or self._connection is None:
+            return None
+        connection = self._connection
+        try:
+            if connection.in_transaction:
+                for statement, params in work:
+                    cursor = connection.execute(statement, params)
+            elif len(work) == 1:
+                cursor = connection.execute(*work[0])
+            else:
+                connection.execute("BEGIN IMMEDIATE")
+                for statement, params in work:
+                    cursor = connection.execute(statement, params)
+                connection.execute("COMMIT")
+        except sqlite3.Error as exc:
+            self._failed(exc, during)
+            return None
+        return cursor.lastrowid
+
+    def _enqueue(self, statement: tuple[str, tuple]) -> None:
+        """Queue a write for the next commit; the flush thread bounds the wait."""
+        self._queue.append(statement)
+        if self._flusher is None:
+            self._flusher = threading.Thread(
+                target=self._flush_loop, name="acadmcp-journal-flush", daemon=True
+            )
+            self._flusher.start()
+        if not self._wake.is_set():
+            self._wake.set()
+
+    def _flush_loop(self) -> None:
+        while not self._stopped.is_set():
+            self._wake.wait()
+            # Gather what the next calls queue; close() cuts the wait short.
+            if self._stopped.wait(FLUSH_DELAY_S):
+                return
+            self._wake.clear()
+            self.flush()
+
+    def flush(self) -> None:
+        """Commit every queued write now."""
+        with self._lock:
+            if self._queue:
+                self._commit([], "flush")
+
+    def _row(self, operation_id: str, *, client_only: bool = True):
+        """The row of ``operation_id``: a client id through its index, else a scan."""
+        where = "operation_id = ? AND client_supplied = 1" if client_only else "operation_id = ?"
         try:
             return self._connection.execute(
-                f"SELECT {_RECORD_COLUMNS}, result_json, result_sha256 FROM operations "
-                "WHERE operation_id = ?",
+                f"SELECT {_RECORD_COLUMNS}, result_json, result_sha256, seq, server_instance, "
+                f"pid, pid_started FROM operations WHERE {where} ORDER BY seq DESC LIMIT 1",
                 (operation_id,),
             ).fetchone()
         except sqlite3.Error as exc:
@@ -811,19 +986,25 @@ class DurableJournal(OperationJournal):
                     tool, arguments, operation_id=operation_id, document=document
                 )
             except BaseException:
+                # A refusal (conflict, reconcile): the transaction holds at most
+                # the dead-owner reconcile of ``_lookup``, which must stay.
                 if client and self._connection is not None:
                     try:
-                        self._connection.execute("ROLLBACK")
+                        self._connection.execute("COMMIT")
                     except sqlite3.Error as exc:
                         self._failed(exc, "begin")
                 raise
             if replay is None and self._connection is not None:
                 args_text = self._args_text(arguments)
                 if eager:
-                    try:
-                        self._upsert(record, args_text)
-                    except sqlite3.Error as exc:
-                        self._failed(exc, "begin")
+                    # The running row, committed before the call runs: one
+                    # statement in its own commit; a client id's transaction
+                    # also carries what earlier calls queued.
+                    seq = self._commit([self._upsert(record, args_text)], "begin", drain=client)
+                    if seq is not None and not client:
+                        self._seq[record.operation_id] = seq
+                        if len(self._seq) > self._maxlen:  # a record never finished
+                            self._seq.pop(next(iter(self._seq)))
                 else:
                     self._deferred[record.operation_id] = args_text
             if client and self._connection is not None:
@@ -853,26 +1034,16 @@ class DurableJournal(OperationJournal):
             stored = (None, None)
             if record.client_supplied and result is not None:
                 stored = self._result_text(result)
-            try:
-                if deferred:
-                    self._upsert(record, args_text, stored)
-                else:
-                    self._connection.execute(
-                        _FINISH,
-                        (
-                            record.state,
-                            record.error_kind,
-                            record.ended,
-                            record.revision_after,
-                            record.document_id,
-                            stored[0],
-                            stored[1],
-                            record.operation_id,
-                            self.server_instance,
-                        ),
-                    )
-            except sqlite3.Error as exc:
-                self._failed(exc, "finish")
+            if deferred:
+                statement = self._upsert(record, args_text, stored)
+            else:
+                statement = self._finish_statement(record, stored)
+            if record.client_supplied:
+                # What a retry after a restart replays: committed before the
+                # call returns, never queued.
+                self._commit([statement], "finish")
+            else:
+                self._enqueue(statement)
 
     def _lookup(self, operation_id: str) -> tuple[OperationRecord, bool, Any] | None:
         found = super()._lookup(operation_id)
@@ -882,6 +1053,22 @@ class DurableJournal(OperationJournal):
         if row is None:
             return None
         record = _record_of(row)
+        seq, instance, pid, token = row[13:17]
+        if record.state == "running" and instance != self.server_instance:
+            if not owner_alive(pid, token):
+                # Its server died after this one opened the file (the open's
+                # sweep could not see it): reconcile it now, as the sweep would.
+                record.state = "cancelled" if self._read_only(record.tool) else "unknown_commit"
+                record.error_kind = "process_exit"
+                record.ended = time.time()
+                try:
+                    self._connection.execute(
+                        "UPDATE operations SET state = ?, error_kind = 'process_exit', "
+                        "ended = ? WHERE seq = ? AND state = 'running'",
+                        (record.state, record.ended, seq),
+                    )
+                except sqlite3.Error as exc:
+                    self._failed(exc, "reconcile")
         result_json, result_sha = row[11], row[12]
         if result_json is None and result_sha is None:
             return record, False, None
@@ -892,7 +1079,7 @@ class DurableJournal(OperationJournal):
         if record is not None or self._connection is None:
             return record
         with self._lock:
-            row = self._row(operation_id)
+            row = self._row(operation_id, client_only=False)
         return _record_of(row) if row is not None else None
 
     def recent(self, n: int = 20) -> list[dict]:
@@ -926,10 +1113,12 @@ class DurableJournal(OperationJournal):
         documents = operations = None
         if self._connection is not None:
             with self._lock:
+                self._commit([], "flush")
                 try:
-                    documents, operations = self._connection.execute(
-                        "SELECT COUNT(DISTINCT document_id), COUNT(*) FROM operations"
-                    ).fetchone()
+                    if self._connection is not None:
+                        documents, operations = self._connection.execute(
+                            "SELECT COUNT(DISTINCT document_id), COUNT(*) FROM operations"
+                        ).fetchone()
                 except sqlite3.Error as exc:
                     self._failed(exc, "read")
         return {
@@ -946,7 +1135,11 @@ class DurableJournal(OperationJournal):
         }
 
     def close(self) -> None:
+        """Commit what is queued, stop the flush thread and close the file."""
+        self._stopped.set()
+        self._wake.set()
         with self._lock:
+            self._commit([], "close")
             connection, self._connection = self._connection, None
             if connection is not None:
                 try:

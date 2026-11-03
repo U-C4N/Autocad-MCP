@@ -3,7 +3,8 @@
 ``DurableJournal`` keeps the in-memory journal's API (``begin`` / ``finish`` /
 ``get`` / ``recent``) and writes every record through to
 ``<STATE_DIR>/journal.sqlite3``: a mutating call is one INSERT (``running``,
-committed before the call) and one UPDATE (its final state). Two journals on
+committed before the call) and one UPDATE (its final state, queued for the
+background flush unless the id is the client's). Two journals on
 one file stand in for a server and its restart; a row's owner is a pid plus
 that process's start time. The subprocess gate (a real ``python server.py``
 killed with ``Popen.kill``) is ``tests/test_journal_durable.py``.
@@ -22,6 +23,7 @@ from pathlib import Path
 import pytest
 from fastmcp.tools.tool import ToolResult
 
+from backends import journal_store
 from backends.journal_store import (
     ARGS_CAP_BYTES,
     JOURNAL_FILE,
@@ -87,8 +89,14 @@ def _dead_owner() -> tuple[int, str | None]:
 
 
 @pytest.fixture
-def state_dir(tmp_path_factory) -> Path:
-    return tmp_path_factory.mktemp("journal-state")
+def state_dir(outside_repo_dir) -> Path:
+    return outside_repo_dir
+
+
+@pytest.fixture
+def slow_flush(monkeypatch):
+    """The background flush waits long enough for a test to see the queue."""
+    monkeypatch.setattr(journal_store, "FLUSH_DELAY_S", 60.0)
 
 
 # ── settings and the state folder ────────────────────────────────────────────
@@ -145,7 +153,8 @@ def test_the_repository_root_is_refused_as_the_state_dir():
         journal.close()
 
 
-def test_any_git_checkout_and_a_drawing_folder_are_refused(tmp_path):
+def test_any_git_checkout_and_a_drawing_folder_are_refused(outside_repo_dir):
+    tmp_path = outside_repo_dir
     checkout = tmp_path / "checkout"
     (checkout / ".git").mkdir(parents=True)
     with pytest.raises(StateDirRefusedError, match="repository"):
@@ -156,6 +165,30 @@ def test_any_git_checkout_and_a_drawing_folder_are_refused(tmp_path):
     with pytest.raises(StateDirRefusedError, match="drawing"):
         check_state_dir(drawings)
     assert check_state_dir(tmp_path / "fresh") == (tmp_path / "fresh").resolve()
+
+
+@pytest.mark.parametrize(
+    "inside", ["state", "backends", "tests/fixtures", ".acadmcp", "out/x/deeper"]
+)
+def test_a_folder_anywhere_inside_the_repository_is_refused(inside):
+    """``git add -A`` would commit a journal left in any of these (review 1.8-03)."""
+    with pytest.raises(StateDirRefusedError, match="inside .* repository checkout"):
+        check_state_dir(ROOT / inside)
+    journal = open_journal({"ACADMCP_STATE_DIR": str(ROOT / inside)})
+    try:
+        assert state_store_status(journal)["degraded"]["kind"] == "state_dir_refused"
+    finally:
+        journal.close()
+    assert not (ROOT / inside / JOURNAL_FILE).exists()
+
+
+def test_a_folder_inside_any_checkout_is_refused(outside_repo_dir):
+    checkout = outside_repo_dir / "checkout"
+    checkout.mkdir()
+    (checkout / ".git").write_text("gitdir: elsewhere\n", encoding="ascii")  # a worktree
+    with pytest.raises(StateDirRefusedError, match=r"inside .*checkout"):
+        check_state_dir(checkout / "state" / "journal")
+    assert check_state_dir(outside_repo_dir / "beside") == (outside_repo_dir / "beside").resolve()
 
 
 # ── write-through, replay across a restart ───────────────────────────────────
@@ -204,7 +237,10 @@ def test_a_result_over_the_cap_replays_as_its_digest(state_dir):
     first.finish(record, "committed", result=_result(big), document={**_DOC, "revision": 9})
     first.close()
     (row,) = _rows(state_dir)
-    assert row["result_json"] is None and row["result_sha256"].startswith("sha256:")
+    assert row["result_sha256"].startswith("sha256:")
+    stub = json.loads(row["result_json"])
+    assert (stub["type"], stub["reason"], stub["is_error"]) == ("omitted", "over_cap", False)
+    assert "x" * 100 not in row["result_json"]
 
     second = _journal(state_dir, settings=settings)
     try:
@@ -212,7 +248,61 @@ def test_a_result_over_the_cap_replays_as_its_digest(state_dir):
         payload = replay.structured_content
         assert payload["result_truncated"] is True and payload["revision_after"] == 9
         assert payload["result_sha256"] == row["result_sha256"]
-        assert "rows" not in payload
+        assert "rows" not in payload and replay.is_error is False
+    finally:
+        second.close()
+
+
+def test_a_truncated_error_replays_as_an_error(state_dir):
+    """Review 1.8-03: a truncated replay used to lose ``is_error``."""
+    settings = _settings(state_dir, JOURNAL_RESULT_MAX_KB="0")
+    first = _journal(state_dir, settings=settings)
+    refused = ToolResult(
+        content="refused", structured_content={"ok": False, "kind": "not_found"}, is_error=True
+    )
+    record, _ = first.begin("entity_move", {"handle": "FFFFFF"}, operation_id="op-e")
+    first.finish(record, "refused", result=refused, error_kind="not_found")
+    raised, _ = first.begin("entity_move", {"handle": "EEEEEE"}, operation_id="op-x")
+    first.finish(raised, "failed", result=RuntimeError("no such handle"), error_kind="failed")
+    first.close()
+    second = _journal(state_dir, settings=settings)
+    try:
+        _, replay = second.begin("entity_move", {"handle": "FFFFFF"}, operation_id="op-e")
+        assert replay.is_error is True and replay.structured_content["ok"] is False
+        assert replay.structured_content["result_truncated"] is True
+        assert replay.structured_content["kind"] == "not_found"
+        _, failure = second.begin("entity_move", {"handle": "EEEEEE"}, operation_id="op-x")
+        assert isinstance(failure, BaseException) and "not available" in str(failure)
+    finally:
+        second.close()
+
+
+@pytest.mark.parametrize("mode", ["digest", "off"])
+def test_digest_and_off_keep_no_answer_text_for_a_client_id(state_dir, mode):
+    """Review 1.8-03: a client id's answer repeats its arguments (a ``cad_batch``
+    echoes its steps' layer names and texts), so under ``JOURNAL_ARGS=digest`` /
+    ``off`` it is kept as its sha256 and replays truncated after a restart."""
+    marker = "ZQX-CUSTOMER-SECRET-7781"
+    settings = _settings(state_dir, JOURNAL_ARGS=mode)
+    first = _journal(state_dir, settings=settings)
+    steps = {"steps": [{"tool": "layer_create", "args": {"name": marker}}]}
+    answer = {"ok": True, "results": [{"tool": "layer_create", "name": marker}]}
+    record, _ = first.begin("cad_batch", steps, operation_id="op-leak", document=_DOC)
+    first.finish(record, "committed", result=_result(answer), document={**_DOC, "revision": 4})
+    failed, _ = first.begin("layer_set_current", {"name": marker}, operation_id="op-leak2")
+    first.finish(failed, "failed", result=RuntimeError(f"no layer {marker}"), error_kind="failed")
+    first.close()
+    blob = b"".join(path.read_bytes() for path in state_dir.iterdir() if path.is_file())
+    assert marker.encode() not in blob
+
+    second = _journal(state_dir, settings=settings)
+    try:
+        _, replay = second.begin("cad_batch", steps, operation_id="op-leak")
+        payload = replay.structured_content
+        assert payload["ok"] is True and payload["result_truncated"] is True
+        assert payload["revision_after"] == 4 and f"JOURNAL_ARGS={mode}" in payload["note"]
+        _, failure = second.begin("layer_set_current", {"name": marker}, operation_id="op-leak2")
+        assert isinstance(failure, BaseException) and marker not in str(failure)
     finally:
         second.close()
 
@@ -239,6 +329,49 @@ def test_a_running_row_of_a_dead_server_becomes_unknown_commit(state_dir):
         second.close()
 
 
+def test_a_server_that_dies_after_this_one_opened_is_reconciled_at_lookup(state_dir):
+    """Review 1.8-03: the open's sweep alone left ``in_progress`` forever."""
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE
+    )
+    try:
+        first = _journal(state_dir, owner=(child.pid, process_start_token(child.pid)))
+        first.begin("entity_create_circle", {"r": 5}, operation_id="op-H")
+        second = _journal(state_dir)  # opens while the owner still runs
+    finally:
+        child.communicate(b"")
+    try:
+        with pytest.raises(RequiresReconcileError) as reconcile:
+            second.begin("entity_create_circle", {"r": 5}, operation_id="op-H")
+        assert reconcile.value.record.error_kind == "process_exit"
+        (row,) = _rows(state_dir)
+        assert (row["state"], row["error_kind"]) == ("unknown_commit", "process_exit")
+    finally:
+        second.close()
+        first._connection.close()
+        first._connection = None
+
+
+def test_a_failed_open_is_tried_again(state_dir, monkeypatch):
+    """Review 1.8-03: an open right after a kill can fail once with an I/O error."""
+    real_connect = sqlite3.connect
+    calls = []
+
+    def flaky(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("disk I/O error")
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(journal_store, "OPEN_RETRY_DELAYS_S", (0.0, 0.0, 0.0))
+    monkeypatch.setattr(journal_store.sqlite3, "connect", flaky)
+    journal = _journal(state_dir)
+    try:
+        assert journal.degraded is None and len(calls) == 2
+    finally:
+        journal.close()
+
+
 def test_a_live_second_server_keeps_its_running_rows(state_dir):
     first = _journal(state_dir)  # this very process: alive
     first.begin("entity_create_circle", {"r": 5}, operation_id="op-live")
@@ -256,7 +389,12 @@ def test_a_live_second_server_keeps_its_running_rows(state_dir):
 # ── what is written, and how much ────────────────────────────────────────────
 
 
-def test_a_mutating_call_is_one_insert_and_one_update(state_dir):
+def test_a_mutating_call_is_one_commit_on_its_hot_path(state_dir, slow_flush):
+    """Review 1.8-03 (B10): the call itself pays one single-statement commit.
+
+    Its running row is committed before it runs; its final UPDATE and a read's
+    row wait for the background flush, which commits them together.
+    """
     journal = _journal(state_dir)
     statements: list[str] = []
     journal._connection.set_trace_callback(statements.append)
@@ -265,11 +403,17 @@ def test_a_mutating_call_is_one_insert_and_one_update(state_dir):
         assert [s.split()[0] for s in statements] == ["INSERT"], "committed before the call"
         assert _rows(state_dir)[0]["state"] == "running"
         journal.finish(record, "committed", document={**_DOC, "revision": 4})
-        assert [s.split()[0] for s in statements] == ["INSERT", "UPDATE"]
-        statements.clear()
         read, _ = journal.begin("entity_list", {}, document=_DOC)
         journal.finish(read, "committed", document=_DOC)
-        assert [s.split()[0] for s in statements] == ["INSERT"], "a read is one row, at its end"
+        assert [s.split()[0] for s in statements] == ["INSERT"], "nothing else on the hot path"
+        journal.flush()
+        assert [s.split()[0] for s in statements] == [
+            "INSERT",
+            "BEGIN",
+            "UPDATE",
+            "INSERT",
+            "COMMIT",
+        ]
     finally:
         journal._connection.set_trace_callback(None)
         journal.close()
@@ -281,6 +425,63 @@ def test_a_mutating_call_is_one_insert_and_one_update(state_dir):
     assert rows[0]["revision_before"] == 3 and rows[0]["revision_after"] == 4
     assert rows[0]["pid"] == os.getpid() and rows[0]["server_instance"]
     assert rows[0]["result_json"] is None, "only a client id's answer is kept"
+
+
+def test_a_server_id_row_touches_no_index(state_dir):
+    """The only index is the partial one over client ids (unique there)."""
+    journal = _journal(state_dir)
+    try:
+        indexes = journal._connection.execute("PRAGMA index_list(operations)").fetchall()
+        assert [(row[1], row[2], row[4]) for row in indexes] == [("operations_client_id", 1, 1)]
+        record, _ = journal.begin("cad_batch", {"n": 1}, operation_id="op-u")
+        journal.finish(record, "cancelled", error_kind="cancelled")
+        rerun, replay = journal.begin("cad_batch", {"n": 1}, operation_id="op-u")
+        assert replay is None and rerun.state == "running"
+    finally:
+        journal.close()
+    assert [row["operation_id"] for row in _rows(state_dir)] == ["op-u"], "replaced in place"
+
+
+def test_the_background_flush_writes_the_queue(state_dir):
+    journal = _journal(state_dir)
+    try:
+        record, _ = journal.begin("entity_create_line", _LINE)
+        journal.finish(record, "committed")
+        deadline = time.monotonic() + 30
+        while _rows(state_dir)[0]["state"] != "committed":
+            assert time.monotonic() < deadline, "the queued UPDATE was never flushed"
+            time.sleep(0.02)
+    finally:
+        journal.close()
+
+
+def test_a_client_id_final_state_is_committed_before_finish_returns(state_dir, slow_flush):
+    journal = _journal(state_dir)
+    try:
+        record, _ = journal.begin("cad_batch", {"n": 1}, operation_id="op-now")
+        journal.finish(record, "committed", result=_result({"ok": True}))
+        (row,) = _rows(state_dir)
+        assert row["state"] == "committed" and json.loads(row["result_json"])["type"]
+    finally:
+        journal.close()
+
+
+def test_a_queued_final_state_lost_to_a_kill_is_unknown_commit(state_dir, slow_flush):
+    """Conservative: a kill before the flush never leaves a false ``committed``."""
+    first = _journal(state_dir, owner=_dead_owner())
+    record, _ = first.begin("entity_create_line", _LINE)
+    first.finish(record, "committed")
+    first._stopped.set()
+    first._wake.set()
+    first._connection.close()  # killed: the queue is lost
+    first._connection = None
+    second = _journal(state_dir)
+    try:
+        (row,) = _rows(state_dir)
+        assert (row["state"], row["error_kind"]) == ("unknown_commit", "process_exit")
+        assert second.get(record.operation_id).state == "unknown_commit"
+    finally:
+        second.close()
 
 
 def test_the_arguments_are_bounded_by_default(state_dir):

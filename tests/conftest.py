@@ -25,8 +25,35 @@ def pin_headless_backend(request, monkeypatch):
     monkeypatch.setenv("AUTOCAD_MCP_BACKEND", "ezdxf")
 
 
+@pytest.fixture(scope="session")
+def state_root():
+    """A session folder for journal state, outside every repository checkout.
+
+    ``--basetemp`` often points inside this repository (``out/pytest/...``), and
+    the journal refuses a state folder anywhere inside a checkout (B13), so the
+    state folders live under the system temp folder instead.
+    """
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    root = Path(tempfile.mkdtemp(prefix="acadmcp-test-state-"))
+    yield root
+    shutil.rmtree(root, ignore_errors=True)
+
+
+@pytest.fixture
+def outside_repo_dir(state_root):
+    """A fresh, empty folder outside every repository checkout."""
+    import uuid
+
+    folder = state_root / uuid.uuid4().hex[:12]
+    folder.mkdir()
+    return folder
+
+
 @pytest.fixture(autouse=True)
-def private_state_dir(tmp_path_factory, monkeypatch):
+def private_state_dir(state_root, monkeypatch):
     """Every test gets its own durable journal folder (B13, 1.8.0).
 
     The server's lifespan opens ``<ACADMCP_STATE_DIR>/journal.sqlite3``; left
@@ -36,7 +63,7 @@ def private_state_dir(tmp_path_factory, monkeypatch):
     """
     import uuid
 
-    folder = tmp_path_factory.getbasetemp() / "acadmcp-state" / uuid.uuid4().hex[:12]
+    folder = state_root / "auto" / uuid.uuid4().hex[:12]
     monkeypatch.setenv("ACADMCP_STATE_DIR", str(folder))
 
 
