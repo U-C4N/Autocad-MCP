@@ -1908,3 +1908,72 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
             {"rows": rows, "findings": findings, "accepted": report["accepted"]},
             [str(path)],
         )
+
+    # ── v9 (v1.8.0) ───────────────────────────────────────────────────────────
+
+    async def _task_policy_read_only(self):
+        """READ_ONLY refuses a write before it runs, on both routes (1.8-17).
+
+        Through the real server: with ``READ_ONLY`` on, a ``cad_batch`` whose
+        one step is ``entity_create_line`` must be refused ``policy_refused``
+        (policy ``read_only``) before step 1 - the content revision and the
+        entity count read off the document itself stay what they were. The
+        broken-input twin sends the same write through the search proxy,
+        ``call_tool("entity_create_line")``, and must be refused the same way.
+        The expected values are fixed here, not read from the server: one
+        line drawn before the policy, revision unchanged by the refusals.
+        """
+        import config
+        import server
+
+        await self.backend.entity_create_line(0, 0, 10, 0)
+        before_revision = self.backend.document_identity()["revision"]
+        before_count = len(await self.backend.entity_list())
+        line = {"x1": 0.0, "y1": 0.0, "x2": 5.0, "y2": 5.0}
+        saved = config.settings.read_only
+        config.settings.read_only = True
+        try:
+            async with self._served() as client:
+                batch = await client.call_tool(
+                    "cad_batch",
+                    {"steps": [{"tool": "entity_create_line", "args": line}]},
+                    raise_on_error=False,
+                )
+            server._apply_discovery_mode("search")
+            try:
+                async with self._served() as client:
+                    proxied = await client.call_tool(
+                        "call_tool",
+                        {"name": "entity_create_line", "arguments": line},
+                        raise_on_error=False,
+                    )
+            finally:
+                server._apply_discovery_mode("off")
+        finally:
+            config.settings.read_only = saved
+            await server._apply_tool_profile("full")
+        after_revision = self.backend.document_identity()["revision"]
+        after_count = len(await self.backend.entity_list())
+        batch_payload = batch.structured_content or {}
+        proxy_payload = proxied.structured_content or {}
+        passed = (
+            batch.is_error
+            and batch_payload.get("kind") == "policy_refused"
+            and batch_payload.get("policy") == "read_only"
+            and proxied.is_error
+            and proxy_payload.get("kind") == "policy_refused"
+            and proxy_payload.get("tool") == "entity_create_line"
+            and after_revision == before_revision
+            and after_count == before_count == 1
+        )
+        return (
+            passed,
+            {
+                "batch_kind": batch_payload.get("kind"),
+                "batch_policy": batch_payload.get("policy"),
+                "proxy_kind": proxy_payload.get("kind"),
+                "revision": [before_revision, after_revision],
+                "entities": [before_count, after_count],
+            },
+            [],
+        )
