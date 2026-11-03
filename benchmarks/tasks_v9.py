@@ -42,6 +42,14 @@ until plan item 1.8-25 publishes the v9 matrix, so a run without
   ``mech_duplicate_dimension`` clean, and a second run draws nothing. Its
   broken-input twin: an ELLIPSE and a SPLINE in the selection come back in
   ``omitted`` with their reasons, never silently dropped.
+* ``dwg_headless_roundtrip`` (K1, reliability) - a DWG (the bundled
+  ``templates/iso_a3_mech.dwt`` under a ``.dwg`` name: a DWT is a DWG
+  container) opened by ``drawing_open`` on the headless engine through a
+  converter (ODA, then accoreconsole) and saved as DXF holds the layers,
+  blocks and per-layout entity counts of the template's DXF twin. Its
+  broken-input twin: with the converters switched off the same open is refused
+  ``unsupported`` / capability ``dwg_read`` with the open document unchanged.
+  No converter on the machine is ``environment_blocked``, never a pass.
 """
 
 from __future__ import annotations
@@ -107,6 +115,14 @@ NEW_TASKS_V9: tuple[TaskSpec, ...] = (
         "ELLIPSE and a SPLINE in the selection are omitted with their reasons",
         1.0,
     ),
+    TaskSpec(
+        "dwg_headless_roundtrip",
+        "reliability",
+        "Open a DWG on the headless engine through a converter and save it as DXF with the "
+        "layers, blocks and entity counts of its DXF twin; with no converter the open is "
+        "refused dwg_read (no converter on the machine: environment_blocked)",
+        1.0,
+    ),
 )
 
 TASKS_V9: tuple[TaskSpec, ...] = TASKS_V8 + NEW_TASKS_V9
@@ -117,7 +133,12 @@ TASKS_V9: tuple[TaskSpec, ...] = TASKS_V8 + NEW_TASKS_V9
 #: runs on both lanes and ``lisp_read_tier`` is the live lane's own task
 #: (headless: ``environment_blocked``), so neither is listed here.
 HEADLESS_ONLY_V9: frozenset[str] = frozenset(
-    {"dimension_lie_detect", "layer_cleanup_budget", "call_count_dimension_part"}
+    {
+        "dimension_lie_detect",
+        "layer_cleanup_budget",
+        "call_count_dimension_part",
+        "dwg_headless_roundtrip",
+    }
 )
 
 #: Runner-selectable task sets: every earlier matrix plus v9. One registry: v9

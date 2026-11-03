@@ -1819,7 +1819,7 @@
       "name": "drawing_open",
       "group": "drawing",
       "cost": "mutate",
-      "summary": "Load an existing DXF from disk (DWG only on the live AutoCAD backend).",
+      "summary": "Load an existing DXF or DWG from disk (headless DWG via a converter).",
       "acad": [
         "OPEN"
       ],

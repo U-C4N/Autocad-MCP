@@ -42,11 +42,10 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 from fastmcp import Client
-from fastmcp.exceptions import ToolError
 from fastmcp.server.transforms import Transform
 
 import server
-from backends.base import CapabilityMap, FeatureCapability
+from backends.base import CapabilityMap, FeatureCapability, UnsupportedCapabilityError
 from discovery.aliases import aliases_for
 from discovery.serialize import MAX_SUMMARY_CHARS
 
@@ -201,14 +200,19 @@ async def test_drawing_open_refuses_a_dwg_the_backend_cannot_read(backend, tmp_p
     file (exactly what pre-1.5.0 drawing_save produced) and the tool then
     answers ``{"ok": True, "name": "part.dwg"}`` — a document that does not
     exist in that format.
+
+    K1 (1.8.0): with no DWG converter (conftest switches accoreconsole off,
+    and no ODA File Converter is installed) it is a ``dwg_read`` capability
+    refusal - the typed boundary, not a ToolError sentence.
     """
     dxf = await _saved_dxf(backend, tmp_path)
     disguised = tmp_path / "part.dwg"
     shutil.copy(dxf, disguised)
 
-    with pytest.raises(ToolError) as excinfo:
+    with pytest.raises(UnsupportedCapabilityError) as excinfo:
         await server.drawing_open(str(disguised), ctx=_Ctx(backend))
 
+    assert excinfo.value.capability == "dwg_read"
     message = str(excinfo.value).lower()
     assert "dwg" in message
     # Blames the backend's missing capability and names the escape hatch,
@@ -221,7 +225,7 @@ async def test_drawing_open_refuses_a_real_dwg_without_leaking_a_parser_error(ba
     real_dwg = tmp_path / "real.dwg"
     real_dwg.write_bytes(b"AC1032" + b"\x00" * 256)
 
-    with pytest.raises(ToolError) as excinfo:
+    with pytest.raises(UnsupportedCapabilityError) as excinfo:
         await server.drawing_open(str(real_dwg), ctx=_Ctx(backend))
 
     assert "is not a DXF file" not in str(excinfo.value)
@@ -234,7 +238,7 @@ async def test_drawing_open_refusal_leaves_the_current_document_untouched(backen
 
     disguised = tmp_path / "other.dwg"
     shutil.copy(dxf, disguised)
-    with pytest.raises(ToolError):
+    with pytest.raises(UnsupportedCapabilityError):
         await server.drawing_open(str(disguised), ctx=ctx)
 
     info = await backend.drawing_info()

@@ -2254,3 +2254,100 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
             },
             [],
         )
+
+    async def _task_dwg_headless_roundtrip(self):
+        """A DWG opened headlessly through a converter, saved as DXF (K1).
+
+        The DWG is the bundled ``templates/iso_a3_mech.dwt`` under a ``.dwg``
+        name (a DWT is a DWG container); the truth is the template's DXF twin,
+        read with ezdxf directly. Through the real server: ``drawing_open`` on
+        the DWG, ``drawing_save_as`` to a DXF, and that file must hold the
+        twin's layers, block names and per-layout entity counts. The
+        broken-input twin runs first: with the converters switched off
+        (``ACCORECONSOLE_PATH=off``, the ODA probe answering no) the same open
+        is refused ``unsupported`` / capability ``dwg_read`` and the open
+        document is unchanged. A machine with no converter at all is
+        ``environment_blocked``, never a pass.
+        """
+        import os
+        import shutil
+
+        import ezdxf
+
+        from backends import ezdxf_backend
+
+        def counts(doc) -> dict:
+            return {
+                "layers": sorted(layer.dxf.name for layer in doc.layers),
+                "blocks": sorted(block.name for block in doc.blocks),
+                "entities": {layout.name: len(layout) for layout in doc.layouts},
+            }
+
+        templates = Path(__file__).resolve().parents[2] / "templates"
+        work = self.artifact_dir / "dwg_headless_roundtrip"
+        work.mkdir(parents=True, exist_ok=True)
+        dwg = work / "iso_a3_mech.dwg"
+        shutil.copyfile(templates / "iso_a3_mech.dwt", dwg)
+        truth = counts(ezdxf.readfile(templates / "iso_a3_mech.dxf"))
+
+        saved_path = os.environ.get("ACCORECONSOLE_PATH")
+        saved_probe = ezdxf_backend._odafc_available
+        os.environ["ACCORECONSOLE_PATH"] = "off"
+        ezdxf_backend._odafc_available = lambda: False
+        try:
+            async with self._served() as client:
+                before = (await client.call_tool("drawing_info", {})).structured_content
+                refused = await client.call_tool(
+                    "drawing_open", {"path": str(dwg)}, raise_on_error=False
+                )
+                after = (await client.call_tool("drawing_info", {})).structured_content
+        finally:
+            ezdxf_backend._odafc_available = saved_probe
+            if saved_path is None:
+                os.environ.pop("ACCORECONSOLE_PATH", None)
+            else:
+                os.environ["ACCORECONSOLE_PATH"] = saved_path
+        twin = refused.structured_content or {}
+        twin_ok = (
+            refused.is_error
+            and twin.get("kind") == "unsupported"
+            and twin.get("capability") == "dwg_read"
+            and (before.get("name"), before.get("revision"))
+            == (after.get("name"), after.get("revision"))
+        )
+        metrics: dict = {
+            "twin": {k: twin.get(k) for k in ("kind", "capability")},
+            "twin_ok": twin_ok,
+        }
+        route = self.backend.capabilities().features.get("dwg_read")
+        metrics["route"] = route.mode if route is not None else None
+        if route is None or not route.supported:
+            return TaskResult(
+                "dwg_headless_roundtrip",
+                "environment_blocked",
+                0.0,
+                "no DWG converter on this machine (ODA File Converter or accoreconsole)",
+                metrics=metrics,
+            )
+        target = work / "roundtrip.dxf"
+        async with self._served() as client:
+            opened = await client.call_tool(
+                "drawing_open", {"path": str(dwg)}, raise_on_error=False
+            )
+            saved = await client.call_tool(
+                "drawing_save_as", {"path": str(target)}, raise_on_error=False
+            )
+        report = (opened.structured_content or {}).get("dwg_read") or {}
+        metrics["dwg_read"] = {
+            k: report.get(k) for k in ("route", "seconds", "exit_code", "dxf_version")
+        }
+        if opened.is_error or saved.is_error or not target.is_file():
+            metrics["error"] = (opened.structured_content or saved.structured_content or {}).get(
+                "message"
+            )
+            return False, metrics, []
+        observed = counts(ezdxf.readfile(target))
+        metrics["equal"] = {key: observed[key] == truth[key] for key in truth}
+        metrics["entities"] = observed["entities"]
+        passed = twin_ok and all(metrics["equal"].values())
+        return passed, metrics, [str(target)]
