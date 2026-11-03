@@ -9,6 +9,7 @@ import logging
 import os
 import re
 from pathlib import Path
+from typing import NamedTuple
 
 from fastmcp.exceptions import ToolError
 
@@ -51,6 +52,17 @@ class CommandRefusedError(ToolError):
         self.symbols = [str(s) for s in symbols]
         self.channel = channel
         self.alternatives: list[dict] = []
+
+    @property
+    def alternative_verbs(self) -> list[str]:
+        """The command verbs whose typed tools fill ``alternatives``: ``verbs``
+        here; a LISP refusal adds the verbs its symbols map to (1.8-18)."""
+        return list(self.verbs)
+
+    def fields(self) -> dict:
+        """The refusal's own envelope fields beyond channel / verbs / symbols
+        (1.8-18: ``security_lisp.LispPolicyRefusedError``'s location)."""
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -479,11 +491,54 @@ def sanitize_command(command: str) -> str:
     return command
 
 
+class DenylistHit(NamedTuple):
+    """One match of the 1.7 LISP denylist: ``symbol`` (lower-cased; the
+    ``command`` of a ``(quote command`` match), its span in the expression and
+    the ``raw`` lower-cased match 1.7 reported in ``symbols``."""
+
+    symbol: str
+    start: int
+    end: int
+    raw: str
+
+
+_QUOTED_COMMAND = re.compile(r"command", re.IGNORECASE)
+
+
+def lisp_denylist_matches(expression: str) -> list[DenylistHit]:
+    """Every match of the 1.7 denylist, in order, string literals blanked.
+
+    The literals are blanked to spaces of the same length (1.7 blanked them to
+    ``""``; neither spelling holds a word character, so the matches are the
+    same) so a match's span is its span in ``expression``.
+    """
+    code_only = _LISP_STRING_LITERAL.sub(
+        lambda m: '"' + " " * (len(m.group(0)) - 2) + '"', expression or ""
+    )
+    hits: list[DenylistHit] = []
+    for match in _DANGEROUS_LISP_PATTERN.finditer(code_only):
+        raw = match.group(0).lower()
+        start, end = match.start(), match.end()
+        if raw.startswith("("):
+            inner = _QUOTED_COMMAND.search(raw)
+            if inner is not None:
+                start, end = match.start() + inner.start(), match.start() + inner.end()
+        hits.append(DenylistHit(code_only[start:end].lower(), start, end, raw))
+    return hits
+
+
 def sanitize_lisp(expression: str) -> str:
     """Validate an AutoLISP expression for safety.
 
     Raises ToolError if a dangerous LISP function is detected
     (unless DANGEROUS_COMMANDS_ENABLED is true).
+
+    1.8-18: under ``LISP_POLICY`` (``config.settings.lisp_policy``) -
+    ``read`` (default) runs what passes the read tier of ``security_lisp`` and
+    sends everything else to the 1.7 denylist unchanged; ``denylist`` is 1.7's
+    behaviour; ``off`` checks nothing. A refusal is
+    ``security_lisp.LispPolicyRefusedError`` (a ``CommandRefusedError``) with
+    the symbol, line and column.
     """
     if not expression or not expression.strip():
         raise ToolError("LISP expression cannot be empty.")
@@ -494,24 +549,11 @@ def sanitize_lisp(expression: str) -> str:
         )
         return expression
 
-    # Blank the literals, then scan. The ORIGINAL expression is returned:
-    # this decides whether to run it, it does not rewrite it.
-    code_only = _LISP_STRING_LITERAL.sub('""', expression)
-    if _DANGEROUS_LISP_PATTERN.search(code_only):
-        log.warning("Blocked dangerous LISP expression: %s", expression[:120])
-        symbols = sorted(
-            {match.group(0).lower() for match in _DANGEROUS_LISP_PATTERN.finditer(code_only)}
-        )
-        raise CommandRefusedError(
-            "LISP expression rejected: contains a restricted function. "
-            "Restricted functions include startapp, command, load, eval, file I/O, etc. "
-            "Set DANGEROUS_COMMANDS_ENABLED=true to allow all LISP expressions.",
-            verbs=lisp_command_verbs(expression),
-            symbols=symbols,
-            channel="lisp",
-        )
+    # Decides whether to run it, never rewrites it: the ORIGINAL expression is
+    # returned. String literals are data to both the reader and the denylist.
+    from security_lisp import check_expression
 
-    return expression
+    return check_expression(expression, getattr(config.settings, "lisp_policy", "read"))
 
 
 #: ``(command "_.ERASE" ...)`` / ``(command-s ...)`` / ``(vl-cmdf ...)``: the

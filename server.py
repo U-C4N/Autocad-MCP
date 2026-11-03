@@ -4710,7 +4710,7 @@ async def _escape_hatch_refusal(name, args: dict) -> CommandRefusedError | None:
     try:
         sanitizer(value)
     except CommandRefusedError as exc:
-        exc.alternatives = await _command_alternatives(exc.verbs)
+        exc.alternatives = await _command_alternatives(exc.alternative_verbs)
         return exc
     except Exception:  # anything else is the denial's business, not a policy kind
         return None
@@ -6665,26 +6665,43 @@ async def _command_alternatives(verbs) -> list[dict]:
     tags={"system"},
 )
 async def system_run_lisp(
-    expression: Annotated[str, 'AutoLISP expression to evaluate (e.g. \'(command "ZOOM" "E")\')'],
+    expression: Annotated[
+        str,
+        "AutoLISP expression to evaluate "
+        "(e.g. '(vla-get-Area (vlax-ename->vla-object (handent \"2A\")))')",
+    ],
     ctx: Context = None,
 ) -> dict:
     """Execute an AutoLISP expression (COM backend only).
 
-    Example: '(setvar \"DIMSCALE\" 1.0)'
+    Example: '(vla-get-Area (vlax-ename->vla-object (handent "2A")))'
 
-    A symbol denylist refuses the known code-execution and file-I/O channels;
-    text inside double quotes is treated as data, so drawing notes are not
-    mistaken for code. It is a guardrail, NOT a security boundary — AutoLISP has
-    more write channels than any denylist enumerates. Prefer the typed tools.
+    LISP_POLICY=read (default) reads the expression and runs what passes the
+    read tier: arithmetic and geometry (angle, distance, polar, inters, trans),
+    lists and control (car/cdr, cons, list, mapcar, foreach, if, cond, progn,
+    lambda, setq), strings (strcat, substr, rtos, vl-string-*) and database
+    reads (entget, entnext, entlast, handent, tblsearch, getvar, dictsearch,
+    ssget with a literal "_X"/"_W"/"_C"/"_CP" mode, vlax-ename->vla-object,
+    vla-get-*, vlax-get-property, vlax-curve-get*). Never run, under any tier:
+    getpoint and the other interactive get*/entsel/ssget forms (they hold
+    AutoCAD's only COM thread), load/autoload/arxload, startapp, dos_*,
+    vl-file-*, read, a non-literal eval/apply, vlax-create-object,
+    vla-SendCommand, vlr-*, defun, c:*, and unreadable or unbalanced text.
+    Anything else (command, entmod, setvar, vla-put-* ...) goes to the 1.7
+    symbol denylist unchanged; LISP_POLICY=denylist is 1.7's behaviour. A
+    guardrail, NOT a security boundary. Prefer the typed tools.
 
-    A refused expression is error kind `policy_refused` with `symbols` (the
-    restricted ones found), `verbs` (the commands its `(command "...")` forms
+    A refused expression is error kind `policy_refused` with policy
+    `lisp_allowlist` (`lisp_denylist` under LISP_POLICY=denylist), `symbol`,
+    `line`, `column`, `tier_needed` (`write`, `none`, `unclassified`; `read`
+    when only LISP_POLICY=denylist refused it),
+    `reason`, `symbols`, `verbs` (the commands its `(command "...")` forms
     name) and `alternatives` ([{tool, summary}], the typed tools for them).
     """
     try:
         sanitize_lisp(expression)
     except CommandRefusedError as exc:
-        exc.alternatives = await _command_alternatives(exc.verbs)
+        exc.alternatives = await _command_alternatives(exc.alternative_verbs)
         raise
     await ctx.warning(f"Running LISP: {expression[:80]}")
     return await _backend(ctx).system_run_lisp(expression)

@@ -15,6 +15,27 @@ DEFAULT_MAX_DXF_BYTES = 512 * 1024 * 1024
 #: Default ``MAX_HTTP_BODY_BYTES``: 8 MiB (1.8-17).
 DEFAULT_MAX_HTTP_BODY_BYTES = 8 * 1024 * 1024
 
+#: ``LISP_POLICY`` values (1.8-18, ``security_lisp.py``); the first is the default.
+LISP_POLICIES: tuple[str, ...] = ("read", "denylist", "off")
+
+
+def parse_lisp_policy(raw: str | None) -> str:
+    """A ``LISP_POLICY`` value; an unknown one falls back to ``read`` with a warning."""
+    value = str(raw or "").strip().lower()
+    if not value:
+        return LISP_POLICIES[0]
+    if value not in LISP_POLICIES:
+        import logging
+
+        logging.getLogger("autocad_mcp.config").warning(
+            "Unknown LISP_POLICY %r - falling back to %r. Valid values: %s.",
+            raw,
+            LISP_POLICIES[0],
+            ", ".join(LISP_POLICIES),
+        )
+        return LISP_POLICIES[0]
+    return value
+
 
 class Settings:
     """Server configuration loaded from environment variables."""
@@ -154,6 +175,12 @@ class Settings:
         self.tool_allowlist: tuple[str, ...] = parse_patterns(os.environ.get("TOOL_ALLOWLIST"))
         self.tool_denylist: tuple[str, ...] = parse_patterns(os.environ.get("TOOL_DENYLIST"))
         self.max_tool_cost: str = parse_cost(os.environ.get("MAX_TOOL_COST"))
+
+        # 1.8-18 (security_lisp.py): how system_run_lisp checks an expression.
+        # "read" (default) runs what passes the AutoLISP read tier and sends the
+        # rest to the 1.7 denylist unchanged; "denylist" is 1.7's behaviour;
+        # "off" checks nothing. An unknown value falls back to "read".
+        self.lisp_policy: str = parse_lisp_policy(os.environ.get("LISP_POLICY"))
 
         # 1.8-17 (http_guard.py): the HTTP transport's request guard. A request
         # carrying an Origin header must name one of HTTP_ALLOWED_ORIGINS

@@ -699,6 +699,9 @@ def classify(exc: BaseException) -> dict:
         }
         if refused.symbols:
             row["symbols"] = list(refused.symbols)
+        # 1.8-18: a LISP_POLICY refusal says where - policy, symbol, line,
+        # column, tier_needed, reason.
+        row.update(refused.fields())
         return row
     for typed in (PathRefusedError, ApplicationBusyError, EntityNotFoundError, InvalidArgsError):
         found = _first_of(exc, typed)

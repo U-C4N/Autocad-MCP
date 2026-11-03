@@ -5,7 +5,7 @@ WORKDIR /app
 RUN useradd --create-home --shell /bin/bash mcp
 
 COPY pyproject.toml README.md LICENSE ./
-COPY server.py config.py security.py policy.py http_guard.py version.py ./
+COPY server.py config.py security.py security_lisp.py policy.py http_guard.py version.py ./
 COPY backends/ ./backends/
 COPY engineering/ ./engineering/
 COPY discovery/ ./discovery/
