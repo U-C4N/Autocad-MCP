@@ -9,6 +9,14 @@ until plan item 1.8-25 publishes the v9 matrix.
   the entity count unchanged; the broken-input twin sends the write through the
   search proxy (``call_tool("entity_create_line")``) and must be refused
   ``policy_refused`` the same way.
+* ``lisp_read_tier`` (1.8-18, security) - three AutoLISP reads run on the
+  first try through ``system_run_lisp`` (a circle's ``vla-get-Area`` equal to
+  ``analysis_measure_entity``, ``getvar "CLAYER"`` equal to
+  ``system_get_variable``, ``(mapcar (function (lambda ...)))``); the
+  broken-input twin ``(command "_ERASE" "_L" "")`` is refused with symbol,
+  line and the typed ``alternatives``. The reads need AutoCAD, so the headless
+  lane is ``environment_blocked`` (never a pass); it still records the policy's
+  verdicts in its metrics.
 """
 
 from __future__ import annotations
@@ -40,6 +48,14 @@ NEW_TASKS_V9: tuple[TaskSpec, ...] = (
         "security",
         "Under READ_ONLY, refuse a one-create-step batch before step 1 with the revision "
         "unchanged, and refuse the same write sent through the search proxy's call_tool",
+        1.0,
+    ),
+    TaskSpec(
+        "lisp_read_tier",
+        "security",
+        "Run three AutoLISP reads (vla-get-Area, getvar, a mapcar over a lambda) on the "
+        'first try, and refuse (command "_ERASE" ...) naming symbol, line and the typed '
+        "alternatives; live engine only (headless: environment_blocked)",
         1.0,
     ),
 )
