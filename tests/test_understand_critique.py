@@ -198,8 +198,12 @@ async def test_the_three_focuses_share_one_index_per_run(backend, pipe_layer):
     for focus in TOPO_FOCUSES:
         await TOPO_DISPATCH[focus](backend, shared)
     # One QA snapshot and one index for the three focuses (the snapshot is
-    # the run's, shared with the base checks and the validator).
-    assert list(shared) == ["qa_snapshot", "topo_index"]
+    # the run's, shared with the base checks and the validator) - and, since
+    # 1.8-16, the run's coverage ledger with one row per focus.
+    from engineering.qa_coverage import LEDGER_KEY
+
+    assert [key for key in shared if key != LEDGER_KEY] == ["qa_snapshot", "topo_index"]
+    assert sorted(r.focus for r in shared[LEDGER_KEY].rows) == sorted(TOPO_FOCUSES)
 
 
 async def test_run_critique_reaches_the_topo_focuses(backend, pipe_layer):

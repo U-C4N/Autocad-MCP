@@ -2227,6 +2227,74 @@ async def region_render_applied():
     return _region_report(shot, requested) and _region_report(zoomed, requested)
 
 
+async def qa_coverage_not_checked():
+    """A lane the critique did not check is named, never read as clean (1.8-16).
+
+    A drawing with a frame line on ``Layout1`` and no viewport onto the model:
+    ``drawing_critique(report=True)`` must report the paper layout's
+    dimension-legibility lane ``not_checked`` with reason ``no_viewport_scale``
+    and ``coverage.complete`` false; ``drawing_finalize`` must pass and carry
+    the same row in ``qa_coverage``; ``strict_critique=True`` must fail
+    ``critique_gate_failed`` with a blocking row of code ``not_checked`` naming
+    it. 1.7.0 returned a bare list in which "nothing found" and "nothing
+    looked" read the same, and had no ``report`` argument at all.
+    """
+    want = {"focus": "iso128", "layout": "Layout1", "reason": "no_viewport_scale"}
+    out = tempfile.mkdtemp(prefix="acadmcp_cov_")
+    try:
+        async with _served_headless() as client:
+            await client.call_tool("drawing_new", {})
+            await client.call_tool(
+                "entity_create_line", {"x1": 0, "y1": 0, "x2": 50, "y2": 0, "layer": "GEOMETRY"}
+            )
+            await client.call_tool("layout_set_current", {"name": "Layout1"})
+            await client.call_tool(
+                "entity_create_line",
+                {"x1": 0, "y1": 0, "x2": 420, "y2": 0, "layer": "TITLEBLOCK"},
+            )
+            await client.call_tool("layout_set_current", {"name": "Model"})
+            critique = await client.call_tool(
+                "drawing_critique", {"report": True}, raise_on_error=False
+            )
+            lenient = await client.call_tool(
+                "drawing_finalize",
+                {"save_path": os.path.join(out, "a.dxf")},
+                raise_on_error=False,
+            )
+            strict = await client.call_tool(
+                "drawing_finalize",
+                {"save_path": os.path.join(out, "b.dxf"), "strict_critique": True},
+                raise_on_error=False,
+            )
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
+    if critique.is_error or lenient.is_error or not strict.is_error:
+        return False
+    reported = critique.structured_content or {}
+    reported = reported.get("result", reported)
+    coverage = reported.get("coverage") or {}
+    layouts = {entry.get("layout"): entry for entry in coverage.get("layouts") or []}
+    named = any(
+        row.get("focus") == "iso128" and row.get("reason") == "no_viewport_scale"
+        for row in (layouts.get("Layout1") or {}).get("not_checked") or []
+    )
+    qa_coverage = (lenient.structured_content or {}).get("qa_coverage") or {}
+    carried = [{key: row.get(key) for key in want} for row in qa_coverage.get("not_checked") or []]
+    gate = strict.structured_content or {}
+    blocked = [
+        {key: row.get(key) for key in want}
+        for row in gate.get("blocking") or []
+        if row.get("code") == "not_checked"
+    ]
+    return (
+        coverage.get("complete") is False
+        and named
+        and want in carried
+        and gate.get("kind") == "critique_gate_failed"
+        and want in blocked
+    )
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -2310,6 +2378,7 @@ CHECKS = {
     "atomic_save_untouched_on_failure": (atomic_save_untouched_on_failure, "Durability"),
     "lineage_revision_continues": (lineage_revision_continues, "Durability"),
     "region_render_applied": (region_render_applied, "Render"),
+    "qa_coverage_not_checked": (qa_coverage_not_checked, "Quality gate"),
 }
 
 

@@ -242,7 +242,11 @@ async def test_the_dispatch_entries_share_one_index_per_run(backend):
         check = MECH_DISPATCH[focus]
         assert check.needs_shared is True
         await check(backend, shared)
-    assert list(shared) == ["mech_index"]
+    # 1.8-16: beside the one index, the run's coverage ledger - one row per focus.
+    from engineering.qa_coverage import LEDGER_KEY
+
+    assert [key for key in shared if key != LEDGER_KEY] == ["mech_index"]
+    assert sorted(r.focus for r in shared[LEDGER_KEY].rows) == sorted(MECH_FOCUSES)
 
 
 # ── the payloads the real writers put on the drawing ────────────────────────

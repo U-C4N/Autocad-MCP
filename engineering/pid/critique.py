@@ -24,6 +24,7 @@ import math
 from typing import TYPE_CHECKING
 
 from engineering.plan_spec import Issue
+from engineering.qa_coverage import domain_row
 from engineering.qa_scan import qa_snapshot, shared_index
 
 from .graph import NO_LOOP_NOTE, build_graph
@@ -375,6 +376,8 @@ def _make(focus: str):
             return await _critique_graph(b, shared)
 
         graph = await shared_index(shared, _KEY, build, backend)
+        present = has_pid_content(graph)
+        domain_row(shared, focus, present=present, n=len(_scored_nodes(graph)) if present else 0)
         return issues_for(focus, graph)
 
     check.needs_shared = True  # type: ignore[attr-defined]

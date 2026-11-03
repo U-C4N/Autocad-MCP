@@ -37,6 +37,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from engineering.plan_spec import Issue
+from engineering.qa_coverage import domain_row
 from engineering.qa_scan import shared_index
 
 from .layers import ARCH_ROLE_LAYER
@@ -355,6 +356,8 @@ def issues_for(focus: str, index: dict) -> list[Issue]:
 def _make(focus: str):
     async def check(backend: AutoCADBackend, shared: dict) -> list[Issue]:
         index = await shared_index(shared, _KEY, build_index, backend)
+        records = sum(len(index[b]) for b in ("walls", "openings", "stairs", "rooms"))
+        domain_row(shared, focus, present=has_arch_content(index), n=records)
         return issues_for(focus, index)
 
     check.needs_shared = True  # type: ignore[attr-defined]

@@ -368,14 +368,18 @@ def gate_failure_payload(
     other=(),
     qa_coverage: dict | None = None,
     detail: str = "summary",
+    not_checked=(),
 ) -> dict:
     """The ``GateFailure`` payload: ``{kind, score, blocking, blocking_count, qa_coverage}``.
 
     ``findings`` are the validator's blocking ``ValidationFinding`` rows,
-    ``issues`` the critique's blocking ``Issue`` rows, ``other`` any further
-    ``(code, message)`` reasons (a delivery's parity, score or export) and
-    ``requirements`` the acceptance report's blocking strings - every reason, in
-    that order, whichever gate failed first. ``detail="full"`` keeps every row and every
+    ``issues`` the critique's blocking ``Issue`` rows, ``not_checked`` the
+    coverage rows a ``strict_critique`` gate fails on (1.8-16:
+    ``engineering/qa_coverage.py``; each becomes a row with code
+    ``not_checked`` and its ``focus``, ``layout`` and ``reason``), ``other``
+    any further ``(code, message)`` reasons (a delivery's parity, score or
+    export) and ``requirements`` the acceptance report's blocking strings -
+    every reason, in that order, whichever gate failed first. ``detail="full"`` keeps every row and every
     handle; the default keeps the first :data:`GATE_BLOCKING_ROWS` rows with
     :data:`GATE_HANDLES_PER_ROW` handles each (``handle_count`` says how many).
     """
@@ -392,6 +396,17 @@ def gate_failure_payload(
         rows.append(
             _gate_row(code or issue.focus, issue.severity, issue.handles, issue.message, full)
         )
+    for lane in not_checked:
+        row = _gate_row(
+            "not_checked",
+            "error",
+            (),
+            f"{lane.focus} was not checked on {lane.layout}: {lane.reason} "
+            "(strict_critique fails on every lane not checked but domain_absent)",
+            full,
+        )
+        row.update(focus=lane.focus, layout=lane.layout, reason=lane.reason)
+        rows.append(row)
     for code, text in other:
         rows.append(_gate_row(code, "error", (), text, full))
     for text in requirements:

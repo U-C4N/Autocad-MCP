@@ -141,6 +141,10 @@ class EntityRecord:
     #: stays the MINSERT's own placement - cell (0, 0) - so a 1.6 reader sees
     #: what it always saw; empty for a plain INSERT.
     cells: tuple = ()
+    #: VIEWPORT (1.8-16): True for a paper layout's own paper viewport - the one
+    #: ezdxf's ``main_viewport()`` returns (status 1, else id 1) - which shows
+    #: the sheet, not the model. False for every other record.
+    paper_viewport: bool = False
     #: Every ``ACADMCP_*`` application on the entity, as ``(app id, json)``.
     xdata: tuple[tuple[str, str], ...] = ()
     #: v1.8.0: the entity's own display properties as DXF stores them, so the
@@ -368,7 +372,20 @@ def _record(entity, space: str, *, insert_boxes: bool = True) -> EntityRecord | 
             hatch_loops=loops,
             hatch_style=int(dxf.get("hatch_style", 0) or 0),
         )
+    if kind == "VIEWPORT":
+        return EntityRecord(**base, paper_viewport=_is_paper_viewport(entity))
     return EntityRecord(**base)
+
+
+def _is_paper_viewport(viewport) -> bool:
+    """The layout's own viewport, asked of the layout the way
+    ``EzdxfBackend._is_main_viewport`` asks it (status 1 first, then id 1)."""
+    try:
+        layout = viewport.get_layout()
+        main = layout.main_viewport() if layout is not None else None
+    except Exception:  # noqa: BLE001 - a viewport without a layout shows no sheet
+        return False
+    return main is not None and main.dxf.handle == viewport.dxf.handle
 
 
 def _insert_transform(entity) -> tuple[float, float, float, float, float, float]:

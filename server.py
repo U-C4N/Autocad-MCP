@@ -5956,6 +5956,18 @@ async def validation_check(
     checks: Annotated[
         list[str], "List of checks: empty_layers, zero_length, duplicate_entities"
     ] = None,
+    summary: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="Return {total, by_focus, by_severity, issues[:limit]} with compact "
+            "rows (5 unless limit says otherwise); by_focus counts per check.",
+        ),
+    ] = False,
+    limit: Annotated[
+        int | None,
+        Field(default=None, ge=0, description="Keep this many issues; the counts stay complete."),
+    ] = None,
     ctx: Context = None,
 ) -> dict:
     """Run quality checks on the current drawing.
@@ -5964,6 +5976,9 @@ async def validation_check(
     - empty_layers: Find layers with no entities
     - zero_length: Find zero-length lines
     - duplicate_entities: Find entities at the same position
+
+    With summary=True or a limit the result also carries total, by_focus (per check)
+    and by_severity over every issue, and `issues` keeps only the first `limit`.
     """
     if checks is None:
         checks = ["empty_layers", "zero_length"]
@@ -6007,6 +6022,11 @@ async def validation_check(
                         }
                     )
 
+    if summary or limit is not None:
+        from engineering.qa_coverage import summarize
+
+        compact = summarize(issues, summary=summary, limit=limit, key="check")
+        return {"ok": len(issues) == 0, **compact, "checks_run": checks}
     return {
         "ok": len(issues) == 0,
         "total_issues": len(issues),
@@ -6913,8 +6933,10 @@ async def drawing_finalize(
         Field(
             default=False,
             description="If true, ANY critique issue (including warnings) fails the gate — the full "
-            "premium discipline. Default false: only critique 'error' issues (e.g. leftover "
-            "construction geometry) fail; warnings are surfaced in the payload.",
+            "premium discipline — and so does every lane the critique could not check "
+            "(qa_coverage.not_checked; domain_absent excepted). Default false: only critique "
+            "'error' issues (e.g. leftover construction geometry) fail; warnings and "
+            "qa_coverage are surfaced in the payload.",
         ),
     ] = False,
     requirements: Annotated[
@@ -6957,9 +6979,16 @@ async def drawing_finalize(
     detail.code `scan_incomplete`, so the gate fails. A check that raises is an `error`
     issue with detail.code `check_failed`, never a clean result.
 
+    The payload's `qa_coverage` says what the critique did not check: {complete, records,
+    spaces, reason, not_checked: [{focus, layout, reason, lane}], domain_absent: [focus]}
+    (reasons: autocad://critique/focuses) - e.g. a paper layout without a model viewport is
+    `no_viewport_scale`, the live engine's dimension-legibility lane
+    `engine_live_document_template`.
+
     Fails (error kind validation_failed / critique_gate_failed / failed_acceptance) if any
     validator 'error' finding is present, or if critique reports an 'error' (or, with
-    strict_critique=True, any critique issue); the error carries what the gate computed -
+    strict_critique=True, any critique issue or any not_checked lane but domain_absent,
+    each a blocking row with code `not_checked`); the error carries what the gate computed -
     score, blocking [{code, severity, handles, message}], blocking_count, qa_coverage - and
     detail="full" adds every row and the whole report. Critique warnings are surfaced
     under payload['critique'] without failing the gate by default. A quarantined document
@@ -7027,6 +7056,11 @@ async def drawing_finalize(
         crit_summary[issue.severity] = crit_summary.get(issue.severity, 0) + 1
     payload["critique"] = [issue.to_dict() for issue in critique_issues]
     payload["critique_summary"] = crit_summary
+    # 1.8-16: what the critique did NOT check (blocking rows + domain_absent names).
+    from engineering.qa_coverage import LEDGER_KEY, blocking_rows, qa_coverage_of
+
+    payload["qa_coverage"] = qa_coverage_of(qa_shared)
+    unchecked = blocking_rows(qa_shared.get(LEDGER_KEY)) if strict_critique else []
 
     # I4 — a single regression-trackable scalar over the union of the structural
     # validator and the premium critique (MUSE/CadBench grade an Invalidity Ratio,
@@ -7097,17 +7131,15 @@ async def drawing_finalize(
         # 1.8-02: what the gate computed travels with the refusal (every
         # blocking reason, whichever gate failed first), so a failed finalize
         # needs no second QA read; detail="full" adds the whole report.
-        from engineering.qa_scan import QA_SNAPSHOT_KEY
-
-        coverage = (qa_shared.get(QA_SNAPSHOT_KEY) or (None, None))[1]
         gate = gate_failure_payload(
             kind,
             score=payload["score"],
             findings=validator_blocking,
             issues=gate_failures,
             requirements=blocking,
-            qa_coverage=coverage.to_dict() if coverage is not None else None,
+            qa_coverage=payload["qa_coverage"],
             detail=detail,
+            not_checked=unchecked,
         )
         if detail == "full":
             gate["report"] = payload
@@ -7126,6 +7158,13 @@ async def drawing_finalize(
             "critique_gate_failed",
             f"drawing_finalize: critique gate failed with {len(gate_failures)} blocking issue(s). "
             f"First: {first.focus}: {first.message}",
+        )
+    if unchecked:
+        lane = unchecked[0]
+        raise _gate(
+            "critique_gate_failed",
+            f"drawing_finalize: critique gate failed: strict_critique and {len(unchecked)} "
+            f"lane(s) not checked. First: {lane.focus} on {lane.layout}: {lane.reason}",
         )
     if blocking:
         report = payload["geometry_acceptance"]
@@ -7166,7 +7205,11 @@ async def drawing_deliver(
     ] = 95.0,
     strict_critique: Annotated[
         bool,
-        Field(default=True, description="Block delivery on every non-info critique issue."),
+        Field(
+            default=True,
+            description="Block delivery on every non-info critique issue and on every lane "
+            "the critique did not check (qa_coverage.not_checked; domain_absent excepted).",
+        ),
     ] = True,
     expected: Annotated[
         dict | None,
@@ -7217,7 +7260,8 @@ async def drawing_deliver(
 
     A ``failed_validation`` / ``failed_acceptance`` result carries ``gate_failure``,
     drawing_finalize's gate payload (kind, score, blocking rows with handles,
-    blocking_count, qa_coverage).
+    blocking_count, qa_coverage). Every result and the manifest carry ``qa_coverage``:
+    the lanes the critique did not check, as drawing_finalize reports them.
     """
     from engineering import deliver_drawing
     from engineering.errors import InvalidArgsError
@@ -7415,27 +7459,43 @@ async def drawing_critique(
         list[str] | None,
         Field(
             default=None,
-            description="Subset of: iso128, layer_color, dim_overlap, untrimmed_corner, "
-            "duplicate_entities, construction_left, property_override (an entity's own "
-            "lineweight / colour / linetype instead of ByLayer), gdt, the P&ID focuses "
-            "pid_dangling_line, pid_duplicate_tag, pid_incompatible_connection, "
-            "pid_untagged_instrument, pid_illegal_tag, pid_unconnected_equipment "
-            "(silent on a drawing with no P&ID symbols), and the mechanical focuses "
-            "mech_missing_centreline, mech_unhatched_section, mech_view_misaligned, "
-            "mech_duplicate_dimension, mech_thread_unrepresented, "
-            "mech_bom_balloon_mismatch (silent on a drawing with no mechanical part), and "
-            "the architectural focuses arch_room_unlabelled, arch_wall_gap, "
-            "arch_opening_clash (silent on a drawing with no ACADMCP_ARCH record), and "
-            "the topology focuses topo_dangling_endpoint, topo_near_miss, "
-            "topo_interior_crossing (network layers no P&ID or architectural focus reads). "
-            "None = run all.",
+            description="Focus names to run, a closed set (iso128, layer_color, "
+            "construction_left, pid_*, mech_*, arch_*, topo_*, ...; every name and what it "
+            "reports: resource autocad://critique/focuses). None = run all.",
+        ),
+    ] = None,
+    report: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="Return {issues, coverage: {layouts, complete}}: per layout what was "
+            "checked and what was not, and why.",
+        ),
+    ] = False,
+    summary: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="Return {total, by_focus, by_severity, issues[:limit]} with compact "
+            "rows (5 unless limit says otherwise); total always counts every issue.",
+        ),
+    ] = False,
+    limit: Annotated[
+        int | None,
+        Field(
+            default=None,
+            ge=0,
+            description="Keep this many issues in the {total, by_focus, by_severity, issues} "
+            "form; the counts stay complete. None with summary=False = the bare list.",
         ),
     ] = None,
     ctx: Context = None,
-) -> list[dict]:
+) -> list[dict] | dict:
     """Run premium-quality checks. Returns zero issues for a clean drawing.
 
-    Standard production gate: must return [] before `drawing_finalize`.
+    Standard production gate: must return [] before `drawing_finalize`. The default
+    result is the bare list of issues; `report`, `summary` or `limit` return a dict
+    instead (a summary is a page, never the clean answer: read `total`).
 
     The entity checks (construction_left, untrimmed_corner, duplicate_entities,
     dim_overlap, property_override) read every entity of every space - model and every
@@ -7449,9 +7509,30 @@ async def drawing_critique(
     MAX_QA_ENTITIES entities, default 2,000,000; or a live export whose per-layout
     counts differ from AutoCAD's) returns detail.code `scan_incomplete`. Neither code
     is a focus name. A quarantined document is refused.
+
+    Coverage: every check writes `checked` or `not_checked` rows; with report=True a
+    lane that did not run is named with its reason (no_viewport_scale for a paper layout
+    with no model viewport, engine_live_document_template for the live engine's
+    dimension-legibility lane, domain_absent for a focus whose domain the drawing lacks).
     """
-    issues = await _backend(ctx).drawing_critique(focus)
-    return [_dc(i) for i in issues]
+    from engineering.qa_coverage import LEDGER_KEY, CoverageLedger, summarize
+    from engineering.qa_scan import QA_SNAPSHOT_KEY
+
+    shared: dict = {}
+    issues = await _backend(ctx).drawing_critique(focus, shared=shared)
+    rows = [_dc(i) for i in issues]
+    if not (report or summary or limit is not None):
+        return rows
+    out = (
+        summarize(rows, summary=summary, limit=limit)
+        if summary or limit is not None
+        else {"issues": rows}
+    )
+    if report:
+        ledger = shared.get(LEDGER_KEY) or CoverageLedger()
+        snap = (shared.get(QA_SNAPSHOT_KEY) or (None, None))[0]
+        out["coverage"] = ledger.report(snap.layouts if snap is not None else ())
+    return out
 
 
 @cad_tool(
@@ -12551,14 +12632,30 @@ async def drawing_topology_check(
         Field(default=0.01, gt=0, description="Within this distance two ends are joined."),
     ] = 0.01,
     limit: Annotated[
-        int,
-        Field(default=200, ge=1, le=5000, description="Rows kept per list; counts are complete."),
-    ] = 200,
+        int | None,
+        Field(
+            default=None,
+            ge=1,
+            le=5000,
+            description="Rows kept per list (None = 200); with summary=True, rows kept in "
+            "all (None = 5). Counts are complete.",
+        ),
+    ] = None,
+    summary: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="Return {total, by_focus (per finding kind), by_severity, "
+            "issues[:limit]} with compact rows instead of the three lists.",
+        ),
+    ] = False,
     ctx: Context = None,
 ) -> dict:
     """Topology of a line network (spec §11): dangling ends, near misses (end to end and
     end to line within `gap`) and interior crossings (two lines of one layer crossing
-    away from their ends). Never modifies the drawing.
+    away from their ends). Never modifies the drawing. summary=True returns the counts
+    over every finding and the first `limit` as compact rows (near_miss error, dangling
+    warning, crossing info - the topo_* critique severities).
 
     An end that touches another network line, any curve on another layer (a tank
     outline) or the box of any block reference (a valve, a pump) is connected. Arcs
@@ -12608,7 +12705,15 @@ async def drawing_topology_check(
         findings = topology_findings(snap, layers=chosen, gap=gap, tol=tol)
     except ValueError as exc:
         raise ToolError(str(exc)) from exc
-    report = cap_findings(findings, limit)
+    if summary:
+        from engineering.qa_coverage import summarize
+        from engineering.understand.topology import finding_rows
+
+        compact = summarize(finding_rows(findings), summary=True, limit=limit)
+        compact["source"] = snap.source
+        compact["layers"] = list(findings["layers"])
+        return compact
+    report = cap_findings(findings, 200 if limit is None else limit)
     report["source"] = snap.source
     report["classification"] = [row for row in classification if row["layer"] in set(chosen)]
     return report
@@ -13274,6 +13379,23 @@ async def resource_standards_coverage() -> str:
     from engineering.mech.standards.coverage import coverage_manifest
 
     return json.dumps(coverage_manifest(), indent=2)
+
+
+@mcp.resource(
+    "autocad://critique/focuses",
+    name="Critique Focuses",
+    description=(
+        "Every drawing_critique focus (the closed set): domain, what it reports, when it is "
+        "silent; and the not_checked reasons a coverage report can carry"
+    ),
+    mime_type="application/json",
+    annotations={"readOnlyHint": True},
+    tags={"premium", "validation"},
+)
+async def resource_critique_focuses() -> str:
+    from engineering.critique_catalog import critique_focuses
+
+    return json.dumps(critique_focuses(), indent=2)
 
 
 @mcp.resource(
