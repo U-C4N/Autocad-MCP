@@ -112,6 +112,9 @@ def test_a_bug_is_internal_but_a_library_lookup_error_is_not():
         pass
 
     assert errors.classify(LibraryKeyError("layer"))["kind"] == "failed"
+    # The server raises these on purpose to refuse a caller's argument.
+    for refusal in (TypeError("DIMTXT: expected a number"), KeyError("x1"), IndexError("0")):
+        assert errors.classify(refusal)["kind"] == "failed", refusal
     assert errors.classify(RuntimeError("Entity with handle 'X' not found."))["kind"] == (
         "failed"
     ), "typed, never read off the text"
@@ -179,18 +182,56 @@ async def test_a_provoked_error_has_one_kind_direct_and_as_a_batch_step(
     assert step["category"] == spec.category and isinstance(step["retryable"], bool)
 
 
+@pytest.mark.parametrize(
+    "tool, args, channel",
+    [
+        ("system_run_lisp", {"expression": '(command "_.ERASE" "_L" "")'}, "lisp"),
+        ("system_run_command", {"command": "_.ERASE"}, "command"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_a_refused_lisp_is_policy_refused_direct_and_denied_in_a_batch(client):
-    expression = '(command "_.ERASE" "_L" "")'
-    _, payload = await _error(client, "system_run_lisp", {"expression": expression})
+async def test_a_refused_lisp_or_command_is_policy_refused_on_both_routes(
+    client, tool, args, channel
+):
+    _, payload = await _error(client, tool, args)
     assert payload["kind"] == "policy_refused" and payload["category"] == "policy"
-    assert payload["channel"] == "lisp" and payload["verbs"] == ["ERASE"]
-    assert "command" in payload["symbols"]
-    # The escape hatches never run inside a batch: the step is denied before
-    # the denylist is even consulted.
-    assert (await _step_error(client, "system_run_lisp", {"expression": expression}))[
-        "kind"
-    ] == "denied"
+    assert payload["channel"] == channel and payload["verbs"] == ["ERASE"]
+    if channel == "lisp":
+        assert "command" in payload["symbols"]
+    step = await _step_error(client, tool, args)
+    assert step["kind"] == "policy_refused", "the direct route and the batch step must agree"
+    assert step["category"] == "policy" and step["hint"] == payload["hint"]
+    assert step["verbs"] == payload["verbs"] and step["channel"] == channel
+    assert step["alternatives"] == payload["alternatives"]
+    assert any(row["tool"] == "entity_delete" for row in step["alternatives"])
+
+
+@pytest.mark.asyncio
+async def test_an_allowed_lisp_is_still_denied_inside_a_batch(client):
+    """The escape hatches never run inside a batch; ``denied`` is for a string a
+    direct call would run, so its hint (call it directly) is true."""
+    step = await _step_error(client, "system_run_lisp", {"expression": '(setvar "LTSCALE" 2.0)'})
+    assert step["kind"] == "denied"
+
+
+@pytest.mark.parametrize(
+    "tool, args",
+    [
+        ("block_define", {"name": "B1", "entities": [{"type": "line"}]}),
+        ("dimstyle_create", {"name": "D1", "overrides": {"DIMTXT": "big"}}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_deliberate_type_error_refusal_is_never_called_a_server_bug(client, tool, args):
+    """block_specs / dimstyles refuse a wrong-typed value with TypeError: the
+    caller's argument, ``failed`` as in 1.7 - never ``internal``."""
+    _, payload = await _error(client, tool, args)
+    assert payload["kind"] == "failed", payload
+    assert payload["category"] != "internal" and "server bug" not in payload["hint"]
+    record = await _record(client, payload["operation_id"])
+    assert record["error_kind"] == "failed"
+    step = await _step_error(client, tool, args)
+    assert step["kind"] == "failed", "the direct route and the batch step must agree"
 
 
 @pytest.mark.asyncio
@@ -421,3 +462,50 @@ async def test_application_busy_reaches_the_client_retryable(com, seat, monkeypa
         assert payload["retryable"] is True and payload["backend"] == "com"
         record = await _record(connected, payload["operation_id"])
         assert (record["state"], record["error_kind"]) == ("refused", "application_busy")
+
+
+@pytest.mark.asyncio
+async def test_a_retryable_refusal_runs_again_under_the_same_operation_id(com, seat, monkeypatch):
+    """retryable: true is honoured on the idempotent route: the refusal is not
+    replayed, so the retry the envelope invites actually runs."""
+    await com.system_get_variable("LTSCALE")
+
+    async def make():
+        return com
+
+    monkeypatch.setattr(server, "_make_backend", make)
+    meta = {"operation_id": "retry-me-1"}
+    args = {"name": "LTSCALE", "value": 2.0}
+    async with Client(server.mcp) as connected:
+        seat.Documents.rejecting = True
+        first = await connected.call_tool(
+            "system_set_variable", args, raise_on_error=False, meta=meta
+        )
+        assert first.structured_content["kind"] == "application_busy"
+        assert first.structured_content["retryable"] is True
+        seat.Documents.rejecting = False  # the operator pressed ESC
+        retry = await connected.call_tool(
+            "system_set_variable", args, raise_on_error=False, meta=meta
+        )
+        assert retry.is_error is False, retry.structured_content
+        assert not (retry.structured_content or {}).get("replayed")
+        assert seat.ActiveDocument.vars["LTSCALE"] == 2.0
+        record = await _record(connected, "retry-me-1")
+        assert record["state"] == "committed"
+        # A committed answer under that id now replays, as before.
+        again = await connected.call_tool(
+            "system_set_variable", args, raise_on_error=False, meta=meta
+        )
+        assert again.structured_content.get("replayed") is True
+
+
+@pytest.mark.asyncio
+async def test_a_non_retryable_refusal_still_replays_under_its_operation_id(client):
+    meta = {"operation_id": "not-found-1"}
+    args = {"handle": "FFFFFF", "dx": 1.0, "dy": 0.0}
+    first = await client.call_tool("entity_move", args, raise_on_error=False, meta=meta)
+    assert first.structured_content["kind"] == "not_found"
+    assert first.structured_content["retryable"] is False
+    again = await client.call_tool("entity_move", args, raise_on_error=False, meta=meta)
+    assert again.structured_content["replayed"] is True
+    assert again.structured_content["retryable"] is False

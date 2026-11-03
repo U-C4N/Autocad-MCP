@@ -346,16 +346,17 @@ _quarantine_error_type: type | None = None
 
 #: Builtin exception types that mean a bug in this server, not a refusal or a
 #: failed CAD operation: a call whose innermost cause is exactly one of them is
-#: ``internal``.
+#: ``internal``. Only types the server never raises on purpose: ``TypeError``
+#: is how block_specs / xdata_specs / the style and preference whitelists refuse
+#: a caller's wrong-typed value, and ``KeyError`` / ``IndexError`` /
+#: ``ZeroDivisionError`` are what a caller's missing key, short list or
+#: degenerate geometry raises - an agent's own argument, which must never read
+#: "a server bug". Those stay ``failed``, as they were in 1.7.
 _BUG_TYPES = frozenset(
     {
         AttributeError,
         NameError,
-        KeyError,
-        IndexError,
-        TypeError,
         AssertionError,
-        ZeroDivisionError,
         RecursionError,
         UnboundLocalError,
     }

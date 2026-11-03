@@ -265,15 +265,20 @@ class AuditMiddleware(Middleware):
             raise
         except Exception as exc:
             state, kind = _exception_outcome(backend, record.operation_id, effective, exc)
+            kept = None if retryable_for(kind, state) else exc
             journal.finish(
-                record, state, result=exc, error_kind=kind, document=_identity_of(backend)
+                record, state, result=kept, error_kind=kind, document=_identity_of(backend)
             )
             raise
         finally:
             CURRENT_OPERATION.reset(token)
         state, kind = _result_outcome(effective, result, backend, record.operation_id)
         journal.finish(
-            record, state, result=result, error_kind=kind, document=_identity_of(backend)
+            record,
+            state,
+            result=None if _retryable_result(result) else result,
+            error_kind=kind,
+            document=_identity_of(backend),
         )
         return result
 
@@ -472,6 +477,19 @@ def _result_outcome(
     if payload.get("ok") is False and not _read_only_tool(tool):
         return "refused", "refused"
     return "committed", None
+
+
+def _retryable_result(result) -> bool:
+    """An error envelope that says ``retryable: true`` (1.8-02).
+
+    Its record is kept, but not its answer: nothing was written, so the same
+    request under the same client ``operation_id`` must run again rather than
+    replay a refusal that tells the client to retry.
+    """
+    if not getattr(result, "is_error", False):
+        return False
+    structured = getattr(result, "structured_content", None)
+    return isinstance(structured, dict) and structured.get("retryable") is True
 
 
 def _replayed_result(stored, operation_id: str):
@@ -4410,6 +4428,39 @@ _compact_batch_message = compact_message
 _batch_message = short_message
 
 
+#: The raw escape hatches and the string argument their own denylist checks.
+_ESCAPE_HATCH_SANITIZERS = {
+    "system_run_command": ("command", sanitize_command),
+    "system_run_lisp": ("expression", sanitize_lisp),
+}
+
+
+async def _escape_hatch_refusal(name, args: dict) -> CommandRefusedError | None:
+    """The ``CommandRefusedError`` a direct call of ``name`` with ``args`` would
+    raise, alternatives filled, or None (1.8-02).
+
+    ``cad_batch`` denies the escape hatches whatever the string; this only lets
+    a step whose string the denylist refuses carry the direct route's kind. It
+    never runs anything, and any other outcome (an allowed or empty string) is
+    None, so the step is still ``denied``.
+    """
+    spec = _ESCAPE_HATCH_SANITIZERS.get(name) if isinstance(name, str) else None
+    if spec is None:
+        return None
+    key, sanitizer = spec
+    value = args.get(key)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        sanitizer(value)
+    except CommandRefusedError as exc:
+        exc.alternatives = await _command_alternatives(exc.verbs)
+        return exc
+    except Exception:  # anything else is the denial's business, not a policy kind
+        return None
+    return None
+
+
 def _classify_batch_error(exc: BaseException) -> dict:
     """Turn an exception from a nested tool call into a typed step error."""
     return classify(exc)
@@ -5035,6 +5086,14 @@ async def cad_batch(
                 f"step {index} has unexpected key(s) {unknown_keys}; a step is "
                 "{'tool', 'args', 'bind'}",
             )
+        elif (refusal := await _escape_hatch_refusal(name, args)) is not None:
+            # 1.8-02: a command or LISP string the denylist refuses is the same
+            # policy_refused (verbs, symbols, alternatives) a direct call gets,
+            # so both routes name one kind; `denied` below is only for a string
+            # a direct call would run.
+            row["status"] = "invalid"
+            row["error"] = annotate(classify(refusal), "refused")
+            problems.append(f"step {index}: {row['error']['message']}")
         elif name in denied:
             _invalid(
                 "denied",
