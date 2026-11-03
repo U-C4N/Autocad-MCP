@@ -6000,12 +6000,33 @@ async def view_screenshot(
         "Label each entity with its handle, so what you see maps to what you "
         "can modify. Headless backend only.",
     ] = False,
+    region: Annotated[
+        list[float] | None,
+        "Optional window [x0, y0, x1, y1] in drawing units (WCS): only that part "
+        "is drawn, at a stated scale. Fewer tokens than a full sheet for a detail.",
+    ] = None,
+    max_px: Annotated[
+        int,
+        Field(description="Long side of the image in pixels (64-4096).", ge=64, le=4096),
+    ] = 1568,
     ctx: Context = None,
 ):
     """Capture a screenshot of the current drawing view.
 
     COM backend: captures live AutoCAD window at current view.
     ezdxf backend: renders via matplotlib to PNG.
+
+    With `region=[x0, y0, x1, y1]` only that window is drawn, on both engines:
+    headless it is the current space, live it is the bound document's
+    `Document.Export` snapshot drawn by the same renderer
+    (`source: "export_snapshot"`, seconds on a large drawing). Without a region
+    the headless engine frames the extents and the live one captures the
+    AutoCAD window (`source: "window"`). Beside the image comes a report:
+    `applied`, `framing`, `px` (read from the PNG), `region` (the window drawn —
+    the requested one widened by under a pixel so x and y share one scale),
+    `px_per_unit` (drawing point (x, y) is pixel ((x - x0)·ppu, (y1 - y)·ppu));
+    a window capture reports `region`/`px_per_unit` null. A zero-width region or
+    a `max_px` outside 64-4096 is refused by name.
 
     With `overlay_handles`, each entity is labelled with its handle at its own
     centre — every modify tool takes a handle, and without the labels there is
@@ -6014,26 +6035,49 @@ async def view_screenshot(
     labelled. Live AutoCAD captures its own window, so there is no render to
     label there; it refuses with `capability: "handle_overlay"`.
 
-    Returns an Image content block with the PNG data.
+    Returns an Image content block with the PNG data, then the report as JSON.
     """
-    from fastmcp.utilities.types import Image
-
     await ctx.info("Capturing drawing screenshot")
     await ctx.report_progress(0, 100)
 
-    b = _backend(ctx)
-    png_bytes = await b.view_screenshot(overlay_handles=overlay_handles)
-
+    report = await _view_render(
+        _backend(ctx), region=region, max_px=max_px, overlay_handles=overlay_handles
+    )
     await ctx.report_progress(100, 100)
+    return _view_image_result(
+        report,
+        "Screenshot not available. "
+        "For COM backend: ensure AutoCAD window is visible. "
+        "For ezdxf backend: install matplotlib (pip install matplotlib).",
+    )
 
-    if png_bytes is None:
-        raise ToolError(
-            "Screenshot not available. "
-            "For COM backend: ensure AutoCAD window is visible. "
-            "For ezdxf backend: install matplotlib (pip install matplotlib)."
-        )
 
-    return Image(data=png_bytes, format="png")
+async def _view_render(b, *, region, max_px: int, overlay_handles: bool = False) -> dict:
+    """``b.view_render``, a bad region or size turned into a ToolError naming it."""
+    try:
+        return await b.view_render(region=region, max_px=max_px, overlay_handles=overlay_handles)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+def _view_image_result(report: dict, unavailable: str) -> ToolResult:
+    """The PNG as an image block, then the render report as JSON (1.8-07)."""
+    from fastmcp.utilities.types import Image
+    from mcp.types import TextContent
+
+    report = dict(report)
+    png = report.pop("png", None)
+    if png is None:
+        detail = report.get("error")
+        raise ToolError(f"{unavailable} ({detail})" if detail else unavailable)
+    payload = {"ok": True, **report}
+    return ToolResult(
+        content=[
+            Image(data=png, format="png").to_image_content(),
+            TextContent(type="text", text=json.dumps(payload, ensure_ascii=False, default=str)),
+        ],
+        structured_content=payload,
+    )
 
 
 @cad_tool(
@@ -6049,31 +6093,48 @@ async def view_zoom_and_screenshot(
     y1: Annotated[float | None, "Optional: zoom to window corner Y1"] = None,
     x2: Annotated[float | None, "Optional: zoom to window corner X2"] = None,
     y2: Annotated[float | None, "Optional: zoom to window corner Y2"] = None,
+    max_px: Annotated[
+        int,
+        Field(description="Long side of the image in pixels (64-4096).", ge=64, le=4096),
+    ] = 1568,
     ctx: Context = None,
 ):
     """Zoom to extents (or window if coordinates given), then capture a screenshot.
 
     The most useful tool for visually inspecting drawing state.
-    """
-    from fastmcp.utilities.types import Image
 
+    The window is really applied on both engines: headless it is drawn as that
+    window (it used to be ignored), live AutoCAD zooms to it and the picture is
+    the bound document's export drawn at a stated scale
+    (`source: "export_snapshot"`). Without a window: extents (headless render;
+    live ZoomExtents + window capture). The report beside the image is the one
+    `view_screenshot` gives — `applied`, `px`, `region`, `px_per_unit`. Give all
+    four corners or none: a partial window is refused, never silently widened
+    to the extents.
+    """
     await ctx.info("Zooming and capturing screenshot")
     b = _backend(ctx)
 
+    corners = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
+    missing = [name for name, value in corners.items() if value is None]
+    if missing and len(missing) < len(corners):
+        raise ToolError(
+            f"view_zoom_and_screenshot: a window needs all four corners; missing "
+            f"{', '.join(missing)} (or give none for the extents)"
+        )
+
     await ctx.report_progress(10, 100)
-    if x1 is not None and y1 is not None and x2 is not None and y2 is not None:
+    if not missing:
         await b.view_zoom_window(x1, y1, x2, y2)
+        region = [x1, y1, x2, y2]
     else:
         await b.view_zoom_extents()
+        region = None
 
     await ctx.report_progress(50, 100)
-    png_bytes = await b.view_screenshot()
+    report = await _view_render(b, region=region, max_px=max_px)
     await ctx.report_progress(100, 100)
-
-    if png_bytes is None:
-        raise ToolError("Screenshot unavailable. Check backend capabilities.")
-
-    return Image(data=png_bytes, format="png")
+    return _view_image_result(report, "Screenshot unavailable. Check backend capabilities.")
 
 
 # ---------------------------------------------------------------------------

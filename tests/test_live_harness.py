@@ -492,6 +492,7 @@ SMOKES = (
     "smoke_verify_com.py",
     "smoke_document_com.py",
     "smoke_operator_edits_com.py",
+    "smoke_render_com.py",
 )
 
 

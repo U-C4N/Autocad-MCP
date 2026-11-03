@@ -49,6 +49,14 @@ from .contracts.settings import SUMMARY_FIELDS, validate_drawing_properties
 from .document_guard import ActiveDocumentChangedError
 from .operations import CURRENT_OPERATION
 from .quarantine import DaemonExecutor, real_call_name
+from .region_render import (
+    DEFAULT_MAX_PX,
+    check_max_px,
+    downscale_png,
+    normalize_region,
+    png_size,
+    render_dxf_file,
+)
 from .xdata_specs import prepare_xdata
 
 log = logging.getLogger(__name__)
@@ -7843,6 +7851,78 @@ class ComBackend(AutoCADBackend):
             return image
 
         return await self._run(_sync)
+
+    async def view_render(
+        self,
+        region: list[float] | None = None,
+        max_px: int = DEFAULT_MAX_PX,
+        overlay_handles: bool = False,
+    ) -> dict:
+        """A region from the exported snapshot; no region is the window capture (1.8-07).
+
+        A window capture cannot say which drawing coordinates its pixels show -
+        AutoCAD's own frame, ribbon and the viewport's aspect sit between them -
+        so a region request does not zoom and capture: it exports the bound
+        document (``_com_export``, the QA snapshot route, guarded by
+        ``_acad_doc()`` inside the job) and draws that DXF's model space with
+        the headless renderer, at a stated scale. The export is seconds on a
+        large drawing, so it runs only when a region is asked for.
+        """
+        wanted = normalize_region(region)
+        size = check_max_px(max_px)
+        if overlay_handles:
+            # Same boundary as view_screenshot_grounded; labels on the export
+            # render are 1.8.1 (highlighting) scope.
+            raise UnsupportedCapabilityError(
+                "handle_overlay",
+                "view_render: the live backend does not label handles on its images. "
+                "Use entity_list for handles beside the picture, or the headless "
+                "backend (AUTOCAD_MCP_BACKEND=ezdxf) for a grounded render.",
+            )
+        if wanted is None:
+            png = await self.view_screenshot()
+            if png is None:
+                return {
+                    "png": None,
+                    "applied": False,
+                    "source": "window",
+                    "error": "no AutoCAD window was found to capture",
+                }
+            png = downscale_png(png, size)
+            width, height = png_size(png)
+            return {
+                "png": png,
+                "applied": True,
+                "framing": "current_view",
+                "source": "window",
+                "px": [width, height],
+                "region": None,
+                "requested_region": None,
+                "px_per_unit": None,
+                "note": (
+                    "a window capture includes AutoCAD's own frame, so its drawing-unit "
+                    "scale is unknown; pass region=[x0, y0, x1, y1] for a measured render"
+                ),
+            }
+        import shutil
+
+        from engineering.understand.snapshot import _com_export
+
+        written, folder, snapshot = await self._run(_com_export, self, None)
+        try:
+            report = await asyncio.to_thread(render_dxf_file, written, region=wanted, max_px=size)
+        except ImportError:
+            return {
+                "png": None,
+                "applied": False,
+                "source": "export_snapshot",
+                "error": "matplotlib is not installed (pip install autocad-mcp-pro[pdf])",
+            }
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+        report["source"] = "export_snapshot"
+        report["snapshot"] = snapshot
+        return report
 
     # ── transactions ──────────────────────────────────────────────────────────
 
