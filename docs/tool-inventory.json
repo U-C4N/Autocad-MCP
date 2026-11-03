@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED FILE - do not edit by hand. Derived from the live FastMCP component registry; regenerate with `python scripts/generate_tool_inventory.py`.",
-  "schema_version": 1,
+  "schema_version": 2,
   "package_version": "1.7.0",
   "totals": {
     "tools": 251,
@@ -44,6 +44,14 @@
       "group": "analysis",
       "cost": "read",
       "summary": "Get the overall extents of everything drawn.",
+      "acad": [],
+      "synonyms": [
+        "bounding box",
+        "drawing extents",
+        "overall size",
+        "how big is the drawing",
+        "outer envelope"
+      ],
       "tags": [
         "analysis",
         "query"
@@ -58,6 +66,14 @@
       "group": "analysis",
       "cost": "read",
       "summary": "Count the drawing's objects, broken down by type and by layer.",
+      "acad": [],
+      "synonyms": [
+        "entity count",
+        "how many objects",
+        "drawing statistics",
+        "breakdown by type",
+        "object inventory"
+      ],
       "tags": [
         "analysis",
         "query"
@@ -72,6 +88,14 @@
       "group": "analysis",
       "cost": "read",
       "summary": "List everything that falls inside a rectangular window.",
+      "acad": [],
+      "synonyms": [
+        "crossing window",
+        "what is in this area",
+        "entities inside a rectangle",
+        "window selection",
+        "objects in a region"
+      ],
       "tags": [
         "analysis",
         "query"
@@ -86,6 +110,13 @@
       "group": "analysis",
       "cost": "read",
       "summary": "Report how many entities, and which types, sit on each layer.",
+      "acad": [],
+      "synonyms": [
+        "layer statistics",
+        "entities per layer",
+        "which layers are used",
+        "layer usage report"
+      ],
       "tags": [
         "analysis",
         "layer",
@@ -101,6 +132,15 @@
       "group": "analysis",
       "cost": "read",
       "summary": "Dump every DXF property of one entity, like LIST.",
+      "acad": [
+        "LIST"
+      ],
+      "synonyms": [
+        "list the properties",
+        "show me everything about this entity",
+        "dump the dxf attributes",
+        "what are this object's properties"
+      ],
       "tags": [
         "analysis",
         "query"
@@ -115,6 +155,13 @@
       "group": "analysis",
       "cost": "read",
       "summary": "Measure a polygon's area and perimeter from its vertices.",
+      "acad": [],
+      "synonyms": [
+        "area of a polygon i will type out",
+        "area from coordinates",
+        "shoelace",
+        "area of a list of points"
+      ],
       "tags": [
         "analysis",
         "measure"
@@ -130,6 +177,18 @@
       "group": "analysis",
       "cost": "read",
       "summary": "Measure the gap between two points: distance, dx/dy and angle.",
+      "acad": [
+        "DIST",
+        "DI",
+        "MEASUREGEOM"
+      ],
+      "synonyms": [
+        "distance",
+        "how far apart",
+        "length between two points",
+        "measure a gap",
+        "spacing"
+      ],
       "tags": [
         "analysis",
         "measure"
@@ -145,6 +204,23 @@
       "group": "analysis",
       "cost": "read",
       "summary": "Area and perimeter of an existing entity, by handle.",
+      "acad": [
+        "AREA",
+        "MEASUREGEOM"
+      ],
+      "synonyms": [
+        "area",
+        "surface area",
+        "how much area",
+        "square millimetres",
+        "polygon area",
+        "area of this entity",
+        "area of that polyline",
+        "perimeter",
+        "circumference",
+        "how long is this polyline",
+        "measure the part i just drew"
+      ],
       "tags": [
         "analysis",
         "measure"
@@ -160,6 +236,13 @@
       "group": "analysis",
       "cost": "read",
       "summary": "Grab the handles of everything sitting on one layer.",
+      "acad": [],
+      "synonyms": [
+        "everything on a layer",
+        "entities on a layer",
+        "select by layer",
+        "layer contents"
+      ],
       "tags": [
         "analysis",
         "query"
@@ -174,6 +257,14 @@
       "group": "analysis",
       "cost": "read",
       "summary": "Grab the handles of every entity of one type: all the circles, all the lines.",
+      "acad": [],
+      "synonyms": [
+        "all the circles",
+        "all the lines",
+        "entities of one type",
+        "select by object type",
+        "filter by type"
+      ],
       "tags": [
         "analysis",
         "query"
@@ -188,6 +279,27 @@
       "group": "architecture",
       "cost": "mutate",
       "summary": "Insert a furniture or sanitary item - bed, sofa, WC, basin, bathtub - as a block.",
+      "acad": [
+        "INSERT"
+      ],
+      "synonyms": [
+        "place furniture",
+        "put a bed in the room",
+        "insert a sofa",
+        "add a wc",
+        "place a toilet",
+        "wash basin",
+        "bathtub",
+        "kitchen sink",
+        "wardrobe",
+        "dining table",
+        "yatak",
+        "koltuk",
+        "klozet",
+        "lavabo",
+        "kuvet",
+        "mobilya yerlestir"
+      ],
       "tags": [
         "arch",
         "create"
@@ -202,6 +314,19 @@
       "group": "architecture",
       "cost": "read",
       "summary": "Search the furniture and sanitary catalogue in English or Turkish.",
+      "acad": [
+        "ADCENTER",
+        "TOOLPALETTES"
+      ],
+      "synonyms": [
+        "furniture catalogue",
+        "furniture library",
+        "sanitary fixtures",
+        "bathroom fixtures",
+        "what furniture is there",
+        "mobilya kutuphanesi",
+        "vitrifiye listesi"
+      ],
       "tags": [
         "arch",
         "query"
@@ -216,6 +341,20 @@
       "group": "architecture",
       "cost": "mutate",
       "summary": "Dimension the plan's facades: openings, walls and overall chains outside each side.",
+      "acad": [],
+      "synonyms": [
+        "dimension the facade",
+        "exterior dimensions",
+        "dimension chains",
+        "overall building dimensions",
+        "opening dimensions on the plan",
+        "ölçülendir",
+        "olculendir plan",
+        "dış ölçü",
+        "dis olcu",
+        "aks ölçüsü",
+        "aks olcusu"
+      ],
       "tags": [
         "arch",
         "dimension"
@@ -230,6 +369,20 @@
       "group": "architecture",
       "cost": "mutate",
       "summary": "Draw a structural grid: axis lines with numbered and lettered bubbles at both ends.",
+      "acad": [
+        "COLUMNGRIDADD"
+      ],
+      "synonyms": [
+        "structural grid",
+        "column grid",
+        "axis grid",
+        "grid bubbles",
+        "grid lines with bubbles",
+        "numbered and lettered axes",
+        "aks sistemi",
+        "akslar",
+        "kolon aksi"
+      ],
       "tags": [
         "arch",
         "create"
@@ -244,6 +397,25 @@
       "group": "architecture",
       "cost": "mutate",
       "summary": "Host a door or a window in a drawn wall by distance along it; the wall is cut.",
+      "acad": [
+        "DOORADD",
+        "WINDOWADD"
+      ],
+      "synonyms": [
+        "add a door",
+        "door in a wall",
+        "door swing",
+        "add a window",
+        "window in a wall",
+        "cut an opening in the wall",
+        "kapı",
+        "kapi",
+        "kapı ekle",
+        "pencere",
+        "pencere ekle",
+        "doğrama",
+        "dograma"
+      ],
       "tags": [
         "arch",
         "create"
@@ -258,6 +430,26 @@
       "group": "architecture",
       "cost": "mutate",
       "summary": "Draw a whole floor plan - walls, doors, windows, stairs, rooms, chains, schedules - in one transaction.",
+      "acad": [],
+      "synonyms": [
+        "draw a floor plan",
+        "whole floor plan from a spec",
+        "plan with walls doors and windows",
+        "draw a house plan",
+        "apartment plan",
+        "two room plan",
+        "architectural plan in one go",
+        "kat planı",
+        "kat plani",
+        "kat planı çiz",
+        "kat plani ciz",
+        "vaziyet",
+        "vaziyet planı",
+        "vaziyet plani",
+        "vaziyet planı çiz",
+        "vaziyet plani ciz",
+        "mimari plan"
+      ],
       "tags": [
         "arch",
         "create"
@@ -272,6 +464,21 @@
       "group": "architecture",
       "cost": "mutate",
       "summary": "Label a room with its name, number and measured area.",
+      "acad": [],
+      "synonyms": [
+        "room label",
+        "label the room",
+        "room name and number",
+        "net floor area",
+        "measured room area",
+        "oda",
+        "oda etiketi",
+        "oda alanı",
+        "oda alani",
+        "alan",
+        "mahal adı",
+        "mahal adi"
+      ],
       "tags": [
         "arch",
         "create"
@@ -286,6 +493,27 @@
       "group": "architecture",
       "cost": "read",
       "summary": "Find the rooms of any plan and measure them; never modifies it.",
+      "acad": [],
+      "synonyms": [
+        "find the rooms",
+        "detect rooms in a plan",
+        "rooms of a floor plan",
+        "room areas of this plan",
+        "read rooms from lines",
+        "oda",
+        "odalar",
+        "odaları bul",
+        "odalari bul",
+        "alan",
+        "oda alanları",
+        "oda alanlari",
+        "oda alanlarını hesapla",
+        "oda alanlarini hesapla",
+        "alan hesabı",
+        "alan hesabi",
+        "kat planı alanları",
+        "kat plani alanlari"
+      ],
       "tags": [
         "arch",
         "query"
@@ -300,6 +528,25 @@
       "group": "architecture",
       "cost": "mutate",
       "summary": "Draw a door, window or room schedule from the plan records.",
+      "acad": [
+        "TABLE"
+      ],
+      "synonyms": [
+        "door schedule",
+        "window schedule",
+        "room schedule",
+        "opening schedule",
+        "kapı çizelgesi",
+        "kapi cizelgesi",
+        "kapı listesi",
+        "kapi listesi",
+        "pencere listesi",
+        "kapı pencere listesi",
+        "kapi pencere listesi",
+        "pencere çizelgesi",
+        "pencere cizelgesi",
+        "mahal listesi"
+      ],
       "tags": [
         "arch",
         "create"
@@ -314,6 +561,25 @@
       "group": "architecture",
       "cost": "mutate",
       "summary": "Draw a straight, L or U stair in plan and report its Blondel step rule.",
+      "acad": [
+        "STAIRADD"
+      ],
+      "synonyms": [
+        "draw a stair",
+        "staircase",
+        "flight of stairs",
+        "l-shaped stair",
+        "u-shaped stair",
+        "walking line",
+        "blondel rule",
+        "risers and treads",
+        "merdiven",
+        "merdiven çiz",
+        "merdiven ciz",
+        "basamak",
+        "rıht",
+        "riht"
+      ],
       "tags": [
         "arch",
         "create"
@@ -328,6 +594,20 @@
       "group": "architecture",
       "cost": "mutate",
       "summary": "Draw a plan symbol: north arrow, section mark, level mark or elevation mark.",
+      "acad": [],
+      "synonyms": [
+        "north arrow",
+        "north point",
+        "section mark",
+        "section cut symbol",
+        "level mark",
+        "floor level symbol",
+        "elevation mark",
+        "kuzey oku",
+        "kot isareti",
+        "kesit isareti",
+        "gorunus isareti"
+      ],
       "tags": [
         "arch",
         "create"
@@ -342,6 +622,29 @@
       "group": "architecture",
       "cost": "mutate",
       "summary": "Add walls to the plan: clean L/T/X junctions, cut openings, material poché.",
+      "acad": [
+        "WALLADD",
+        "MLINE"
+      ],
+      "synonyms": [
+        "draw a wall",
+        "wall with a thickness",
+        "exterior wall",
+        "partition wall",
+        "floor plan walls",
+        "walls of a floor plan",
+        "draw the walls",
+        "clean wall corners",
+        "t junction of walls",
+        "wall poche",
+        "duvar",
+        "duvar çiz",
+        "duvar ciz",
+        "bölme duvar",
+        "bolme duvar",
+        "kat planı",
+        "kat plani"
+      ],
       "tags": [
         "arch",
         "create"
@@ -356,6 +659,17 @@
       "group": "sheet",
       "cost": "mutate",
       "summary": "Add an ISO 6433 balloon linked to its item row.",
+      "acad": [],
+      "synonyms": [
+        "balloon",
+        "item reference",
+        "item number",
+        "position number",
+        "iso 6433",
+        "number the items",
+        "balon",
+        "pozisyon numarasi"
+      ],
       "tags": [
         "engineering",
         "sheet"
@@ -370,6 +684,18 @@
       "group": "page_setup",
       "cost": "mutate",
       "summary": "Plot every sheet (or the named ones) to PDF; each sheet size is read back from its PDF.",
+      "acad": [
+        "PUBLISH",
+        "PLOT"
+      ],
+      "synonyms": [
+        "print all sheets to pdf",
+        "plot every layout",
+        "publish the sheet set",
+        "batch print",
+        "one pdf per sheet",
+        "plot the whole drawing set"
+      ],
       "tags": [
         "export",
         "layout",
@@ -386,6 +712,18 @@
       "group": "blocks",
       "cost": "mutate",
       "summary": "Turn existing entities into a reusable block definition.",
+      "acad": [
+        "BLOCK",
+        "BMAKE",
+        "WBLOCK"
+      ],
+      "synonyms": [
+        "make a block",
+        "define a block",
+        "group entities into a symbol",
+        "save a selection as a block",
+        "reusable symbol"
+      ],
       "tags": [
         "block"
       ],
@@ -399,6 +737,18 @@
       "group": "blocks",
       "cost": "mutate",
       "summary": "Define a block from typed primitives and attribute definitions, on both engines.",
+      "acad": [
+        "BLOCK",
+        "BEDIT",
+        "ATTDEF"
+      ],
+      "synonyms": [
+        "define a block",
+        "make a symbol",
+        "block with attributes",
+        "attribute definition",
+        "create a block definition from scratch"
+      ],
       "tags": [
         "block",
         "create"
@@ -413,6 +763,19 @@
       "group": "blocks",
       "cost": "destructive",
       "summary": "Break a block reference apart into its component entities.",
+      "acad": [
+        "EXPLODE",
+        "BURST"
+      ],
+      "synonyms": [
+        "explode",
+        "break a block apart",
+        "ungroup",
+        "split a block into entities",
+        "flatten a symbol",
+        "burst a block",
+        "explode and keep the attribute text"
+      ],
       "tags": [
         "block"
       ],
@@ -427,6 +790,15 @@
       "group": "blocks",
       "cost": "read",
       "summary": "Find every place a given block is inserted.",
+      "acad": [
+        "BCOUNT"
+      ],
+      "synonyms": [
+        "where is this block used",
+        "block instances",
+        "find the inserts",
+        "count block references"
+      ],
       "tags": [
         "block",
         "query"
@@ -441,6 +813,13 @@
       "group": "blocks",
       "cost": "read",
       "summary": "Read the tag/value pairs off a block reference.",
+      "acad": [],
+      "synonyms": [
+        "read block attributes",
+        "attribute values",
+        "title block fields",
+        "tag values"
+      ],
       "tags": [
         "block",
         "query"
@@ -455,6 +834,15 @@
       "group": "blocks",
       "cost": "mutate",
       "summary": "Place a block, filling in its attribute values as you go.",
+      "acad": [
+        "INSERT"
+      ],
+      "synonyms": [
+        "insert a block",
+        "place a symbol",
+        "stamp a block",
+        "add a block instance"
+      ],
       "tags": [
         "block"
       ],
@@ -468,6 +856,13 @@
       "group": "blocks",
       "cost": "read",
       "summary": "List the block definitions the drawing already carries.",
+      "acad": [],
+      "synonyms": [
+        "list blocks",
+        "block definitions",
+        "what blocks exist",
+        "available symbols"
+      ],
       "tags": [
         "block",
         "query"
@@ -482,6 +877,16 @@
       "group": "blocks",
       "cost": "mutate",
       "summary": "Fill in a block reference's attributes, such as title-block fields.",
+      "acad": [
+        "EATTEDIT",
+        "ATTEDIT"
+      ],
+      "synonyms": [
+        "edit block attributes",
+        "fill in the title block",
+        "set attribute values",
+        "update the tags"
+      ],
       "tags": [
         "block"
       ],
@@ -495,6 +900,17 @@
       "group": "sheet",
       "cost": "read",
       "summary": "Read the bill of materials out of the drawing's block references.",
+      "acad": [],
+      "synonyms": [
+        "bill of materials",
+        "read the bom",
+        "bom",
+        "item list",
+        "what is on this drawing",
+        "iso 7573",
+        "parca listesi",
+        "malzeme listesi"
+      ],
       "tags": [
         "engineering",
         "query",
@@ -510,6 +926,17 @@
       "group": "sheet",
       "cost": "mutate",
       "summary": "Draw the parts list as a real TABLE above the title block.",
+      "acad": [
+        "TABLE"
+      ],
+      "synonyms": [
+        "bom table",
+        "item list table",
+        "materials table",
+        "iso 7573 table",
+        "parca listesi tablosu",
+        "draw the parts list table on the sheet"
+      ],
       "tags": [
         "engineering",
         "sheet"
@@ -524,6 +951,12 @@
       "group": "analysis",
       "cost": "mutate",
       "summary": "Join named entities into one closed boundary polyline.",
+      "acad": [],
+      "synonyms": [
+        "join these into a closed shape",
+        "make a loop from these lines",
+        "chain entities into a boundary"
+      ],
       "tags": [
         "analysis"
       ],
@@ -537,6 +970,16 @@
       "group": "analysis",
       "cost": "mutate",
       "summary": "Trace the closed boundary around a point, like BOUNDARY.",
+      "acad": [
+        "BOUNDARY",
+        "BPOLY"
+      ],
+      "synonyms": [
+        "trace the boundary",
+        "outline this area",
+        "closed polyline around this point",
+        "pick an internal point"
+      ],
       "tags": [
         "analysis"
       ],
@@ -550,6 +993,31 @@
       "group": "plant",
       "cost": "safe",
       "summary": "Cable takeoff: one row per load, Manhattan length to its panel, rounded up to the metre.",
+      "acad": [],
+      "synonyms": [
+        "cable takeoff",
+        "cable schedule",
+        "cable lengths",
+        "cable list",
+        "how much cable",
+        "motor cable lengths",
+        "kablo metrajı",
+        "kablo metraji",
+        "kablo listesi",
+        "kablo cetveli",
+        "кабельный журнал",
+        "ведомость кабелей",
+        "takeoff",
+        "cable lengths to the panel",
+        "bill of quantities",
+        "boq",
+        "metraj",
+        "metre cetveli",
+        "kablo metrajı çıkar",
+        "kablo metraji cikar",
+        "кабельная ведомость",
+        "спецификация"
+      ],
       "tags": [
         "analysis",
         "plant"
@@ -565,6 +1033,19 @@
       "group": "batch",
       "cost": "destructive",
       "summary": "Run an ordered list of tool calls in one round trip, binding results between steps.",
+      "acad": [],
+      "synonyms": [
+        "run several tools at once",
+        "do it all in one call",
+        "chain tool calls",
+        "sequence of operations",
+        "one round trip",
+        "macro",
+        "task recipe",
+        "run a recipe",
+        "workflow recipe",
+        "is akisi tarifi"
+      ],
       "tags": [
         "batch"
       ],
@@ -579,6 +1060,20 @@
       "group": "mechanical",
       "cost": "mutate",
       "summary": "Draw ISO 128-23 centre marks or centre lines on circles, read from the drawing.",
+      "acad": [
+        "CENTERMARK",
+        "CENTERLINE",
+        "DIMCENTER"
+      ],
+      "synonyms": [
+        "centre mark",
+        "center mark",
+        "centre line",
+        "center line of a hole",
+        "cross at the centre",
+        "eksen cizgisi",
+        "merkez isareti"
+      ],
       "tags": [
         "engineering",
         "mech"
@@ -634,6 +1129,13 @@
       "group": "premium",
       "cost": "destructive",
       "summary": "Wipe the construction scaffolding off the drawing before finalize.",
+      "acad": [],
+      "synonyms": [
+        "delete the construction lines",
+        "remove the scaffolding",
+        "clean the construction layer",
+        "wipe the guides"
+      ],
       "tags": [
         "construction",
         "premium"
@@ -648,6 +1150,17 @@
       "group": "premium",
       "cost": "mutate",
       "summary": "Lay down an infinite guide line to build geometry against.",
+      "acad": [
+        "XLINE",
+        "XL"
+      ],
+      "synonyms": [
+        "construction line",
+        "infinite line",
+        "guide line",
+        "reference axis",
+        "scaffolding line"
+      ],
       "tags": [
         "construction",
         "premium"
@@ -662,6 +1175,18 @@
       "group": "sheet",
       "cost": "safe",
       "summary": "Write the bill of materials to a CSV file, or to XLSX when openpyxl is present.",
+      "acad": [
+        "DATAEXTRACTION",
+        "EATTEXT"
+      ],
+      "synonyms": [
+        "export the bill of materials",
+        "extract attributes",
+        "bom to csv",
+        "bom to excel",
+        "data extraction",
+        "excele aktar"
+      ],
       "tags": [
         "engineering",
         "query",
@@ -677,6 +1202,14 @@
       "group": "engineering",
       "cost": "mutate",
       "summary": "Mark a datum on a feature: filled triangle plus the boxed datum letter.",
+      "acad": [],
+      "synonyms": [
+        "datum",
+        "datum symbol",
+        "datum triangle",
+        "datum reference",
+        "reference feature"
+      ],
       "tags": [
         "engineering",
         "gdt"
@@ -691,6 +1224,16 @@
       "group": "dimensions",
       "cost": "mutate",
       "summary": "Dimension the true distance between two points, along a slope.",
+      "acad": [
+        "DIMALIGNED",
+        "DAL"
+      ],
+      "synonyms": [
+        "aligned dimension",
+        "true length dimension",
+        "dimension along a slope",
+        "slanted dimension"
+      ],
       "tags": [
         "annotation",
         "dimension"
@@ -705,6 +1248,16 @@
       "group": "dimensions",
       "cost": "mutate",
       "summary": "Dimension the included angle between two rays from a vertex.",
+      "acad": [
+        "DIMANGULAR",
+        "DAN"
+      ],
+      "synonyms": [
+        "angle dimension",
+        "angular dimension",
+        "measure an angle",
+        "included angle"
+      ],
       "tags": [
         "annotation",
         "dimension"
@@ -719,6 +1272,19 @@
       "group": "premium",
       "cost": "mutate",
       "summary": "Dimension a set of entities at once, as a chain, baseline or ordinate run.",
+      "acad": [
+        "QDIM",
+        "DIMCONTINUE",
+        "DIMBASELINE",
+        "DIMORDINATE"
+      ],
+      "synonyms": [
+        "dimension everything",
+        "chain dimensions",
+        "baseline dimensions",
+        "ordinate dimensions",
+        "quick dimension"
+      ],
       "tags": [
         "dimension",
         "premium"
@@ -733,6 +1299,16 @@
       "group": "dimensions",
       "cost": "mutate",
       "summary": "Call out a hole or shaft diameter, optionally to a fit such as H7.",
+      "acad": [
+        "DIMDIAMETER",
+        "DDI"
+      ],
+      "synonyms": [
+        "diameter dimension",
+        "hole size",
+        "bore diameter",
+        "dimension a hole"
+      ],
       "tags": [
         "annotation",
         "dimension"
@@ -747,6 +1323,18 @@
       "group": "dimensions",
       "cost": "mutate",
       "summary": "Dimension a horizontal or vertical size, with an ISO 129 tolerance or ISO 286 fit.",
+      "acad": [
+        "DIMLINEAR",
+        "DLI"
+      ],
+      "synonyms": [
+        "dimension",
+        "linear dimension",
+        "horizontal dimension",
+        "vertical dimension",
+        "size tolerance",
+        "h7 fit"
+      ],
       "tags": [
         "annotation",
         "dimension"
@@ -761,6 +1349,16 @@
       "group": "dimensions",
       "cost": "mutate",
       "summary": "Call out the radius of a circle or arc, optionally toleranced.",
+      "acad": [
+        "DIMRADIUS",
+        "DRA"
+      ],
+      "synonyms": [
+        "radius dimension",
+        "corner radius callout",
+        "dimension an arc",
+        "fillet radius"
+      ],
       "tags": [
         "annotation",
         "dimension"
@@ -775,6 +1373,18 @@
       "group": "styles",
       "cost": "mutate",
       "summary": "Create a dimension style from the ISO-25 or ANSI preset, with per-variable overrides.",
+      "acad": [
+        "DIMSTYLE",
+        "DDIM"
+      ],
+      "synonyms": [
+        "new dimension style",
+        "create a dimension style",
+        "iso-25 dimension style",
+        "ansi dimension style",
+        "dimension style from a preset",
+        "set up dimension text height and arrows"
+      ],
       "tags": [
         "create",
         "style"
@@ -789,6 +1399,16 @@
       "group": "styles",
       "cost": "read",
       "summary": "List dimension styles with their ISO-25/ANSI variables and the current one.",
+      "acad": [
+        "DIMSTYLE"
+      ],
+      "synonyms": [
+        "list dimension styles",
+        "dimension styles in the drawing",
+        "dimension style table",
+        "current dimstyle",
+        "dim styles"
+      ],
       "tags": [
         "query",
         "style"
@@ -803,6 +1423,16 @@
       "group": "styles",
       "cost": "mutate",
       "summary": "Change DIM* variables on an existing dimension style; reports only what moved.",
+      "acad": [
+        "DIMSTYLE"
+      ],
+      "synonyms": [
+        "change a dimension style",
+        "edit the dimension style",
+        "change dimension text height for the whole drawing",
+        "set dimdec on a style",
+        "modify dimstyle variables"
+      ],
       "tags": [
         "modify",
         "style"
@@ -817,6 +1447,16 @@
       "group": "styles",
       "cost": "safe",
       "summary": "Make a dimension style current so new dimensions use it.",
+      "acad": [
+        "DIMSTYLE"
+      ],
+      "synonyms": [
+        "current dimension style",
+        "make this dimension style current",
+        "switch dimension style",
+        "use iso-25 for new dimensions",
+        "activate a dimstyle"
+      ],
       "tags": [
         "modify",
         "style"
@@ -831,6 +1471,14 @@
       "group": "environment",
       "cost": "safe",
       "summary": "Switch which open document every later tool call targets.",
+      "acad": [],
+      "synonyms": [
+        "switch drawing",
+        "switch to the other drawing",
+        "make this drawing active",
+        "go to the other open file",
+        "change the current document"
+      ],
       "tags": [
         "drawing",
         "environment"
@@ -846,6 +1494,16 @@
       "group": "environment",
       "cost": "destructive",
       "summary": "Close one open document by name; never drops unsaved work unless told to.",
+      "acad": [
+        "CLOSE"
+      ],
+      "synonyms": [
+        "close a drawing by name",
+        "close the other drawing",
+        "close without saving",
+        "discard changes and close",
+        "close all but this one"
+      ],
       "tags": [
         "drawing",
         "environment"
@@ -860,6 +1518,14 @@
       "group": "environment",
       "cost": "read",
       "summary": "List the open documents: which is active, which have unsaved changes.",
+      "acad": [],
+      "synonyms": [
+        "open drawings",
+        "list documents",
+        "what files are open",
+        "the active drawing",
+        "currently open files"
+      ],
       "tags": [
         "drawing",
         "environment"
@@ -874,6 +1540,14 @@
       "group": "premium",
       "cost": "mutate",
       "summary": "Set up a standard ISO layer set with the right colours and lineweights.",
+      "acad": [],
+      "synonyms": [
+        "iso layers",
+        "standard layer set",
+        "set up drafting layers",
+        "layer standard",
+        "bootstrap the layers"
+      ],
       "tags": [
         "layers",
         "premium"
@@ -888,6 +1562,15 @@
       "group": "styles",
       "cost": "mutate",
       "summary": "Put the drawing on ISO or ANSI in one call: dimstyle, text style, units, mech layers.",
+      "acad": [],
+      "synonyms": [
+        "set the drawing up to iso",
+        "iso drafting standard",
+        "ansi drawing setup",
+        "apply the drafting standard",
+        "iso-25 and isocp in one go",
+        "standard styles units and layers"
+      ],
       "tags": [
         "drawing",
         "style"
@@ -902,6 +1585,16 @@
       "group": "drawing",
       "cost": "mutate",
       "summary": "Scan the drawing for structural errors and repair what it finds.",
+      "acad": [
+        "AUDIT"
+      ],
+      "synonyms": [
+        "audit",
+        "fix drawing errors",
+        "integrity check",
+        "repair the file",
+        "corrupt drawing"
+      ],
       "tags": [
         "cleanup",
         "drawing"
@@ -916,6 +1609,14 @@
       "group": "drawing",
       "cost": "destructive",
       "summary": "Close the drawing, saving first unless you say otherwise.",
+      "acad": [
+        "CLOSE"
+      ],
+      "synonyms": [
+        "close the drawing",
+        "shut the file",
+        "finish with this drawing"
+      ],
       "tags": [
         "drawing"
       ],
@@ -929,6 +1630,15 @@
       "group": "premium",
       "cost": "read",
       "summary": "Review the drawing for drafting mistakes: must come back empty before finalize.",
+      "acad": [],
+      "synonyms": [
+        "review the drawing",
+        "quality review",
+        "what is wrong with this drawing",
+        "drafting mistakes",
+        "check before finalising",
+        "anything wrong before i finish"
+      ],
       "tags": [
         "premium",
         "validation"
@@ -944,6 +1654,13 @@
       "group": "engineering",
       "cost": "destructive",
       "summary": "Hand the drawing off: a hashed, validated bundle of files plus a manifest.",
+      "acad": [],
+      "synonyms": [
+        "delivery bundle",
+        "package the drawing",
+        "hand off the drawing",
+        "final deliverable"
+      ],
       "tags": [
         "delivery",
         "drawing",
@@ -960,6 +1677,31 @@
       "group": "understanding",
       "cost": "mutate",
       "summary": "Compare two revisions of a drawing: what moved, changed, was added or removed.",
+      "acad": [
+        "COMPARE"
+      ],
+      "synonyms": [
+        "compare two drawings",
+        "compare two revisions",
+        "what changed between revisions",
+        "drawing differences",
+        "cloud the changes",
+        "revizyonlar arası değişiklik",
+        "revizyonlar arasi degisiklik",
+        "compare",
+        "compare two revisions of this drawing",
+        "drawing diff",
+        "dwg compare",
+        "dwgcompare",
+        "fark",
+        "revizyon farkı",
+        "revizyon farki",
+        "karşılaştır",
+        "karsilastir",
+        "iki revizyonu karşılaştır",
+        "iki revizyonu karsilastir",
+        "сравнить чертежи"
+      ],
       "tags": [
         "analysis",
         "query",
@@ -975,6 +1717,18 @@
       "group": "sheet",
       "cost": "safe",
       "summary": "Write the drawing as a real DWG at a chosen AutoCAD version.",
+      "acad": [
+        "SAVEAS"
+      ],
+      "synonyms": [
+        "export dwg",
+        "save as dwg",
+        "write a dwg",
+        "autocad 2018 format",
+        "downgrade to r2000",
+        "dwg olarak kaydet",
+        "save this drawing as a dwg"
+      ],
       "tags": [
         "drawing",
         "sheet"
@@ -989,6 +1743,15 @@
       "group": "drawing",
       "cost": "mutate",
       "summary": "Write a DXF interchange copy of the drawing.",
+      "acad": [
+        "DXFOUT"
+      ],
+      "synonyms": [
+        "export dxf",
+        "save as dxf",
+        "interchange file",
+        "dxf output"
+      ],
       "tags": [
         "drawing",
         "export"
@@ -1002,6 +1765,18 @@
       "group": "drawing",
       "cost": "mutate",
       "summary": "Plot the drawing, or one paper-space layout, to PDF.",
+      "acad": [
+        "PLOT",
+        "PRINT",
+        "EXPORTPDF"
+      ],
+      "synonyms": [
+        "print",
+        "plot",
+        "export pdf",
+        "pdf output",
+        "paper copy"
+      ],
       "tags": [
         "drawing",
         "export"
@@ -1015,6 +1790,14 @@
       "group": "engineering",
       "cost": "destructive",
       "summary": "Finish the drawing: validate, critique, save, screenshot and score it.",
+      "acad": [],
+      "synonyms": [
+        "finish the drawing",
+        "validate and save",
+        "final check",
+        "completion gate",
+        "the drawing is done"
+      ],
       "tags": [
         "drawing",
         "engineering",
@@ -1030,6 +1813,16 @@
       "group": "entity_query",
       "cost": "read",
       "summary": "Read the current drawing's name, path, extents and object counts.",
+      "acad": [
+        "DWGPROPS",
+        "STATUS"
+      ],
+      "synonyms": [
+        "drawing info",
+        "file properties",
+        "drawing metadata",
+        "what is in this drawing"
+      ],
       "tags": [
         "drawing",
         "query"
@@ -1044,6 +1837,17 @@
       "group": "drawing",
       "cost": "mutate",
       "summary": "Start a drawing: blank with the engineering layers, or from a bundled/own template.",
+      "acad": [
+        "NEW",
+        "QNEW"
+      ],
+      "synonyms": [
+        "new drawing",
+        "start a drawing",
+        "blank sheet",
+        "create a file",
+        "start from a bundled template"
+      ],
       "tags": [
         "drawing"
       ],
@@ -1057,6 +1861,15 @@
       "group": "drawing",
       "cost": "mutate",
       "summary": "Load an existing DXF from disk (DWG only on the live AutoCAD backend).",
+      "acad": [
+        "OPEN"
+      ],
+      "synonyms": [
+        "open a drawing",
+        "load a dwg",
+        "read a dxf file",
+        "open a file"
+      ],
       "tags": [
         "drawing"
       ],
@@ -1069,6 +1882,13 @@
       "group": "premium",
       "cost": "safe",
       "summary": "Commit sheet size, scale, layer set and dimension style before any geometry.",
+      "acad": [],
+      "synonyms": [
+        "plan the drawing",
+        "drawing plan",
+        "decide what to draw",
+        "drawing intent"
+      ],
       "tags": [
         "planning",
         "premium"
@@ -1083,6 +1903,13 @@
       "group": "premium",
       "cost": "read",
       "summary": "Check the brief before you draw: units, part type, tolerances, missing inputs.",
+      "acad": [],
+      "synonyms": [
+        "preflight",
+        "check the requirements",
+        "validate the brief",
+        "normalise the requirements"
+      ],
       "tags": [
         "planning",
         "premium",
@@ -1098,6 +1925,17 @@
       "group": "environment",
       "cost": "read",
       "summary": "Read the drawing's title, subject, author, keywords, comments and custom properties.",
+      "acad": [
+        "DWGPROPS"
+      ],
+      "synonyms": [
+        "drawing properties",
+        "document properties",
+        "summary info",
+        "title subject author keywords",
+        "custom properties",
+        "who made this drawing"
+      ],
       "tags": [
         "drawing",
         "environment",
@@ -1113,6 +1951,17 @@
       "group": "environment",
       "cost": "safe",
       "summary": "Set the drawing's summary fields and add, change or delete custom properties.",
+      "acad": [
+        "DWGPROPS"
+      ],
+      "synonyms": [
+        "set the drawing title",
+        "set author and keywords",
+        "add a custom property",
+        "project number in the file properties",
+        "edit summary info",
+        "delete a custom property"
+      ],
       "tags": [
         "drawing",
         "environment",
@@ -1128,6 +1977,16 @@
       "group": "drawing",
       "cost": "destructive",
       "summary": "Strip unused layers, blocks, linetypes and styles out of the file.",
+      "acad": [
+        "PURGE",
+        "PU"
+      ],
+      "synonyms": [
+        "purge",
+        "remove unused layers",
+        "clean out unused blocks",
+        "slim the file"
+      ],
       "tags": [
         "cleanup",
         "drawing"
@@ -1141,6 +2000,15 @@
       "group": "drawing",
       "cost": "safe",
       "summary": "Reapply the operation you just undid.",
+      "acad": [
+        "REDO",
+        "MREDO"
+      ],
+      "synonyms": [
+        "redo",
+        "reapply the change",
+        "undo the undo"
+      ],
       "tags": [
         "drawing",
         "undo"
@@ -1155,6 +2023,16 @@
       "group": "premium",
       "cost": "destructive",
       "summary": "Auto-repair what the critique found, then re-check, up to three rounds.",
+      "acad": [
+        "OVERKILL"
+      ],
+      "synonyms": [
+        "fix the issues",
+        "auto repair",
+        "clean up the drawing",
+        "remove duplicate entities",
+        "repair loop"
+      ],
       "tags": [
         "modify",
         "premium",
@@ -1170,6 +2048,16 @@
       "group": "drawing",
       "cost": "mutate",
       "summary": "Write the drawing back to its file, or to a path you give.",
+      "acad": [
+        "QSAVE",
+        "SAVE"
+      ],
+      "synonyms": [
+        "save",
+        "save the drawing",
+        "write the file",
+        "keep my changes"
+      ],
       "tags": [
         "drawing"
       ],
@@ -1182,6 +2070,15 @@
       "group": "drawing",
       "cost": "mutate",
       "summary": "Save a copy under a new name; the extension picks DXF, DWG or DWT.",
+      "acad": [
+        "SAVEAS"
+      ],
+      "synonyms": [
+        "save as",
+        "save a copy",
+        "write to a new file",
+        "save as a template"
+      ],
       "tags": [
         "drawing"
       ],
@@ -1194,6 +2091,27 @@
       "group": "understanding",
       "cost": "read",
       "summary": "Is this drawing to scale against a reference? Tag distances, ratios, a verdict.",
+      "acad": [],
+      "synonyms": [
+        "scale check",
+        "is the p&id to scale",
+        "is this drawing to scale",
+        "schematic or to scale",
+        "unscaled p&id",
+        "tag distances against the layout",
+        "can i measure pipe on the p&id",
+        "ölçek",
+        "olcek",
+        "ölçek kontrolü",
+        "olcek kontrolu",
+        "ölçekli mi",
+        "olcekli mi",
+        "масштаб",
+        "compare distances between two drawings",
+        "ölçek kontrolu",
+        "bu çizim ölçekli mi",
+        "bu cizim olcekli mi"
+      ],
       "tags": [
         "analysis",
         "query",
@@ -1209,6 +2127,38 @@
       "group": "system",
       "cost": "safe",
       "summary": "Read or change drawing units, precision, linetype and dimension scale by name.",
+      "acad": [
+        "UNITS",
+        "DDUNITS",
+        "OSNAP",
+        "DSETTINGS",
+        "LTSCALE",
+        "DIMSCALE",
+        "LIMITS",
+        "GRID",
+        "SNAP",
+        "ORTHO",
+        "PSLTSCALE",
+        "CANNOSCALE"
+      ],
+      "synonyms": [
+        "drawing units",
+        "millimetres or inches",
+        "decimal precision",
+        "dimension scale",
+        "linetype scale",
+        "object snap settings",
+        "drawing limits",
+        "turn the grid on",
+        "grid spacing",
+        "snap spacing",
+        "ortho mode",
+        "polar tracking",
+        "annotation scale",
+        "architectural units",
+        "current dimension style",
+        "current text style"
+      ],
       "tags": [
         "system"
       ],
@@ -1223,6 +2173,15 @@
       "group": "page_setup",
       "cost": "read",
       "summary": "List the five bundled drawing templates: standard, sheet, layers, styles, page setup.",
+      "acad": [],
+      "synonyms": [
+        "which templates are there",
+        "bundled templates",
+        "iso a3 template",
+        "ansi b sheet",
+        "start from a standard sheet",
+        "dwt list"
+      ],
       "tags": [
         "drawing",
         "pagesetup",
@@ -1239,6 +2198,16 @@
       "group": "page_setup",
       "cost": "mutate",
       "summary": "Save the current drawing as a template: .dwt on live AutoCAD, .dxf headlessly.",
+      "acad": [
+        "SAVEAS"
+      ],
+      "synonyms": [
+        "save as template",
+        "make a dwt",
+        "template from this drawing",
+        "save as dwt",
+        "reuse this sheet setup"
+      ],
       "tags": [
         "drawing",
         "pagesetup",
@@ -1254,6 +2223,22 @@
       "group": "understanding",
       "cost": "read",
       "summary": "Find dangling ends, near misses and unjoined crossings in a pipe or cable network.",
+      "acad": [],
+      "synonyms": [
+        "dangling pipe ends",
+        "pipes that do not connect",
+        "gaps in the pipe network",
+        "unconnected cable ends",
+        "network connectivity check",
+        "açık uçlar",
+        "acik uclar",
+        "kopuk hatlar",
+        "find dangling line ends",
+        "find dangling line ends and gaps",
+        "uçları açık çizgiler",
+        "uclari acik cizgiler",
+        "kopuk hat"
+      ],
       "tags": [
         "analysis",
         "query",
@@ -1269,6 +2254,37 @@
       "group": "understanding",
       "cost": "read",
       "summary": "Read a foreign drawing: units, extents, clusters, layers, tags, rooms, languages.",
+      "acad": [],
+      "synonyms": [
+        "understand this drawing",
+        "read a foreign drawing",
+        "summarise a client drawing",
+        "drawing report",
+        "which unit is this drawing really in",
+        "wrong insunits",
+        "inches or millimetres",
+        "two copies of the plan",
+        "stray entity far away",
+        "what is on this p&id",
+        "birim",
+        "birimi ne",
+        "çizimi anla",
+        "cizimi anla",
+        "çizim raporu",
+        "cizim raporu",
+        "yabancı çizim",
+        "yabanci cizim",
+        "what is in this drawing",
+        "what is in this drawing somebody sent me",
+        "understand a foreign drawing",
+        "read a drawing somebody else made",
+        "which units is this drawing in",
+        "drawing units check",
+        "birim kontrolü",
+        "birim kontrolu",
+        "çizim birimi",
+        "cizim birimi"
+      ],
       "tags": [
         "analysis",
         "query",
@@ -1284,6 +2300,15 @@
       "group": "drawing",
       "cost": "safe",
       "summary": "Step back one operation.",
+      "acad": [
+        "UNDO"
+      ],
+      "synonyms": [
+        "undo",
+        "take that back",
+        "revert the last change",
+        "step back"
+      ],
       "tags": [
         "drawing",
         "undo"
@@ -1299,6 +2324,20 @@
       "group": "understanding",
       "cost": "safe",
       "summary": "Verify source requirements on the CAD geometry: pass/fail/unknown each, with evidence.",
+      "acad": [],
+      "synonyms": [
+        "verify requirements",
+        "check the drawing against the requirements",
+        "are the dimensions right",
+        "measured against the source",
+        "acceptance report",
+        "pass fail per dimension",
+        "did the hole end up where it should",
+        "ölçüleri doğrula",
+        "olculeri dogrula",
+        "gereksinim kontrolü",
+        "gereksinim kontrolu"
+      ],
       "tags": [
         "analysis",
         "understand",
@@ -1315,6 +2354,17 @@
       "group": "entity_modification",
       "cost": "mutate",
       "summary": "Repeat an entity around a centre: a bolt circle or radial pattern.",
+      "acad": [
+        "ARRAYPOLAR",
+        "ARRAY"
+      ],
+      "synonyms": [
+        "polar array",
+        "circular pattern",
+        "bolt circle",
+        "repeat around a centre",
+        "radial pattern"
+      ],
       "tags": [
         "array",
         "entity",
@@ -1330,6 +2380,16 @@
       "group": "entity_modification",
       "cost": "mutate",
       "summary": "Repeat an entity in a grid of rows and columns.",
+      "acad": [
+        "ARRAYRECT",
+        "ARRAY"
+      ],
+      "synonyms": [
+        "rectangular array",
+        "grid of copies",
+        "rows and columns",
+        "repeat in a grid"
+      ],
       "tags": [
         "array",
         "entity",
@@ -1345,6 +2405,13 @@
       "group": "batch",
       "cost": "mutate",
       "summary": "Draw many entities in one call instead of one round trip each.",
+      "acad": [],
+      "synonyms": [
+        "create many entities",
+        "bulk create",
+        "draw several things at once",
+        "batch draw"
+      ],
       "tags": [
         "batch",
         "create",
@@ -1360,6 +2427,13 @@
       "group": "batch",
       "cost": "destructive",
       "summary": "Move, rotate, scale, restyle or delete many entities in one call.",
+      "acad": [],
+      "synonyms": [
+        "bulk edit",
+        "modify many entities",
+        "batch changes",
+        "apply edits at once"
+      ],
       "tags": [
         "batch",
         "entity",
@@ -1375,6 +2449,17 @@
       "group": "corner_ops",
       "cost": "mutate",
       "summary": "Bevel a corner between two lines by two setback distances.",
+      "acad": [
+        "CHAMFER",
+        "CHA"
+      ],
+      "synonyms": [
+        "chamfer",
+        "bevel a corner",
+        "break the edge",
+        "45 degree corner",
+        "cut the corner off"
+      ],
       "tags": [
         "corner",
         "entity",
@@ -1391,6 +2476,15 @@
       "group": "layouts",
       "cost": "mutate",
       "summary": "Move entities between model space and a sheet through a viewport.",
+      "acad": [
+        "CHSPACE"
+      ],
+      "synonyms": [
+        "change space",
+        "move to paper space",
+        "move to model space",
+        "move this onto the sheet"
+      ],
       "tags": [
         "layout",
         "modify"
@@ -1405,6 +2499,17 @@
       "group": "entity_modification",
       "cost": "mutate",
       "summary": "Duplicate an entity and offset the copy.",
+      "acad": [
+        "COPY",
+        "CO",
+        "CP"
+      ],
+      "synonyms": [
+        "copy",
+        "duplicate",
+        "clone an entity",
+        "make another one"
+      ],
       "tags": [
         "entity",
         "modify"
@@ -1420,6 +2525,16 @@
       "group": "entity_creation",
       "cost": "mutate",
       "summary": "Draw a circular arc from a centre, a radius and two angles.",
+      "acad": [
+        "ARC"
+      ],
+      "synonyms": [
+        "arc",
+        "curved segment",
+        "part of a circle",
+        "bend",
+        "sweep"
+      ],
       "tags": [
         "create",
         "entity"
@@ -1434,6 +2549,15 @@
       "group": "blocks",
       "cost": "mutate",
       "summary": "Drop an instance of an existing block definition into the drawing.",
+      "acad": [
+        "INSERT"
+      ],
+      "synonyms": [
+        "block reference",
+        "place a block",
+        "insert a symbol instance",
+        "drop in a symbol"
+      ],
       "tags": [
         "block",
         "create",
@@ -1449,6 +2573,17 @@
       "group": "entity_creation",
       "cost": "mutate",
       "summary": "Draw a circle: a hole, a bore, a pitch circle.",
+      "acad": [
+        "CIRCLE"
+      ],
+      "synonyms": [
+        "circle",
+        "hole",
+        "bore",
+        "round hole",
+        "pitch circle",
+        "disc"
+      ],
       "tags": [
         "create",
         "entity"
@@ -1463,6 +2598,16 @@
       "group": "entity_creation",
       "cost": "mutate",
       "summary": "Draw an ellipse from its centre, major axis vector and axis ratio.",
+      "acad": [
+        "ELLIPSE",
+        "EL"
+      ],
+      "synonyms": [
+        "ellipse",
+        "oval",
+        "elliptical shape",
+        "squashed circle"
+      ],
       "tags": [
         "create",
         "entity"
@@ -1477,6 +2622,18 @@
       "group": "entity_creation",
       "cost": "mutate",
       "summary": "Fill a closed boundary with a section pattern such as ANSI31 or SOLID.",
+      "acad": [
+        "HATCH",
+        "BHATCH"
+      ],
+      "synonyms": [
+        "hatch",
+        "fill a region",
+        "section hatching",
+        "crosshatch",
+        "shade an area",
+        "ansi31"
+      ],
       "tags": [
         "create",
         "entity"
@@ -1491,6 +2648,15 @@
       "group": "entity_creation",
       "cost": "mutate",
       "summary": "Draw a straight line between two points.",
+      "acad": [
+        "LINE"
+      ],
+      "synonyms": [
+        "line",
+        "straight segment",
+        "edge",
+        "connect two points"
+      ],
       "tags": [
         "create",
         "entity"
@@ -1505,6 +2671,16 @@
       "group": "entity_creation",
       "cost": "mutate",
       "summary": "Place a wrapped paragraph note in a text box of a given width.",
+      "acad": [
+        "MTEXT"
+      ],
+      "synonyms": [
+        "paragraph text",
+        "multiline text",
+        "note block",
+        "wrapped text",
+        "general notes"
+      ],
       "tags": [
         "annotation",
         "create",
@@ -1520,6 +2696,17 @@
       "group": "entity_creation",
       "cost": "mutate",
       "summary": "Place a point marker (node) at a coordinate.",
+      "acad": [
+        "POINT",
+        "PO"
+      ],
+      "synonyms": [
+        "point",
+        "node",
+        "marker",
+        "dot",
+        "reference point"
+      ],
       "tags": [
         "create",
         "entity"
@@ -1534,6 +2721,18 @@
       "group": "entity_creation",
       "cost": "mutate",
       "summary": "Draw a connected outline or closed profile through a list of points.",
+      "acad": [
+        "PLINE",
+        "PL"
+      ],
+      "synonyms": [
+        "polyline",
+        "connected segments",
+        "outline",
+        "closed profile",
+        "boundary",
+        "contour"
+      ],
       "tags": [
         "create",
         "entity"
@@ -1548,6 +2747,17 @@
       "group": "entity_creation",
       "cost": "mutate",
       "summary": "Draw a closed rectangle from two opposite corners.",
+      "acad": [
+        "RECTANG",
+        "REC"
+      ],
+      "synonyms": [
+        "rectangle",
+        "box",
+        "square",
+        "plate outline",
+        "four sided shape"
+      ],
       "tags": [
         "create",
         "entity"
@@ -1563,6 +2773,15 @@
       "group": "entity_creation",
       "cost": "mutate",
       "summary": "Draw a revision cloud around an area.",
+      "acad": [
+        "REVCLOUD"
+      ],
+      "synonyms": [
+        "revision cloud",
+        "cloud this area",
+        "mark a revision",
+        "circle the change"
+      ],
       "tags": [
         "create",
         "entity"
@@ -1577,6 +2796,17 @@
       "group": "entity_creation",
       "cost": "mutate",
       "summary": "Draw a smooth NURBS curve through fit points.",
+      "acad": [
+        "SPLINE",
+        "SPL"
+      ],
+      "synonyms": [
+        "spline",
+        "smooth curve",
+        "freeform curve",
+        "nurbs",
+        "fit points"
+      ],
       "tags": [
         "create",
         "entity"
@@ -1591,6 +2821,18 @@
       "group": "entity_creation",
       "cost": "mutate",
       "summary": "Place a parts list, BOM or schedule as a table with headers and rows.",
+      "acad": [
+        "TABLE",
+        "TB"
+      ],
+      "synonyms": [
+        "table",
+        "parts list",
+        "bill of materials",
+        "bom",
+        "schedule",
+        "revision table"
+      ],
       "tags": [
         "annotation",
         "create",
@@ -1607,6 +2849,17 @@
       "group": "entity_creation",
       "cost": "mutate",
       "summary": "Place a single-line text label.",
+      "acad": [
+        "TEXT",
+        "DTEXT"
+      ],
+      "synonyms": [
+        "text",
+        "label",
+        "single line text",
+        "caption",
+        "annotate"
+      ],
       "tags": [
         "annotation",
         "create",
@@ -1622,6 +2875,15 @@
       "group": "entity_creation",
       "cost": "mutate",
       "summary": "Mask whatever is behind a closed polygon on the sheet.",
+      "acad": [
+        "WIPEOUT"
+      ],
+      "synonyms": [
+        "wipeout",
+        "mask what is behind",
+        "hide the drawing underneath",
+        "white out an area"
+      ],
       "tags": [
         "create",
         "entity"
@@ -1636,6 +2898,15 @@
       "group": "entity_modification",
       "cost": "destructive",
       "summary": "Erase one entity by handle.",
+      "acad": [
+        "ERASE"
+      ],
+      "synonyms": [
+        "delete",
+        "erase",
+        "remove an entity",
+        "get rid of it"
+      ],
       "tags": [
         "entity",
         "modify"
@@ -1651,6 +2922,15 @@
       "group": "entity_modification",
       "cost": "destructive",
       "summary": "Erase a whole list of entities in one call.",
+      "acad": [
+        "ERASE"
+      ],
+      "synonyms": [
+        "delete several",
+        "erase many",
+        "bulk delete",
+        "remove a list of entities"
+      ],
       "tags": [
         "entity",
         "modify"
@@ -1666,6 +2946,17 @@
       "group": "entity_modification",
       "cost": "mutate",
       "summary": "Change a circle's radius, a line's endpoints or an arc's angles in place.",
+      "acad": [
+        "LENGTHEN",
+        "PEDIT"
+      ],
+      "synonyms": [
+        "change the radius",
+        "move an endpoint",
+        "resize a circle",
+        "edit geometry in place",
+        "adjust the arc angles"
+      ],
       "tags": [
         "entity",
         "modify"
@@ -1681,6 +2972,17 @@
       "group": "entity_modification",
       "cost": "mutate",
       "summary": "Reword a label, or change its height or rotation, keeping its handle.",
+      "acad": [
+        "DDEDIT",
+        "TEXTEDIT"
+      ],
+      "synonyms": [
+        "change the text",
+        "rename a label",
+        "edit the wording",
+        "fix a typo",
+        "retitle"
+      ],
       "tags": [
         "entity",
         "modify"
@@ -1696,6 +2998,16 @@
       "group": "corner_ops",
       "cost": "mutate",
       "summary": "Lengthen a line until it meets a boundary line.",
+      "acad": [
+        "EXTEND",
+        "EX"
+      ],
+      "synonyms": [
+        "extend",
+        "lengthen to meet",
+        "stretch to the boundary",
+        "reach the other line"
+      ],
       "tags": [
         "corner",
         "entity",
@@ -1712,6 +3024,16 @@
       "group": "corner_ops",
       "cost": "mutate",
       "summary": "Round a corner between two lines with a tangent arc.",
+      "acad": [
+        "FILLET"
+      ],
+      "synonyms": [
+        "fillet",
+        "round the corner",
+        "rounded corner",
+        "radius the corner",
+        "tangent arc corner"
+      ],
       "tags": [
         "corner",
         "entity",
@@ -1728,6 +3050,15 @@
       "group": "entity_query",
       "cost": "read",
       "summary": "Inspect one entity by handle: type, layer, colour and geometry.",
+      "acad": [
+        "LI"
+      ],
+      "synonyms": [
+        "entity properties",
+        "what is this object",
+        "inspect an entity",
+        "details for a handle"
+      ],
       "tags": [
         "entity",
         "query"
@@ -1742,6 +3073,15 @@
       "group": "entity_query",
       "cost": "read",
       "summary": "Read an entity's extended data (XDATA) by application name.",
+      "acad": [
+        "XDLIST"
+      ],
+      "synonyms": [
+        "extended data",
+        "read xdata",
+        "entity metadata",
+        "registered application data"
+      ],
       "tags": [
         "entity",
         "query"
@@ -1756,6 +3096,13 @@
       "group": "entity_query",
       "cost": "read",
       "summary": "Browse the drawing's entities and their handles, filtered by type or layer.",
+      "acad": [],
+      "synonyms": [
+        "list the entities",
+        "what is in the drawing",
+        "browse the objects",
+        "all the handles"
+      ],
       "tags": [
         "entity",
         "query"
@@ -1770,6 +3117,17 @@
       "group": "entity_modification",
       "cost": "mutate",
       "summary": "Reflect an entity across a mirror line, keeping or dropping the original.",
+      "acad": [
+        "MIRROR",
+        "MI"
+      ],
+      "synonyms": [
+        "mirror",
+        "flip",
+        "reflect",
+        "symmetry",
+        "mirrored copy"
+      ],
       "tags": [
         "entity",
         "modify"
@@ -1785,6 +3143,16 @@
       "group": "entity_modification",
       "cost": "mutate",
       "summary": "Shift an entity by a displacement vector.",
+      "acad": [
+        "MOVE"
+      ],
+      "synonyms": [
+        "move",
+        "shift",
+        "translate",
+        "relocate",
+        "nudge"
+      ],
       "tags": [
         "entity",
         "modify"
@@ -1800,6 +3168,16 @@
       "group": "entity_modification",
       "cost": "mutate",
       "summary": "Make a parallel copy of a line, circle or polyline at a set distance.",
+      "acad": [
+        "OFFSET"
+      ],
+      "synonyms": [
+        "offset",
+        "parallel copy",
+        "wall thickness",
+        "concentric copy",
+        "inset"
+      ],
       "tags": [
         "entity",
         "modify"
@@ -1815,6 +3193,17 @@
       "group": "entity_modification",
       "cost": "mutate",
       "summary": "Turn an entity about a base point by an angle in degrees.",
+      "acad": [
+        "ROTATE",
+        "RO"
+      ],
+      "synonyms": [
+        "rotate",
+        "turn",
+        "spin",
+        "reorient",
+        "set the angle"
+      ],
       "tags": [
         "entity",
         "modify"
@@ -1830,6 +3219,17 @@
       "group": "entity_modification",
       "cost": "mutate",
       "summary": "Resize an entity uniformly about a base point.",
+      "acad": [
+        "SCALE",
+        "SC"
+      ],
+      "synonyms": [
+        "scale",
+        "resize",
+        "enlarge",
+        "shrink",
+        "make it bigger"
+      ],
       "tags": [
         "entity",
         "modify"
@@ -1845,6 +3245,18 @@
       "group": "premium",
       "cost": "read",
       "summary": "Pick every entity matching a description: type, layer, colour, length, location.",
+      "acad": [
+        "QSELECT",
+        "FILTER",
+        "SELECTSIMILAR"
+      ],
+      "synonyms": [
+        "select by property",
+        "find every matching entity",
+        "smart selection",
+        "quick select",
+        "pick everything that is"
+      ],
       "tags": [
         "premium",
         "select"
@@ -1859,6 +3271,21 @@
       "group": "entity_modification",
       "cost": "mutate",
       "summary": "Change an entity's layer, colour, linetype, lineweight or visibility.",
+      "acad": [
+        "PROPERTIES",
+        "CHPROP",
+        "CHANGE",
+        "MATCHPROP",
+        "PR"
+      ],
+      "synonyms": [
+        "change the colour",
+        "move to another layer",
+        "set the linetype",
+        "set the lineweight",
+        "match properties",
+        "hide an entity"
+      ],
       "tags": [
         "entity",
         "modify"
@@ -1874,6 +3301,14 @@
       "group": "entity_modification",
       "cost": "safe",
       "summary": "Attach or replace extended data (XDATA) on an entity.",
+      "acad": [
+        "XDATA"
+      ],
+      "synonyms": [
+        "attach extended data",
+        "write xdata",
+        "tag an entity with metadata"
+      ],
       "tags": [
         "entity",
         "modify"
@@ -1888,6 +3323,17 @@
       "group": "corner_ops",
       "cost": "mutate",
       "summary": "Cut a line back to where another crosses it, keeping the side you point at.",
+      "acad": [
+        "TRIM",
+        "TR"
+      ],
+      "synonyms": [
+        "trim",
+        "cut back",
+        "clean up the overshoot",
+        "cut to the intersection",
+        "remove the excess"
+      ],
       "tags": [
         "corner",
         "entity",
@@ -1904,6 +3350,17 @@
       "group": "engineering",
       "cost": "mutate",
       "summary": "Draw an ISO 1101 feature control frame: symbol, tolerance zone and datums.",
+      "acad": [
+        "TOLERANCE"
+      ],
+      "synonyms": [
+        "feature control frame",
+        "geometric tolerance",
+        "gd&t",
+        "flatness",
+        "perpendicularity",
+        "true position"
+      ],
       "tags": [
         "engineering",
         "gdt"
@@ -1918,6 +3375,14 @@
       "group": "engineering",
       "cost": "mutate",
       "summary": "Draw a helical gear front view: true involute teeth, circles, bore and keyway.",
+      "acad": [],
+      "synonyms": [
+        "helical gear",
+        "gear front view",
+        "involute teeth",
+        "toothed wheel",
+        "helix gear"
+      ],
       "tags": [
         "engineering",
         "gear"
@@ -1932,6 +3397,13 @@
       "group": "engineering",
       "cost": "mutate",
       "summary": "Draw the hatched side cross-section A-A of a gear you already drew.",
+      "acad": [],
+      "synonyms": [
+        "gear section",
+        "section a-a",
+        "cross section of a gear",
+        "cut view of a gear"
+      ],
       "tags": [
         "engineering",
         "gear"
@@ -1946,6 +3418,13 @@
       "group": "engineering",
       "cost": "mutate",
       "summary": "Draw a straight-tooth spur gear front view with true involute teeth.",
+      "acad": [],
+      "synonyms": [
+        "spur gear",
+        "straight tooth gear",
+        "involute gear",
+        "gear front view"
+      ],
       "tags": [
         "engineering",
         "gear"
@@ -1960,6 +3439,12 @@
       "group": "entity_creation",
       "cost": "mutate",
       "summary": "Add a boundary path to a hatch, arcs and ellipses included.",
+      "acad": [],
+      "synonyms": [
+        "add a boundary to a hatch",
+        "hatch boundary with arcs",
+        "another island in the hatch"
+      ],
       "tags": [
         "create",
         "entity"
@@ -1974,6 +3459,15 @@
       "group": "entity_creation",
       "cost": "mutate",
       "summary": "Change a hatch's pattern, scale, angle, colour or island style.",
+      "acad": [
+        "HATCHEDIT"
+      ],
+      "synonyms": [
+        "change the hatch pattern",
+        "rescale a hatch",
+        "island detection style",
+        "edit a hatch"
+      ],
       "tags": [
         "create",
         "entity"
@@ -1988,6 +3482,14 @@
       "group": "mechanical",
       "cost": "mutate",
       "summary": "Hatch a region with the ISO 128-50 section pattern for a named material.",
+      "acad": [],
+      "synonyms": [
+        "material hatch",
+        "hatch as cast iron",
+        "section hatching for steel",
+        "hatch pattern for a material",
+        "malzeme taramasi"
+      ],
       "tags": [
         "engineering",
         "mech"
@@ -2002,6 +3504,14 @@
       "group": "entity_creation",
       "cost": "mutate",
       "summary": "Replace a hatch's fill with a two-colour gradient.",
+      "acad": [
+        "GRADIENT"
+      ],
+      "synonyms": [
+        "gradient fill",
+        "fade from one colour to another",
+        "colour ramp fill"
+      ],
       "tags": [
         "create",
         "entity"
@@ -2016,6 +3526,17 @@
       "group": "sheet",
       "cost": "mutate",
       "summary": "Attach a raster image (PNG/JPG) as an underlay.",
+      "acad": [
+        "IMAGEATTACH"
+      ],
+      "synonyms": [
+        "attach an image",
+        "raster underlay",
+        "insert a png",
+        "background image",
+        "scanned drawing",
+        "resim ekle"
+      ],
       "tags": [
         "create",
         "drawing",
@@ -2031,6 +3552,15 @@
       "group": "engineering",
       "cost": "mutate",
       "summary": "Draw a bore with a DIN 6885 keyway, auto-sized from the bore diameter.",
+      "acad": [],
+      "synonyms": [
+        "keyway",
+        "keyed bore",
+        "key slot",
+        "shaft keyway",
+        "din 6885 key",
+        "hub bore"
+      ],
       "tags": [
         "engineering",
         "keyway"
@@ -2045,6 +3575,12 @@
       "group": "engineering",
       "cost": "mutate",
       "summary": "Draw the side cross-section of a keyed bore.",
+      "acad": [],
+      "synonyms": [
+        "keyway section",
+        "keyed bore side view",
+        "key slot cross section"
+      ],
       "tags": [
         "engineering",
         "keyway"
@@ -2059,6 +3595,16 @@
       "group": "layers",
       "cost": "mutate",
       "summary": "Add a layer with a colour, linetype and lineweight.",
+      "acad": [
+        "LAYER",
+        "LA"
+      ],
+      "synonyms": [
+        "new layer",
+        "add a layer",
+        "create a layer",
+        "layer with a colour"
+      ],
       "tags": [
         "layer"
       ],
@@ -2072,6 +3618,14 @@
       "group": "layers",
       "cost": "destructive",
       "summary": "Remove an empty layer from the drawing.",
+      "acad": [
+        "LAYDEL"
+      ],
+      "synonyms": [
+        "delete a layer",
+        "remove a layer",
+        "get rid of a layer"
+      ],
       "tags": [
         "layer"
       ],
@@ -2086,6 +3640,14 @@
       "group": "layers",
       "cost": "safe",
       "summary": "Freeze a layer so it stops drawing and regenerating.",
+      "acad": [
+        "LAYFRZ"
+      ],
+      "synonyms": [
+        "freeze a layer",
+        "freeze",
+        "stop regenerating a layer"
+      ],
       "tags": [
         "layer"
       ],
@@ -2098,6 +3660,14 @@
       "group": "layers",
       "cost": "safe",
       "summary": "Turn a layer off so its entities stop showing.",
+      "acad": [
+        "LAYOFF"
+      ],
+      "synonyms": [
+        "turn a layer off",
+        "hide a layer",
+        "make a layer invisible"
+      ],
       "tags": [
         "layer"
       ],
@@ -2110,6 +3680,15 @@
       "group": "layers",
       "cost": "safe",
       "summary": "Hide every layer except one, to work on it alone.",
+      "acad": [
+        "LAYISO"
+      ],
+      "synonyms": [
+        "isolate a layer",
+        "show only one layer",
+        "hide everything else",
+        "layer isolation"
+      ],
       "tags": [
         "layer"
       ],
@@ -2123,6 +3702,15 @@
       "group": "layers",
       "cost": "read",
       "summary": "List every layer with its colour, linetype and visibility state.",
+      "acad": [
+        "LAYER"
+      ],
+      "synonyms": [
+        "list the layers",
+        "what layers exist",
+        "layer table",
+        "layer overview"
+      ],
       "tags": [
         "layer",
         "query"
@@ -2137,6 +3725,14 @@
       "group": "layers",
       "cost": "safe",
       "summary": "Lock a layer so its entities can be seen but not edited.",
+      "acad": [
+        "LAYLCK"
+      ],
+      "synonyms": [
+        "lock a layer",
+        "protect a layer",
+        "make a layer read only"
+      ],
       "tags": [
         "layer"
       ],
@@ -2149,6 +3745,15 @@
       "group": "layers",
       "cost": "mutate",
       "summary": "Change an existing layer's colour, linetype or lineweight.",
+      "acad": [
+        "LAYER"
+      ],
+      "synonyms": [
+        "change a layer colour",
+        "edit a layer",
+        "set the layer linetype",
+        "set the layer lineweight"
+      ],
       "tags": [
         "layer"
       ],
@@ -2163,6 +3768,16 @@
       "group": "layers",
       "cost": "safe",
       "summary": "Choose the layer that new geometry lands on.",
+      "acad": [
+        "CLAYER",
+        "LAYMCUR"
+      ],
+      "synonyms": [
+        "current layer",
+        "draw on this layer",
+        "set the active layer",
+        "switch layer"
+      ],
       "tags": [
         "layer"
       ],
@@ -2177,6 +3792,14 @@
       "group": "layers",
       "cost": "safe",
       "summary": "Turn a layer that was switched off back on.",
+      "acad": [
+        "LAYON"
+      ],
+      "synonyms": [
+        "turn a layer on",
+        "show a layer",
+        "unhide a layer"
+      ],
       "tags": [
         "layer"
       ],
@@ -2189,6 +3812,14 @@
       "group": "environment",
       "cost": "destructive",
       "summary": "Delete one saved layer state from the drawing.",
+      "acad": [
+        "LAYERSTATE"
+      ],
+      "synonyms": [
+        "delete a layer state",
+        "remove a saved layer setup",
+        "drop the layer snapshot"
+      ],
       "tags": [
         "environment",
         "layer"
@@ -2203,6 +3834,14 @@
       "group": "environment",
       "cost": "read",
       "summary": "List the layer states saved in this drawing.",
+      "acad": [
+        "LAYERSTATE"
+      ],
+      "synonyms": [
+        "saved layer states",
+        "saved layer setups",
+        "list layer snapshots"
+      ],
       "tags": [
         "environment",
         "layer"
@@ -2217,6 +3856,16 @@
       "group": "environment",
       "cost": "safe",
       "summary": "Restore a saved layer state, all properties or a chosen subset.",
+      "acad": [
+        "LAYERSTATE"
+      ],
+      "synonyms": [
+        "restore the layer state",
+        "put the layers back",
+        "go back to the plot layer setup",
+        "reapply saved layer settings",
+        "layer snapshot restore"
+      ],
       "tags": [
         "environment",
         "layer"
@@ -2232,6 +3881,16 @@
       "group": "environment",
       "cost": "safe",
       "summary": "Save the layer table (on/frozen/locked/colour/linetype/lineweight/plot + current) under a name, in the file.",
+      "acad": [
+        "LAYERSTATE"
+      ],
+      "synonyms": [
+        "save the layer state",
+        "remember the layer setup",
+        "snapshot the layers",
+        "layer configuration for plotting",
+        "save which layers are frozen"
+      ],
       "tags": [
         "environment",
         "layer"
@@ -2247,6 +3906,14 @@
       "group": "layers",
       "cost": "safe",
       "summary": "Bring a frozen layer back into view.",
+      "acad": [
+        "LAYTHW"
+      ],
+      "synonyms": [
+        "thaw a layer",
+        "unfreeze a layer",
+        "bring a layer back"
+      ],
       "tags": [
         "layer"
       ],
@@ -2259,6 +3926,13 @@
       "group": "layers",
       "cost": "safe",
       "summary": "Unlock a layer so its entities can be edited again.",
+      "acad": [
+        "LAYULK"
+      ],
+      "synonyms": [
+        "unlock a layer",
+        "allow editing on a layer"
+      ],
       "tags": [
         "layer"
       ],
@@ -2271,6 +3945,15 @@
       "group": "layouts",
       "cost": "mutate",
       "summary": "Duplicate a sheet with its page setup and geometry.",
+      "acad": [
+        "LAYOUT"
+      ],
+      "synonyms": [
+        "copy a layout",
+        "duplicate a sheet",
+        "clone a layout tab",
+        "another sheet like this one"
+      ],
       "tags": [
         "layout"
       ],
@@ -2284,6 +3967,15 @@
       "group": "layouts",
       "cost": "mutate",
       "summary": "Add a new paper-space sheet tab to the drawing.",
+      "acad": [
+        "LAYOUT"
+      ],
+      "synonyms": [
+        "new layout",
+        "paper space tab",
+        "create a sheet",
+        "add a layout"
+      ],
       "tags": [
         "layout"
       ],
@@ -2297,6 +3989,15 @@
       "group": "layouts",
       "cost": "destructive",
       "summary": "Delete a sheet tab and everything drawn on it.",
+      "acad": [
+        "LAYOUT"
+      ],
+      "synonyms": [
+        "delete a layout",
+        "remove a sheet tab",
+        "get rid of a layout",
+        "drop a paper space tab"
+      ],
       "tags": [
         "layout"
       ],
@@ -2310,6 +4011,13 @@
       "group": "layouts",
       "cost": "read",
       "summary": "List the sheet tabs: Model plus every paper-space layout.",
+      "acad": [],
+      "synonyms": [
+        "list the layouts",
+        "what sheets exist",
+        "layout tabs",
+        "model and paper space"
+      ],
       "tags": [
         "layout",
         "query"
@@ -2324,6 +4032,16 @@
       "group": "layouts",
       "cost": "mutate",
       "summary": "Rename a sheet tab, keeping its geometry and handles.",
+      "acad": [
+        "LAYOUT",
+        "RENAME"
+      ],
+      "synonyms": [
+        "rename a layout",
+        "rename a sheet tab",
+        "change the layout name",
+        "retitle a sheet"
+      ],
       "tags": [
         "layout"
       ],
@@ -2337,6 +4055,16 @@
       "group": "layouts",
       "cost": "safe",
       "summary": "Switch to a sheet tab, or back to model space.",
+      "acad": [
+        "LAYOUT",
+        "PSPACE"
+      ],
+      "synonyms": [
+        "switch to a layout",
+        "activate a sheet",
+        "go to paper space",
+        "open a layout tab"
+      ],
       "tags": [
         "layout"
       ],
@@ -2349,6 +4077,19 @@
       "group": "entity_creation",
       "cost": "mutate",
       "summary": "Add a callout: an arrow with a note on the end.",
+      "acad": [
+        "MLEADER",
+        "MLD",
+        "QLEADER",
+        "LEADER"
+      ],
+      "synonyms": [
+        "leader",
+        "callout",
+        "arrow with a note",
+        "pointer note",
+        "balloon"
+      ],
       "tags": [
         "annotation",
         "create",
@@ -2365,6 +4106,12 @@
       "group": "layers",
       "cost": "read",
       "summary": "List the dash patterns currently loaded in the drawing.",
+      "acad": [],
+      "synonyms": [
+        "list the linetypes",
+        "which linetypes are loaded",
+        "available dash patterns"
+      ],
       "tags": [
         "layer",
         "linetype"
@@ -2379,6 +4126,18 @@
       "group": "layers",
       "cost": "mutate",
       "summary": "Load a linetype such as CENTER or HIDDEN, without the FILEDIA dialog trap.",
+      "acad": [
+        "LINETYPE",
+        "LTYPE",
+        "LT"
+      ],
+      "synonyms": [
+        "load a linetype",
+        "dashed line",
+        "centre line linetype",
+        "hidden linetype",
+        "phantom linetype"
+      ],
       "tags": [
         "layer",
         "linetype"
@@ -2393,6 +4152,20 @@
       "group": "mechanical",
       "cost": "mutate",
       "summary": "Dimension a drawn part: ISO 129 dimensions, ISO 286 fits, a hole table.",
+      "acad": [],
+      "synonyms": [
+        "dimension the part",
+        "put the dimensions on",
+        "chain dimensions",
+        "baseline dimensions",
+        "ordinate dimensions",
+        "hole table",
+        "iso 286 fit on a dimension",
+        "h7 bore",
+        "olculendir",
+        "olcu ver",
+        "tolerans"
+      ],
       "tags": [
         "dimension",
         "mech"
@@ -2407,6 +4180,19 @@
       "group": "mechanical",
       "cost": "mutate",
       "summary": "Draw a linear, grid or polar hole pattern with centre marks on any drawing.",
+      "acad": [
+        "ARRAY"
+      ],
+      "synonyms": [
+        "bolt circle",
+        "hole pattern",
+        "hole array",
+        "pitch circle of holes",
+        "grid of holes",
+        "delik deseni",
+        "civata dairesi",
+        "delik aynasi"
+      ],
       "tags": [
         "create",
         "mech"
@@ -2421,6 +4207,24 @@
       "group": "mechanical",
       "cost": "mutate",
       "summary": "Draw a machine part from a segment list or an outline plus typed features.",
+      "acad": [],
+      "synonyms": [
+        "draw a shaft",
+        "stepped shaft",
+        "draw a machine part",
+        "turned part",
+        "draw a plate",
+        "flange",
+        "part from a segment list",
+        "shaft with a keyway",
+        "mil",
+        "mil ciz",
+        "kademeli mil",
+        "kama",
+        "pah",
+        "plaka",
+        "flans"
+      ],
       "tags": [
         "create",
         "mech"
@@ -2435,6 +4239,14 @@
       "group": "mechanical",
       "cost": "mutate",
       "summary": "Draw a whole mechanical sheet - several parts and their views - in one transaction.",
+      "acad": [],
+      "synonyms": [
+        "draw the whole sheet",
+        "several parts at once",
+        "mechanical sheet from a spec",
+        "batch draw parts",
+        "parca sayfasi"
+      ],
       "tags": [
         "create",
         "mech"
@@ -2449,6 +4261,14 @@
       "group": "mechanical",
       "cost": "read",
       "summary": "Read the part model back off the drawing: segments, features, views, omissions.",
+      "acad": [],
+      "synonyms": [
+        "what part is this",
+        "read the part model back",
+        "part features",
+        "which views were drawn",
+        "parca bilgisi"
+      ],
       "tags": [
         "mech",
         "query"
@@ -2463,6 +4283,26 @@
       "group": "mechanical",
       "cost": "mutate",
       "summary": "Add another view of a drawn part: side, top, section (full/half/offset) or detail.",
+      "acad": [
+        "SECTIONPLANE"
+      ],
+      "synonyms": [
+        "add a section view",
+        "section a-a",
+        "cross section",
+        "half section",
+        "offset section",
+        "detail view",
+        "blown-up detail",
+        "end view",
+        "side view",
+        "another view of the part",
+        "kesit",
+        "kesit al",
+        "gorunus",
+        "yan gorunus",
+        "detay"
+      ],
       "tags": [
         "create",
         "mech"
@@ -2477,6 +4317,15 @@
       "group": "styles",
       "cost": "mutate",
       "summary": "Create a multileader style from the ISO or ANSI preset, on both engines.",
+      "acad": [
+        "MLEADERSTYLE"
+      ],
+      "synonyms": [
+        "new leader style",
+        "multileader style",
+        "leader arrow size and landing",
+        "iso leader style"
+      ],
       "tags": [
         "create",
         "style"
@@ -2491,6 +4340,14 @@
       "group": "styles",
       "cost": "read",
       "summary": "List multileader styles: arrow size, landing gap, text style and height.",
+      "acad": [
+        "MLEADERSTYLE"
+      ],
+      "synonyms": [
+        "list leader styles",
+        "multileader styles in the drawing",
+        "mleader styles"
+      ],
       "tags": [
         "query",
         "style"
@@ -2505,6 +4362,18 @@
       "group": "page_setup",
       "cost": "safe",
       "summary": "Set a sheet's paper, orientation, ctb, plot scale and device (PAGESETUP).",
+      "acad": [
+        "PAGESETUP"
+      ],
+      "synonyms": [
+        "page setup",
+        "set the paper size",
+        "a3 landscape",
+        "plot scale",
+        "monochrome ctb",
+        "which printer",
+        "set up the sheet for printing"
+      ],
       "tags": [
         "layout",
         "pagesetup",
@@ -2520,6 +4389,16 @@
       "group": "page_setup",
       "cost": "read",
       "summary": "Read each sheet's page setup: paper, orientation, ctb, scale, device.",
+      "acad": [
+        "PAGESETUP"
+      ],
+      "synonyms": [
+        "what paper is this sheet",
+        "page setup of each layout",
+        "plot settings",
+        "sheet size and orientation",
+        "which ctb is set"
+      ],
       "tags": [
         "layout",
         "pagesetup",
@@ -2536,6 +4415,12 @@
       "group": "pid",
       "cost": "safe",
       "summary": "Equipment list derived from the P&ID graph (tag, kind, ports, connections); optional CSV.",
+      "acad": [],
+      "synonyms": [
+        "equipment list",
+        "equipment schedule",
+        "valve list"
+      ],
       "tags": [
         "pid",
         "query"
@@ -2551,6 +4436,13 @@
       "group": "pid",
       "cost": "mutate",
       "summary": "Draw a whole P&ID from one declarative spec in one transaction; returns graph + critique.",
+      "acad": [],
+      "synonyms": [
+        "whole p&id in one call",
+        "p&id from json",
+        "draw the process from a spec",
+        "batch p&id"
+      ],
       "tags": [
         "batch",
         "create",
@@ -2566,6 +4458,16 @@
       "group": "pid",
       "cost": "read",
       "summary": "Read the P&ID back as a graph: symbols, lines, junctions, dangling ends, confidence.",
+      "acad": [],
+      "synonyms": [
+        "p&id connectivity",
+        "what is connected to",
+        "trace the line",
+        "read the p&id",
+        "dangling lines",
+        "instrument loop graph",
+        "process graph"
+      ],
       "tags": [
         "pid",
         "query"
@@ -2580,6 +4482,13 @@
       "group": "pid",
       "cost": "safe",
       "summary": "Instrument index derived from the P&ID graph (tag, function, loop, connections); optional CSV.",
+      "acad": [],
+      "synonyms": [
+        "instrument index",
+        "instrument list",
+        "loop list",
+        "tag list"
+      ],
       "tags": [
         "pid",
         "query"
@@ -2595,6 +4504,21 @@
       "group": "pid",
       "cost": "mutate",
       "summary": "Draw a P&ID line port-to-port: orthogonal route, ISA-5.1 class, line number, markers, arrow.",
+      "acad": [
+        "PLINE"
+      ],
+      "synonyms": [
+        "process line",
+        "pipe run",
+        "signal line",
+        "connect equipment",
+        "instrument line",
+        "line number",
+        "connect the pump to the vessel",
+        "pneumatic signal",
+        "unnumbered signal line",
+        "route a line through waypoints"
+      ],
       "tags": [
         "create",
         "pid"
@@ -2609,6 +4533,13 @@
       "group": "pid",
       "cost": "safe",
       "summary": "Line list derived from the P&ID graph (number, class, size, spec, from/to); optional CSV.",
+      "acad": [],
+      "synonyms": [
+        "line list",
+        "pipe list",
+        "line schedule",
+        "line numbers"
+      ],
       "tags": [
         "pid",
         "query"
@@ -2624,6 +4555,19 @@
       "group": "pid",
       "cost": "mutate",
       "summary": "Place a P&ID symbol (valve, pump, vessel, instrument bubble, connector) as a tagged block with ports.",
+      "acad": [
+        "INSERT"
+      ],
+      "synonyms": [
+        "p&id symbol",
+        "insert a valve",
+        "place a pump",
+        "draw a vessel",
+        "instrument bubble",
+        "control valve",
+        "off-page connector",
+        "process equipment symbol"
+      ],
       "tags": [
         "create",
         "pid"
@@ -2638,6 +4582,13 @@
       "group": "pid",
       "cost": "read",
       "summary": "List the P&ID symbol catalogue: families, variants, ports, parameters.",
+      "acad": [],
+      "synonyms": [
+        "p&id symbols",
+        "pid symbol catalogue",
+        "which valves can i draw",
+        "instrument bubble types"
+      ],
       "tags": [
         "pid",
         "query"
@@ -2652,6 +4603,14 @@
       "group": "pid",
       "cost": "read",
       "summary": "Parse an ISA-5.1 instrument tag or an equipment tag; explains every letter.",
+      "acad": [],
+      "synonyms": [
+        "what does fic mean",
+        "isa 5.1 tag",
+        "instrument tag letters",
+        "decode the tag",
+        "loop number"
+      ],
       "tags": [
         "pid",
         "query"
@@ -2666,6 +4625,29 @@
       "group": "plant",
       "cost": "safe",
       "summary": "Pipe takeoff from a P&ID and its layout: rows by room, service and diameter.",
+      "acad": [],
+      "synonyms": [
+        "pipe takeoff",
+        "piping takeoff",
+        "takeoff",
+        "pipe quantities",
+        "how much pipe",
+        "pipe lengths from a p&id",
+        "bill of quantities",
+        "boq",
+        "metraj",
+        "boru metrajı",
+        "boru metraji",
+        "metre cetveli",
+        "boru listesi",
+        "спецификация",
+        "ведомость",
+        "спецификация трубопроводов",
+        "ведомость трубопроводов",
+        "pipe takeoff by diameter from the p&id",
+        "boru metrajı çıkar",
+        "boru metraji cikar"
+      ],
       "tags": [
         "analysis",
         "plant"
@@ -2681,6 +4663,16 @@
       "group": "page_setup",
       "cost": "read",
       "summary": "List the plot style tables (ctb): the AutoCAD catalogue, plus what is installed.",
+      "acad": [
+        "STYLESMANAGER"
+      ],
+      "synonyms": [
+        "ctb files",
+        "plot style table",
+        "pen assignments",
+        "monochrome or grayscale",
+        "which plot styles are installed"
+      ],
       "tags": [
         "layout",
         "pagesetup",
@@ -2697,6 +4689,17 @@
       "group": "premium",
       "cost": "read",
       "summary": "Get an exact endpoint, midpoint, centre, quadrant or perpendicular foot.",
+      "acad": [],
+      "synonyms": [
+        "endpoint",
+        "midpoint",
+        "centre point",
+        "quadrant",
+        "perpendicular foot",
+        "object snap",
+        "osnap",
+        "exact coordinate"
+      ],
       "tags": [
         "premium",
         "snap"
@@ -2711,6 +4714,15 @@
       "group": "premium",
       "cost": "read",
       "summary": "Find where two lines or circles cross, exactly.",
+      "acad": [],
+      "synonyms": [
+        "intersection",
+        "where two lines cross",
+        "crossing point",
+        "meeting point",
+        "segment intersection",
+        "do the segments meet"
+      ],
       "tags": [
         "premium",
         "snap"
@@ -2725,6 +4737,13 @@
       "group": "premium",
       "cost": "read",
       "summary": "Find where a line from an outside point touches a circle.",
+      "acad": [],
+      "synonyms": [
+        "tangent point",
+        "tangency",
+        "touch point on a circle",
+        "tangent from a point"
+      ],
       "tags": [
         "premium",
         "snap"
@@ -2739,6 +4758,20 @@
       "group": "sheet",
       "cost": "mutate",
       "summary": "Append a revision row, with optional revision clouds and triangular tags.",
+      "acad": [
+        "REVCLOUD"
+      ],
+      "synonyms": [
+        "revision",
+        "revision block",
+        "revision cloud",
+        "revision table",
+        "change note",
+        "engineering change",
+        "as built change",
+        "revizyon",
+        "degisiklik"
+      ],
       "tags": [
         "engineering",
         "sheet"
@@ -2753,6 +4786,17 @@
       "group": "mechanical",
       "cost": "mutate",
       "summary": "Draw an ISO 128-40 cutting-plane line and return the plane the section view uses.",
+      "acad": [
+        "SECTIONPLANE"
+      ],
+      "synonyms": [
+        "cutting plane line",
+        "section line",
+        "section a-a",
+        "where to cut the part",
+        "view direction arrows",
+        "kesit cizgisi"
+      ],
       "tags": [
         "engineering",
         "mech"
@@ -2767,6 +4811,15 @@
       "group": "entity_query",
       "cost": "read",
       "summary": "Select entities by layer, type, colour, linetype or minimum area.",
+      "acad": [
+        "QSELECT"
+      ],
+      "synonyms": [
+        "select by properties",
+        "find all the red circles",
+        "everything on this layer",
+        "quick select"
+      ],
       "tags": [
         "entity",
         "query"
@@ -2781,6 +4834,14 @@
       "group": "entity_query",
       "cost": "read",
       "summary": "Read what the user already picked in the AutoCAD viewport (COM backend).",
+      "acad": [],
+      "synonyms": [
+        "current selection",
+        "what the user selected",
+        "picked entities",
+        "highlighted objects",
+        "pickfirst"
+      ],
       "tags": [
         "entity",
         "query"
@@ -2795,6 +4856,14 @@
       "group": "entity_query",
       "cost": "read",
       "summary": "Select entities inside or crossing an arbitrary polygon.",
+      "acad": [
+        "WPOLYGON"
+      ],
+      "synonyms": [
+        "select inside a polygon",
+        "lasso selection",
+        "pick everything in this shape"
+      ],
       "tags": [
         "entity",
         "query"
@@ -2809,6 +4878,15 @@
       "group": "entity_query",
       "cost": "read",
       "summary": "Select entities inside or crossing a rectangle.",
+      "acad": [
+        "SSGET"
+      ],
+      "synonyms": [
+        "select in a box",
+        "window selection",
+        "crossing selection",
+        "pick everything in this rectangle"
+      ],
       "tags": [
         "entity",
         "query"
@@ -2823,6 +4901,23 @@
       "group": "sheet",
       "cost": "mutate",
       "summary": "Draw an ISO 5457 sheet frame with the zone grid and centring marks.",
+      "acad": [
+        "MVSETUP"
+      ],
+      "synonyms": [
+        "sheet frame",
+        "drawing frame",
+        "drawing border",
+        "iso 5457",
+        "zone grid",
+        "grid reference system",
+        "centring marks",
+        "trimming marks",
+        "sheet margins",
+        "filing margin",
+        "pafta",
+        "cizim cercevesi"
+      ],
       "tags": [
         "engineering",
         "sheet"
@@ -2837,6 +4932,18 @@
       "group": "solids",
       "cost": "destructive",
       "summary": "Union, subtract or intersect two 3D solids; the tool solid is consumed.",
+      "acad": [
+        "UNION",
+        "SUBTRACT",
+        "INTERSECT"
+      ],
+      "synonyms": [
+        "boolean",
+        "union of solids",
+        "subtract a solid",
+        "cut a pocket",
+        "combine solids"
+      ],
       "tags": [
         "solid"
       ],
@@ -2850,6 +4957,15 @@
       "group": "solids",
       "cost": "mutate",
       "summary": "Create a 3D solid box (live AutoCAD, opt-in via ENABLE_3D).",
+      "acad": [
+        "BOX"
+      ],
+      "synonyms": [
+        "3d box",
+        "cuboid",
+        "solid block",
+        "rectangular solid"
+      ],
       "tags": [
         "solid"
       ],
@@ -2863,6 +4979,15 @@
       "group": "solids",
       "cost": "mutate",
       "summary": "Create a 3D solid cylinder or shaft (live AutoCAD, opt-in via ENABLE_3D).",
+      "acad": [
+        "CYLINDER"
+      ],
+      "synonyms": [
+        "3d cylinder",
+        "solid shaft",
+        "round solid",
+        "pin"
+      ],
       "tags": [
         "solid"
       ],
@@ -2876,6 +5001,15 @@
       "group": "solids",
       "cost": "mutate",
       "summary": "Pull a closed profile up into a 3D solid (live AutoCAD, opt-in via ENABLE_3D).",
+      "acad": [
+        "EXTRUDE"
+      ],
+      "synonyms": [
+        "extrude",
+        "pull a profile into 3d",
+        "give it thickness",
+        "solid from a profile"
+      ],
       "tags": [
         "solid"
       ],
@@ -2889,6 +5023,15 @@
       "group": "solids",
       "cost": "mutate",
       "summary": "Spin a closed profile around an axis into a 3D solid (opt-in via ENABLE_3D).",
+      "acad": [
+        "REVOLVE"
+      ],
+      "synonyms": [
+        "revolve",
+        "turn a profile around an axis",
+        "lathe",
+        "solid of revolution"
+      ],
       "tags": [
         "solid"
       ],
@@ -2902,6 +5045,25 @@
       "group": "mechanical",
       "cost": "mutate",
       "summary": "Draw a standard feature - thread, undercut, ring or O-ring groove, centre hole - onto existing geometry.",
+      "acad": [],
+      "synonyms": [
+        "draw a thread",
+        "thread representation",
+        "undercut",
+        "relief groove",
+        "retaining ring groove",
+        "circlip groove",
+        "snap ring groove",
+        "centre hole",
+        "center drill",
+        "o-ring groove",
+        "din 509",
+        "din 471",
+        "din 332",
+        "vida disi",
+        "segman kanali",
+        "punta deligi"
+      ],
       "tags": [
         "create",
         "mech"
@@ -2916,6 +5078,26 @@
       "group": "mechanical",
       "cost": "mutate",
       "summary": "Insert an ISO standard part - hex bolt, nut, washer, cap screw or ball bearing - as a tagged block.",
+      "acad": [
+        "INSERT"
+      ],
+      "synonyms": [
+        "insert a bolt",
+        "place a screw",
+        "draw a nut",
+        "add a washer",
+        "put a bearing in",
+        "hex bolt",
+        "socket head cap screw",
+        "allen screw",
+        "deep groove ball bearing",
+        "standard part",
+        "civata",
+        "somun",
+        "rondela",
+        "rulman",
+        "put an m12 hex bolt on the drawing"
+      ],
       "tags": [
         "create",
         "mech"
@@ -2930,6 +5112,21 @@
       "group": "mechanical",
       "cost": "read",
       "summary": "Search the standard-parts catalogue: ISO bolts, nuts, washers, cap screws, bearings.",
+      "acad": [],
+      "synonyms": [
+        "standard parts catalogue",
+        "what bolts do you have",
+        "bolt sizes",
+        "hex bolt table",
+        "bearing list",
+        "iso 4014 sizes",
+        "find a washer",
+        "civata listesi",
+        "rulman listesi",
+        "standards coverage",
+        "which sizes are transcribed",
+        "standart kapsami"
+      ],
       "tags": [
         "mech",
         "query"
@@ -2944,6 +5141,19 @@
       "group": "mechanical",
       "cost": "mutate",
       "summary": "Draw an ISO 21920-1 surface-texture symbol: Ra/Rz, process, lay, allowance.",
+      "acad": [],
+      "synonyms": [
+        "surface finish",
+        "surface roughness",
+        "surface texture symbol",
+        "roughness symbol",
+        "ra value",
+        "rz value",
+        "machining symbol",
+        "yuzey puruzlulugu",
+        "yuzey isleme sembolu",
+        "yüzey pürüzlülüğü"
+      ],
       "tags": [
         "engineering",
         "mech"
@@ -2958,6 +5168,15 @@
       "group": "system",
       "cost": "read",
       "summary": "See what this server can do: version, tool groups and active profile.",
+      "acad": [
+        "ABOUT"
+      ],
+      "synonyms": [
+        "about",
+        "what can this server do",
+        "capabilities overview",
+        "version information"
+      ],
       "tags": [
         "system"
       ],
@@ -2971,6 +5190,13 @@
       "group": "entity_query",
       "cost": "read",
       "summary": "Ask the active backend which features it really supports.",
+      "acad": [],
+      "synonyms": [
+        "what is supported",
+        "backend capabilities",
+        "feature support",
+        "can it do this"
+      ],
       "tags": [
         "query",
         "system"
@@ -2985,6 +5211,14 @@
       "group": "system",
       "cost": "read",
       "summary": "Read one AutoCAD system variable, such as DIMSCALE or LTSCALE.",
+      "acad": [
+        "SETVAR"
+      ],
+      "synonyms": [
+        "read a system variable",
+        "get a sysvar",
+        "current variable value"
+      ],
       "tags": [
         "system"
       ],
@@ -2998,6 +5232,14 @@
       "group": "environment",
       "cost": "safe",
       "summary": "Attach to the running AutoCAD or start it, optionally opening a file (live only).",
+      "acad": [],
+      "synonyms": [
+        "start autocad",
+        "launch autocad",
+        "attach to the running autocad",
+        "is autocad running",
+        "open autocad with this file"
+      ],
       "tags": [
         "environment",
         "system"
@@ -3013,6 +5255,16 @@
       "group": "environment",
       "cost": "read",
       "summary": "Read AutoCAD preferences from the whitelist (OPTIONS dialog values; live only).",
+      "acad": [
+        "OPTIONS"
+      ],
+      "synonyms": [
+        "read a preference",
+        "autosave interval",
+        "support file search path",
+        "what is the pickbox size",
+        "options dialog value"
+      ],
       "tags": [
         "environment",
         "system"
@@ -3027,6 +5279,16 @@
       "group": "environment",
       "cost": "safe",
       "summary": "Change one whitelisted AutoCAD preference; reports old and new (live only).",
+      "acad": [
+        "OPTIONS"
+      ],
+      "synonyms": [
+        "change a preference",
+        "set the autosave interval",
+        "cursor size",
+        "pickbox size",
+        "default plot style table"
+      ],
       "tags": [
         "environment",
         "system"
@@ -3042,6 +5304,14 @@
       "group": "environment",
       "cost": "safe",
       "summary": "Print a message on AutoCAD's command line (live only).",
+      "acad": [],
+      "synonyms": [
+        "message on the command line",
+        "tell the operator",
+        "print to the command line",
+        "command line note",
+        "say something in autocad"
+      ],
       "tags": [
         "environment",
         "system"
@@ -3057,6 +5327,14 @@
       "group": "system",
       "cost": "escape",
       "summary": "Send a raw command string to the AutoCAD command line (COM only).",
+      "acad": [],
+      "synonyms": [
+        "run an autocad command",
+        "command line",
+        "send a command string",
+        "macro",
+        "raw command"
+      ],
       "tags": [
         "system"
       ],
@@ -3070,6 +5348,14 @@
       "group": "system",
       "cost": "escape",
       "summary": "Evaluate an AutoLISP expression inside AutoCAD (COM only).",
+      "acad": [],
+      "synonyms": [
+        "autolisp",
+        "lisp",
+        "run a lisp expression",
+        "vlisp",
+        "script it"
+      ],
       "tags": [
         "system"
       ],
@@ -3083,6 +5369,14 @@
       "group": "system",
       "cost": "safe",
       "summary": "Set one AutoCAD system variable by name.",
+      "acad": [
+        "SETVAR"
+      ],
+      "synonyms": [
+        "set a system variable",
+        "change a sysvar",
+        "configure an autocad variable"
+      ],
       "tags": [
         "system"
       ],
@@ -3096,6 +5390,13 @@
       "group": "system",
       "cost": "read",
       "summary": "Check the connection: which engine is live and what document is open.",
+      "acad": [],
+      "synonyms": [
+        "server status",
+        "is autocad connected",
+        "backend status",
+        "health check"
+      ],
       "tags": [
         "system"
       ],
@@ -3109,6 +5410,20 @@
       "group": "environment",
       "cost": "read",
       "summary": "Explain a system variable: type, range, default, where it is saved, which engine honours it.",
+      "acad": [
+        "SETVAR",
+        "SYSVARMONITOR",
+        "SYSVDLG"
+      ],
+      "synonyms": [
+        "sysvar",
+        "what does ltscale do",
+        "explain a system variable",
+        "system variable reference",
+        "which variables are saved in the drawing",
+        "valid range of a system variable",
+        "list system variables"
+      ],
       "tags": [
         "environment",
         "settings",
@@ -3124,6 +5439,16 @@
       "group": "templates",
       "cost": "mutate",
       "summary": "Create a standard layer set: architectural, mechanical, electrical or piping.",
+      "acad": [
+        "LAYTRANS"
+      ],
+      "synonyms": [
+        "apply a layer template",
+        "standard layers",
+        "architectural layers",
+        "mechanical layers",
+        "translate the layers"
+      ],
       "tags": [
         "layer",
         "template"
@@ -3138,6 +5463,12 @@
       "group": "templates",
       "cost": "read",
       "summary": "Show the available layer templates and the layers in each.",
+      "acad": [],
+      "synonyms": [
+        "available templates",
+        "what layer templates exist",
+        "list the templates"
+      ],
       "tags": [
         "query",
         "template"
@@ -3152,6 +5483,15 @@
       "group": "entity_modification",
       "cost": "mutate",
       "summary": "Find and replace text across the drawing.",
+      "acad": [
+        "FIND"
+      ],
+      "synonyms": [
+        "find and replace text",
+        "replace text everywhere",
+        "search and replace",
+        "change all the labels"
+      ],
       "tags": [
         "entity",
         "modify"
@@ -3166,6 +5506,15 @@
       "group": "entity_modification",
       "cost": "mutate",
       "summary": "Put an opaque background box behind an MTEXT.",
+      "acad": [
+        "BACKGROUNDMASK"
+      ],
+      "synonyms": [
+        "text background mask",
+        "make the text readable over hatch",
+        "opaque box behind text",
+        "background fill for mtext"
+      ],
       "tags": [
         "entity",
         "modify"
@@ -3180,6 +5529,16 @@
       "group": "styles",
       "cost": "mutate",
       "summary": "Create a text style from a bundled font (isocp, isocpeur, arial, romans) or any file.",
+      "acad": [
+        "STYLE"
+      ],
+      "synonyms": [
+        "new text style",
+        "create a text style",
+        "isocp font",
+        "set the font",
+        "text style with width factor and oblique angle"
+      ],
       "tags": [
         "create",
         "style"
@@ -3194,6 +5553,15 @@
       "group": "styles",
       "cost": "read",
       "summary": "List text styles: font file, height, width factor, oblique angle.",
+      "acad": [
+        "STYLE"
+      ],
+      "synonyms": [
+        "list text styles",
+        "fonts loaded in the drawing",
+        "text style table",
+        "current text style"
+      ],
       "tags": [
         "query",
         "style"
@@ -3208,6 +5576,16 @@
       "group": "styles",
       "cost": "safe",
       "summary": "Make a text style current so new text uses it.",
+      "acad": [
+        "STYLE",
+        "TEXTSTYLE"
+      ],
+      "synonyms": [
+        "make this text style current",
+        "switch the text style",
+        "use isocp for new text",
+        "active text style"
+      ],
       "tags": [
         "modify",
         "style"
@@ -3222,6 +5600,22 @@
       "group": "sheet",
       "cost": "mutate",
       "summary": "Stamp an ISO 7200 title block (and frame) on any sheet from A4 to A0.",
+      "acad": [],
+      "synonyms": [
+        "title block",
+        "iso 7200",
+        "drawing header",
+        "sheet title block",
+        "a0 title block",
+        "a1 title block",
+        "a2 title block",
+        "a4 title block",
+        "projection angle symbol",
+        "first angle symbol",
+        "third angle symbol",
+        "antet",
+        "baslik blogu"
+      ],
       "tags": [
         "engineering",
         "sheet"
@@ -3236,6 +5630,15 @@
       "group": "engineering",
       "cost": "mutate",
       "summary": "Stamp an ISO 7200 title block and sheet frame onto an A3 drawing.",
+      "acad": [],
+      "synonyms": [
+        "title block",
+        "drawing frame",
+        "sheet border",
+        "iso 7200",
+        "a3 sheet",
+        "drawing header"
+      ],
       "tags": [
         "engineering",
         "titleblock"
@@ -3250,6 +5653,14 @@
       "group": "transactions",
       "cost": "mutate",
       "summary": "Open a rollback checkpoint before a risky edit.",
+      "acad": [],
+      "synonyms": [
+        "start a transaction",
+        "undo mark",
+        "checkpoint",
+        "savepoint",
+        "begin a safe edit"
+      ],
       "tags": [
         "transaction"
       ],
@@ -3264,6 +5675,13 @@
       "group": "transactions",
       "cost": "safe",
       "summary": "Keep the changes and drop the checkpoint.",
+      "acad": [],
+      "synonyms": [
+        "commit",
+        "keep the changes",
+        "end the transaction",
+        "accept the edits"
+      ],
       "tags": [
         "transaction"
       ],
@@ -3278,6 +5696,13 @@
       "group": "transactions",
       "cost": "destructive",
       "summary": "Throw away every change made since transaction_begin.",
+      "acad": [],
+      "synonyms": [
+        "rollback",
+        "discard the changes",
+        "revert the transaction",
+        "undo back to the checkpoint"
+      ],
       "tags": [
         "transaction"
       ],
@@ -3292,6 +5717,16 @@
       "group": "environment",
       "cost": "read",
       "summary": "List the user coordinate systems, with the implicit world one.",
+      "acad": [
+        "UCS",
+        "UCSMAN"
+      ],
+      "synonyms": [
+        "the current ucs",
+        "list coordinate systems",
+        "named ucs",
+        "ucs manager"
+      ],
       "tags": [
         "environment",
         "view"
@@ -3306,6 +5741,16 @@
       "group": "environment",
       "cost": "safe",
       "summary": "Make a saved UCS current, or `world` to reset to WCS.",
+      "acad": [
+        "UCS"
+      ],
+      "synonyms": [
+        "back to world coordinates",
+        "reset the ucs",
+        "ucs world",
+        "switch to a saved ucs",
+        "make that coordinate system current"
+      ],
       "tags": [
         "environment",
         "view"
@@ -3321,6 +5766,16 @@
       "group": "environment",
       "cost": "safe",
       "summary": "Define (or replace) a named UCS from an origin and two perpendicular axes, and make it current.",
+      "acad": [
+        "UCS"
+      ],
+      "synonyms": [
+        "user coordinate system",
+        "define a ucs",
+        "new coordinate system at this origin",
+        "rotate the ucs",
+        "ucs origin"
+      ],
       "tags": [
         "environment",
         "view"
@@ -3336,6 +5791,16 @@
       "group": "environment",
       "cost": "read",
       "summary": "Ask the operator to pick a point on screen (live only; blocks until they do).",
+      "acad": [
+        "ID"
+      ],
+      "synonyms": [
+        "pick a point",
+        "click a point on screen",
+        "ask the operator for a point",
+        "where should this go",
+        "let me click"
+      ],
       "tags": [
         "environment",
         "system"
@@ -3350,6 +5815,16 @@
       "group": "environment",
       "cost": "read",
       "summary": "Ask the operator to select one entity or a set on screen (live only).",
+      "acad": [
+        "SELECT"
+      ],
+      "synonyms": [
+        "let me select",
+        "pick objects on screen",
+        "ask the operator to select",
+        "select on screen",
+        "hand me the selection"
+      ],
       "tags": [
         "environment",
         "system"
@@ -3364,6 +5839,14 @@
       "group": "validation",
       "cost": "read",
       "summary": "Sanity-check the drawing for empty layers, zero-length lines and duplicates.",
+      "acad": [],
+      "synonyms": [
+        "quality check",
+        "find duplicates",
+        "empty layers",
+        "zero length lines",
+        "sanity check the drawing"
+      ],
       "tags": [
         "analysis",
         "validation"
@@ -3378,6 +5861,14 @@
       "group": "environment",
       "cost": "read",
       "summary": "List the named views saved in this drawing.",
+      "acad": [
+        "VIEW"
+      ],
+      "synonyms": [
+        "saved views",
+        "existing named views",
+        "list the views"
+      ],
       "tags": [
         "environment",
         "view"
@@ -3392,6 +5883,15 @@
       "group": "environment",
       "cost": "safe",
       "summary": "Restore a named view.",
+      "acad": [
+        "VIEW"
+      ],
+      "synonyms": [
+        "go to the saved view",
+        "restore a named view",
+        "jump to the detail view",
+        "recall the view"
+      ],
       "tags": [
         "environment",
         "view"
@@ -3407,6 +5907,16 @@
       "group": "environment",
       "cost": "safe",
       "summary": "Save a named view: a centre and height (and width) to come back to.",
+      "acad": [
+        "VIEW"
+      ],
+      "synonyms": [
+        "save this view",
+        "named view",
+        "remember where i am looking",
+        "bookmark the view",
+        "save a detail view"
+      ],
       "tags": [
         "environment",
         "view"
@@ -3422,6 +5932,14 @@
       "group": "view",
       "cost": "read",
       "summary": "Capture a PNG picture of the drawing as it currently looks.",
+      "acad": [],
+      "synonyms": [
+        "screenshot",
+        "picture of the drawing",
+        "render an image",
+        "preview",
+        "what does it look like"
+      ],
       "tags": [
         "screenshot",
         "view"
@@ -3436,6 +5954,15 @@
       "group": "view",
       "cost": "read",
       "summary": "Fit the drawing on screen, then capture it: the quickest visual check.",
+      "acad": [
+        "ZOOM"
+      ],
+      "synonyms": [
+        "show me the drawing",
+        "zoom then capture",
+        "fit and screenshot",
+        "visual check"
+      ],
       "tags": [
         "screenshot",
         "view"
@@ -3450,6 +5977,14 @@
       "group": "view",
       "cost": "safe",
       "summary": "Zoom out until every entity fits on screen.",
+      "acad": [
+        "ZOOM"
+      ],
+      "synonyms": [
+        "zoom to fit",
+        "fit the drawing on screen",
+        "see everything"
+      ],
       "tags": [
         "view"
       ],
@@ -3464,6 +5999,14 @@
       "group": "view",
       "cost": "safe",
       "summary": "Zoom in on a rectangular region of the drawing.",
+      "acad": [
+        "ZOOM"
+      ],
+      "synonyms": [
+        "zoom into a region",
+        "close up of an area",
+        "magnify a rectangle"
+      ],
       "tags": [
         "view"
       ],
@@ -3478,6 +6021,17 @@
       "group": "layouts",
       "cost": "mutate",
       "summary": "Put a scaled window onto model space on a sheet, at 1:1, 1:2 and so on.",
+      "acad": [
+        "MVIEW",
+        "MV",
+        "VPORTS"
+      ],
+      "synonyms": [
+        "viewport",
+        "scaled window on a sheet",
+        "model view on paper",
+        "paper space window"
+      ],
       "tags": [
         "layout"
       ],
@@ -3491,6 +6045,12 @@
       "group": "layouts",
       "cost": "destructive",
       "summary": "Remove a viewport from a sheet.",
+      "acad": [],
+      "synonyms": [
+        "delete a viewport",
+        "remove a viewport",
+        "get rid of the window on the sheet"
+      ],
       "tags": [
         "layout"
       ],
@@ -3504,6 +6064,13 @@
       "group": "layouts",
       "cost": "read",
       "summary": "List the viewports on a sheet with their scales and locks.",
+      "acad": [],
+      "synonyms": [
+        "list the viewports",
+        "what viewports are on this sheet",
+        "viewport scales",
+        "show the windows on the layout"
+      ],
       "tags": [
         "layout",
         "query"
@@ -3518,6 +6085,13 @@
       "group": "layouts",
       "cost": "safe",
       "summary": "Lock a viewport so its scale cannot be zoomed away.",
+      "acad": [],
+      "synonyms": [
+        "lock a viewport",
+        "unlock a viewport",
+        "stop the viewport scale changing",
+        "display locked"
+      ],
       "tags": [
         "layout"
       ],
@@ -3530,6 +6104,15 @@
       "group": "layouts",
       "cost": "mutate",
       "summary": "Set a viewport's scale, e.g. 1:2 or 1:50.",
+      "acad": [
+        "ZOOM"
+      ],
+      "synonyms": [
+        "set the viewport scale",
+        "make this viewport 1:50",
+        "rescale a viewport",
+        "zoom xp"
+      ],
       "tags": [
         "layout"
       ],
@@ -3543,6 +6126,19 @@
       "group": "mechanical",
       "cost": "mutate",
       "summary": "Draw an ISO 2553 weld symbol: reference line, identification line, size and pitch.",
+      "acad": [],
+      "synonyms": [
+        "weld symbol",
+        "welding symbol",
+        "fillet weld",
+        "butt weld",
+        "weld callout",
+        "field weld",
+        "weld all around",
+        "kaynak sembolu",
+        "kose kaynagi",
+        "kaynak sembolü"
+      ],
       "tags": [
         "engineering",
         "mech"
@@ -3557,6 +6153,17 @@
       "group": "sheet",
       "cost": "mutate",
       "summary": "Attach a DWG/DXF as an external reference (attachment or overlay).",
+      "acad": [
+        "XATTACH"
+      ],
+      "synonyms": [
+        "attach an xref",
+        "external reference",
+        "xref",
+        "reference another drawing",
+        "overlay a drawing",
+        "harici referans"
+      ],
       "tags": [
         "block",
         "drawing",
@@ -3572,6 +6179,19 @@
       "group": "sheet",
       "cost": "mutate",
       "summary": "List, reload, bind, detach or repath an external reference.",
+      "acad": [
+        "XREF",
+        "XBIND"
+      ],
+      "synonyms": [
+        "list the xrefs",
+        "reload an xref",
+        "bind an xref",
+        "detach an xref",
+        "repath an xref",
+        "xref manager",
+        "broken xref path"
+      ],
       "tags": [
         "block",
         "drawing",

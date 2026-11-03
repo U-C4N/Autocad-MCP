@@ -60,6 +60,7 @@ def report() -> dict:
 def _rows(report: dict) -> list[dict]:
     """Every measured row in the report, whatever lane it came from."""
     rows = list(report["idle"])
+    rows.extend(row["wire"] for row in report["idle"])
     for arm in report["discovery"]["arms"]:
         rows.extend(arm["queries"])
     rows.extend(report["result"]["scenarios"])
@@ -161,18 +162,32 @@ def test_the_cache_arithmetic_follows_the_published_multipliers():
 # -- lane 1: idle cost ------------------------------------------------------
 
 
-def test_the_idle_lane_covers_the_five_advertised_surfaces(report):
-    """Default, lean, search - and the two single-vertical clients:
+def test_the_idle_lane_covers_the_advertised_surfaces_and_the_instructions(report):
+    """Default, lean, TOOL_PACKS=core, search - the two single-vertical clients:
     TOOL_PACKS=core,mech (the default surface minus exactly the pid, settings,
     arch and plant packs) and TOOL_PACKS=core,arch (minus pid, settings, mech
-    and plant)."""
+    and plant) - and, since 1.8-14, the server instructions."""
     variants = {row["variant"]: row for row in report["idle"]}
-    assert set(variants) == {"default", "lean", "packs_core_mech", "packs_core_arch", "search"}
+    assert set(variants) == {
+        "default",
+        "lean",
+        "packs_core",
+        "packs_core_mech",
+        "packs_core_arch",
+        "search",
+        "instructions",
+    }
     assert variants["default"]["advertised_tools"] > 100
     assert variants["lean"]["advertised_tools"] == len(server.LEAN_TOOL_NAMES)
     # search_tools + call_tool + describe_tool
     assert variants["search"]["advertised_tools"] == 3
     packs = server.PACK_TOOL_NAMES
+    assert variants["packs_core"]["advertised_tools"] == (
+        variants["default"]["advertised_tools"]
+        - sum(len(packs[name]) for name in ("pid", "settings", "mech", "arch", "plant"))
+    )
+    assert variants["instructions"]["kind"] == "instructions"
+    assert variants["instructions"]["chars"] == len(server.mcp.instructions)
     assert variants["packs_core_mech"]["advertised_tools"] == (
         variants["default"]["advertised_tools"]
         - len(packs["pid"])
@@ -196,11 +211,31 @@ def test_the_idle_lane_covers_the_five_advertised_surfaces(report):
         )
 
 
-def test_the_idle_lane_separates_the_wire_payload_from_what_the_model_pays(report):
-    """tools/list carries annotations, titles and _meta a client need not forward."""
+def test_the_idle_headline_is_what_the_model_pays_with_the_wire_beside_it(report):
+    """1.8-14: the headline prices the tools array a client forwards (prompt
+    payload); tools/list also carries annotations, titles and _meta, which stay
+    measured as the ``wire`` column - the basis of 1.7.0's 89,226 and 503."""
+    assert report["idle_basis"] == "prompt_payload"
     for row in report["idle"]:
-        assert row["chars"] == row["wire_chars"]
-        assert 0 < row["prompt_chars"] < row["wire_chars"]
+        assert row["chars"] == row["prompt_chars"]
+        assert row["wire"]["chars"] == row["wire_chars"]
+        if row["kind"] == "tools_list":
+            assert row["basis"] == "prompt_payload"
+            assert 0 < row["prompt_chars"] < row["wire_chars"]
+            assert row["prompt_cache"] == ts.cacheability(row["tokens"]["value"])
+
+
+def test_the_meta_card_no_longer_carries_the_alias_lists(report):
+    """1.8-14: acad/synonyms left meta["cad"], so the wire shrank by their size."""
+
+    async def _metas() -> list[dict]:
+        from fastmcp import Client
+
+        async with Client(server.mcp) as client:
+            return [dict(tool.meta or {}) for tool in await client.list_tools()]
+
+    for meta in asyncio.run(_metas()):
+        assert set(meta.get("cad") or {}) <= {"summary", "cost"}
 
 
 def test_the_search_mode_prefix_falls_below_the_prompt_cache_minimum(report):
@@ -319,6 +354,246 @@ def test_the_suite_leaves_the_shared_server_as_it_found_it(report):
     names = asyncio.run(_names())
     assert len(names) > 100
     assert "search_tools" not in names
+
+
+# -- lane 4: task cost (1.8-14) ---------------------------------------------
+
+BUDGET = json.loads(ts.DEFAULT_BUDGET.read_text(encoding="utf-8"))
+
+
+def _scenarios(report: dict) -> dict[str, dict]:
+    return {row["scenario"]: row for row in report["task"]["scenarios"]}
+
+
+def test_the_task_lane_runs_every_scenario_both_ways_on_the_headless_engine(report):
+    rows = _scenarios(report)
+    assert set(rows) == {
+        "layer_cleanup_300",
+        "dimension_plate",
+        "sketch_20_entities",
+        "inspect_foreign",
+        "history_value_lookup",
+    }
+    assert set(rows) == set(BUDGET["task"])
+    for name, row in rows.items():
+        naive = row["arms"]["naive"]
+        assert naive["status"] == "measured", (name, naive["detail"])
+        assert naive["verified"] is True
+        assert naive["label"].startswith("naive: one tool per entity"), "the naive arm is labelled"
+        assert naive["calls"] == len(naive["sizes"]) > 0
+        assert naive["request_chars"] == sum(size[0] for size in naive["sizes"])
+        assert naive["result_chars"] == sum(size[1] for size in naive["sizes"])
+
+
+def test_a_batched_oracle_that_exists_meets_its_ceiling(report):
+    """Where the verb exists the oracle runs, does the job and stays within the ceiling."""
+    measured = 0
+    for name, row in _scenarios(report).items():
+        batched = row["arms"]["batched"]
+        if batched["status"] == "pending_tool":
+            continue
+        measured += 1
+        assert batched["status"] == "measured", (name, batched["detail"])
+        assert batched["calls"] <= BUDGET["task"][name]["ceiling"], name
+        assert batched["calls"] < row["arms"]["naive"]["calls"], name
+    assert measured >= 2, "sketch_20_entities and inspect_foreign have their verbs today"
+
+
+def test_a_missing_verb_is_pending_never_a_pass(report):
+    rows = _scenarios(report)
+    for name, verbs in (
+        ("layer_cleanup_300", {"entity_modify_where", "layer_merge"}),
+        ("dimension_plate", {"dimension_auto_v2"}),
+        ("history_value_lookup", {"drawing_history"}),
+    ):
+        batched = rows[name]["arms"]["batched"]
+        assert batched["status"] == "pending_tool"
+        assert batched["verified"] is None
+        assert set(batched["missing_tools"]) == verbs
+        assert batched["session"] is None
+    checked = ts.check_budget(report, BUDGET)
+    pending = {item["cell"] for item in checked["pending"]}
+    assert {"task.layer_cleanup_300", "task.dimension_plate", "task.history_value_lookup"} <= (
+        pending
+    )
+    passed = {item["cell"] for item in checked["checked"]}
+    assert not any(cell.startswith("task.") for cell in passed)
+
+
+def test_every_measured_arm_is_priced_as_a_session(report):
+    prefix = report["task"]["prefix"]["tokens"]
+    assert prefix == (
+        {row["variant"]: row for row in report["idle"]}["default"]["tokens"]["value"]
+        + {row["variant"]: row for row in report["idle"]}["instructions"]["tokens"]["value"]
+    )
+    for row in report["task"]["scenarios"]:
+        for arm in row["arms"].values():
+            if arm["status"] == "pending_tool":
+                continue
+            session = arm["session"]
+            assert session["turns"] == arm["calls"] + 1
+            assert session["prefix_tokens"] == prefix
+            assert session["session_input_uncached"] > session["session_input_cached"]
+            assert session["session_input_uncached"] >= prefix * session["turns"]
+
+
+def test_the_session_model_resends_every_earlier_span():
+    """Three calls of 10, 20 and 30 tokens behind a 100-token prefix: four turns.
+
+    Uncached: 4 x 100 + 10 x 3 + 20 x 2 + 30 x 1 = 500. Cached: the prefix
+    written once and read three times (125 + 30), each span written once and
+    read on its later turns (12.5 + 2, 25 + 2, 37.5).
+    """
+    session = ts.session_input([10, 20, 30], 100)
+    assert session["turns"] == 4
+    assert session["history_tokens"] == 60
+    assert session["session_input_uncached"] == pytest.approx(500.0)
+    assert session["session_input_cached"] == pytest.approx(155 + 14.5 + 27 + 37.5)
+
+
+# -- the budget (token_budget.json, --budget) --------------------------------
+
+
+def test_the_budget_file_is_the_plans_table():
+    """Fixed before W2: ceilings, gates and owners, and the 1.7.0 baselines."""
+    assert BUDGET["growth_limit_pct"] == 5.0
+    baseline = BUDGET["baseline"]["v1.7.0_readme_wire"]
+    assert (baseline["default"], baseline["search"], baseline["lean"], baseline["packs_core"]) == (
+        89_226,
+        503,
+        25_066,
+        61_422,
+    )
+    measured = BUDGET["baseline"]["v1.7.0_measured"]
+    for name in ("default", "lean", "packs_core"):
+        # measured 1.7.0 prompt value + 5 %, rounded down
+        assert BUDGET["idle"][name]["ceiling"] == int(measured[name]["prompt_tokens"] * 1.05)
+    assert BUDGET["idle"]["search"]["ceiling"] == 250
+    assert BUDGET["idle"]["instructions"]["ceiling"] == 250
+    assert BUDGET["idle"]["search_pinned"]["ceiling"] == 1_500
+    assert "2,730" in BUDGET["idle"]["search_pinned"]["note"]
+    for lane in ("idle", "result", "task"):
+        for name, cell in BUDGET[lane].items():
+            assert cell["gate"] in ("ci", "release"), name
+            assert cell.get("owner"), name
+    calls = {name: cell["ceiling"] for name, cell in BUDGET["task"].items()}
+    assert calls["layer_cleanup_300"] == 3
+    assert calls["dimension_plate"] == 2
+    assert calls["sketch_20_entities"] == 1
+    assert calls["history_value_lookup"] == 2
+
+
+def _idle_report(rows: list[dict]) -> dict:
+    return {"idle": rows, "task": None}
+
+
+def _row(variant: str, prompt: int, wire: int | None = None, kind: str = "tools_list") -> dict:
+    wire = prompt if wire is None else wire
+    return {
+        "variant": variant,
+        "kind": kind,
+        "basis": "text" if kind == "instructions" else "prompt_payload",
+        "tokens": {"value": prompt},
+        "wire": {"tokens": {"value": wire}},
+    }
+
+
+def test_a_ci_cell_over_its_ceiling_fails_and_a_release_cell_is_reported():
+    budget = {
+        "growth_limit_pct": 5.0,
+        "idle": {
+            "default": {"basis": ["prompt_payload"], "ceiling": 100, "gate": "ci", "owner": "x"},
+            "lean": {"basis": ["prompt_payload"], "ceiling": 10, "gate": "release", "owner": "y"},
+        },
+    }
+    report = _idle_report([_row("default", 101), _row("lean", 11)])
+    checked = ts.check_budget(report, budget)
+    assert not checked["ok"]
+    assert [item["cell"] for item in checked["violations"]] == ["idle.default"]
+    assert [item["cell"] for item in checked["over_ceiling"]] == ["idle.lean"]
+    released = ts.check_budget(report, budget, release=True)
+    assert {item["cell"] for item in released["violations"]} == {"idle.default", "idle.lean"}
+    within = ts.check_budget(_idle_report([_row("default", 100), _row("lean", 10)]), budget)
+    assert within["ok"]
+    assert within["over_ceiling"] == []
+
+
+def test_a_ci_cell_nothing_measured_fails():
+    budget = {"idle": {"default": {"basis": ["prompt_payload"], "ceiling": 9, "gate": "ci"}}}
+    checked = ts.check_budget(_idle_report([]), budget)
+    assert checked["violations"][0]["reason"] == "not measured"
+
+
+def test_growth_beyond_five_percent_against_the_published_report_fails():
+    budget = {"growth_limit_pct": 5.0, "idle": {}}
+    published = _idle_report(
+        [_row("default", 1000), _row("instructions", 400, kind="instructions")]
+    )
+    grown = ts.check_budget(_idle_report([_row("default", 1051)]), budget, published)
+    assert not grown["ok"]
+    assert grown["violations"][0]["cell"] == "growth.default"
+    held = ts.check_budget(_idle_report([_row("default", 1050)]), budget, published)
+    assert held["ok"]
+    assert held["growth"][0]["pct"] == 5.0
+
+
+def test_a_published_report_from_before_the_prompt_headline_is_read_on_its_prompt_column():
+    """A 1.7.0-shaped row (wire headline, nested prompt_payload) compares like with like."""
+    old = {
+        "variant": "default",
+        "tokens": {"value": 89_000},
+        "prompt_payload": {"tokens": {"value": 1000}},
+    }
+    checked = ts.check_budget(_idle_report([_row("default", 1040)]), {"idle": {}}, {"idle": [old]})
+    assert checked["growth"][0]["published"] == 1000
+    assert checked["ok"]
+
+
+def test_a_docstring_inflated_by_two_thousand_tokens_fails_the_budget(report, monkeypatch):
+    """The gate shown once: +2k tokens on one lean tool's description must fail it.
+
+    In memory only - nothing is committed. It fails twice over: the default
+    surface passes its ci ceiling, and lean grows more than 5 % on the
+    report this module measured a moment ago.
+    """
+    padding = " Inflated." * int(2_000 * ts.CHARS_PER_TOKEN["json_schema"].chars_per_token / 10)
+    # the module the suite measures: tests/test_http_auth.py re-imports server.py,
+    # so this module's own `server` may be an older copy than sys.modules holds
+    live = ts._load_server()
+    tool = next(t for t in live._local_tool_components() if t.name == "entity_create_line")
+    assert tool.name in live.LEAN_TOOL_NAMES
+    monkeypatch.setattr(tool, "description", (tool.description or "") + padding)
+    inflated = {"idle": asyncio.run(ts.idle_lane(ts.RatioTokenCounter())), "task": None}
+    budget = {key: BUDGET[key] for key in ("growth_limit_pct", "idle")}
+    clean = ts.check_budget(
+        {"idle": report["idle"], "task": None}, budget, {"idle": report["idle"]}
+    )
+    checked = ts.check_budget(inflated, budget, {"idle": report["idle"]})
+    assert clean["ok"], clean["violations"]
+    assert not checked["ok"]
+    failed = {item["cell"] for item in checked["violations"]}
+    assert "growth.lean" in failed
+    assert "idle.default" in failed or "growth.default" in failed
+
+
+def test_ci_runs_both_budgets_on_every_pull_request():
+    """T3 (-1 'a failed report drops the gate'): the budgets are a PR gate, not a report."""
+    import yaml
+
+    workflow = yaml.safe_load(
+        (ts.ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    )
+    triggers = workflow.get("on") or workflow.get(True)
+    assert "pull_request" in triggers
+    runs = "\n".join(step.get("run", "") for step in workflow["jobs"]["token-budget"]["steps"])
+    assert "benchmarks.token_suite" in runs
+    assert "--budget benchmarks/token_budget.json" in " ".join(runs.split())
+    assert "benchmarks.call_budget" in runs
+
+
+def test_the_cli_refuses_a_budget_in_another_unit(capsys):
+    assert ts.main(["--tokenizer", "anthropic", "--budget", str(ts.DEFAULT_BUDGET)]) == 2
+    assert "ratio" in capsys.readouterr().err
 
 
 # -- the human summary ------------------------------------------------------

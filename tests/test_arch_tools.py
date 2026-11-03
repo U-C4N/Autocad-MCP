@@ -12,6 +12,7 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
 import server
+from discovery.aliases import aliases_for
 
 pytestmark = pytest.mark.asyncio
 
@@ -41,7 +42,10 @@ async def test_the_four_tools_are_registered_under_the_architecture_group():
     for name in ARCH_TOOLS:
         card = (tools[name].meta or {})["cad"]
         assert card["cost"] == "mutate"
-        assert card["synonyms"], f"{name} needs an alias record"
+        # 1.8-14: the card is {summary, cost}; the aliases stay in the corpus
+        assert aliases_for(name) is not None and aliases_for(name).synonyms, (
+            f"{name} needs an alias record"
+        )
 
 
 async def test_a_plan_built_tool_by_tool(client):

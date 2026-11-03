@@ -301,13 +301,17 @@ async def test_cad_tool_publishes_discovery_meta(name):
 
 
 @pytest.mark.parametrize("name", CAD_TOOL_SECTION)
-async def test_cad_tool_pulls_aliases_from_the_discovery_corpus(name):
-    """The corpus is the single source of truth; server.py must not restate it."""
+async def test_cad_tool_leaves_the_aliases_in_the_discovery_corpus(name):
+    """1.8-14: the card is {summary, cost}; acad/synonyms stay in the corpus.
+
+    The corpus is the single source of truth, read by the ranker,
+    describe_tool and the inventory generator through aliases_for - never
+    copied onto every tools/list entry.
+    """
     record = aliases_for(name)
     cad = (_component(name).meta or {})["cad"]
-    assert cad["acad"] == list(record.acad)
-    assert cad["synonyms"] == list(record.synonyms)
-    assert cad["synonyms"], "the transaction tools do carry synonyms"
+    assert set(cad) == {"summary", "cost"}
+    assert record.synonyms, "the transaction tools do carry synonyms"
 
 
 async def test_cad_tool_meta_reaches_the_wire(monkeypatch):
@@ -315,8 +319,11 @@ async def test_cad_tool_meta_reaches_the_wire(monkeypatch):
     async with Client(server.mcp) as client:
         tools = {tool.name: tool for tool in await client.list_tools()}
     cad = tools["transaction_rollback"].meta["cad"]
-    assert cad["cost"] == "destructive"
-    assert "rollback" in cad["synonyms"]
+    assert cad == {
+        "summary": (_component("transaction_rollback").meta or {})["cad"]["summary"],
+        "cost": "destructive",
+    }
+    assert "rollback" in aliases_for("transaction_rollback").synonyms
 
 
 async def test_cad_tool_rejects_an_unknown_cost():
@@ -421,17 +428,19 @@ async def test_only_the_raw_passthroughs_are_costed_escape():
     assert escapes == ["system_run_command", "system_run_lisp"]
 
 
-async def test_no_tool_restates_its_aliases_in_server_py():
-    """@cad_tool copies the corpus; server.py must never hand-write acad/synonyms."""
-    bad: list[str] = []
-    for tool in await server._registered_tools():
-        cad = _cad(tool) or {}
-        record = aliases_for(tool.name)
-        expected_acad = list(record.acad) if record else []
-        expected_synonyms = list(record.synonyms) if record else []
-        if cad.get("acad") != expected_acad or cad.get("synonyms") != expected_synonyms:
-            bad.append(tool.name)
-    assert not bad, f"cad metadata out of step with discovery.aliases: {bad}"
+async def test_no_tool_carries_its_aliases_in_the_meta_card():
+    """1.8-14: the card is {summary, cost} on every tool - no acad/synonyms copy.
+
+    The aliases cost every full-catalog client tokens on each tools/list and
+    only a search reads them; describe_tool and docs/tool-inventory.json carry
+    them from discovery.aliases instead.
+    """
+    bad = sorted(
+        tool.name
+        for tool in await server._registered_tools()
+        if set(_cad(tool) or {}) != {"summary", "cost"}
+    )
+    assert not bad, f"cad cards with keys beyond summary/cost: {bad}"
 
 
 # ── tags are load-bearing: _tool_groups() feeds system_about ────────────────

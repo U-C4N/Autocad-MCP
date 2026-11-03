@@ -50,6 +50,7 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
 import server
+from discovery.aliases import aliases_for
 
 pytestmark = pytest.mark.asyncio
 
@@ -111,7 +112,9 @@ async def test_cad_batch_is_registered_with_a_discovery_card():
     card = (tools["cad_batch"].meta or {})["cad"]
     assert card["cost"] == "destructive", "it can run any mutating tool, so it costs the worst case"
     assert card["summary"] and "\n" not in card["summary"]
-    assert card["synonyms"], "the alias corpus must cover it"
+    # 1.8-14: the aliases live in the corpus (describe_tool, the inventory), not the card
+    assert set(card) == {"summary", "cost"}
+    assert aliases_for("cad_batch").synonyms, "the alias corpus must cover it"
 
 
 async def test_cad_batch_is_filed_under_the_batch_group():
