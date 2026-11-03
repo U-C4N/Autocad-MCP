@@ -84,6 +84,7 @@ More than 3 consecutive calls to the same tool = a missed batch tool.
 | Dimension a part | `dimension_auto(selector=...)` |
 | Part, P&ID, plan | `mech_part_from_spec`, `pid_from_spec`, `arch_plan_from_spec` |
 | Read a foreign drawing | `drawing_understand` |
+| Check the result | its own `created`/`omitted`, one `drawing_critique`; never `entity_get` per handle |
 
 ## 5. Reporting
 

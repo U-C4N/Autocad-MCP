@@ -754,6 +754,9 @@ def test_the_call_budget_cases_fail_above_six_calls() -> None:
             d for d, _ in graders.values() if d.get("type") == "tool_used" and d.get("input_match")
         ]
         assert per_call and all(d["max"] <= 2 for d in per_call), name
+        # the CLI's tool_used min defaults to 1 ("expected 1..2", measured in the
+        # 1.8-11 run): without min 0 the grader fails the agent that never loops
+        assert all(d.get("min") == 0 for d in per_call), name
 
 
 def test_the_suite_uses_every_grader_type_the_spec_names() -> None:

@@ -199,6 +199,9 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
             "capabilities": self.backend.capabilities().to_dict() if self.backend else None,
             # 1.8-11: in search mode the in-process client tasks call through call_tool
             "discovery_mode": "search" if _search_mode() else "off",
+            # how many tool calls of this run went through the call_tool proxy
+            # (0 in "off"): the evidence a search-mode pass is not vacuous
+            "proxied_calls": getattr(self, "_proxied_calls", 0),
         }
 
     async def _reset(self) -> None:
@@ -1100,7 +1103,16 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
                 # 1.8-11: under DISCOVERY_MODE=search every call goes through the
                 # call_tool proxy, as a client that sees only the listed tools
                 # makes it - the evidence the server default flips on.
-                yield _ProxiedClient(client) if _search_mode() else client
+                if _search_mode():
+                    proxied = _ProxiedClient(client)
+                    try:
+                        yield proxied
+                    finally:
+                        self._proxied_calls = (
+                            getattr(self, "_proxied_calls", 0) + proxied.proxied_calls
+                        )
+                else:
+                    yield client
         finally:
             server._make_backend, server._disconnect_backend = make, disconnect
 

@@ -87,7 +87,9 @@ async def test_every_tool_named_is_registered_and_advertised(surface, name):
     candidates = registered | set(SYNTHETIC_TOOLS)
     named = named_tools(text, candidates)
     assert named, name
-    assert not (named - set(advertised)), f"{name}: named but not advertised {named - set(advertised)}"
+    assert not (named - set(advertised)), (
+        f"{name}: named but not advertised {named - set(advertised)}"
+    )
     # every snake_case word is a tool on that list or a known argument: a stale
     # or misspelt tool name cannot hide as "not a registered tool"
     unknown = _identifiers(text) - set(advertised) - ARGUMENTS

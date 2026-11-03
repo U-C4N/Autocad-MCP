@@ -104,6 +104,7 @@ def _plain_plate(path: Path) -> str:
     doc.saveas(path)
     return str(path)
 
+
 PLATE = {
     "kind": "prismatic",
     "name": "plate",

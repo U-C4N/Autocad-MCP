@@ -795,6 +795,7 @@ _auth = (
 # FastMCP server
 # ---------------------------------------------------------------------------
 
+
 def _server_instructions(
     mode: str | None = None, profile: str | None = None, packs: set[str] | None = None
 ) -> str:
@@ -855,9 +856,10 @@ mcp.add_middleware(CapabilityRefusalMiddleware())
 # ---------------------------------------------------------------------------
 # Tool discovery mode (DISCOVERY_MODE)
 # ---------------------------------------------------------------------------
-# "off"    the whole catalog is advertised (default, backwards compatible)
-# "search" list_tools returns a search tool + a call_tool proxy + describe_tool
-#          (one tool's full schema) instead, and the catalog is reached through
+# "off"    the whole catalog is advertised (the 1.7.0 surface)
+# "search" (default since 1.8.0) list_tools returns the DISCOVERY_PINNED tools,
+#          a search tool, a call_tool proxy and describe_tool (one or several
+#          tools' full schemas) instead, and the catalog is reached through
 #          discovery/transform.py — which indexes each tool's AutoCAD command
 #          aliases as well as its description, so BPOLY/QSELECT/MATCHPROP
 #          resolve at all.
@@ -910,15 +912,11 @@ def _apply_discovery_mode(mode: str | None = None) -> str:
 
         # 1.8-11: DISCOVERY_PINNED stays listed beside the synthetic tools (as a
         # shortened card; describe_tool has the rest). A pin the profile or packs
-        # hide is not listed; a name nothing registers is said once, here.
+        # hide is not listed; a name nothing registers is warned about by
+        # _warn_unknown_pins (here once tools exist, and at every profile apply).
         pinned = list(config.settings.discovery_pinned)
-        # At import this runs before any tool is registered: nothing to check yet.
-        components = globals().get("_local_tool_components")
-        registered = {tool.name for tool in components()} if components is not None else set()
-        unknown = [name for name in pinned if registered and name not in registered]
-        if unknown:
-            log.warning("DISCOVERY_PINNED names no registered tool: %s", ", ".join(unknown))
         _discovery_transform = CadSearchTransform(pack_of=_tool_pack, always_visible=pinned)
+        _warn_unknown_pins()
         mcp.add_transform(_discovery_transform)
         log.info(
             "Tool discovery: search transform attached "
@@ -927,6 +925,28 @@ def _apply_discovery_mode(mode: str | None = None) -> str:
         )
     _refresh_server_instructions()
     return selected
+
+
+def _warn_unknown_pins() -> list[str]:
+    """Warn about DISCOVERY_PINNED names no tool registers; returns them.
+
+    Silent before any tool is registered (the import-time apply above runs
+    first), so the lifespan's profile apply is where a typo is reported.
+    """
+    if _discovery_transform is None:
+        return []
+    components = globals().get("_local_tool_components")
+    try:
+        registered = {tool.name for tool in components()} if components is not None else set()
+    except Exception as exc:  # a registry layout change must not take the server down
+        log.debug("DISCOVERY_PINNED: registry unavailable, nothing checked: %s", exc)
+        return []
+    if not registered:
+        return []
+    unknown = [name for name in config.settings.discovery_pinned if name not in registered]
+    if unknown:
+        log.warning("DISCOVERY_PINNED names no registered tool: %s", ", ".join(unknown))
+    return unknown
 
 
 _apply_discovery_mode()
@@ -1792,6 +1812,7 @@ async def _apply_tool_profile(profile: str | None = None) -> dict:
     )
     # 1.8-11: the instructions name only tools this surface advertises.
     _refresh_server_instructions()
+    _warn_unknown_pins()
     return _active_tool_profile
 
 

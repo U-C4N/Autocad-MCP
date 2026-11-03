@@ -636,6 +636,23 @@ async def test_search_lists_the_default_pins_beside_the_synthetic_tools():
     assert set(names) == {*DEFAULT_PINNED, "search_tools", "call_tool", "describe_tool"}
 
 
+async def test_the_default_pins_cannot_lower_the_golden_hit_rate():
+    """A pinned tool is left out of search results (it is listed already), so a
+    golden case expecting one would read as a miss in search mode: none does."""
+    expected = {case.expect for case in ALL_CASES}
+    assert not (expected & set(DEFAULT_PINNED)), expected & set(DEFAULT_PINNED)
+
+
+async def test_a_misspelt_pin_is_warned_about_once_tools_exist(monkeypatch, caplog):
+    monkeypatch.setattr(config.settings, "discovery_pinned", ("cad_batch", "cad_bacth"))
+    server._apply_discovery_mode("search")
+    with caplog.at_level("WARNING"):
+        assert server._warn_unknown_pins() == ["cad_bacth"]
+    assert "DISCOVERY_PINNED names no registered tool: cad_bacth" in caplog.text
+    server._apply_discovery_mode("off")
+    assert server._warn_unknown_pins() == [], "nothing is pinned in off mode"
+
+
 async def test_the_pinned_env_var_is_a_comma_list_and_may_be_empty(monkeypatch):
     monkeypatch.setenv("DISCOVERY_PINNED", " cad_batch , layer_list,cad_batch ")
     assert config.Settings().discovery_pinned == ("cad_batch", "layer_list")
@@ -670,9 +687,9 @@ async def test_a_pinned_card_keeps_the_schema_a_call_is_validated_against():
             text = spec.get("description")
             if text:
                 assert len(text) <= PIN_PARAM_CHARS or "." not in text[:-1], (name, prop)
-                assert " ".join(tool.inputSchema["properties"][prop]["description"].split()).startswith(
-                    text
-                ), (name, prop)
+                assert " ".join(
+                    tool.inputSchema["properties"][prop]["description"].split()
+                ).startswith(text), (name, prop)
     # the batch syntax a caller needs survives the cut
     steps = listed["cad_batch"].inputSchema["properties"]["steps"]["description"]
     assert "'bind'" in steps and "$name" in steps

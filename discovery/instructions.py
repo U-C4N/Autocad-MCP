@@ -48,8 +48,7 @@ _BATCH_LINES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("entity_batch_create",), "- entity_batch_create draws many entities in one call."),
     (
         ("entity_modify_where",),
-        "- entity_modify_where changes every entity a filter selects (layer, colour, "
-        "lineweight).",
+        "- entity_modify_where changes every entity a filter selects (layer, colour, lineweight).",
     ),
     (("dimension_auto",), "- dimension_auto dimensions a whole part."),
     (
@@ -104,9 +103,7 @@ def build_instructions(
         return "\n".join(lines)
 
     batch = [
-        line
-        for tools, text in _BATCH_LINES
-        if (line := _line(tools, text, advertised)) is not None
+        line for tools, text in _BATCH_LINES if (line := _line(tools, text, advertised)) is not None
     ]
     if batch:
         lines.append(_BATCH)
