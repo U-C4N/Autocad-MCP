@@ -4,7 +4,7 @@
   "plan_item": "1.8-00",
   "measured_on": "2026-11-03",
   "machine": "Windows 11 Home 10.0.26300, CPython 3.12.16 (uv-managed), fastmcp 3.4.5, ezdxf 1.4.4, SQLite 3.53.1",
-  "spikes": [
+  "rows": [
     {
       "id": "S1",
       "question": "With DISCOVERY_MODE=search applied, can a client call a hidden tool directly by name, or does fastmcp refuse it so that every write must go through the call_tool proxy? Are always_visible (pinned) tools both listed and directly callable?",
