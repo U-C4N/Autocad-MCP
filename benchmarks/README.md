@@ -352,15 +352,42 @@ python benchmarks/compare_versions.py --json results.json
 python benchmarks/compare_versions.py v1.6.0 --fail-on-regression   # exit 1 on any regression
 ```
 
-### Result — v1.7.0 vs v1.6.0 (release gate)
+### Result — v1.8.0 vs v1.7.0 (release gate, W1 state)
 
-61 checks, ezdxf backend, one subprocess per check. Machine-readable report:
+67 checks, ezdxf backend, one subprocess per check. Machine-readable report:
+[`results/published/ab-v1.7.0-vs-v1.8.0.json`](results/published/ab-v1.7.0-vs-v1.8.0.json).
+
+| Version | Checks passing | Pass rate | Fixed | Regressed |
+|---------|----------------|-----------|-------|-----------|
+| **v1.7.0** (baseline)     | 61 / 67 | 91.0 % | — | — |
+| **v1.8.0** (this release) | 67 / 67 | 100 % | 6 | **0** |
+
+Six are fixed, one per W1 item of 1.8.0. Four are `fail → pass`: v1.7.0 has every
+method they call and gets the answer wrong. `journal_replay_after_kill` kills a
+server after a `cad_batch(operation_id=…)` and sends the same id to a fresh
+process: 1.7.0's in-memory journal had forgotten it and drew the batch again;
+now it answers `replayed: true` (B13, 1.8-03). `atomic_save_untouched_on_failure`
+holds the target open while a save runs: 1.7.0 wrote straight into it; now the
+save is refused `save_locked` with the target's bytes untouched and no `.tmp`
+left (1.8-04). `lineage_revision_continues` reopens an unchanged file in a fresh
+backend: 1.7.0 started a new document at revision 0; now the same `document_id`
+and revision continue (1.8-04). `region_render_applied` asks for a window:
+1.7.0 answered `applied: false` and rendered the extents; now the region is
+drawn at the requested pixel size with one `px_per_unit` (1.8-07). The other two
+are `miss → pass`: `lineweight_truth` reads `lineweight_name` and the named
+`"ByLayer"` parser, and `error_envelope_routes_agree` compares the typed
+envelope on the direct and the `cad_batch` route - neither exists on 1.7.0
+(1.8-01, 1.8-02). The 61 checks v1.7.0 was released on all still pass.
+
+### Result — v1.7.0 vs v1.6.0
+
+61 checks at the time, ezdxf backend, one subprocess per check. Machine-readable report:
 [`results/published/ab-v1.6.0-vs-v1.7.0.json`](results/published/ab-v1.6.0-vs-v1.7.0.json).
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---------|----------------|-----------|-------|-----------|
 | **v1.6.0** (baseline)     | 48 / 61 | 78.7 % | — | — |
-| **v1.7.0** (this release) | 61 / 61 | 100 % | 13 | **0** |
+| **v1.7.0** (that release) | 61 / 61 | 100 % | 13 | **0** |
 
 Thirteen are fixed. Four are `fail → pass`: v1.6.0 has every method they call and gets the
 answer wrong. They are the three reproducers of the 1.7.0 W1 review focus and

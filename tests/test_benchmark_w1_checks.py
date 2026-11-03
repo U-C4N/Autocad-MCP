@@ -12,6 +12,7 @@ into the target, which is what 1.7.0 did, does not pass the atomic-save check.
 from __future__ import annotations
 
 import ast
+import json
 import os
 from pathlib import Path
 
@@ -51,6 +52,20 @@ def test_the_suite_carries_the_six_w1_checks():
         assert CHECKS[name][1] == category, name
     assert list(CHECKS)[-len(W1_CHECKS) :] == list(W1_CHECKS), "appended, nothing reordered"
     assert len(CHECKS) == 67
+
+
+def test_the_published_ab_report_shows_the_six_w1_checks_fixed():
+    """The 1.8.0 A/B report: every W1 check fails or misses on v1.7.0 and passes now."""
+    from scripts.check_doc_numbers import AB_REPORT
+
+    report = json.loads((ROOT / AB_REPORT).read_text(encoding="utf-8"))
+    rows = {row["check"]: row for row in report["rows"]}
+    assert report["summary"]["baseline_ref"] == "v1.7.0"
+    assert report["summary"]["regressed"] == 0
+    assert report["summary"]["fixed"] >= len(W1_CHECKS)
+    for name in W1_CHECKS:
+        assert rows[name]["new"] == "pass", name
+        assert rows[name]["old"] != "pass", f"{name} passed on v1.7.0: it proves nothing new"
 
 
 def test_the_suite_imports_only_the_standard_library_at_module_level():

@@ -543,9 +543,19 @@ def test_the_published_ab_report_is_over_the_whole_suite_with_nothing_regressed(
 
     report = json.loads((ROOT / AB_REPORT).read_text(encoding="utf-8"))
     rows = {row["check"]: row for row in report["rows"]}
-    assert report["summary"]["baseline_ref"] == "v1.6.0"
+    assert report["summary"]["baseline_ref"] == "v1.7.0"
     assert set(rows) == set(CHECKS)
     assert report["summary"]["regressed"] == 0
+    for name in VERIFICATION_CHECKS:  # new in 1.7.0: green on both sides of the 1.8.0 report
+        assert (rows[name]["old"], rows[name]["new"]) == ("pass", "pass"), name
+
+
+def test_the_1_7_0_report_proved_the_verification_checks_new():
+    """The 1.7.0 release report stays published: on v1.6.0 the nine could not even run."""
+    published = ROOT / "benchmarks" / "results" / "published"
+    report = json.loads((published / "ab-v1.6.0-vs-v1.7.0.json").read_text(encoding="utf-8"))
+    rows = {row["check"]: row for row in report["rows"]}
+    assert report["summary"]["baseline_ref"] == "v1.6.0"
     for name in VERIFICATION_CHECKS:
         assert rows[name]["new"] == "pass", name
         assert rows[name]["old"] != "pass", f"{name} passed on 1.6.0: it proves nothing new"

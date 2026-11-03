@@ -19,7 +19,7 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 
 </div>
 
-> **v1.7 release snapshot:** 248 tools · 11 resources · 5 prompt templates · 6060 collected tests.
+> **v1.7 release snapshot:** 248 tools · 11 resources · 5 prompt templates · 6348 collected tests.
 > 248 is the **registered** count; a default install advertises 243 over `tools/list`,
 > because `ENABLE_3D` is unset. `system_about` is the runtime authority.
 
@@ -275,14 +275,28 @@ A second lane runs tasks instead of reading source. Every task in the fixed-task
 
 ### Correctness — every release re-proves itself
 
-61 deterministic headless checks against the previous tag and the current tree. Each runs in its own subprocess, so a hard crash counts as a miss rather than killing the run.
+67 deterministic headless checks against the previous tag and the current tree. Each runs in its own subprocess, so a hard crash counts as a miss rather than killing the run.
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---|---:|---:|---:|---:|
-| v1.6.0 *(baseline)* | 48 / 61 | 78.7 % | — | — |
-| **v1.7.0** *(this release)* | **61 / 61** | **100 %** | 13 | **0** |
+| v1.7.0 *(baseline)* | 61 / 67 | 91.0 % | — | — |
+| **v1.8.0** *(this release)* | **67 / 67** | **100 %** | 6 | **0** |
 
-The 48 checks v1.6.0 was released on all still pass. Thirteen rows are fixed. Four are reliability defects 1.6.0 shipped with, each reproduced on v1.6.0 (`fail → pass`) and fixed in 1.7.0; the other nine are the roadmap's acceptance scenarios, which 1.6.0 could not even attempt (`miss → pass`: the verification engine they call is new in 1.7.0):
+The 61 checks v1.7.0 was released on all still pass. Six rows are fixed, one per W1 item of 1.8.0: four reproduce a 1.7.0 defect on v1.7.0 (`fail → pass`), two call a method 1.7.0 does not have (`miss → pass`):
+
+| Check | Verified against |
+|---|---|
+| `lineweight_truth` | an entity created with lineweight -3 reports `lineweight_name: "Default"`, never ByLayer; `"ByLayer"` by name writes -1 and reads back as ByLayer; a layer asked for ByLayer is refused before anything is written |
+| `error_envelope_routes_agree` | a missing handle (`not_found`) and a path outside `ALLOWED_PATHS` (`path_refused`) carry the same kind, category and `retryable` as a direct call and as a `cad_batch` step |
+| `journal_replay_after_kill` | `cad_batch(operation_id=…)` on one server, `Popen.kill()`, the same id and steps on a fresh process answer `replayed: true` with the same entity count; other steps under that id are `operation_conflict` |
+| `atomic_save_untouched_on_failure` | a save whose target is held open by another process is refused `save_locked`: the target's bytes are identical, no `.tmp` and no pending marker is left, and the save after release writes the drawing |
+| `lineage_revision_continues` | open, add three lines, save, close, reopen the unchanged file in a fresh backend: the same `document_id` and the same revision, never back to 0 |
+| `region_render_applied` | `view_screenshot(region=[0,0,100,50], max_px=400)` answers `applied: true`, a 400 × 200 PNG (read from its own IHDR) and one `px_per_unit` on x and y; `view_zoom_and_screenshot` with four corners applies its window headlessly |
+
+<details>
+<summary><b>The thirteen checks 1.7 added</b></summary>
+
+The 48 checks v1.6.0 was released on all still passed on v1.7.0. Thirteen rows were fixed in 1.7.0. Four are reliability defects 1.6.0 shipped with, each reproduced on v1.6.0 (`fail → pass`) and fixed in 1.7.0; the other nine are the roadmap's acceptance scenarios, which 1.6.0 could not even attempt (`miss → pass`: the verification engine they call is new in 1.7.0):
 
 | Check | Verified against |
 |---|---|
@@ -299,6 +313,8 @@ The 48 checks v1.6.0 was released on all still pass. Thirteen rows are fixed. Fo
 | `verify_t18_dimension_override_and_dimlfac_visible` | T18: a "42" override over 40 and a DIMLFAC 2 over 21 leave the geometry rows passing and are two blocking `dimension_mismatch` findings; honest dimensions are accepted |
 | `verify_t25_handle_renumber_rebinds` | T25: a save that gave the bore's handle to the pin is re-bound by geometry (Ø40 passes on the bore); a copied feature tag is `unknown`, never a pick |
 | `verify_t36_report_stale_after_file_change` | T36: a line appended to the delivered DXF after delivery: `verify_manifest` names it stale and the acceptance report turns stale and unaccepted |
+
+</details>
 
 The twenty-two checks 1.6 added against v1.5.1 (`miss → pass`) each pin a number computed by hand, not read back from the code that drew it:
 
