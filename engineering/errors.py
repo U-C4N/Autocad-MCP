@@ -53,6 +53,7 @@ __all__ = [
     "ApplicationBusyError",
     "CommandIncompleteError",
     "CommandRefusedError",
+    "DimensionRenderError",
     "EntityNotFoundError",
     "GateFailure",
     "InvalidArgsError",
@@ -289,6 +290,15 @@ class ApplicationBusyError(RuntimeError):
     kind = "application_busy"
 
 
+class DimensionRenderError(RuntimeError):
+    """A DIMENSION the headless renderer cannot redraw (1.8-15): the redraw is
+    all or nothing and the edit that asked for it is put back, so nothing was
+    written - the tool declined (``refused``), its message names the dimension
+    and the renderer's own reason."""
+
+    kind = "refused"
+
+
 class CommandIncompleteError(RuntimeError):
     """A command sent to AutoCAD's command line was still at a prompt when its
     deadline ran out (1.8-05): ``last_prompt`` is AutoCAD's own ``LASTPROMPT``,
@@ -368,14 +378,18 @@ def gate_failure_payload(
     other=(),
     qa_coverage: dict | None = None,
     detail: str = "summary",
+    not_checked=(),
 ) -> dict:
     """The ``GateFailure`` payload: ``{kind, score, blocking, blocking_count, qa_coverage}``.
 
     ``findings`` are the validator's blocking ``ValidationFinding`` rows,
-    ``issues`` the critique's blocking ``Issue`` rows, ``other`` any further
-    ``(code, message)`` reasons (a delivery's parity, score or export) and
-    ``requirements`` the acceptance report's blocking strings - every reason, in
-    that order, whichever gate failed first. ``detail="full"`` keeps every row and every
+    ``issues`` the critique's blocking ``Issue`` rows, ``not_checked`` the
+    coverage rows a ``strict_critique`` gate fails on (1.8-16:
+    ``engineering/qa_coverage.py``; each becomes a row with code
+    ``not_checked`` and its ``focus``, ``layout`` and ``reason``), ``other``
+    any further ``(code, message)`` reasons (a delivery's parity, score or
+    export) and ``requirements`` the acceptance report's blocking strings -
+    every reason, in that order, whichever gate failed first. ``detail="full"`` keeps every row and every
     handle; the default keeps the first :data:`GATE_BLOCKING_ROWS` rows with
     :data:`GATE_HANDLES_PER_ROW` handles each (``handle_count`` says how many).
     """
@@ -392,6 +406,17 @@ def gate_failure_payload(
         rows.append(
             _gate_row(code or issue.focus, issue.severity, issue.handles, issue.message, full)
         )
+    for lane in not_checked:
+        row = _gate_row(
+            "not_checked",
+            "error",
+            (),
+            f"{lane.focus} was not checked on {lane.layout}: {lane.reason} "
+            "(strict_critique fails on every lane not checked but domain_absent)",
+            full,
+        )
+        row.update(focus=lane.focus, layout=lane.layout, reason=lane.reason)
+        rows.append(row)
     for code, text in other:
         rows.append(_gate_row(code, "error", (), text, full))
     for text in requirements:
@@ -693,7 +718,13 @@ def classify(exc: BaseException) -> dict:
         if refused.symbols:
             row["symbols"] = list(refused.symbols)
         return row
-    for typed in (PathRefusedError, ApplicationBusyError, EntityNotFoundError, InvalidArgsError):
+    for typed in (
+        PathRefusedError,
+        ApplicationBusyError,
+        EntityNotFoundError,
+        InvalidArgsError,
+        DimensionRenderError,
+    ):
         found = _first_of(exc, typed)
         if found is not None:
             row = {"kind": typed.kind, "message": message}

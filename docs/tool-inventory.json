@@ -4,7 +4,7 @@
   "package_version": "1.7.0",
   "totals": {
     "tools": 248,
-    "resources": 11,
+    "resources": 12,
     "prompts": 5,
     "groups": 28
   },
@@ -6170,6 +6170,18 @@
       "mime_type": "application/json",
       "tags": [
         "block"
+      ],
+      "templated": false,
+      "parameters": []
+    },
+    {
+      "uri": "autocad://critique/focuses",
+      "name": "Critique Focuses",
+      "description": "Every drawing_critique focus (the closed set): domain, what it reports, when it is silent; and the not_checked reasons a coverage report can carry",
+      "mime_type": "application/json",
+      "tags": [
+        "premium",
+        "validation"
       ],
       "templated": false,
       "parameters": []

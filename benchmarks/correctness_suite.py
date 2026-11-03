@@ -2227,6 +2227,152 @@ async def region_render_applied():
     return _region_report(shot, requested) and _region_report(zoomed, requested)
 
 
+async def qa_coverage_not_checked():
+    """A lane the critique did not check is named, never read as clean (1.8-16).
+
+    A drawing with a frame line on ``Layout1`` and no viewport onto the model:
+    ``drawing_critique(report=True)`` must report the paper layout's
+    dimension-legibility lane ``not_checked`` with reason ``no_viewport_scale``
+    and ``coverage.complete`` false; ``drawing_finalize`` must pass and carry
+    the same row in ``qa_coverage``; ``strict_critique=True`` must fail
+    ``critique_gate_failed`` with a blocking row of code ``not_checked`` naming
+    it. 1.7.0 returned a bare list in which "nothing found" and "nothing
+    looked" read the same, and had no ``report`` argument at all.
+    """
+    want = {"focus": "iso128", "layout": "Layout1", "reason": "no_viewport_scale"}
+    out = tempfile.mkdtemp(prefix="acadmcp_cov_")
+    try:
+        async with _served_headless() as client:
+            await client.call_tool("drawing_new", {})
+            await client.call_tool(
+                "entity_create_line", {"x1": 0, "y1": 0, "x2": 50, "y2": 0, "layer": "GEOMETRY"}
+            )
+            await client.call_tool("layout_set_current", {"name": "Layout1"})
+            await client.call_tool(
+                "entity_create_line",
+                {"x1": 0, "y1": 0, "x2": 420, "y2": 0, "layer": "TITLEBLOCK"},
+            )
+            await client.call_tool("layout_set_current", {"name": "Model"})
+            critique = await client.call_tool(
+                "drawing_critique", {"report": True}, raise_on_error=False
+            )
+            lenient = await client.call_tool(
+                "drawing_finalize",
+                {"save_path": os.path.join(out, "a.dxf")},
+                raise_on_error=False,
+            )
+            strict = await client.call_tool(
+                "drawing_finalize",
+                {"save_path": os.path.join(out, "b.dxf"), "strict_critique": True},
+                raise_on_error=False,
+            )
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
+    if critique.is_error or lenient.is_error or not strict.is_error:
+        return False
+    reported = critique.structured_content or {}
+    reported = reported.get("result", reported)
+    coverage = reported.get("coverage") or {}
+    layouts = {entry.get("layout"): entry for entry in coverage.get("layouts") or []}
+    named = any(
+        row.get("focus") == "iso128" and row.get("reason") == "no_viewport_scale"
+        for row in (layouts.get("Layout1") or {}).get("not_checked") or []
+    )
+    qa_coverage = (lenient.structured_content or {}).get("qa_coverage") or {}
+    carried = [{key: row.get(key) for key in want} for row in qa_coverage.get("not_checked") or []]
+    gate = strict.structured_content or {}
+    blocked = [
+        {key: row.get(key) for key in want}
+        for row in gate.get("blocking") or []
+        if row.get("code") == "not_checked"
+    ]
+    return (
+        coverage.get("complete") is False
+        and named
+        and want in carried
+        and gate.get("kind") == "critique_gate_failed"
+        and want in blocked
+    )
+
+
+async def dimension_display_truth():
+    """A dimension shows what its style formats, and its block shows it too (1.8-15).
+
+    A 19.6 mm dimension drawn under DIMDEC 2, then the style changed to
+    DIMDEC 0: the sheet must show "20" - in the ``*D`` block the drawing
+    carries (the headless ``dimstyle_modify`` redraws) and in what
+    ``bind_dimension`` reports (``displayed_text`` "20", ``display_rounding``
+    0.4, no mismatch: rounding is not a lie). v1.7.0 reported "19.6" and left
+    the block saying "19.6" behind ``rerender_required``.
+    """
+    from engineering.understand.snapshot import records_from_doc
+    from engineering.verification.binding import bind_dimension
+    from engineering.verification.observe import observe
+
+    b = await _b()
+    msp = b._doc.modelspace()
+    msp.add_line((0, 0), (0, 20))
+    msp.add_line((19.6, 0), (19.6, 20))
+    dim = await b.dimension_linear(0, 0, 19.6, 0, 10, -10)
+    await b.dimstyle_modify("Standard", {"DIMDEC": 0})
+    entity = b._doc.entitydb[dim.handle]
+    shown = [e.plain_text() for e in entity.get_geometry_block() if e.dxftype() == "MTEXT"]
+    observed = observe(records_from_doc(b._doc, source="check"))
+    (feature,) = [f for f in observed.features if f.type == "dimension"]
+    result = bind_dimension(feature, observed, epsilon=1e-6)
+    rounding = result.get("display_rounding")
+    return (
+        shown == ["20"]
+        and result["displayed_text"] == "20"
+        and rounding is not None
+        and abs(rounding - 0.4) < 1e-9
+        and result["mismatch"] is False
+    )
+
+
+async def dimension_truth_focus():
+    """Every way a dimension lies is one ``dimension_truth`` finding (1.8-15).
+
+    Three dimensions on real geometry: a "42" override over 40 mm, a diameter
+    whose override ``%%c<>`` doubles the sign, and one whose DSTYLE override
+    says DIMDEC 0 while its ``*D`` block still says "19.6". The focus must
+    report exactly ``dim_override_disagrees``, ``dim_double_prefix`` and
+    ``dim_render_stale`` on those three, and ``drawing_refine`` must redraw
+    the stale one and leave the two lies to a person. v1.7.0 has no such
+    focus (the name is an unknown focus there).
+    """
+    from ezdxf.entities import DimStyleOverride
+
+    from engineering.critique import run_critique
+    from engineering.refiner import refine_drawing
+
+    b = await _b()
+    msp = b._doc.modelspace()
+    for x in (0, 40, 100, 119.6):
+        msp.add_line((x, 0), (x, 20))
+    msp.add_circle((200, 0), 10)
+    lie = await b.dimension_linear(0, 0, 40, 0, 20, -10, text_override="42")
+    double = await b.dimension_diameter(190, 0, 210, 0, text_override="%%c<>")
+    stale = await b.dimension_linear(100, 0, 119.6, 0, 110, -10)
+    override = DimStyleOverride(b._doc.entitydb[stale.handle])
+    override.dimstyle_attribs["dimdec"] = 0
+    override.commit()
+    issues = await run_critique(b, ["dimension_truth"])
+    got = sorted((str(i.detail.get("code")), i.handles[0]) for i in issues)
+    want = sorted(
+        [
+            ("dim_override_disagrees", lie.handle),
+            ("dim_double_prefix", double.handle),
+            ("dim_render_stale", stale.handle),
+        ]
+    )
+    if got != want:
+        return False
+    refined = await refine_drawing(b, focus=["dimension_truth"], min_score=100.0)
+    left = sorted((str(i["detail"].get("code")), i["handles"][0]) for i in refined.remaining_issues)
+    return left == [("dim_double_prefix", double.handle), ("dim_override_disagrees", lie.handle)]
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -2310,6 +2456,9 @@ CHECKS = {
     "atomic_save_untouched_on_failure": (atomic_save_untouched_on_failure, "Durability"),
     "lineage_revision_continues": (lineage_revision_continues, "Durability"),
     "region_render_applied": (region_render_applied, "Render"),
+    "qa_coverage_not_checked": (qa_coverage_not_checked, "Quality gate"),
+    "dimension_display_truth": (dimension_display_truth, "Dimensions"),
+    "dimension_truth_focus": (dimension_truth_focus, "Quality gate"),
 }
 
 

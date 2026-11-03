@@ -32,6 +32,7 @@ from engineering.arch.layers import ARCH_LAYER_ROLES, ARCH_LAYERS
 from engineering.layers import PID_LAYERS
 from engineering.pid.lines import PID_LINE_LAYERS
 from engineering.plan_spec import Issue
+from engineering.qa_coverage import DOCUMENT, domain_row, ledger_of
 from engineering.qa_scan import shared_index
 from engineering.understand.topology import (
     network_layers,
@@ -196,6 +197,12 @@ def _make(focus: str):
             return await build_index(b, shared)
 
         index = await shared_index(shared, _KEY, build, backend)
+        if index.get("error"):
+            ledger_of(shared).not_checked(focus, DOCUMENT, "scan_incomplete")
+        else:
+            findings = index.get("findings")
+            entities = int((findings or {}).get("stats", {}).get("entities", 0))
+            domain_row(shared, focus, present=findings is not None, n=entities)
         return issues_for(focus, index)
 
     check.needs_shared = True  # type: ignore[attr-defined]

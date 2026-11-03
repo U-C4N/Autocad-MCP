@@ -19,6 +19,7 @@ from pathlib import Path
 
 from benchmarks.adapters.base import BenchmarkAdapter, EnvironmentBlocked, TaskResult
 from benchmarks.tasks_v8 import NEW_TASKS_V8, TaskSpec
+from benchmarks.tasks_v9 import NEW_TASKS_V9
 from engineering.delivery import deliver_drawing
 from engineering.layers import ensure_engineering_layers, ensure_standard_linetypes
 from engineering.refiner import refine_drawing
@@ -61,7 +62,7 @@ ROUNDTRIP_AREAS_MM2: dict[str, float] = {
 #: files) to stage what an operator or a damaged file would do. On the live
 #: engine they report ``not_run``; the live evidence is the COM harness
 #: (``scripts/live``, spec §6 Task 21), never a zero here.
-HEADLESS_ONLY: frozenset[str] = frozenset(task.task_id for task in NEW_TASKS_V8)
+HEADLESS_ONLY: frozenset[str] = frozenset(task.task_id for task in (*NEW_TASKS_V8, *NEW_TASKS_V9))
 
 #: ``requirements_roundtrip``: a 120 x 80 plate, a Ø20 bore at (60, 40) and four
 #: Ø8 holes 15 mm in from the corners. Every target below is worked out by hand.
@@ -1907,4 +1908,66 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
             passed,
             {"rows": rows, "findings": findings, "accepted": report["accepted"]},
             [str(path)],
+        )
+
+    # ── v9 (v1.8.0) ───────────────────────────────────────────────────────────
+
+    async def _task_dimension_lie_detect(self):
+        """1.8-15: one ``dimension_truth`` finding per lie, on the dimension telling it.
+
+        The fixture (``tests/fixtures/lying_dims.py``) draws seven dimensions,
+        each lying one way, and says which code each must earn; the expected
+        set is that map, fixed before the critique runs. A 19.6 mm dimension
+        under DIMDEC 0 must read "20" with a display rounding of 0.4, and the
+        twin - DIMDEC 2 -> 0 with ``rerender=False`` - must leave exactly that
+        dimension ``dim_render_stale`` until ``drawing_refine`` redraws it.
+        """
+        from engineering.critique import run_critique
+        from engineering.qa_scan import qa_snapshot
+        from engineering.verification.binding import bind_dimension
+        from engineering.verification.measure import default_epsilon
+        from engineering.verification.observe import observe
+        from tests.fixtures.lying_dims import build_lying_dims
+
+        expected = await build_lying_dims(self.backend)
+        issues = await run_critique(self.backend, ["dimension_truth"])
+        got = sorted((str(i.detail.get("code")), i.handles[0]) for i in issues)
+        lies_ok = got == sorted(expected.items())
+
+        await self._reset()
+        msp = self.backend._doc.modelspace()
+        msp.add_line((0, 0), (0, 20))
+        msp.add_line((19.6, 0), (19.6, 20))
+        dim = await self.backend.dimension_linear(0, 0, 19.6, 0, 10, -10)
+        modified = await self.backend.dimstyle_modify("Standard", {"DIMDEC": 0}, rerender=False)
+        snap, _ = await qa_snapshot(self.backend, {})
+        observed = observe(snap)
+        (feature,) = [f for f in observed.features if f.type == "dimension"]
+        bound = bind_dimension(feature, observed, epsilon=default_epsilon(observed))
+        shows_20 = (
+            bound["displayed_text"] == "20"
+            and abs((bound.get("display_rounding") or 0.0) - 0.4) < 1e-9
+            and bound["mismatch"] is False
+        )
+        stale = await run_critique(self.backend, ["dimension_truth"])
+        stale_named = [(str(i.detail.get("code")), i.handles[0]) for i in stale] == [
+            ("dim_render_stale", dim.handle)
+        ]
+        refined = await refine_drawing(self.backend, focus=["dimension_truth"], min_score=100.0)
+        cleared = refined.remaining_issues == []
+        return (
+            lies_ok
+            and shows_20
+            and modified["rerender_required"] is True
+            and stale_named
+            and cleared,
+            {
+                "expected": expected,
+                "found": got,
+                "displayed_text": bound["displayed_text"],
+                "display_rounding": bound.get("display_rounding"),
+                "stale_named": stale_named,
+                "refine_status": refined.status,
+            },
+            [],
         )

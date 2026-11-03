@@ -309,6 +309,56 @@ async def _properties(h: LiveHarness) -> dict:
     return {"set": written, "get": props}
 
 
+async def _dimension_truth(h: LiveHarness) -> dict:
+    """1.8-15 / spike S4: does AutoCAD redraw a *D block after a DIMDEC change,
+    does Update() do it, does ``%%c<>`` print a double diameter sign?
+
+    Runs after ``_styles`` (ISO-25-SMOKE is current, DIMDEC 2). Every answer
+    is read back through the ``Document.Export`` snapshot - the *D text AutoCAD
+    actually holds - never taken from the call's own return value.
+    """
+    from engineering.critique import run_critique
+
+    backend = h.backend
+    await backend.entity_create_line(0, 0, 0, 20, layer="0")
+    await backend.entity_create_line(19.6, 0, 19.6, 20, layer="0")
+    linear = await backend.dimension_linear(0, 0, 19.6, 0, 10, -10)
+    await backend.entity_create_circle(100, 0, 10, layer="0")
+    double = await backend.dimension_diameter(90, 0, 110, 0, text_override="%%c<>")
+    before = await backend._dimension_display([linear.handle, double.handle])
+    modified = await backend.dimstyle_modify("ISO-25-SMOKE", {"DIMDEC": 0})
+    after = await backend._dimension_display([linear.handle, double.handle])
+    key = linear.handle.upper()
+    h.check(
+        "DIMDEC 2 -> 0 redrawn and confirmed by read-back",
+        after.get(key, (None, None))[1] is True and modified["rerender_required"] is False,
+        expected="20",
+        observed={"before": before.get(key), "after": after.get(key), "modify": modified},
+    )
+    scaled = await backend.entity_scale(linear.handle, 0, 0, 2)
+    h.check(
+        "entity_scale redraws the number (Update + read-back)",
+        scaled.get("rerendered") == [linear.handle],
+        observed=scaled,
+    )
+    rerender = await backend.dimension_rerender([linear.handle, double.handle])
+    h.check("dimension_rerender verified", rerender["verified"] is True, observed=rerender)
+    double_text = after.get(double.handle.upper(), (None, None))[0]
+    # S4: recorded, not asserted - the answer decides whether dim_double_prefix
+    # becomes an error in 1.8.1.
+    issues = await run_critique(backend, ["dimension_truth"])
+    return {
+        "before": before,
+        "after": after,
+        "modify": modified,
+        "scale": scaled,
+        "rerender": rerender,
+        "double_prefix_rendered": double_text,
+        "double_prefix_is_double": bool(double_text and double_text.count("Ø") >= 2),
+        "dimension_truth": [i.to_dict() for i in issues],
+    }
+
+
 def make_body(*, build: bool = False, interactive: bool = False):
     async def body(h: LiveHarness) -> dict:
         backend = h.backend
@@ -334,6 +384,8 @@ def make_body(*, build: bool = False, interactive: bool = False):
         report["document"] = smoke_document
         h.stage("styles")
         report["styles"] = await _styles(h)
+        h.stage("dimension truth")
+        report["dimension_truth"] = await _dimension_truth(h)
         h.stage("page setup")
         report["page_setup"] = await _page_setup(h)
         h.stage("template")

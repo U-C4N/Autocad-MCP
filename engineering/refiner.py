@@ -13,6 +13,7 @@ import anyio
 
 from .changes.preview import RevisionWatch, check_preconditions, make_preview
 from .critique import CHECK_FAILED, SCAN_INCOMPLETE
+from .dimension_truth import repair_dimension_truth
 from .plan_spec import Issue
 from .property_override import repair_property_override
 from .repairs import (
@@ -113,6 +114,7 @@ class RepairRegistry:
             self.register("untrimmed_corner", repair_untrimmed_corner)
             self.register("dim_overlap", repair_dim_overlap)
             self.register("property_override", repair_property_override)
+            self.register("dimension_truth", repair_dimension_truth)
 
     def register(self, focus: str, handler: RepairHandler) -> None:
         self._handlers[focus] = handler
@@ -129,9 +131,17 @@ UNREPAIRABLE_CODES = frozenset({CHECK_FAILED, SCAN_INCOMPLETE})
 
 
 def unrepairable_code(issue: Issue) -> str | None:
-    """The issue's ``detail["code"]`` when it is one of ``UNREPAIRABLE_CODES``."""
-    code = (issue.detail or {}).get("code")
-    return code if code in UNREPAIRABLE_CODES else None
+    """The issue's ``detail["code"]`` when it is one of ``UNREPAIRABLE_CODES``,
+    or when the issue itself says ``repairable: false`` (1.8-15: of the
+    ``dimension_truth`` codes only a stale render is redrawn automatically;
+    an override that lies is a person's decision)."""
+    detail = issue.detail or {}
+    code = detail.get("code")
+    if code in UNREPAIRABLE_CODES:
+        return code
+    if detail.get("repairable") is False:
+        return str(code)
+    return None
 
 
 def issue_fingerprint(issue: Issue) -> str:

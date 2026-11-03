@@ -96,6 +96,8 @@ class DeliveryResult:
     blocking: list[str] | None = None
     #: 1.8-02: set on a failed_validation / failed_acceptance delivery only.
     gate_failure: dict | None = None
+    #: 1.8-16: what the critique did not check (``qa_coverage.qa_coverage_of``).
+    qa_coverage: dict | None = None
 
     def to_dict(self) -> dict:
         data = {
@@ -106,6 +108,8 @@ class DeliveryResult:
             "score": dict(self.score),
             "parity": dict(self.parity),
         }
+        if self.qa_coverage is not None:
+            data["qa_coverage"] = dict(self.qa_coverage)
         if self.geometry_acceptance is not None:
             data["geometry_acceptance"] = dict(self.geometry_acceptance)
             data["drafting_quality"] = dict(self.drafting_quality or {})
@@ -581,6 +585,11 @@ async def deliver_drawing(
     critique_summary = {severity: 0 for severity in ("error", "warning", "info")}
     for issue in critique_issues:
         critique_summary[issue.severity] += 1
+    # 1.8-16: the lanes the critique did not check; strict delivery fails on them.
+    from engineering.qa_coverage import LEDGER_KEY, blocking_rows, qa_coverage_of
+
+    qa_coverage = qa_coverage_of(qa_shared)
+    unchecked = blocking_rows(qa_shared.get(LEDGER_KEY)) if strict_critique else []
 
     dxf_record = next(item for item in artifacts if item["format"] == "dxf")
     if dxf_record["status"] != "created":
@@ -627,7 +636,7 @@ async def deliver_drawing(
         for issue in critique_issues
         if issue.severity == "error" or (strict_critique and issue.severity != "info")
     ]
-    critique_blocked = bool(blocking_issues)
+    critique_blocked = bool(blocking_issues) or bool(unchecked)
     validation_blocked = (
         not validation.ok
         or not parity["ok"]
@@ -650,8 +659,13 @@ async def deliver_drawing(
         blocking.append("parity: the delivered DXF differs from the source document")
     if score["score"] < float(min_score):
         blocking.append(f"score: {score['score']} < min_score {float(min_score)}")
-    if critique_blocked:
+    if blocking_issues:
         blocking.append(f"critique: {len(blocking_issues)} blocking issue(s)")
+    if unchecked:
+        blocking.append(
+            f"critique: {len(unchecked)} lane(s) not checked (strict_critique): "
+            + ", ".join(f"{r.focus} on {r.layout} ({r.reason})" for r in unchecked[:5])
+        )
     acceptance_blocked = acceptance is not None and not acceptance["report"]["accepted"]
     if acceptance is not None:
         blocking.extend(acceptance["report"]["blocking"])
@@ -702,6 +716,7 @@ async def deliver_drawing(
         "validator": validation.to_dict(),
         "critique": validation_payload["critique"],
         "critique_summary": critique_summary,
+        "qa_coverage": qa_coverage,
         "parity": parity,
         "blocking": blocking,
         "artifacts": artifacts,
@@ -726,6 +741,7 @@ async def deliver_drawing(
         artifacts=artifacts,
         score=score,
         parity=parity,
+        qa_coverage=qa_coverage,
     )
     if acceptance is not None:
         report = acceptance["report"]
@@ -766,7 +782,8 @@ async def deliver_drawing(
             score=score,
             min_score=float(min_score),
             acceptance=acceptance,
-            qa_shared=qa_shared,
+            qa_coverage=qa_coverage,
+            unchecked=unchecked,
             detail=detail,
         )
     return result
@@ -781,12 +798,13 @@ def _gate_failure(
     score: dict,
     min_score: float,
     acceptance,
-    qa_shared: dict,
+    qa_coverage: dict,
+    unchecked,
     detail: str,
 ) -> dict:
-    """The finalize-shaped gate payload of a failed delivery (1.8-02)."""
+    """The finalize-shaped gate payload of a failed delivery (1.8-02); a
+    strict delivery's not-checked lanes are rows too (1.8-16)."""
     from engineering.errors import gate_failure_payload
-    from engineering.qa_scan import QA_SNAPSHOT_KEY
 
     other: list[tuple[str, str]] = []
     if not parity_ok:
@@ -795,11 +813,15 @@ def _gate_failure(
         other.append(("score", f"score {score['score']} < min_score {min_score}"))
     if status == "failed_acceptance":
         kind = "failed_acceptance"
-    elif validation.ok and parity_ok and score["score"] >= min_score and blocking_issues:
+    elif (
+        validation.ok
+        and parity_ok
+        and score["score"] >= min_score
+        and (blocking_issues or unchecked)
+    ):
         kind = "critique_gate_failed"
     else:
         kind = "validation_failed"
-    coverage = (qa_shared.get(QA_SNAPSHOT_KEY) or (None, None))[1]
     return gate_failure_payload(
         kind,
         score=score,
@@ -807,6 +829,7 @@ def _gate_failure(
         issues=blocking_issues,
         other=other,
         requirements=list(acceptance["report"]["blocking"]) if acceptance is not None else [],
-        qa_coverage=coverage.to_dict() if coverage is not None else None,
+        qa_coverage=qa_coverage,
         detail=detail,
+        not_checked=unchecked,
     )

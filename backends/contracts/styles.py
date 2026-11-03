@@ -49,18 +49,26 @@ class StylesContract(ABC):
         ...
 
     @abstractmethod
-    async def dimstyle_modify(self, name: str, values: dict) -> dict:
+    async def dimstyle_modify(
+        self, name: str, values: dict, rerender: bool = True, force: bool = False
+    ) -> dict:
         """Change variables on an existing style.
 
         Returns ``{ok, name, changed: {VAR: [old, new]}, dimensions_using_style,
-        rerender_required}``. ``changed`` names only the variables that moved
-        (the ``hatch_edit`` rule: re-setting a value to itself is not a
-        change). Dimensions already drawn with the style are listed by handle;
-        ``rerender_required`` is ``True`` headlessly when any exist and
-        something changed, because a headless DIMENSION carries its rendered
-        block and shows the old style until it is redrawn — AutoCAD re-renders
-        on the next regen, so the live engine reports ``False``. Modifying the
-        current style also updates the ``DIM*`` current settings.
+        rerendered, text_kept, rerender_required}``. ``changed`` names only the
+        variables that moved (the ``hatch_edit`` rule: re-setting a value to
+        itself is not a change). Dimensions already drawn with the style are
+        listed by handle. A DIMENSION carries its rendered ``*D`` block and
+        shows the old style until it is redrawn; since 1.8-15 ``rerender``
+        (default True) redraws every one of them and lists it in
+        ``rerendered`` - headlessly by re-rendering, live by ``Update()`` on
+        each, confirmed by reading the ``*D`` text back (a handle whose text
+        did not change stays out of ``rerendered``). A text its author placed
+        keeps its position (``text_kept``) unless ``force``.
+        ``rerender_required`` is True when something changed and a dimension
+        still shows the old style: ``rerender=False`` (the 1.7 behaviour), or a
+        live redraw the read-back did not confirm. Modifying the current style
+        also updates the ``DIM*`` current settings.
         """
         ...
 

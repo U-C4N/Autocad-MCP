@@ -251,7 +251,11 @@ async def test_the_dispatch_entries_share_one_index_per_run(backend):
         check = ARCH_DISPATCH[focus]
         assert check.needs_shared is True
         await check(backend, shared)
-    assert list(shared) == ["arch_index"]
+    # 1.8-16: beside the one index, the run's coverage ledger - one row per focus.
+    from engineering.qa_coverage import LEDGER_KEY
+
+    assert [key for key in shared if key != LEDGER_KEY] == ["arch_index"]
+    assert sorted(r.focus for r in shared[LEDGER_KEY].rows) == sorted(ARCH_FOCUSES)
 
 
 @pytest.mark.asyncio

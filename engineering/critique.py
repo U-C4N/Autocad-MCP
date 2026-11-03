@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+from collections import Counter
 from typing import TYPE_CHECKING
 
 from backends.quarantine import DOCUMENT_REFUSALS, quarantine_refusal
@@ -20,6 +21,7 @@ from .plan_spec import (
     CritiqueFocus,
     Issue,
 )
+from .qa_coverage import DOCUMENT, LEDGER_KEY, CoverageLedger, domain_row, ledger_of
 from .qa_scan import ScanCoverage, qa_snapshot
 
 #: ``Issue.detail["code"]`` of a check that raised. A value, not a CritiqueFocus.
@@ -38,12 +40,19 @@ _EXPECTED_LAYER_COLOR: dict[str, int] = {
 }
 
 
-async def _check_iso128(backend: AutoCADBackend) -> list[Issue]:
+async def _check_iso128(backend: AutoCADBackend, shared: dict | None = None) -> list[Issue]:
     """Layer lineweights must be in ISO_128_LINEWEIGHTS_MM (or the -3 Default
     sentinel, which a layer may carry; -1 ByLayer and -2 ByBlock are entity
-    values - an entity's own lineweight is the ``property_override`` focus)."""
+    values - an entity's own lineweight is the ``property_override`` focus).
+
+    Coverage (1.8-16): the layer lane writes one ``checked`` row; the
+    dimension-legibility lane writes its own (``_check_dimension_legibility``,
+    ``_plot_scale_rows``)."""
+    shared = {} if shared is None else shared
+    ledger = ledger_of(shared)
     issues: list[Issue] = []
     layers = await backend.layer_list()
+    ledger.checked("iso128", DOCUMENT, len(layers), lane="layer_lineweight")
     allowed = set(ISO_128_LINEWEIGHTS_MM)
     for lyr in layers:
         # CONSTRUCTION-class layers are intentionally sub-ISO (0.05mm scratch
@@ -70,15 +79,56 @@ async def _check_iso128(backend: AutoCADBackend) -> list[Issue]:
                     detail={"layer": lyr.name, "lineweight": lw},
                 )
             )
-    issues.extend(_check_dimension_legibility(backend))
+    issues.extend(_check_dimension_legibility(backend, ledger))
+    if getattr(backend, "_doc", None) is not None:
+        await _plot_scale_rows(backend, shared, ledger)
     return issues
 
 
 #: ISO 3098 minimum lettering height for technical drawings, in mm.
 ISO_3098_MIN_TEXT_MM = 2.5
 
+#: The legibility lane's name in the coverage ledger.
+LEGIBILITY_LANE = "dimension_legibility"
 
-def _check_dimension_legibility(backend: AutoCADBackend) -> list[Issue]:
+#: Model-space records whose lettering a viewport plots at its own scale.
+_LETTERING_TYPES = frozenset({"DIMENSION", "TEXT", "MTEXT", "MULTILEADER", "LEADER"})
+
+
+async def _plot_scale_rows(backend: AutoCADBackend, shared: dict, ledger) -> None:
+    """One legibility row per paper layout (headless; 1.8-16).
+
+    The lane grades the document's dimension settings at 1:1. A sheet plots
+    the model at its viewports' scale, which this release does not grade
+    (1.8.1), so a paper layout is never reported as checked by it:
+
+    * no entity but its own paper viewport: ``checked``, n = 0 - nothing plots;
+    * a viewport onto lettered model space: ``viewport_scale_deferred``;
+    * viewports onto a model with no lettering: ``checked``, n = viewports;
+    * content and no model viewport: ``no_viewport_scale``.
+    """
+    snap, coverage = await qa_snapshot(backend, shared)
+    if snap is None or not coverage.complete:
+        ledger.not_checked("iso128", DOCUMENT, "scan_incomplete", lane=LEGIBILITY_LANE)
+        return
+    lettered = any(r.space == "Model" and r.type in _LETTERING_TYPES for r in snap.records)
+    for layout in snap.layouts:
+        if layout == "Model":
+            continue
+        here = [r for r in snap.records if r.space == layout]
+        views = [r for r in here if r.type == "VIEWPORT" and not r.paper_viewport]
+        content = [r for r in here if r.type != "VIEWPORT"]
+        if views and lettered:
+            ledger.not_checked("iso128", layout, "viewport_scale_deferred", lane=LEGIBILITY_LANE)
+        elif views:
+            ledger.checked("iso128", layout, len(views), lane=LEGIBILITY_LANE)
+        elif content:
+            ledger.not_checked("iso128", layout, "no_viewport_scale", lane=LEGIBILITY_LANE)
+        else:
+            ledger.checked("iso128", layout, 0, lane=LEGIBILITY_LANE)
+
+
+def _check_dimension_legibility(backend: AutoCADBackend, ledger=None) -> list[Issue]:
     """Dimension text must be readable and use an ISO 129 decimal marker.
 
     This lane was blind: `iso128` checked layer lineweights only, so a sheet
@@ -96,10 +146,16 @@ def _check_dimension_legibility(backend: AutoCADBackend) -> list[Issue]:
 
     Headless only by construction: a live AutoCAD document carries the
     operator's own template, and second-guessing it from here would report
-    their house standard as a defect.
+    their house standard as a defect. Since 1.8-16 that is a
+    ``not_checked`` row (``engine_live_document_template``) in ``ledger``,
+    not a silent ``[]`` that read as "checked, clean".
     """
     doc = getattr(backend, "_doc", None)
     if doc is None:  # the live backend has no ezdxf document to read
+        if ledger is not None:
+            ledger.not_checked(
+                "iso128", DOCUMENT, "engine_live_document_template", lane=LEGIBILITY_LANE
+            )
         return []
 
     # This is the one check that reads `_doc` directly instead of going through
@@ -146,13 +202,16 @@ def _check_dimension_legibility(backend: AutoCADBackend) -> list[Issue]:
                 detail={"dimdsep": separator},
             )
         )
+    if ledger is not None:  # two settings graded: DIMTXT and DIMDSEP
+        ledger.checked("iso128", DOCUMENT, 2, lane=LEGIBILITY_LANE)
     return issues
 
 
-async def _check_layer_color(backend: AutoCADBackend) -> list[Issue]:
+async def _check_layer_color(backend: AutoCADBackend, shared: dict | None = None) -> list[Issue]:
     """Engineering-standard layers must keep their canonical ACI color."""
     issues: list[Issue] = []
     layers = await backend.layer_list()
+    ledger_of({} if shared is None else shared).checked("layer_color", DOCUMENT, len(layers))
     for lyr in layers:
         expected = _EXPECTED_LAYER_COLOR.get(lyr.name)
         if expected is None:
@@ -174,8 +233,19 @@ async def _check_layer_color(backend: AutoCADBackend) -> list[Issue]:
 
 async def _records(backend: AutoCADBackend, shared: dict, focus: str):
     """The run's snapshot records (every space), plus a ``scan_incomplete``
-    issue for ``focus`` when the read did not cover the whole drawing."""
+    issue for ``focus`` when the read did not cover the whole drawing.
+
+    It also writes ``focus``'s coverage rows (1.8-16): one ``checked`` row per
+    layout with the entities read there, or one ``not_checked`` row
+    (``scan_incomplete``) - so every check built on it reports coverage."""
     snap, coverage = await qa_snapshot(backend, shared)
+    ledger = ledger_of(shared)
+    if coverage.complete and snap is not None:
+        counts = Counter(r.space for r in snap.records)
+        for layout in snap.layouts:
+            ledger.checked(focus, layout, counts.get(layout, 0))
+    else:
+        ledger.not_checked(focus, DOCUMENT, "scan_incomplete")
     issues = [] if coverage.complete else [scan_incomplete_issue(focus, coverage)]
     return (snap.records if snap is not None else ()), issues
 
@@ -429,16 +499,7 @@ async def _check_dim_overlap(backend: AutoCADBackend, shared: dict) -> list[Issu
     return issues + await asyncio.to_thread(_dim_overlap_issues, records)
 
 
-for _check in (
-    _check_construction_left,
-    _check_untrimmed_corner,
-    _check_duplicate_entities,
-    _check_dim_overlap,
-):
-    _check.needs_shared = True  # type: ignore[attr-defined]
-
-
-async def _check_gdt(backend: AutoCADBackend) -> list[Issue]:
+async def _check_gdt(backend: AutoCADBackend, shared: dict | None = None) -> list[Issue]:
     """Every datum referenced by a feature control frame must have a matching
     datum feature symbol.
 
@@ -450,6 +511,12 @@ async def _check_gdt(backend: AutoCADBackend) -> list[Issue]:
     """
     referenced = set(getattr(backend, "_gdt_datums_referenced", None) or set())
     defined = set(getattr(backend, "_gdt_datums_defined", None) or set())
+    domain_row(
+        {} if shared is None else shared,
+        "gdt",
+        present=bool(referenced or defined),
+        n=len(referenced | defined),
+    )
     missing = sorted(referenced - defined)
     if not missing:
         return []
@@ -470,6 +537,18 @@ async def _check_gdt(backend: AutoCADBackend) -> list[Issue]:
     ]
 
 
+for _check in (
+    _check_iso128,
+    _check_layer_color,
+    _check_construction_left,
+    _check_untrimmed_corner,
+    _check_duplicate_entities,
+    _check_dim_overlap,
+    _check_gdt,
+):
+    _check.needs_shared = True  # type: ignore[attr-defined]
+
+
 _FOCUS_DISPATCH = {
     "iso128": _check_iso128,
     "layer_color": _check_layer_color,
@@ -483,6 +562,10 @@ _FOCUS_DISPATCH = {
 from .property_override import check_property_override  # noqa: E402  (imports _records lazily)
 
 _FOCUS_DISPATCH["property_override"] = check_property_override
+
+from .dimension_truth import check_dimension_truth  # noqa: E402  (imports _records lazily)
+
+_FOCUS_DISPATCH["dimension_truth"] = check_dimension_truth
 
 from .pid.critique import PID_DISPATCH  # noqa: E402  (registered after the mechanical focuses)
 
@@ -508,14 +591,23 @@ async def _run_check(check, focus: str, backend: AutoCADBackend, shared: dict) -
     caller must be told so, not handed a finding about it. So does the live
     engine's ``ActiveDocumentChangedError``: the check read nothing of the
     bound document (``DOCUMENT_REFUSALS``).
+
+    Coverage (1.8-16): a check that raises writes ``not_checked(focus, *,
+    check_failed)``; one that returns without writing a row for ``focus``
+    gets ``not_checked(focus, *, check_unreported)`` - a missing row is a
+    server bug, and it must not read as a clean lane.
     """
+    ledger = ledger_of(shared)
+    before = ledger.count(focus)
     try:
         if getattr(check, "needs_shared", False):
-            return await check(backend, shared)
-        return await check(backend)
+            issues = await check(backend, shared)
+        else:
+            issues = await check(backend)
     except DOCUMENT_REFUSALS:
         raise
     except Exception as exc:  # noqa: BLE001 - reported as check_failed below
+        ledger.not_checked(focus, DOCUMENT, "check_failed")
         error = f"{type(exc).__name__}: {exc}"
         return [
             Issue(
@@ -525,6 +617,9 @@ async def _run_check(check, focus: str, backend: AutoCADBackend, shared: dict) -
                 detail={"code": CHECK_FAILED, "error": error},
             )
         ]
+    if ledger.count(focus) == before:
+        ledger.not_checked(focus, DOCUMENT, "check_unreported")
+    return issues
 
 
 async def run_critique(
@@ -546,11 +641,16 @@ async def run_critique(
     ``detail["code"] == "check_failed"``; a read that did not cover the whole
     drawing yields ``detail["code"] == "scan_incomplete"``. Neither code is a
     focus. A quarantine refusal propagates.
+
+    Each run starts a fresh coverage ledger in ``shared`` (1.8-16,
+    ``engineering/qa_coverage.py``): every check writes ``checked`` or
+    ``not_checked`` rows into it, and the caller reads them from there.
     """
     foci = list(focus) if focus is not None else list(ALL_CRITIQUE_FOCUSES)
     issues: list[Issue] = []
     if shared is None:
         shared = {}
+    shared[LEDGER_KEY] = CoverageLedger()
     for f in foci:
         check = _FOCUS_DISPATCH.get(f)
         if check is None:

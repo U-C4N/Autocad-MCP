@@ -84,6 +84,25 @@ class DimensionContract(ABC):
     ) -> EntityInfo: ...
 
     @abstractmethod
+    async def dimension_rerender(
+        self, handles: list[str] | None = None, force: bool = False
+    ) -> dict:
+        """Redraw DIMENSIONs from their fields and style (1.8-15).
+
+        ``handles`` None means every DIMENSION of every layout. Returns ``{ok,
+        rerendered: [handles], text_kept: [handles], verified}``. Headlessly
+        the ``*D`` block is re-rendered (the old one deleted once nothing
+        references it) and group 42 rewritten; live, ``Update()`` runs on each
+        and ``rerendered`` holds only the handles whose ``*D`` text read back
+        changed or already matched (``verified``; S4: the live regen claim is
+        not measured yet). A text its author placed keeps its position unless
+        ``force``. A handle that is not a DIMENSION is refused by name. It is
+        the repair ``drawing_refine`` runs for ``dim_render_stale`` and
+        ``dim_group42_stale``; it is not a tool.
+        """
+        ...
+
+    @abstractmethod
     async def dimension_diameter(
         self,
         x1: float,

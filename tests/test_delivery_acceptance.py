@@ -122,6 +122,7 @@ async def test_without_requirements_the_result_is_unchanged(backend, tmp_path):
         "artifacts",
         "score",
         "parity",
+        "qa_coverage",  # 1.8-16: every delivery says what its critique did not check
     }
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     assert "acceptance" not in manifest

@@ -111,7 +111,13 @@ async def test_dimstyle_modify_reports_only_what_moved_and_the_dimensions_using_
     assert result["name"] == "ISO-25"
     assert result["changed"] == {"DIMDEC": [2, 3]}
     assert result["dimensions_using_style"] == [dim.handle]
-    assert result["rerender_required"] is True
+    # 1.8-15: the dimensions using the style are redrawn; rerender=False is
+    # the 1.7 behaviour (left stale, rerender_required).
+    assert result["rerendered"] == [dim.handle]
+    assert result["rerender_required"] is False
+    stale = await backend.dimstyle_modify("ISO-25", {"DIMDEC": 2}, rerender=False)
+    assert stale["rerendered"] == [] and stale["rerender_required"] is True
+    await backend.dimstyle_modify("ISO-25", {"DIMDEC": 3})
     assert backend._doc.header["$DIMDEC"] == 3, "the current style's header twin follows"
     assert not backend._doc.dimstyles.get("ISO-25").dxf.hasattr("dimrnd"), (
         "DIMRND 0 is 'no rounding' and must be discarded, not stored (xround(x, 0.0) rounds)"
@@ -1034,6 +1040,22 @@ def com_backend(monkeypatch, tmp_path):
         return func(*args, **kwargs)
 
     monkeypatch.setattr(backend, "_run", _run_inline)
+
+    # 1.8-15: dimstyle_modify reads the *D texts back through the export; the
+    # fake seat has no Export, so the read-back answers "already right".
+    async def _display(handles=None):
+        return {str(h).upper(): ("text", True) for h in (handles or ())}
+
+    monkeypatch.setattr(backend, "_dimension_display", _display)
+    # ... and Update()s each dimension using the style.
+    entities = {
+        e.Handle: e
+        for index in range(document.Layouts.Count)
+        for e in document.Layouts.Item(index).Block.entities
+    }
+    document.HandleToObject = lambda handle: entities[handle]
+    for entity in entities.values():
+        entity.Update = lambda: None
     return backend, document
 
 
@@ -1093,20 +1115,32 @@ async def test_com_list_reports_values_for_the_current_style_only(com_backend):
     assert rows[1]["values"]["DIMDSEP"] == "." and tuple(rows[1]["values"]) == PRESET_VARIABLES
 
 
-async def test_com_modify_switches_saves_and_switches_back(com_backend):
+async def test_com_modify_switches_saves_and_switches_back(com_backend, monkeypatch):
     backend, document = com_backend
     await backend.dimstyle_create("ISO-25", resolve_dimstyle("iso-25", None))
     document.calls.clear()
+    # 1.8-15: each dimension using the style is Update()d and its *D text read
+    # back through the export (stubbed here: before, then after the change).
+    reads = iter([{"2A": ("19.60", True)}, {"2A": ("19.600", True)}])
+
+    async def _display(handles=None):
+        return next(reads, {"2A": ("19.600", True)})
+
+    monkeypatch.setattr(backend, "_dimension_display", _display)
+    dim = document.Layouts.Item(0).Block.entities[0]
+    dim.Update = lambda: document.calls.append(("Update", "2A"))
     result = await backend.dimstyle_modify("iso-25", {"DIMDEC": 3, "DIMTXT": 2.5})
     assert result["name"] == "ISO-25"
     assert result["changed"] == {"DIMDEC": [2, 3]}
     assert result["dimensions_using_style"] == ["2A"], "model and paper space, dimensions only"
-    assert result["rerender_required"] is False, "AutoCAD re-renders on regen"
+    assert result["rerendered"] == ["2A"], "the read-back saw the text change"
+    assert result["rerender_required"] is False
     assert document.calls == [
         ("ActiveDimStyle", "ISO-25"),
         ("SetVariable", "DIMDEC", 3),
         ("CopyFrom", "ISO-25", document),
         ("ActiveDimStyle", "Standard"),
+        ("Update", "2A"),
     ]
     document.calls.clear()
     again = await backend.dimstyle_modify("ISO-25", {"DIMDEC": 3})

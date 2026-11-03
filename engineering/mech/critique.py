@@ -47,6 +47,7 @@ import re
 from typing import TYPE_CHECKING
 
 from engineering.plan_spec import Issue
+from engineering.qa_coverage import domain_row
 from engineering.qa_scan import shared_index
 
 from .primitives import ROLE_LAYER
@@ -653,6 +654,8 @@ def issues_for(focus: str, index: dict) -> list[Issue]:
 def _make(focus: str):
     async def check(backend: AutoCADBackend, shared: dict) -> list[Issue]:
         index = await shared_index(shared, _KEY, build_index, backend)
+        present = has_mech_content(index)
+        domain_row(shared, focus, present=present, n=len(index.get("records") or ()))
         return issues_for(focus, index)
 
     check.needs_shared = True  # type: ignore[attr-defined]

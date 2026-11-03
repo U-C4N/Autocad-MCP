@@ -601,3 +601,32 @@ def cap_findings(findings: dict, limit: int) -> dict:
     for kind in FINDING_KINDS:
         capped[kind] = list(findings.get(kind) or [])[: int(limit)]
     return capped
+
+
+#: Each finding kind's severity - the one the ``topo_*`` critique focuses give it
+#: (``engineering/understand/critique.py``): a near miss is an error, a dangling
+#: end a warning, a crossing info.
+FINDING_SEVERITY = {"dangling": "warning", "near_miss": "error", "crossing": "info"}
+
+
+def finding_rows(findings: dict) -> list[dict]:
+    """Every finding as one flat row ``{focus: kind, severity, handles, layer,
+    at, space}`` - the shape ``engineering.qa_coverage.summarize`` counts
+    (``drawing_topology_check(summary=True)``, 1.8-16)."""
+    rows = []
+    for kind in FINDING_KINDS:
+        for item in findings.get(kind) or []:
+            handles = item.get("handles") or ([item["handle"]] if item.get("handle") else [])
+            layer = item.get("layer") or (item.get("layers") or [None])[0]
+            at = item.get("at")
+            where = f" at ({at[0]:.3f}, {at[1]:.3f})" if at else ""
+            rows.append(
+                {
+                    "focus": kind,
+                    "severity": FINDING_SEVERITY[kind],
+                    "handles": list(handles),
+                    "message": f"{kind} on layer {layer}{where}",
+                    "space": item.get("space"),
+                }
+            )
+    return rows

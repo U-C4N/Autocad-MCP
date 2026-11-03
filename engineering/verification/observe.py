@@ -51,6 +51,7 @@ import math
 import numpy as np
 from ezdxf import units as ezdxf_units
 
+from engineering.dimtext import StyleVars
 from engineering.understand.units import infer_units
 from engineering.verification.types import ObservedFeature, ObservedGeometry
 
@@ -260,6 +261,11 @@ def _features_of(rec, m: Affine, path, space, parent_layer, tilted_above) -> lis
             dimlfac=dimlfac,
             angle=angle,
             text_midpoint=rec.points[1] if len(rec.points) > 1 else None,
+            # 1.8-15: the style the text is formatted with, and what the *D
+            # block shows - engineering/dimtext.py and the dimension_truth focus.
+            style_vars=None if rec.dim_vars is None else StyleVars(rec.dim_vars),
+            rendered_text=rec.rendered_text,
+            group42=rec.group42,
         )
         return [_feature(rec, "dimension", geometry, notes=notes, **common)]
     return []
