@@ -3,7 +3,7 @@
   "schema_version": 1,
   "package_version": "1.7.0",
   "totals": {
-    "tools": 248,
+    "tools": 251,
     "resources": 11,
     "prompts": 5,
     "groups": 28
@@ -18,10 +18,10 @@
     "drawing": 11,
     "engineering": 10,
     "entity_creation": 18,
-    "entity_modification": 16,
+    "entity_modification": 17,
     "entity_query": 9,
     "environment": 22,
-    "layers": 14,
+    "layers": 16,
     "layouts": 12,
     "mechanical": 14,
     "page_setup": 6,
@@ -1740,6 +1740,21 @@
       }
     },
     {
+      "name": "entity_modify_where",
+      "group": "entity_modification",
+      "cost": "destructive",
+      "summary": "Restyle every entity a filter matches (layer, colour, linetype, lineweight) in one call.",
+      "tags": [
+        "entity",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Modify Entities Where",
+        "readOnlyHint": false,
+        "destructiveHint": true
+      }
+    },
+    {
       "name": "entity_move",
       "group": "entity_modification",
       "cost": "mutate",
@@ -2104,6 +2119,20 @@
       }
     },
     {
+      "name": "layer_merge",
+      "group": "layers",
+      "cost": "destructive",
+      "summary": "Merge layers into one: move their entities, then delete them.",
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "Merge Layers",
+        "readOnlyHint": false,
+        "destructiveHint": true
+      }
+    },
+    {
       "name": "layer_modify",
       "group": "layers",
       "cost": "mutate",
@@ -2113,6 +2142,20 @@
       ],
       "annotations": {
         "title": "Modify Layer",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "layer_rename",
+      "group": "layers",
+      "cost": "mutate",
+      "summary": "Rename a layer; every entity on it follows.",
+      "tags": [
+        "layer"
+      ],
+      "annotations": {
+        "title": "Rename Layer",
         "readOnlyHint": false,
         "destructiveHint": false
       }

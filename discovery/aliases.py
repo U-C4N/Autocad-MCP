@@ -68,7 +68,12 @@ class ToolAliases:
 #       catalogue inserts), so each is a correct destination.
 #   QSELECT -- AutoCAD's Quick Select dialog is both "filter by properties"
 #       (selection_filter) and "find things like this one"
-#       (entity_select_smart); a drafter typing it could mean either.
+#       (entity_select_smart); a drafter typing it could mean either. Since
+#       1.8.0 it also selects-and-changes a whole set (entity_modify_where).
+#   CHPROP -- one entity's properties (entity_set_properties) or every entity
+#       a filter matches (entity_modify_where, 1.8.0).
+#   RENAME -- one dialog renames any named object: a layout (layout_rename)
+#       or a layer (layer_rename, 1.8.0).
 #   BLOCK -- one command makes a definition either from selected objects
 #       (block_create_from_entities) or from scratch with attribute
 #       definitions (block_define); a drafter typing it could mean either.
@@ -110,6 +115,7 @@ SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
     {
         "ARRAY",
         "BLOCK",
+        "CHPROP",
         "CLOSE",
         "DIMSTYLE",
         "DWGPROPS",
@@ -125,6 +131,7 @@ SHARED_ACAD_COMMANDS: frozenset[str] = frozenset(
         "PLINE",
         "PLOT",
         "QSELECT",
+        "RENAME",
         "REVCLOUD",
         "SAVEAS",
         "SECTIONPLANE",
@@ -871,6 +878,19 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
         acad=("MIRROR", "MI"),
         synonyms=("mirror", "flip", "reflect", "symmetry", "mirrored copy"),
     ),
+    "entity_modify_where": ToolAliases(
+        acad=("QSELECT", "CHPROP"),
+        synonyms=(
+            "change every entity on a layer",
+            "move all entities to another layer",
+            "set everything to bylayer",
+            "remove colour overrides",
+            "bulk change properties",
+            "modify where",
+            "restyle by filter",
+            "select by properties and change",
+        ),
+    ),
     "entity_move": ToolAliases(
         acad=("MOVE",),
         synonyms=("move", "shift", "translate", "relocate", "nudge"),
@@ -1198,6 +1218,16 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
         acad=("LAYLCK",),
         synonyms=("lock a layer", "protect a layer", "make a layer read only"),
     ),
+    "layer_merge": ToolAliases(
+        acad=("LAYMRG",),
+        synonyms=(
+            "merge layers",
+            "combine layers",
+            "move a layer's entities onto another layer",
+            "fold layers into one",
+            "layer cleanup",
+        ),
+    ),
     "layer_modify": ToolAliases(
         acad=("LAYER",),
         synonyms=(
@@ -1206,6 +1236,10 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "set the layer linetype",
             "set the layer lineweight",
         ),
+    ),
+    "layer_rename": ToolAliases(
+        acad=("RENAME",),
+        synonyms=("rename a layer", "change a layer name", "fix a misnamed layer"),
     ),
     "layer_set_current": ToolAliases(
         acad=("CLAYER", "LAYMCUR"),

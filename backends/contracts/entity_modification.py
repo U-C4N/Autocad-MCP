@@ -133,3 +133,35 @@ class EntityModificationContract(ABC):
         editing it would either do nothing or break the association.
         """
         ...
+
+    # ── set-based edits (1.8-12) ─────────────────────────────────────────────
+
+    @abstractmethod
+    async def entity_select_where(self, where: dict, set_: dict, space: str = "model") -> dict:
+        """What ``entity_modify_where`` would write, written nowhere (its dry run).
+
+        ``{ok, dry_run: True, space, count, would_change, handles (first 20),
+        truncated, skipped_locked: {count, layers}}``; ``where`` / ``set_`` /
+        ``space`` follow :mod:`backends.set_edits` and are refused by path
+        before anything is read. A read: never a content change.
+        """
+        ...
+
+    @abstractmethod
+    async def entity_modify_where(
+        self,
+        where: dict,
+        set_: dict,
+        space: str = "model",
+        expect_count: int | None = None,
+    ) -> dict:
+        """Write ``set_`` onto every entity ``where`` matches in ``space``.
+
+        One locked call (one STA job live): select, compare the count with
+        ``expect_count`` - a mismatch raises ``StaleRevisionError`` before
+        anything is written - then create a missing ``set_.layer``, load a
+        missing linetype and write. ``{ok, space, matched, changed, unchanged,
+        handles (first 20 changed), truncated, skipped_locked, layers_created,
+        set, changes}``.
+        """
+        ...

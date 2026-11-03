@@ -1346,7 +1346,7 @@ def cad_tool(*, summary: str, cost: str):
 # Some MCP clients degrade (or hard-cap) when a server exposes 100+ tools.
 # TOOL_PROFILE selects how much of the surface is advertised:
 #   full — everything (default, backwards compatible)
-#   lean — a curated 66-tool drafting/inspection core (LEAN_TOOL_NAMES)
+#   lean — a curated 67-tool drafting/inspection core (LEAN_TOOL_NAMES)
 # Disabled tools stay registered (system_about still reports the full
 # inventory) but are hidden from MCP list_tools and rejected if called.
 
@@ -1473,6 +1473,11 @@ LEAN_TOOL_NAMES = frozenset(
         # core-pack tool, so TOOL_PACKS=core keeps it; lean is 66 (56 with
         # TOOL_PACKS=core).
         "drawing_verify_requirements",
+        # Set-based edits (1.8-12) - the verb a tight-cap client otherwise
+        # spends one call per entity on. layer_rename / layer_merge stay full:
+        # this one moves a layer's entities and layer_delete drops the layer.
+        # A core-pack tool; lean is 67 (57 with TOOL_PACKS=core).
+        "entity_modify_where",
     }
 )
 
@@ -2795,7 +2800,7 @@ async def dimension_diameter(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 4: Entity Modification (18 tools) ───────────────────────────────
+# ── SECTION 4: Entity Modification (19 tools) ───────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -3367,6 +3372,88 @@ async def entity_edit_geometry(
     return _dc(result)
 
 
+@cad_tool(
+    summary="Restyle every entity a filter matches (layer, colour, linetype, lineweight) in one call.",
+    cost="destructive",
+)
+@mcp.tool(
+    annotations={"title": "Modify Entities Where", "readOnlyHint": False, "destructiveHint": True},
+    tags={"entity", "modify"},
+)
+async def entity_modify_where(
+    where: Annotated[
+        dict,
+        Field(
+            description=(
+                "Filter, at least one key: layer (name or list; * and ? wildcards), type "
+                "(DXF type or list), color (ACI 0-256, 256 = ByLayer), linetype, lineweight "
+                "('ByLayer', 25, -3), region [x0, y0, x1, y1] (box meets it), block (INSERT "
+                "block name or list)."
+            )
+        ),
+    ],
+    set: Annotated[
+        dict,
+        Field(
+            description=(
+                "What to write, at least one key: layer (created when missing), color "
+                "(0-256), linetype, lineweight ('ByLayer' = -1, never -3), visible."
+            )
+        ),
+    ],
+    space: Annotated[
+        str,
+        "model, paper (every paper layout) or all. Block definitions are never searched.",
+    ] = "model",
+    dry_run: Annotated[
+        bool, "Report the count, the first 20 handles and a `preview`; change nothing."
+    ] = False,
+    expect_count: Annotated[
+        int | None,
+        Field(
+            default=None,
+            ge=0,
+            description=(
+                "Apply only if `where` still matches exactly this many entities (a dry run's "
+                "`count`); otherwise refused stale_revision and nothing is changed."
+            ),
+        ),
+    ] = None,
+    ctx: Context = None,
+) -> dict:
+    """AutoCAD's QSELECT + CHPROP: one call for a whole set, not one row per entity.
+
+    Example - every override on the old layers back to ByLayer, on the new layer::
+
+        entity_modify_where(where={"layer": ["WALL*", "Walls"]},
+                            set={"layer": "A-WALL", "color": 256, "lineweight": "ByLayer"})
+
+    Entities on a locked layer are not written (AutoCAD's rule) and are reported in
+    `skipped_locked`, never counted as matched. `changed` counts only entities that
+    really changed: re-setting a value to itself is not a change. dry_run=True adds
+    `preview` (the document revision, plus the region fingerprint when `where` has a
+    region - of the current layout); send its `count` back as `expect_count`, or the
+    preview to `cad_batch(expected_revision=, preconditions=)`. Refused by name before
+    anything is written: an unknown or malformed `where` / `set` key (invalid_args),
+    a `set.layer` no layer may carry, an `expect_count` the drawing no longer matches
+    (stale_revision).
+    """
+    backend = _backend(ctx)
+    if dry_run:
+        from backends.set_edits import parse_where
+        from engineering.changes.preview import make_preview
+
+        result = await backend.entity_select_where(where, set, space)
+        region = parse_where(where).region
+        preview = (await make_preview(backend, region=region)).to_dict()
+        result["preview"] = preview
+        if region is not None:
+            result["region_fingerprint"] = preview["preconditions"][-1]["fingerprint"]
+        return result
+    await ctx.info(f"Modifying entities where {where} ({space})")
+    return await backend.entity_modify_where(where, set, space, expect_count)
+
+
 # ---------------------------------------------------------------------------
 # ── SECTION 5: Entity Query (9 tools) ───────────────────────────────────────
 # ---------------------------------------------------------------------------
@@ -3665,7 +3752,7 @@ async def entity_set_xdata(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 6: Layer Management (14 tools) ──────────────────────────────────
+# ── SECTION 6: Layer Management (16 tools) ──────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -3837,6 +3924,61 @@ async def layer_isolate(
             await b.layer_hide(lyr.name)
             hidden.append(lyr.name)
     return {"ok": True, "isolated": name, "hidden_count": len(hidden), "hidden_layers": hidden}
+
+
+@cad_tool(summary="Rename a layer; every entity on it follows.", cost="mutate")
+@mcp.tool(
+    annotations={"title": "Rename Layer", "readOnlyHint": False, "destructiveHint": False},
+    tags={"layer"},
+)
+async def layer_rename(
+    old: Annotated[str, "The layer's current name."],
+    new: Annotated[str, "Its new name; no layer may carry it yet."],
+    ctx: Context = None,
+) -> dict:
+    """AutoCAD's RENAME for a layer: the table entry and every reference to it.
+
+    Headless, every entity's layer in model space, every paper layout and every
+    block definition is rewritten (`entities`, `by_space`, `blocks_touched`), with
+    viewport frozen lists and the current layer; live, AutoCAD references a layer by
+    object id, so `AcadLayer.Name` renames it everywhere and no entity is rewritten
+    (`entities: null`). A layer state saved earlier keeps the old name. Refused by
+    name, before anything changes: `0`, `DEFPOINTS`, an xref-dependent layer, a
+    missing `old`, an existing `new` (use layer_merge), a case-only change.
+    """
+    await ctx.info(f"Renaming layer {old!r} to {new!r}")
+    return await _backend(ctx).layer_rename(old, new)
+
+
+@cad_tool(
+    summary="Merge layers into one: move their entities, then delete them.", cost="destructive"
+)
+@mcp.tool(
+    annotations={"title": "Merge Layers", "readOnlyHint": False, "destructiveHint": True},
+    tags={"layer"},
+)
+async def layer_merge(
+    sources: Annotated[list[str], "Layers to merge away."],
+    target: Annotated[str, "Existing layer that receives their entities."],
+    delete_sources: Annotated[bool, "Delete the source layers afterwards."] = True,
+    ctx: Context = None,
+) -> dict:
+    """AutoCAD's LAYMRG: every entity on `sources` moves to `target`, then the
+    sources are deleted.
+
+    Reassigns in model space, every paper layout and every block definition
+    (attributes included); `by_space` counts per layout, `blocks_touched` names the
+    edited definitions - and `note` says so, because an edited definition changes
+    every INSERT of that block. The current layer moves to `target` when it was a
+    source; viewport freezes of a source are dropped with it. Live, a locked source
+    or target is unlocked for the move and the target relocked; a source AutoCAD
+    will not delete is listed in `layers_not_deleted` with its reason. Refused by
+    name, before anything changes: a missing source or target (layer_create the
+    target first), `0` / `DEFPOINTS` / an xref-dependent layer as a source, the
+    target among the sources.
+    """
+    await ctx.warning(f"Merging layers {sources} into {target!r}")
+    return await _backend(ctx).layer_merge(sources, target, delete_sources)
 
 
 @cad_tool(summary="List the dash patterns currently loaded in the drawing.", cost="read")
