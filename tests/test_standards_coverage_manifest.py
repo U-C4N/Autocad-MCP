@@ -45,6 +45,8 @@ EMPTY = {
     "DIN 509-E": "DIN 509",
     "DIN 509-F": "DIN 509",
     "ISO 3601-2": "ISO 3601-2",
+    # 1.8-22: the axial housings are their own table, keyed by cord like the radial one.
+    "ISO 3601-2-axial": "ISO 3601-2",
 }
 FIELDS = (
     "standard",

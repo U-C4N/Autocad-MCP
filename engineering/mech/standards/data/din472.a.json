@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "standard": "DIN 472",
+  "entry": "a",
+  "entered_by": null,
+  "tables": {
+    "bore": {
+      "row_source": {
+        "edition": null,
+        "table": null,
+        "page": null
+      },
+      "rows": {}
+    }
+  }
+}

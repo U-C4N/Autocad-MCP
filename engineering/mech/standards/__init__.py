@@ -108,6 +108,21 @@ def coverage_of(standard: str) -> Coverage:
     return _table(standard).coverage
 
 
+def row_count(standard: str) -> int:
+    """How many sizes the registered table lists; 0 is a table shipped before its rows."""
+    return len(_table(standard).rows)
+
+
+def coverage_from_rows(rows: dict, unit: str = "mm") -> Coverage:
+    """The range a numerically keyed table was transcribed for: its smallest to largest key.
+
+    An empty table gets the ``Coverage(0, 0)`` placeholder that the manifest
+    reports as "no rows transcribed", never as a range.
+    """
+    sizes = [float(key) for key in rows]
+    return Coverage(min(sizes), max(sizes), unit) if sizes else Coverage(0.0, 0.0, unit)
+
+
 def source_of(standard: str) -> str:
     return _table(standard).source
 

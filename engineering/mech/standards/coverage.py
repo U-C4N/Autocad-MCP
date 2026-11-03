@@ -11,8 +11,14 @@ DIN 332-1, ISO 3601-2) report ``"no rows transcribed"`` and no range: their
 registered ``Coverage(0, 0)`` is a placeholder, not a coverage, and reporting
 it as ``0-0 mm`` would read as a table that covers nothing *by design*.
 
-``transcriber`` and ``reviewer`` are ``None`` for every table: the repository
-records no named transcriber or reviewer, and none is invented here. A table
+The feature tables are filled only through the double entry of
+``scripts/build_standards.py`` (``transcription.py``); ISO 3601-2 has one
+table per housing kind (``ISO 3601-2`` radial static, ``ISO 3601-2-axial``).
+
+``transcriber`` and ``reviewer`` are the two ``entered_by`` names of a table
+filled through that double entry, and ``None`` for every other table: the
+repository records no other named transcriber or reviewer, and none is
+invented here. A table
 registered without an entry in :data:`_LOCATORS` (a later table, a test
 fixture) still gets its record; its edition and table locator are then parsed
 from its SOURCE line, or reported as ``"not stated"``.
@@ -68,6 +74,20 @@ _LOCATORS: dict[str, tuple[str, str, str]] = {
     "DIN 332-A": ("1986-04", "Table 1 (forms A and B)", "pilot diameter"),
     "DIN 332-B": ("1986-04", "Table 1 (forms A and B)", "pilot diameter"),
     "ISO 3601-2": ("2016", "Tables 1-2 (radial static housings)", "cord diameter"),
+    "ISO 3601-2-axial": (
+        "2016",
+        "Table of axial housings (number confirmed against the licensed copy)",
+        "cord diameter",
+    ),
+}
+
+#: ``(transcriber, reviewer)`` per table, from the double entry of the B40
+#: tables (``TRANSCRIBED_BY`` / ``CHECKED_BY`` of the table modules, generated
+#: by scripts/build_standards.py). A table with no entry here reports both null.
+_PROVENANCE: dict[str, tuple[str | None, str | None]] = {
+    name: (who, getattr(module, "CHECKED_BY", {}).get(name))
+    for module in _TABLE_MODULES
+    for name, who in getattr(module, "TRANSCRIBED_BY", {}).items()
 }
 
 _EDITION_RE = re.compile(r":\s*(\d{4}(?:-\d{2})?)")
@@ -172,6 +192,7 @@ def table_coverage(standard: str) -> TableCoverage:
         "high": float(table.coverage.high) if rows else None,
         "measure": measure,
     }
+    transcriber, reviewer = _PROVENANCE.get(standard, (None, None)) if rows else (None, None)
     return TableCoverage(
         standard=standard,
         edition=edition,
@@ -180,8 +201,8 @@ def table_coverage(standard: str) -> TableCoverage:
         implemented=implemented,
         coverage=coverage,
         source=table.source,
-        transcriber=None,
-        reviewer=None,
+        transcriber=transcriber,
+        reviewer=reviewer,
         redistribution=_redistribution(standard, table.source, rows),
     )
 
@@ -205,8 +226,9 @@ def coverage_manifest() -> dict:
         ),
         "notes": {
             "transcriber": (
-                "transcriber and reviewer are not recorded in the repository for any table, "
-                "so both are null; none is invented"
+                "transcriber and reviewer are recorded only for a table transcribed through "
+                "the double entry of scripts/build_standards.py (the two entered_by names); "
+                "every other table has them not recorded, so both are null; none is invented"
             ),
             "coverage": (
                 f"a table with no rows reports status {NO_ROWS!r} and no range; its registered "

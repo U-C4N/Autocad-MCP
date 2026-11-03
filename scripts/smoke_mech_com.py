@@ -12,6 +12,11 @@ path. The whole track goes through the same code the tools call:
       -> draw_bom_table -> add_balloon
       -> xref_attach / xref_manage("list") / xref_manage("detach")
       -> run_critique(focus=None) -> drawing_export_dwg
+    B40 tables (1.8-22): one std_feature_draw per DIN 471 / 472, DIN 509,
+      DIN 332-1 and ISO 3601-2 table that has transcribed rows, in a document
+      of its own, plus a size between two rows refused by name; a table with
+      no rows is skipped with a message naming it (deferred to 1.8.1), never
+      run - 1.8.0 ships none, so the stage adds no check until one is filled.
 
 Checks: the section view omitted nothing; the part was dimensioned; the bolt
 carries its ACADMCP_MECH XDATA; the parts list read off the drawing is the
@@ -114,6 +119,55 @@ def assess(h: LiveHarness, report: dict) -> None:
         expected=0,
         observed=report["critique"],
     )
+    tables = report.get("std_tables") or {}
+    for name, count in (tables.get("drawn") or {}).items():
+        h.check(
+            f"B40 {name}: one size drawn from its row", count > 0, expected="> 0", observed=count
+        )
+    for name, found in (tables.get("looked_up") or {}).items():
+        h.check(f"B40 {name}: one size looked up", found, expected=True, observed=found)
+    for name, named in (tables.get("refused") or {}).items():
+        h.check(
+            f"B40 {name}: a size between rows refused by name", named, expected=True, observed=named
+        )
+
+
+async def _b40_tables(h: LiveHarness) -> dict:
+    """One std_feature_draw per filled B40 table, in a document of its own.
+
+    A table with no transcribed rows is skipped with a message, never drawn:
+    the stage is a no-op (and adds no check) until a licensed copy is entered.
+    """
+    from engineering.mech.standards import lookup
+    from engineering.mech.standards.feature_tables import (
+        deferred_message,
+        deferred_tables,
+        filled_tables,
+        probe,
+    )
+    from engineering.mech.stdparts import draw_std_feature
+
+    out = {"drawn": {}, "looked_up": {}, "refused": {}, "skipped": list(deferred_tables())}
+    if out["skipped"]:
+        print(f"B40 tables skipped: {deferred_message()}")
+    filled = filled_tables()
+    if not filled:
+        return out
+    await h.new_document()
+    for index, name in enumerate(filled):
+        p = probe(name)
+        if p["draw"] is None:  # the axial O-ring housing: no drawing path takes it
+            out["looked_up"][name] = bool(lookup(name, p["size"]))
+            continue
+        kind, params = p["draw"]
+        result = await draw_std_feature(h.backend, kind, (60.0 * index, 0.0), params)
+        out["drawn"][name] = len(result.get("handles") or [])
+        try:
+            await draw_std_feature(h.backend, kind, (60.0 * index, 80.0), p["refused_draw"][1])
+            out["refused"][name] = False
+        except ValueError as exc:
+            out["refused"][name] = name in str(exc)
+    return out
 
 
 async def body(h: LiveHarness) -> dict:
@@ -226,6 +280,8 @@ async def body(h: LiveHarness) -> dict:
         "critique_issues": len(issues),
         "critique": [issue.to_dict() for issue in issues],
     }
+    h.stage("B40 tables")
+    report["std_tables"] = await _b40_tables(h)
     h.stage("checks")
     assess(h, report)
     return report

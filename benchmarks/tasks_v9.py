@@ -42,6 +42,14 @@ until plan item 1.8-25 publishes the v9 matrix, so a run without
   ``mech_duplicate_dimension`` clean, and a second run draws nothing. Its
   broken-input twin: an ELLIPSE and a SPLINE in the selection come back in
   ``omitted`` with their reasons, never silently dropped.
+* ``std_tables_b40`` (1.8-22, standards, B40) - one size drawn by
+  ``std_feature_draw`` from every DIN 471 / DIN 472 / DIN 509 / DIN 332-1 /
+  ISO 3601-2 table that has transcribed rows, its dimensions equal to the
+  double entry's own row; the broken-input twin draws a size between two rows
+  (or past the only one) and must be refused by name with nothing drawn. With
+  no table filled - 1.8.0 ships none, the licensed copies were not at hand -
+  the task is ``not_run`` naming the tables deferred to 1.8.1, never a vacuous
+  pass. It runs through the backend contract, so it is not headless-only.
 """
 
 from __future__ import annotations
@@ -105,6 +113,14 @@ NEW_TASKS_V9: tuple[TaskSpec, ...] = (
         "Dimension a plate (outline, six holes, two arcs) in at most 2 calls: every dimension "
         "bound without a dimension_mismatch, no duplicate, a second run draws nothing; an "
         "ELLIPSE and a SPLINE in the selection are omitted with their reasons",
+        1.0,
+    ),
+    TaskSpec(
+        "std_tables_b40",
+        "standards",
+        "Draw one size from every filled DIN 471/472, DIN 509, DIN 332-1 and ISO 3601-2 "
+        "table with the double entry's own dimensions; a size between two rows is refused "
+        "by name with nothing drawn; no filled table is not_run naming the deferred tables",
         1.0,
     ),
 )
