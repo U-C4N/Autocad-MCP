@@ -12,6 +12,9 @@ DEFAULT_CAD_PROGID = "AutoCAD.Application"
 #: Default ``MAX_DXF_BYTES``: 512 MB.
 DEFAULT_MAX_DXF_BYTES = 512 * 1024 * 1024
 
+#: Default ``MAX_HTTP_BODY_BYTES``: 8 MiB (1.8-17).
+DEFAULT_MAX_HTTP_BODY_BYTES = 8 * 1024 * 1024
+
 
 class Settings:
     """Server configuration loaded from environment variables."""
@@ -138,6 +141,41 @@ class Settings:
             os.environ.get("ALLOW_REMOTE_HTTP", "false").lower().strip() == "true"
         )
         self.mcp_auth_token: str = os.environ.get("MCP_AUTH_TOKEN", "").strip()
+
+        # 1.8-17 (policy.py): which tools a client may reach. The defaults are
+        # 1.7's behaviour - every tool, every cost. READ_ONLY runs only `read`
+        # tools and writes no file; TOOL_ALLOWLIST / TOOL_DENYLIST take comma-
+        # separated names or globs (`entity_*`), an entry naming no tool is
+        # warned about at startup; MAX_TOOL_COST is the highest @cad_tool cost
+        # a call may carry (read|safe|mutate|destructive|escape).
+        from policy import parse_cost, parse_patterns
+
+        self.read_only: bool = os.environ.get("READ_ONLY", "false").lower().strip() == "true"
+        self.tool_allowlist: tuple[str, ...] = parse_patterns(os.environ.get("TOOL_ALLOWLIST"))
+        self.tool_denylist: tuple[str, ...] = parse_patterns(os.environ.get("TOOL_DENYLIST"))
+        self.max_tool_cost: str = parse_cost(os.environ.get("MAX_TOOL_COST"))
+
+        # 1.8-17 (http_guard.py): the HTTP transport's request guard. A request
+        # carrying an Origin header must name one of HTTP_ALLOWED_ORIGINS
+        # (default none: every browser origin is refused 403); its Host must be
+        # the bound host:port or one of HTTP_ALLOWED_HOSTS (421); a body over
+        # MAX_HTTP_BODY_BYTES (8 MiB; 0 disables) is refused 413. A request
+        # authenticated with MCP_AUTH_TOKEN_READONLY gets only the mcp:read
+        # scope and runs under the `read` ceiling. stdio is unaffected.
+        self.http_allowed_origins: tuple[str, ...] = tuple(
+            origin.strip().rstrip("/").lower()
+            for origin in os.environ.get("HTTP_ALLOWED_ORIGINS", "").split(",")
+            if origin.strip()
+        )
+        self.http_allowed_hosts: tuple[str, ...] = tuple(
+            host.strip().lower()
+            for host in os.environ.get("HTTP_ALLOWED_HOSTS", "").split(",")
+            if host.strip()
+        )
+        self.max_http_body_bytes: int = max(
+            0, int(os.environ.get("MAX_HTTP_BODY_BYTES", str(DEFAULT_MAX_HTTP_BODY_BYTES)))
+        )
+        self.mcp_auth_token_readonly: str = os.environ.get("MCP_AUTH_TOKEN_READONLY", "").strip()
 
         # Exposed tool profile: "full" (default, everything) or "lean" (a
         # curated 66-tool drafting/inspection core for clients with tight tool

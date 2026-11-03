@@ -24,7 +24,6 @@ from typing import Annotated, Any
 import anyio
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
-from fastmcp.server.auth import StaticTokenVerifier
 from fastmcp.server.lifespan import lifespan
 from fastmcp.server.middleware import Middleware, MiddlewareContext
 from fastmcp.server.middleware.error_handling import ErrorHandlingMiddleware
@@ -34,6 +33,8 @@ from fastmcp.tools.tool import ToolResult
 from pydantic import Field
 
 import config
+import http_guard
+import policy
 from backends.base import (
     LINEWEIGHT_HELP,
     LINEWEIGHT_LAYER_NOTE,
@@ -73,7 +74,21 @@ from engineering.errors import (
 )
 from engineering.fits import fit_lookup
 from engineering.measure import is_self_intersecting, polygon_area_perimeter
-from security import command_verbs, sanitize_command, sanitize_lisp, validate_path
+from security import (
+    DIRECTORY,
+    KINDS_DRAWING,
+    KINDS_DWG,
+    KINDS_DXF,
+    KINDS_IMAGE,
+    KINDS_PDF,
+    KINDS_REPORT,
+    KINDS_TABLE,
+    KINDS_TEMPLATE,
+    command_verbs,
+    sanitize_command,
+    sanitize_lisp,
+    validate_path,
+)
 from version import __version__
 
 # ---------------------------------------------------------------------------
@@ -259,14 +274,49 @@ class AuditMiddleware(Middleware):
     async def on_call_tool(self, context: MiddlewareContext, call_next):
         tool_name = context.message.name
         start = time.monotonic()
+        # getattr: a hand-built context (tests/test_cancel_rollbacks.py) has no arguments.
+        arguments = dict(getattr(context.message, "arguments", None) or {})
+        effective = _effective_tool(tool_name, arguments)
+        # 1.8-17: the tool policy, before any record is opened - on the tool the
+        # call really runs (call_tool's target), under this request's ceiling
+        # (a read-only token holds it to `read`).
+        ceiling_token = policy.REQUEST_CEILING.set(
+            _request_token_ceiling() or policy.REQUEST_CEILING.get()
+        )
+        tool_token = policy.CURRENT_TOOL.set(effective)
+        try:
+            refused = _policy_refusal(effective)
+            if refused is not None:
+                elapsed = (time.monotonic() - start) * 1000
+                log.warning("TOOL ERR %-40s %6.1fms  (policy_refused)", tool_name, elapsed)
+                return _journal_refusal(context, "policy_refused", str(refused), refused.fields())
+            return await self._call(context, call_next, tool_name, start, arguments, effective)
+        finally:
+            policy.CURRENT_TOOL.reset(tool_token)
+            policy.REQUEST_CEILING.reset(ceiling_token)
+
+    async def on_list_tools(self, context: MiddlewareContext, call_next):
+        """A read-only token's catalog: the tools its `read` ceiling lets it call (1.8-17).
+
+        The server-wide policy already shrank the catalog (the profile
+        visibility transform); only a per-request ceiling filters here.
+        """
+        tools = await call_next(context)
+        limit = _request_token_ceiling()
+        if limit is None:
+            return tools
+        token = policy.REQUEST_CEILING.set(limit)
+        try:
+            return [tool for tool in tools if _policy_refusal(tool.name, tool) is None]
+        finally:
+            policy.REQUEST_CEILING.reset(token)
+
+    async def _call(self, context, call_next, tool_name, start, arguments, effective):
         if CURRENT_OPERATION.get() is not None:
             return await self._logged(context, call_next, tool_name, start)
         lifespan = _lifespan_context_or_none(context)
         journal = _operations_journal(lifespan)
         backend = lifespan.get("backend") if lifespan is not None else None
-        # getattr: a hand-built context (tests/test_cancel_rollbacks.py) has no arguments.
-        arguments = dict(getattr(context.message, "arguments", None) or {})
-        effective = _effective_tool(tool_name, arguments)
         try:
             supplied = _client_operation_id(tool_name, arguments, _request_meta(context))
             record, replay = journal.begin(
@@ -415,6 +465,44 @@ def _effective_tool(tool: str, arguments: dict) -> str:
     if tool == "call_tool" and isinstance(arguments.get("name"), str):
         return arguments["name"]
     return tool
+
+
+def _request_token_ceiling() -> str | None:
+    """``"read"`` for a request authenticated with the read-only token (1.8-17).
+
+    No verifier, no token: stdio and an unauthenticated loopback server skip
+    the lookup entirely.
+    """
+    if _auth is None:
+        return None
+    return http_guard.token_ceiling()
+
+
+def _tool_card(name: str, tool=None) -> dict | None:
+    """The ``@cad_tool`` card of ``name`` (from ``tool`` or the local registry), or
+    None when no such tool is registered. A registered tool without a card
+    answers ``{}`` - the policy judges it ``escape`` (fail closed)."""
+    component = tool
+    if component is None:
+        component = next((t for t in _local_tool_components() if t.name == name), None)
+    if component is None:
+        return None
+    return (getattr(component, "meta", None) or {}).get("cad") or {}
+
+
+def _policy_refusal(name: str, tool=None):
+    """The ``PolicyRefusedError`` the tool policy meets ``name`` with, or None (1.8-17).
+
+    Judged on the registered tool's own cost card, so a tool the policy hid
+    from the catalog is still refused by name (``policy_refused``), never as
+    an unknown tool. A name no tool carries is left to FastMCP's own answer.
+    """
+    if policy.REQUEST_CEILING.get() is None and not policy.restrictive():
+        return None
+    card = _tool_card(name, tool)
+    if card is None:
+        return None
+    return policy.refusal(name, card.get("cost"))
 
 
 def _client_operation_id(tool: str, arguments: dict, meta) -> str | None:
@@ -706,17 +794,12 @@ def _journal_refusal(context, kind: str, text: str, fields: dict) -> ToolResult:
 # HTTP auth
 # ---------------------------------------------------------------------------
 
-_auth = (
-    StaticTokenVerifier(
-        tokens={
-            config.settings.mcp_auth_token: {
-                "client_id": "mcp-http-client",
-                "scopes": ["mcp:read", "mcp:write"],
-            }
-        }
-    )
-    if config.settings.mcp_auth_token
-    else None
+# 1.8-17: a StaticTokenVerifier subclass comparing with hmac.compare_digest;
+# MCP_AUTH_TOKEN_READONLY issues only mcp:read, which AuditMiddleware turns
+# into the `read` policy ceiling for that request (http_guard.py).
+_auth = http_guard.build_auth(
+    config.settings.mcp_auth_token,
+    getattr(config.settings, "mcp_auth_token_readonly", ""),
 )
 
 # ---------------------------------------------------------------------------
@@ -1659,10 +1742,19 @@ async def _apply_tool_profile(profile: str | None = None) -> dict:
                 ", ".join(TOOL_PROFILES),
             )
         selected = "full"
-    registered = {tool.name for tool in await _registered_tools() if getattr(tool, "name", None)}
+    components = {
+        tool.name: tool for tool in await _registered_tools() if getattr(tool, "name", None)
+    }
+    registered = set(components)
     # Resolved once per apply: twice warned twice per unknown entry (W4-T18-04).
     packs, ignored = _enabled_packs()
     enabled = _profile_enabled_names(selected, registered, packs)
+    # 1.8-17: the tool policy shrinks the catalog too - a tool READ_ONLY, the
+    # allow/deny lists or MAX_TOOL_COST refuse is not advertised (and is still
+    # refused by name, policy_refused, if called).
+    policy.warn_unmatched(registered)
+    policy_hidden = sorted(n for n in enabled if _policy_refusal(n, components[n]) is not None)
+    enabled -= set(policy_hidden)
     disabled = sorted(registered - enabled)
     # Replace the previous profile's visibility, never stack on it. fastmcp 3's
     # enable()/disable() append a Visibility transform per call and a tool lookup
@@ -1688,6 +1780,8 @@ async def _apply_tool_profile(profile: str | None = None) -> dict:
         "disabled_count": len(disabled),
         "disabled_tools": disabled,
     }
+    if policy_hidden:
+        _active_tool_profile["policy_hidden_count"] = len(policy_hidden)
     _active_tool_profile["tool_packs"] = {
         "enabled": sorted(packs),
         "available": list(TOOL_PACK_NAMES),
@@ -1914,7 +2008,7 @@ async def drawing_save(
     (`recovered_source_protected`) unless overwrite_source=True.
     """
     if path is not None:
-        validated = validate_path(path, allow_write=True)
+        validated = validate_path(path, allow_write=True, kinds=KINDS_DRAWING)
         path = str(validated)
     await ctx.info("Saving drawing")
     if overwrite_source:
@@ -1945,7 +2039,7 @@ async def drawing_save_as(
     match the name (N2) — e.g. 'part.dxf' writes DXF, not DWG. `format` overrides
     only when the path has no recognised extension.
     """
-    validated = validate_path(path, allow_write=True)
+    validated = validate_path(path, allow_write=True, kinds=KINDS_DRAWING)
     from pathlib import Path as _P
 
     ext = _P(str(validated)).suffix.lstrip(".").lower()
@@ -1971,7 +2065,7 @@ async def drawing_export_dxf(
     and the DXF version written. Refused: a name that is not .dxf (a .dwg headlessly
     with capability `dwg`).
     """
-    validated = validate_path(path, allow_write=True)
+    validated = validate_path(path, allow_write=True, kinds=KINDS_DXF)
     await ctx.info(f"Exporting DXF: {validated}")
     return await _backend(ctx).drawing_export_dxf(str(validated))
 
@@ -1991,7 +2085,7 @@ async def drawing_export_pdf(
     ctx: Context = None,
 ) -> dict:
     """Export the current drawing (or a paper-space layout) to PDF."""
-    validated = validate_path(path, allow_write=True)
+    validated = validate_path(path, allow_write=True, kinds=KINDS_PDF)
     await ctx.info(f"Exporting PDF: {validated}")
     await ctx.report_progress(0, 100)
     result = await _backend(ctx).drawing_export_pdf(str(validated), layout=layout)
@@ -5195,7 +5289,9 @@ async def cad_batch(
     opens with transaction_begin is closed with the batch's (`unwound`).
 
     NOT CALLABLE from a batch: the raw command/LISP escape hatches, and
-    cad_batch itself. Call those directly.
+    cad_batch itself. Call those directly. A step the server's tool policy
+    refuses (READ_ONLY, TOOL_ALLOWLIST / TOOL_DENYLIST, MAX_TOOL_COST) refuses
+    the whole batch before any step runs, kind policy_refused.
 
     For a few hundred entities of the same kind, entity_batch_create is denser
     still (no per-step tool name) - and it can be one step of a cad_batch.
@@ -5263,6 +5359,13 @@ async def cad_batch(
                 "the raw escape hatches (or another batch executor). Call it directly, "
                 "where its own gate applies.",
             )
+        elif (policy_refused := _policy_refusal(name)) is not None:
+            # 1.8-17: steps skip the middleware (run_middleware=False), so the
+            # tool policy is checked here, for every step, before any runs.
+            row["status"] = "invalid"
+            row["error"] = annotate(classify(policy_refused), "refused")
+            row["_policy"] = policy_refused
+            problems.append(f"step {index}: {row['error']['message']}")
         else:
             tool = await ctx.fastmcp.get_tool(name)
             card = (getattr(tool, "meta", None) or {}).get("cad") or {}
@@ -5355,6 +5458,20 @@ async def cad_batch(
             ),
         }
 
+    first_policy = next((row["_policy"] for row in plans if "_policy" in row), None)
+    if first_policy is not None:
+        # The batch's own envelope is the policy refusal of its first refused
+        # step (kind policy_refused, its policy / tool / allowed_cost), naming
+        # every problem; nothing ran.
+        raise policy.PolicyRefusedError(
+            f"cad_batch refused all {len(steps)} steps - nothing was executed. "
+            + "; ".join(problems[:5])
+            + ("" if len(problems) <= 5 else f" (+{len(problems) - 5} more)"),
+            policy=first_policy.policy,
+            tool=first_policy.tool,
+            allowed_cost=first_policy.allowed_cost,
+            cost=first_policy.cost,
+        ) from None
     if problems:
         raise ToolError(
             f"cad_batch refused all {len(steps)} steps - nothing was executed. "
@@ -6318,6 +6435,7 @@ async def system_status(ctx: Context = None) -> dict:
         out["state_store"] = state_store_status(journal)
         if ctx.lifespan_context.get("save_recovery"):
             out["save_recovery"] = ctx.lifespan_context["save_recovery"]
+        out["policy"] = policy.describe()
         return out
     status = await b.system_status()
     status["server"] = "AutoCAD MCP Pro"
@@ -6332,6 +6450,8 @@ async def system_status(ctx: Context = None) -> dict:
     status["state_store"] = state_store_status(journal)
     if ctx.lifespan_context.get("save_recovery"):
         status["save_recovery"] = ctx.lifespan_context["save_recovery"]
+    # 1.8-17: the tool policy in force (READ_ONLY, allow/deny lists, MAX_TOOL_COST).
+    status["policy"] = policy.describe()
     return status
 
 
@@ -6612,6 +6732,18 @@ async def system_about(ctx: Context = None) -> dict:
     # R20: omit total_tools when unknown rather than reporting a fake -1.
     if tool_count is not None:
         out["total_tools"] = tool_count
+    # 1.8-17: the tool policy and the HTTP guard's settings (no token is shown).
+    registered = [t.name for t in _local_tool_components()]
+    out["policy"] = {
+        **policy.describe(registered),
+        "http": {
+            "allowed_origins": list(getattr(config.settings, "http_allowed_origins", ()) or ()),
+            "allowed_hosts": list(getattr(config.settings, "http_allowed_hosts", ()) or ()),
+            "max_body_bytes": getattr(config.settings, "max_http_body_bytes", None),
+            "auth": _auth is not None,
+            "readonly_token": bool(getattr(config.settings, "mcp_auth_token_readonly", "")),
+        },
+    }
     return out
 
 
@@ -6996,14 +7128,14 @@ async def drawing_finalize(
     backend = _backend(ctx)
 
     if save_path:
-        validated = validate_path(save_path, allow_write=True)
+        validated = validate_path(save_path, allow_write=True, kinds=KINDS_DRAWING)
         from pathlib import Path as _P
 
         _fmt = _P(str(validated)).suffix.lstrip(".").lower() or "dxf"
         await backend.drawing_save_as(str(validated), fmt=_fmt)
 
     if screenshot_path:
-        validated_shot = validate_path(screenshot_path, allow_write=True)
+        validated_shot = validate_path(screenshot_path, allow_write=True, kinds=KINDS_IMAGE)
         try:
             shot = await backend.view_screenshot()
             if shot:
@@ -7234,7 +7366,7 @@ async def drawing_deliver(
             rs = parse_requirements(requirements)
         except (KeyError, TypeError, ValueError) as exc:
             raise ToolError(f"invalid_args: requirements: {exc}") from exc
-    destination = validate_path(output_dir, allow_write=True)
+    destination = validate_path(output_dir, allow_write=True, kinds=DIRECTORY)
     result = await deliver_drawing(
         _backend(ctx),
         destination,
@@ -9133,7 +9265,7 @@ async def batch_plot(
         raise ToolError(
             f"batch_plot: format must be 'pdf' (got {format!r}); PDF is the only plot format"
         )
-    destination = validate_path(output_dir, allow_write=True)
+    destination = validate_path(output_dir, allow_write=True, kinds=DIRECTORY)
     await ctx.info(f"Batch plotting {layouts or 'every sheet'} to {destination}")
     try:
         return await _batch_plot(_backend(ctx), layouts, str(destination), file_pattern)
@@ -9202,7 +9334,7 @@ async def drawing_template_save(
 
     Pack: core · lean: no (`drawing_save_as` is not lean either).
     """
-    validated = validate_path(path, allow_write=True)
+    validated = validate_path(path, allow_write=True, kinds=KINDS_TEMPLATE)
     await ctx.info(f"Saving template: {validated}")
     try:
         return await _backend(ctx).drawing_template_save(str(validated), name, description)
@@ -11356,7 +11488,9 @@ async def data_extract(
 ) -> dict:
     """The same rows `bom_extract` returns, written to a file.
 
-    Refusals: a format that is not 'csv' or 'xlsx'; a drawing with nothing to
+    Refusals: a format that is not 'csv' or 'xlsx'; a path not ending .csv or
+    .xlsx, or naming a file AutoCAD loads (acaddoc.lsp, acad.pgp, ...), with
+    kind path_refused; a drawing with nothing to
     itemise (nothing is written); and `fmt='xlsx'` without openpyxl, which
     carries `capability: "xlsx_write"` and names both the package to install
     and the CSV route that always works.
@@ -11365,7 +11499,7 @@ async def data_extract(
     from engineering.sheet.extract import write_rows
 
     backend = _backend(ctx)
-    validated = validate_path(path, allow_write=True)
+    validated = validate_path(path, allow_write=True, kinds=KINDS_TABLE)
     records = await extract_records(backend, layer=layer or None)
     rows = rows_from_records(records, columns=columns, group_by=group_by or None)
     await ctx.info(f"Data extract: {len(rows)} rows -> {validated}")
@@ -11399,7 +11533,7 @@ async def drawing_export_dwg(
     flag is re-evaluated at call time, so installing the converter changes it
     without a restart. An unknown version is refused by name with the six.
     """
-    validated = validate_path(path, allow_write=True)
+    validated = validate_path(path, allow_write=True, kinds=KINDS_DWG)
     await ctx.info(f"DWG export {version}: {validated}")
     return await _backend(ctx).drawing_export_dwg(str(validated), version)
 
@@ -12735,7 +12869,7 @@ async def drawing_verify_requirements(
 
     report_target = None
     if report_path is not None:
-        report_target = validate_path(report_path, allow_write=True)
+        report_target = validate_path(report_path, allow_write=True, kinds=KINDS_REPORT)
         allowed = (".json",) if manifest_path is not None else (".json", ".md")
         if report_target.suffix.lower() not in allowed:
             raise ToolError(
@@ -12968,7 +13102,7 @@ async def pipe_takeoff(
 
     pid = str(validate_path(pid_path)) if pid_path else None
     layout = str(validate_path(layout_path)) if layout_path else None
-    target = str(validate_path(output, allow_write=True)) if output else None
+    target = str(validate_path(output, allow_write=True, kinds=KINDS_TABLE)) if output else None
     await ctx.info(f"pipe_takeoff: {pid or 'current drawing'} / {layout or 'no layout'}")
     try:
         return await run_pipe_takeoff(
@@ -13089,7 +13223,7 @@ async def cable_takeoff(
 
     pid = str(validate_path(pid_path)) if pid_path else None
     layout = str(validate_path(layout_path)) if layout_path else None
-    target = str(validate_path(output, allow_write=True)) if output else None
+    target = str(validate_path(output, allow_write=True, kinds=KINDS_TABLE)) if output else None
     await ctx.info(f"cable_takeoff: {pid or 'current drawing'} / {layout or 'no layout'}")
     try:
         return await run_cable_takeoff(
@@ -13609,11 +13743,20 @@ def _validate_http_bind(host: str) -> None:
             "Set ALLOW_REMOTE_HTTP=true and MCP_AUTH_TOKEN=<token> to opt in. "
             "Without auth, any client on the network can run AutoCAD commands."
         )
-    if not config.settings.mcp_auth_token:
+    if not (
+        config.settings.mcp_auth_token or getattr(config.settings, "mcp_auth_token_readonly", "")
+    ):
         raise SystemExit(
             f"Refusing to bind HTTP on '{host}' without MCP_AUTH_TOKEN. "
             "Set MCP_AUTH_TOKEN=<token> to enable bearer-token auth, or bind "
             "to 127.0.0.1 for local-only access."
+        )
+    if not config.settings.allowed_paths:
+        # 1.8-17: a network-reachable server confines every file it reads or
+        # writes; without ALLOWED_PATHS a remote client names any path.
+        raise SystemExit(
+            f"Refusing to bind HTTP on '{host}' without ALLOWED_PATHS. A non-loopback "
+            "server must confine its file reads and writes: set ALLOWED_PATHS=<folder>[,...]."
         )
     log.warning(
         "⚠ Binding HTTP on non-loopback host '%s'. Auth token required for all "
@@ -13671,11 +13814,49 @@ def _effective_http_host(kwargs: dict) -> str:
 
 async def _guarded_run_async(transport=None, *args, **kwargs):
     if (transport in _HTTP_TRANSPORTS) or (kwargs.get("transport") in _HTTP_TRANSPORTS):
-        _validate_http_bind(_effective_http_host(kwargs))
+        host = _effective_http_host(kwargs)
+        _validate_http_bind(host)
+        # 1.8-17: the request guard's Host check compares against this bind.
+        http_guard.set_bind(host, _effective_http_port(kwargs))
     return await _orig_run_async(transport, *args, **kwargs)
 
 
+def _effective_http_port(kwargs: dict) -> int | None:
+    """The port that will be bound: ``port`` when given, else fastmcp's setting."""
+    port = kwargs.get("port")
+    if port:
+        return int(port)
+    try:
+        import fastmcp
+
+        resolved = getattr(fastmcp.settings, "port", None)
+        return int(resolved) if resolved else None
+    except Exception:  # pragma: no cover - defensive; the guard then accepts any port
+        return None
+
+
 mcp.run_async = _guarded_run_async
+
+# 1.8-17 (spike S3): the HTTP request guard (Origin 403, Host 421, body 413),
+# prepended on every app builder - main(), mcp.run, `fastmcp run` and a direct
+# mcp.http_app() all reach it through this instance attribute, the SSE app
+# included. Pure ASGI, so the MCP event stream passes through unbuffered.
+_orig_http_app = mcp.http_app
+
+
+def _guarded_http_app(*args, **kwargs):
+    from starlette.middleware import Middleware as _AsgiMiddleware
+
+    guard = _AsgiMiddleware(http_guard.HttpGuard)
+    args = list(args)
+    if len(args) > 1:  # http_app(path, middleware, ...) positionally
+        args[1] = [guard, *(args[1] or [])]
+    else:
+        kwargs["middleware"] = [guard, *(kwargs.get("middleware") or [])]
+    return _orig_http_app(*args, **kwargs)
+
+
+mcp.http_app = _guarded_http_app
 
 
 def main() -> None:

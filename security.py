@@ -27,6 +27,12 @@ class PathRefusedError(ToolError):
 
     kind = "path_refused"
 
+    def __init__(self, message: str, **details):
+        super().__init__(message)
+        #: The refusal's own envelope fields (1.8-17: ``reason``, ``extension``,
+        #: ``allowed``); empty for the 1.7 traversal / directory refusals.
+        self.details = {key: value for key, value in details.items() if value is not None}
+
 
 class CommandRefusedError(ToolError):
     """The raw command / LISP denylist refused the string (plan 1.8-02).
@@ -93,13 +99,119 @@ def _reject_non_local_anchor(original: str, resolved: Path) -> None:
     )
 
 
-def validate_path(path: str, *, allow_write: bool = False) -> Path:
+#: ``kinds=DIRECTORY``: the write target is a folder the tool writes fixed,
+#: named files into (``drawing_deliver``, ``batch_plot``), each of which is
+#: validated with its own extension set when the tool names it.
+DIRECTORY = "directory"
+
+#: File names AutoCAD (or Windows) loads or runs: never written by any tool,
+#: whatever ``kinds`` or ``ALLOWED_PATHS`` say (1.8-17). ``acad*.lsp`` and
+#: ``acaddoc*.lsp`` are the autoload names; every ``.lsp`` is refused, as is
+#: compiled LISP, menu LISP, scripts, ObjectARX / DBX modules and the
+#: Windows executables, and the command-alias file ``acad.pgp``.
+WRITE_REFUSED_SUFFIXES: frozenset[str] = frozenset(
+    {
+        ".lsp",
+        ".fas",
+        ".vlx",
+        ".mnl",
+        ".scr",
+        ".arx",
+        ".dbx",
+        ".dll",
+        ".exe",
+        ".bat",
+        ".cmd",
+        ".ps1",
+        ".vbs",
+        ".js",
+    }
+)
+WRITE_REFUSED_NAMES: frozenset[str] = frozenset({"acad.pgp"})
+
+#: The extension sets the writers pass as ``kinds`` (1.8-17).
+KINDS_DRAWING: tuple[str, ...] = (".dxf", ".dwg", ".dwt")
+KINDS_DXF: tuple[str, ...] = (".dxf",)
+KINDS_DWG: tuple[str, ...] = (".dwg",)
+KINDS_TEMPLATE: tuple[str, ...] = (".dxf", ".dwt")
+KINDS_PDF: tuple[str, ...] = (".pdf",)
+KINDS_TABLE: tuple[str, ...] = (".csv", ".xlsx")
+KINDS_CSV: tuple[str, ...] = (".csv",)
+KINDS_IMAGE: tuple[str, ...] = (".png", ".jpg")
+KINDS_REPORT: tuple[str, ...] = (".json", ".md")
+
+
+def _write_name(resolved: Path) -> str:
+    """The name Windows will actually create: trailing dots and spaces dropped."""
+    return resolved.name.rstrip(" .").lower()
+
+
+def _check_write_target(original: str, resolved: Path, kinds) -> None:
+    """The extension rules of a write (1.8-17); raises ``PathRefusedError``."""
+    name = _write_name(resolved)
+    if ":" in resolved.name:
+        # An NTFS alternate data stream (`report.csv:acaddoc.lsp`) is a second
+        # file the extension check below would never see.
+        raise PathRefusedError(
+            f"Path rejected: '{original}' names an alternate data stream (':' in the file "
+            "name); write a plain file.",
+            reason="alternate_data_stream",
+        )
+    suffix = Path(name).suffix
+    if suffix in WRITE_REFUSED_SUFFIXES or name in WRITE_REFUSED_NAMES:
+        log.warning("Blocked write of a loadable/executable file: %s", resolved)
+        raise PathRefusedError(
+            f"Path rejected: '{resolved.name}' is a file AutoCAD or Windows loads or runs "
+            f"({suffix or name}); no tool writes one, inside ALLOWED_PATHS or not.",
+            reason="executable_name",
+            extension=suffix or name,
+        )
+    if kinds is None:
+        return
+    if kinds == DIRECTORY:
+        if resolved.exists() and not resolved.is_dir():
+            raise PathRefusedError(
+                f"Path rejected: '{resolved}' is a file; name the folder to write into.",
+                reason="not_a_directory",
+            )
+        return
+    allowed = tuple(str(kind).lower() for kind in kinds)
+    names = [kind or "(no extension)" for kind in allowed]
+    shown = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " or " + names[-1]
+    if resolved.is_dir():
+        raise PathRefusedError(
+            f"Path rejected: '{resolved}' is a directory; name the {shown} file to write.",
+            reason="is_a_directory",
+            allowed=list(allowed),
+        )
+    if suffix not in allowed:
+        raise PathRefusedError(
+            f"Path rejected: '{resolved.name}' must end in {shown} - this tool "
+            f"writes only those (got {suffix or 'no extension'!r}).",
+            reason="extension_not_allowed",
+            extension=suffix,
+            allowed=list(allowed),
+        )
+
+
+def validate_path(path: str, *, allow_write: bool = False, kinds=None) -> Path:
     """Resolve and validate a file path against security rules.
 
     Raises ToolError if:
       - Path contains traversal sequences (..)
       - Path is outside ALLOWED_PATHS (when configured)
       - Path targets a system directory
+
+    With ``allow_write=True`` (1.8-17) also:
+      - the server's tool policy forbids writes (``READ_ONLY``, a ceiling below
+        ``mutate``, a read-only token) - ``PolicyRefusedError``, kind
+        ``policy_refused``, whatever the calling tool's label;
+      - the name is one AutoCAD or Windows loads or runs (``*.lsp``,
+        ``acad.pgp``, ...: :data:`WRITE_REFUSED_SUFFIXES`) - always, even
+        inside ``ALLOWED_PATHS``; kind ``path_refused``;
+      - ``kinds`` (the writer's extension set, e.g. ``(".pdf",)``, or
+        :data:`DIRECTORY`) does not admit the name - kind ``path_refused``.
+        Every writer passes its ``kinds`` (``tests/test_write_path_policy.py``).
     """
     if not path or not path.strip():
         raise ToolError("File path cannot be empty.")
@@ -161,6 +273,10 @@ def validate_path(path: str, *, allow_write: bool = False) -> Path:
             )
 
     if allow_write:
+        from policy import check_write
+
+        check_write(resolved)
+        _check_write_target(path, resolved, kinds)
         parent = resolved.parent
         if not parent.exists():
             raise ToolError(

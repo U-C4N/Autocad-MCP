@@ -141,6 +141,8 @@ only-include = [
     "server.py",
     "config.py",
     "security.py",
+    "policy.py",
+    "http_guard.py",
     "version.py",
     "backends",
     "engineering",

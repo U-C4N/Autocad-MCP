@@ -39,6 +39,7 @@ from fastmcp.exceptions import ToolError
 
 # Defined beside the checks that raise them (security.py imports nothing of
 # this package, so this import cannot cycle); re-exported here.
+from policy import PolicyRefusedError
 from security import CommandRefusedError, PathRefusedError
 
 log = logging.getLogger("autocad_mcp.errors")
@@ -58,6 +59,7 @@ __all__ = [
     "InvalidArgsError",
     "KindSpec",
     "PathRefusedError",
+    "PolicyRefusedError",
     "annotate",
     "capability_of",
     "cause_chain",
@@ -681,6 +683,11 @@ def classify(exc: BaseException) -> dict:
     if gate is not None:
         extras = {k: v for k, v in gate.payload.items() if k != "kind"}
         return {"kind": gate.kind, **extras, "message": message}
+    policy = _first_of(exc, PolicyRefusedError)
+    if policy is not None:
+        # 1.8-17: the server's tool policy (READ_ONLY, the allow/deny lists,
+        # MAX_TOOL_COST, a read-only token) - nothing ran.
+        return {"kind": "policy_refused", **policy.fields(), "message": message}
     refused = _first_of(exc, CommandRefusedError)
     if refused is not None:
         row = {
@@ -699,6 +706,9 @@ def classify(exc: BaseException) -> dict:
             row = {"kind": typed.kind, "message": message}
             if typed is EntityNotFoundError:
                 row["handle"] = found.handle
+            if typed is PathRefusedError:
+                # 1.8-17: reason / extension / allowed of a write refusal.
+                row.update(getattr(found, "details", None) or {})
             return row
     found = _file_error_of(exc)
     if found is not None:
