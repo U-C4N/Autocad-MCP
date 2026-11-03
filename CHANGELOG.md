@@ -358,6 +358,18 @@ evidence is in `docs/analysis/spikes-1.8.0.json`, rows S1-S3, all headless:
   still gets the image there. The report is `content[1]` and the
   structured content.
 
+**W1 gate (2026-11-03, `41588a8`).** The full suite green at 6,348
+collected tests with the document numbers retaken; ruff, the inventory, the
+plugin validation and `scripts/check_doc_numbers.py` green;
+`compare_versions.py v1.7.0 --fail-on-regression` 67 / 67 against v1.7.0's
+61 / 67, six fixed, zero regressed; `perf_compare.py --base v1.7.0 --aa
+--rounds 20` `ok: true` with ratios `create_lines_2k` 1.08, `roundtrip_10k`
+1.08, `region_query_10k` 0.98, `premium_pass` 1.00 and
+`server_create_lines_2k` 1.11 (the durable journal, about 200 µs per call on
+this run). The A/A spread was 12.3 % on that machine, so the bound was 1.25:
+the server workload is the number to re-measure on an idle machine, and the
+one 1.8-10's change summary must not push further.
+
 **Live evidence pending.** AutoCAD 2026 was not running on 2026-11-03, so
 `scripts/smoke_space_com.py`, `scripts/smoke_edit_com.py` and
 `scripts/smoke_render_com.py` are written but not yet run. The S4 row
