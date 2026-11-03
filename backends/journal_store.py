@@ -1099,6 +1099,35 @@ class DurableJournal(OperationJournal):
                 return mine
         return [_record_of(row).to_dict() for row in reversed(rows)] + mine
 
+    def max_revision(self, document_id: str) -> int | None:
+        """The highest revision any recorded call saw for ``document_id`` (1.8-04).
+
+        A reopened file continues its document's revision (backends/lineage.py);
+        this is how a revision issued by a process that died before saving is
+        never issued again. Rows of every run, this one's included.
+        """
+        highs = [
+            value
+            for record in list(self._records.values())
+            if record.document_id == document_id
+            for value in (record.revision_before, record.revision_after)
+            if value is not None
+        ]
+        if self._connection is not None:
+            with self._lock:
+                self._commit([], "flush")
+                try:
+                    if self._connection is not None:
+                        row = self._connection.execute(
+                            "SELECT MAX(revision_after), MAX(revision_before) FROM operations "
+                            "WHERE document_id = ?",
+                            (document_id,),
+                        ).fetchone()
+                        highs.extend(int(v) for v in row if v is not None)
+                except sqlite3.Error as exc:
+                    self._failed(exc, "read")
+        return max(highs) if highs else None
+
     # ── status and shutdown ──
 
     def state_store(self) -> dict:

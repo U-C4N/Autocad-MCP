@@ -1765,8 +1765,10 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
     async def _task_damaged_dxf_refusal(self):
         """A damaged file is refused by name and the open work is kept.
 
-        1.7.0 does not recover a damaged DXF (``ezdxf.recover`` is B09, 1.7.1);
-        what it must do is refuse honestly. A valid 50-line DXF is cut in half
+        The default ``drawing_open`` does not recover a damaged DXF; what it
+        must do is refuse honestly (since 1.8.0 the refusal names
+        ``recover=True``, B09, which the v9 ``damaged_dxf_recover`` task
+        measures). A valid 50-line DXF is cut in half
         (no ENDSEC, no EOF) and a text file is given a .dxf name. Opening each
         must raise an error that names the fault (DXF in its text), and the
         document that was open - one line - must still be the current document,
@@ -1812,7 +1814,7 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
                 "cases": cases,
                 "document_kept": document_kept,
                 "entity_count_after": count_after,
-                "recover": "not in 1.7.0 (B09, 1.7.1)",
+                "recover": "opt-in: drawing_open(recover=True), 1.8.0 (B09)",
             },
             [str(truncated), str(not_dxf)],
         )

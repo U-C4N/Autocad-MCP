@@ -36,8 +36,10 @@ the claim:
   is measured against requirements, repaired under a fingerprint precondition
   and accepted on the saved file, every other entity unchanged;
 * ``damaged_dxf_refusal``: a truncated DXF and a file that is not a DXF at
-  all are refused by name and the open document is kept. 1.7.0 refuses;
-  ``recover`` arrives in 1.7.1, and this task is named for what 1.7.0 does;
+  all are refused by name and the open document is kept. The default open
+  still refuses (and since 1.8.0 the refusal names ``recover=True``);
+  ``drawing_open(recover=True)`` arrived in 1.8.0 (B09) and is measured by the
+  v9 ``damaged_dxf_recover`` task, not here;
 * ``dimension_binding`` (best-cad-mcp's claim): a DIMENSION bound to the
   features it measures, its displayed text and DIMLFAC judged against the
   geometry - best-cad is COM-only with no adapter, so its lane is ``not_run``.
@@ -119,7 +121,7 @@ NEW_TASKS_V8: tuple[TaskSpec, ...] = (
         "damaged_dxf_refusal",
         "reliability",
         "Open a truncated DXF and a non-DXF: refused by name, the open document kept "
-        "(recover arrives in 1.7.1)",
+        "(the default open; recover=True is 1.8.0)",
         1.0,
     ),
     TaskSpec(

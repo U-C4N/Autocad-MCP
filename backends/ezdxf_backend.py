@@ -30,7 +30,8 @@ from typing import Any
 import config
 from engineering import measure
 
-from . import ocs
+from . import lineage, ocs
+from .atomic_write import atomic_write_dxf, file_sha256, resolve_pending
 from .base import (
     AutoCADBackend,
     BlockInfo,
@@ -52,6 +53,7 @@ from .contracts.settings import (
     scale_value,
     validate_drawing_properties,
 )
+from .dxf_recover import read_dxf, recover_dxf, recovered_source_refusal
 from .entity_fields import (
     dimension_fields,
     dimension_props,
@@ -1478,6 +1480,13 @@ class _DocState:
     document_id: str = ""
     # The content revision: `_DirtyField` moves it on every `_dirty = True`.
     revision: int = 0
+    # 1.8-04: the lineage this document carries across processes (minted at
+    # its first save or open; backends/lineage.py), its parent on a fork, and
+    # the damaged source a `drawing_open(recover=True)` read it from - a save
+    # onto that source needs `overwrite_source=True`.
+    lineage_id: str = ""
+    lineage_parent: str | None = None
+    recovered_from: str | None = None
 
     @property
     def label(self) -> str:
@@ -1576,6 +1585,12 @@ class EzdxfBackend(AutoCADBackend):
         self.call_outcomes: collections.deque = collections.deque(maxlen=_MAX_CALL_OUTCOMES)
         self._leases: set[_Lease] = set()
         self._in_flight: dict[concurrent.futures.Future, str] = {}
+        # 1.8-04: the highest revision issued per document_id by an entry that
+        # has since left the registry (reloaded or closed), so a reopen never
+        # issues a revision twice; the lifespan adds the journal's view through
+        # ``revision_high_lookup(document_id)``.
+        self._issued_high: dict[str, int] = {}
+        self.revision_high_lookup = None
 
     @property
     def _state(self) -> _DocState:
@@ -1943,8 +1958,13 @@ class EzdxfBackend(AutoCADBackend):
 
     # ── document registry (v1.6) ──────────────────────────────────────────────
 
-    def _register_document(self, doc, path: str | None) -> tuple[str, bool]:
+    def _register_document(
+        self, doc, path: str | None, *, document_id: str | None = None
+    ) -> tuple[str, bool]:
         """Add ``doc`` to the registry and make it active.
+
+        ``document_id`` continues a saved file's lineage (1.8-04,
+        ``backends/lineage.py``); None mints a new id.
 
         Returns ``(key, reloaded)``. A path that is already open is *reloaded*:
         its old entry (and its snapshots) is dropped and the fresh read takes
@@ -1964,13 +1984,96 @@ class EzdxfBackend(AutoCADBackend):
             previous_key = self._path_holder(key)
             reloaded = previous_key is not None
             if previous_key is not None:
-                self._docs.pop(previous_key).discard_snapshots()
+                dropped = self._docs.pop(previous_key)
+                self._note_issued(dropped)
+                dropped.discard_snapshots()
                 if self._active_key == previous_key:
                     self._active_key = None
-        # B11: a registration is a document of its own - a reopened file too.
-        self._docs[key] = _DocState(key=key, doc=doc, path=path, document_id=uuid.uuid4().hex)
+        # B11: a registration is a document of its own; 1.8-04: unless the
+        # file's lineage record continues one (an unchanged reopen).
+        self._docs[key] = _DocState(
+            key=key, doc=doc, path=path, document_id=document_id or uuid.uuid4().hex
+        )
         self._activate_key(key)
         return key, reloaded
+
+    # ── the save protocol and lineage (1.8-04) ───────────────────────────────
+
+    def _note_issued(self, state: _DocState) -> None:
+        """Remember the revision an entry leaving the registry had reached."""
+        if state.document_id:
+            known = self._issued_high.get(state.document_id, -1)
+            self._issued_high[state.document_id] = max(known, state.revision)
+
+    def _revision_high(self, document_id: str) -> int | None:
+        """The highest revision known to have been issued for ``document_id``."""
+        highs = [s.revision for s in self._docs.values() if s.document_id == document_id]
+        if document_id in self._issued_high:
+            highs.append(self._issued_high[document_id])
+        lookup = self.revision_high_lookup
+        if lookup is not None:
+            try:
+                found = lookup(document_id)
+            except Exception as exc:  # the journal is evidence, never a reason to fail
+                log.debug("revision_high_lookup(%s): %s", document_id, exc)
+                found = None
+            if found is not None:
+                highs.append(int(found))
+        return max(highs) if highs else None
+
+    def _lineage_open_elsewhere(self, lineage_id: str, path: str) -> bool:
+        """Is ``lineage_id`` open in this registry under a file other than ``path``."""
+        return any(
+            state.lineage_id == lineage_id
+            and not (state.path and self._same_file(state.path, path))
+            for state in self._docs.values()
+        )
+
+    def _write_dxf(
+        self,
+        state: _DocState,
+        op: str,
+        target: str,
+        *,
+        repoint: bool,
+        overwrite_source: bool = False,
+    ) -> dict:
+        """One DXF write of ``state``'s document through the atomic protocol.
+
+        ``repoint`` makes it a save (path, saved flag, lineage record); an
+        export writes a copy and records nothing. A save onto the damaged
+        source of a recovered document is refused unless ``overwrite_source``.
+        """
+        if repoint and state.recovered_from and not overwrite_source:
+            if self._same_file(state.recovered_from, target):
+                raise recovered_source_refusal(op, state.label, state.recovered_from)
+        written = atomic_write_dxf(state.doc, target)
+        if not repoint:
+            return written
+        state.doc.filename = str(target)
+        if state.recovered_from and self._same_file(state.recovered_from, target):
+            state.recovered_from = None  # the caller chose to replace the damaged source
+        if not state.lineage_id:
+            state.lineage_id = lineage.new_lineage_id()
+        lineage.write_record(
+            target,
+            {
+                "lineage_id": state.lineage_id,
+                "document_id": state.document_id,
+                "last_saved_sha256": written["sha256"],
+                "revision": state.revision,
+                "lineage_parent": state.lineage_parent,
+                "engine": "ezdxf",
+            },
+        )
+        return written
+
+    @staticmethod
+    def _saved_fields(written: dict) -> dict:
+        out = {"sha256": written["sha256"], "bytes": written["bytes"]}
+        if written.get("backup"):
+            out["backup"] = written["backup"]
+        return out
 
     def _activate_key(self, key: str) -> None:
         self._activation_counter += 1
@@ -2098,7 +2201,7 @@ class EzdxfBackend(AutoCADBackend):
                 # save onto a file another entry holds would leave that
                 # entry claiming ``saved: True`` over someone else's bytes.
                 self._refuse_shared_path(label, state)
-                state.doc.saveas(state.path)
+                self._write_dxf(state, "document_close", state.path, repoint=True)
                 state.dirty = False
                 saved = True
             elif not discard:
@@ -2109,6 +2212,7 @@ class EzdxfBackend(AutoCADBackend):
                 )
         discarded = state.dirty
         state.discard_snapshots()
+        self._note_issued(state)
         del self._docs[key]
         result = {"ok": True, "closed": key, "saved": saved, "discarded_changes": discarded}
         if closing_active:
@@ -2797,7 +2901,21 @@ class EzdxfBackend(AutoCADBackend):
 
         return await self._async(_sync, quarantine_exit=True)
 
-    async def drawing_open(self, path: str) -> dict:
+    async def drawing_open(self, path: str, recover: bool = False) -> dict:
+        """Open a DXF; with ``recover=True`` through ezdxf's recover reader (B09).
+
+        1.8-04: a save of this path a dead process left half done is resolved
+        first (``save_recovery``); the file's lineage record decides whether
+        this continues a document (same ``document_id`` and revision when the
+        bytes are the ones last saved, ``external_change: true`` and one
+        revision more when they are not) or starts one (``lineage``). A file
+        ezdxf cannot parse is refused by name (``damaged_drawing``) and the
+        open document is kept; ``recover=True`` reports ``recovered: {fixes,
+        errors, messages, entities_read}`` and starts a new lineage with
+        ``recovered_from`` - a later save onto the source needs
+        ``overwrite_source=True``.
+        """
+
         def _sync():
             max_bytes = config.settings.max_dxf_bytes
             if max_bytes > 0:
@@ -2810,15 +2928,59 @@ class EzdxfBackend(AutoCADBackend):
                         f"DXF file exceeds MAX_DXF_BYTES limit "
                         f"({size} > {max_bytes}). Set MAX_DXF_BYTES env var to override."
                     )
-            doc = ezdxf.readfile(path)
+            # Before the read: a finished replace changes the bytes read below.
+            save_recovery = resolve_pending(path)
+            recovered = None
+            if recover:
+                doc, recovered = recover_dxf(path)
+            else:
+                doc = read_dxf(path)
+            sha = file_sha256(path)
             _normalise_dimstyle_rounding(doc)
+            if recover:
+                line = {
+                    "lineage_id": lineage.new_lineage_id(),
+                    "document_id": None,
+                    "revision": 0,
+                    "continued": False,
+                    "external_change": False,
+                    "recovered_from": path,
+                }
+            else:
+                line = lineage.resolve_open(
+                    path,
+                    sha,
+                    open_elsewhere=lambda lid: self._lineage_open_elsewhere(lid, path),
+                    revision_high=self._revision_high,
+                )
             # R32: only reached if the read succeeded. Reopening the very path a
             # runaway doc.saveas is writing either fails loudly here (acceptable)
             # or hands back a truncated document (not) — _clear_quarantine
             # compares the two paths and says so.
             self._evict_quarantined_document()
             released = self._clear_quarantine("drawing_open", path)
-            key, reloaded = self._register_document(doc, path)
+            key, reloaded = self._register_document(doc, path, document_id=line["document_id"])
+            state = self._state
+            state.revision = int(line["revision"])
+            state.lineage_id = line["lineage_id"]
+            state.lineage_parent = line.get("lineage_parent")
+            state.recovered_from = path if recover else None
+            # A recovered document is not what its file holds: unsaved, so
+            # document_close asks first (set on the state: not a content edit).
+            state.dirty = bool(recover)
+            if not recover:
+                # The damaged source keeps no record: it is not this document.
+                lineage.write_record(
+                    path,
+                    {
+                        "lineage_id": state.lineage_id,
+                        "document_id": state.document_id,
+                        "last_saved_sha256": sha,
+                        "revision": state.revision,
+                        "lineage_parent": state.lineage_parent,
+                        "engine": "ezdxf",
+                    },
+                )
             try:
                 self._current_layer = doc.header.get("$CLAYER", "0")
             except Exception as exc:
@@ -2832,7 +2994,24 @@ class EzdxfBackend(AutoCADBackend):
                 "path": path,
                 "document": key,
                 "open_documents": len(self._docs),
+                "document_id": state.document_id,
+                "revision": state.revision,
+                "external_change": bool(line["external_change"]),
+                "lineage": {
+                    key_: line[key_]
+                    for key_ in ("lineage_id", "continued", "lineage_parent", "revision_floor")
+                    if line.get(key_) is not None
+                },
+                "sha256": sha,
             }
+            if line["external_change"]:
+                result["previous_sha256"] = line.get("previous_sha256")
+            if recovered is not None:
+                result["recovered"] = recovered
+                result["recovered_from"] = path
+                result["lineage"]["recovered_from"] = path
+            if save_recovery:
+                result["save_recovery"] = save_recovery
             if reloaded:
                 result["reloaded"] = True
             if released is not None:
@@ -2841,22 +3020,35 @@ class EzdxfBackend(AutoCADBackend):
 
         return await self._async(_sync, quarantine_exit=True)
 
-    async def drawing_save(self, path: str | None = None) -> dict:
+    async def drawing_save(self, path: str | None = None, overwrite_source: bool = False) -> dict:
+        """Save through the atomic protocol (1.8-04, ``backends/atomic_write.py``).
+
+        The result adds the written file's ``sha256`` and ``bytes`` (and
+        ``backup`` with ``SAVE_BACKUP=1``). A document opened with
+        ``recover=True`` is refused onto its damaged source unless
+        ``overwrite_source=True``.
+        """
         save_path = path or self._doc_path
-        # `doc.saveas` derives the format from the extension and ezdxf can only
-        # write DXF, so a .dwg destination here would silently mislabel the file.
+        # ezdxf can only write DXF, so a .dwg destination here would silently
+        # mislabel the file.
         if save_path and _is_dwg_path(save_path):
             raise _refuse_dwg("drawing_save", save_path)
 
         def _sync():
-            doc = self._require_doc()
+            self._require_doc()
             if not save_path:
                 raise RuntimeError("No path specified and no current file path.")
             self._refuse_path_held_elsewhere("drawing_save", save_path)
-            doc.saveas(save_path)
+            written = self._write_dxf(
+                self._state,
+                "drawing_save",
+                save_path,
+                repoint=True,
+                overwrite_source=overwrite_source,
+            )
             self._doc_path = save_path
             self._dirty = False
-            return {"ok": True, "path": save_path}
+            return {"ok": True, "path": save_path, **self._saved_fields(written)}
 
         return await self._async(_sync)
 
@@ -2867,12 +3059,12 @@ class EzdxfBackend(AutoCADBackend):
             raise _refuse_dwg("drawing_save_as", path)
 
         def _sync():
-            doc = self._require_doc()
+            self._require_doc()
             self._refuse_path_held_elsewhere("drawing_save_as", path)
-            doc.saveas(path)
+            written = self._write_dxf(self._state, "drawing_save_as", path, repoint=True)
             self._doc_path = path
             self._dirty = False
-            return {"ok": True, "path": path, "format": "dxf"}
+            return {"ok": True, "path": path, "format": "dxf", **self._saved_fields(written)}
 
         return await self._async(_sync)
 
@@ -2885,6 +3077,8 @@ class EzdxfBackend(AutoCADBackend):
         this method opens, with ``Drawing.save``'s own encoding rule
         (``output_encoding``, errors ``dxfreplace``). Not a content change:
         the revision does not move. A ``.dwg`` name is refused (``dwg``).
+        1.8-04: the stream is the atomic protocol's tmp, so a target that
+        already exists is replaced whole or not at all.
         """
         if _is_dwg_path(path):
             raise _refuse_dwg("drawing_export_dxf", path)
@@ -2892,9 +3086,9 @@ class EzdxfBackend(AutoCADBackend):
         def _sync():
             doc = self._require_doc()
             self._refuse_path_held_elsewhere("drawing_export_dxf", path)
-            with open(path, "w", encoding=doc.output_encoding, errors="dxfreplace") as stream:
-                doc.write(stream)
+            written = self._write_dxf(self._state, "drawing_export_dxf", path, repoint=False)
             return {
+                "sha256": written["sha256"],
                 "ok": True,
                 "path": path,
                 "format": "dxf",

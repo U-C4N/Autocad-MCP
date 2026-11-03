@@ -22,10 +22,17 @@ class DrawingContract(ABC):
     async def drawing_new(self, template: str | None = None) -> dict: ...
 
     @abstractmethod
-    async def drawing_open(self, path: str) -> dict: ...
+    async def drawing_open(self, path: str, recover: bool = False) -> dict:
+        """Open ``path``. A file that does not parse is refused (``damaged_drawing``,
+        naming ``recover=True``) and the open document is kept; ``recover=True``
+        reads a damaged DXF through ``ezdxf.recover`` and reports ``recovered:
+        {fixes, errors, messages, entities_read}`` and ``recovered_from`` (1.8-04,
+        B09). Both engines report the file's ``lineage`` and ``external_change``."""
 
     @abstractmethod
-    async def drawing_save(self, path: str | None = None) -> dict: ...
+    async def drawing_save(self, path: str | None = None, overwrite_source: bool = False) -> dict:
+        """Save. Onto the damaged source of a ``recover=True`` document only with
+        ``overwrite_source=True`` (``recovered_source_protected`` otherwise)."""
 
     @abstractmethod
     async def drawing_save_as(self, path: str, fmt: str = "dwg") -> dict: ...
