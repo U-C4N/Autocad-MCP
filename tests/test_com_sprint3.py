@@ -119,7 +119,9 @@ async def test_run_command_reads_cmdactive_on_the_document(monkeypatch):
 
     b = _backend_no_executor()
     out = await b.system_run_command("_ZOOM E")
-    assert out == {"ok": True, "command": "_ZOOM E"} and doc.sent == ["_ZOOM E\n"]
+    # 1.8-05: the command is waited on and its report says it completed.
+    assert out["ok"] is True and out["command"] == "_ZOOM E" and out["completed"] is True
+    assert doc.sent == ["_ZOOM E\n"]
 
     doc.SetVariable("CMDACTIVE", 1)
     with pytest.raises(RuntimeError, match="CMDACTIVE=1"):

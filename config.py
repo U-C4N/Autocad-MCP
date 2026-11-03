@@ -92,6 +92,13 @@ class Settings:
         # otherwise block the single-thread STA executor forever.
         self.com_call_timeout: float = float(os.environ.get("COM_CALL_TIMEOUT", "60"))
 
+        # 1.8-05: how long a command sent to AutoCAD's command line (a raw
+        # system_run_command, drawing_undo / drawing_redo, a corner op, the
+        # transaction mark) may stay active before it is cancelled with ESC x3
+        # and reported as command_incomplete with AutoCAD's LASTPROMPT. Well
+        # inside COM_CALL_TIMEOUT, so the STA job always comes back.
+        self.command_deadline_s: float = max(0.1, float(os.environ.get("COMMAND_DEADLINE_S", "8")))
+
         # Per-call timeout for the headless ezdxf backend. Every ezdxf method
         # runs under one document lock, so a single hung call (pathological DXF,
         # a render that never returns) would otherwise hold that lock forever

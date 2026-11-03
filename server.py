@@ -1941,6 +1941,11 @@ async def drawing_undo(ctx: Context = None) -> dict:
     `transaction_rollback` is far cheaper.
 
     Drawing something after an undo discards the redo branch, as in AutoCAD.
+
+    `verified` says whether the drawing observably changed: always true for a
+    headless snapshot restore; live, true when the entity count over every
+    layout or the document's edit counter moved (`evidence` has both), false
+    for "no change seen". An undo left at a prompt is `command_incomplete`.
     """
     return await _backend(ctx).drawing_undo()
 
@@ -1957,6 +1962,7 @@ async def drawing_redo(ctx: Context = None) -> dict:
     `EZDXF_UNDO_DEPTH` set. Anything drawn after an undo discards the redo
     branch — otherwise redo would restore a state that never existed, with
     geometry you had removed reappearing beside geometry you drew afterwards.
+    Reports `verified` the same way `drawing_undo` does.
     """
     return await _backend(ctx).drawing_redo()
 
@@ -6239,6 +6245,14 @@ async def system_run_command(
     `alternatives` ([{tool, summary}], the typed tools for those verbs that the
     active profile advertises); an allowed one that a typed tool also does
     carries `typed_alternative` in the same shape.
+
+    The call waits for the command to finish (CMDACTIVE, `COMMAND_DEADLINE_S`,
+    default 8 s) and returns `{completed: true, created: [{handle, type, space}]
+    (first 50), created_count, last_prompt, target_space}`; a new entity
+    outside the target space (model space unless `layout_set_current` chose a
+    sheet) adds `warning: "created_outside_target_space"`. A command still at a
+    prompt is cancelled with ESC x3 and fails with kind `command_incomplete`
+    carrying AutoCAD's own `last_prompt`.
     """
     try:
         sanitize_command(command)
@@ -7595,7 +7609,14 @@ async def layout_set_current(
     name: Annotated[str, "Layout tab to activate ('Model' or a paper-space layout)."],
     ctx: Context = None,
 ) -> dict:
-    """Activate a layout tab."""
+    """Activate a layout tab and make it where new geometry goes.
+
+    Every document starts in model space (drawing_new, drawing_open and
+    document_activate reset it); only this tool moves the target. On a live
+    AutoCAD a tab the operator clicks afterwards does not move it - drawing on
+    a sheet takes this call, as headlessly. An entity created outside model
+    space reports `space` in its properties.
+    """
     return await _backend(ctx).layout_set_current(name)
 
 

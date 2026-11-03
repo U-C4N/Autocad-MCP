@@ -166,7 +166,7 @@ def test_safe_send_command_immediate_return():
     """CMDACTIVE=0 immediately → no polling loop, returns empty new-handles list."""
     doc = _make_mock_doc(cmdactive_sequence=[0])
     result = ComBackend._safe_send_command(doc, "ZOOM E\n")
-    assert result == []
+    assert result.handles == [] and result.created_count == 0
     doc.SendCommand.assert_called_once()
 
 
@@ -175,7 +175,7 @@ def test_safe_send_command_waits_for_active_to_clear():
     doc = _make_mock_doc(cmdactive_sequence=[1, 1, 0])
     with patch("time.sleep"):  # don't actually sleep
         result = ComBackend._safe_send_command(doc, "REGEN\n")
-    assert result == []
+    assert result.handles == []
 
 
 def test_safe_send_command_restores_variables_on_success():
@@ -256,7 +256,7 @@ def test_safe_send_command_new_handle_detection():
         modelspace_handles_post=post_handles,
     )
     result = ComBackend._safe_send_command(doc, "LINE\n")
-    assert set(result) == {"1C", "1D"}
+    assert set(result.handles) == {"1C", "1D"}
 
 
 # ---------------------------------------------------------------------------

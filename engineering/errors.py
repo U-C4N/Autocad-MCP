@@ -50,6 +50,7 @@ __all__ = [
     "ERROR_TABLE",
     "GATE_KINDS",
     "ApplicationBusyError",
+    "CommandIncompleteError",
     "CommandRefusedError",
     "EntityNotFoundError",
     "GateFailure",
@@ -243,6 +244,29 @@ class ApplicationBusyError(RuntimeError):
     touched the document: nothing was written, the same call may be sent again."""
 
     kind = "application_busy"
+
+
+class CommandIncompleteError(RuntimeError):
+    """A command sent to AutoCAD's command line was still at a prompt when its
+    deadline ran out (1.8-05): ``last_prompt`` is AutoCAD's own ``LASTPROMPT``,
+    read before the ESCs that cancelled it, verbatim (it is localised).
+
+    A ``RuntimeError`` with the 1.7 sentence ("did not finish within ..."), so
+    ``except RuntimeError`` and a prose-only client are unchanged. Not
+    retryable: the command was sent, so part of it may have landed.
+    """
+
+    kind = "command_incomplete"
+
+    def __init__(self, command: str, last_prompt: str | None, deadline_s: float):
+        self.command = str(command)
+        self.last_prompt = None if last_prompt is None else str(last_prompt)
+        self.deadline_s = float(deadline_s)
+        stopped = "" if self.last_prompt is None else f" It stopped at: {self.last_prompt!r}."
+        super().__init__(
+            f"AutoCAD command did not finish within {self.deadline_s:.1f}s: "
+            f"{self.command!r}.{stopped} ESC was sent three times to cancel it."
+        )
 
 
 class GateFailure(ToolError):
@@ -568,6 +592,14 @@ def classify(exc: BaseException) -> dict:
             if typed is EntityNotFoundError:
                 row["handle"] = found.handle
             return row
+    incomplete = _first_of(exc, CommandIncompleteError)
+    if incomplete is not None:
+        return {
+            "kind": "command_incomplete",
+            "command": incomplete.command,
+            "last_prompt": incomplete.last_prompt,
+            "message": message,
+        }
     chain = cause_chain(exc)
     if any(isinstance(error, NotFoundError) for error in chain):
         return {"kind": "unknown_tool", "message": message}

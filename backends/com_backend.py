@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import concurrent.futures
+import contextlib
 import contextvars
 import functools
 import io
@@ -20,12 +21,13 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
 import config
-from engineering.errors import ApplicationBusyError, EntityNotFoundError
+from engineering.errors import ApplicationBusyError, CommandIncompleteError, EntityNotFoundError
 from engineering.measure import is_self_intersecting, polygon_area_perimeter
 from security import sanitize_macro_argument, sanitize_symbol_name, validate_path
 
@@ -148,7 +150,7 @@ class _JobGuard:
     COM thread when the job ends (a COM proxy must not be released elsewhere).
     """
 
-    __slots__ = ("backend", "doc", "touched")
+    __slots__ = ("backend", "doc", "touched", "space")
 
     def __init__(self, backend):
         self.backend = backend
@@ -156,6 +158,10 @@ class _JobGuard:
         #: Set by ``_acad_app()``: the job has held the Application proxy, so
         #: it may have written something (1.8-02, ``application_busy``).
         self.touched = False
+        #: ``(layout name, block ObjectID)`` once ``_msp()`` handed out a paper
+        #: layout's block in this job (1.8-05): ``_entity_info`` names that
+        #: space on an entity it owns.
+        self.space = None
 
     def __call__(self, app):
         if self.doc is None:
@@ -590,21 +596,51 @@ def _handle_to_object(doc, handle):
         raise EntityNotFoundError(handle) from exc
 
 
-def _msp():
-    """The space new geometry goes into — the active layout's block.
+def _target_space_name() -> str:
+    """The bound document's target space: ``"Model"`` or a paper layout's name.
 
-    This returned ``ModelSpace`` unconditionally, so ``layout_set_current``
-    reported success and everything drawn afterwards still landed in model
-    space. ``ActiveLayout.Block`` is the same object as ``ModelSpace`` while the
-    Model tab is active, so the model-space path is unchanged; on a paper layout
-    it is the sheet, which is where a title block belongs.
+    Read from the backend the running job belongs to (1.8-05); outside a job
+    (a test calling a ``_sync`` directly) it is ``"Model"``.
+    """
+    guard = getattr(_JOB_STATE, "guard", None)
+    bound = getattr(guard.backend, "_bound", None) if guard is not None else None
+    return str((bound or {}).get("space") or "Model")
+
+
+def _msp():
+    """The space new geometry goes into - the server's target space (1.8-05).
+
+    Model space unless ``layout_set_current`` chose a paper layout for the
+    bound document - never the tab the operator happens to have active. Up to
+    1.7.0 this returned ``ActiveLayout.Block``, so a drawing saved with Layout1
+    active, or a tab click between two calls, put the next ``entity_create_*``
+    on the sheet (§4.6 of the rival's report: the circle in paper space). The
+    headless engine has always started in Model (``EzdxfBackend._msp``).
+
+    A target layout that no longer exists (deleted in AutoCAD by hand) falls
+    back to model space and resets the target, with a warning in the log - the
+    same rule as the headless engine.
     """
     doc = _acad_doc()
-    try:
-        return doc.ActiveLayout.Block
-    except Exception as exc:  # never strand a write over a layout probe
-        log.debug("ActiveLayout.Block unavailable (%s); using ModelSpace", exc)
+    name = _target_space_name()
+    if name.lower() == "model":
         return doc.ModelSpace
+    try:
+        block = doc.Layouts.Item(name).Block
+    except Exception as exc:  # the operator deleted the sheet under the session
+        log.warning("target layout %r is gone (%s); falling back to model space", name, exc)
+        guard = getattr(_JOB_STATE, "guard", None)
+        bound = getattr(guard.backend, "_bound", None) if guard is not None else None
+        if bound is not None:
+            bound["space"] = "Model"
+        return doc.ModelSpace
+    guard = getattr(_JOB_STATE, "guard", None)
+    if guard is not None:
+        try:
+            guard.space = (name, block.ObjectID)
+        except Exception as exc:  # the space tag is evidence, never a failure
+            log.debug("target block ObjectID unreadable: %s", exc)
+    return block
 
 
 def _delete_on_layer_all_layouts(doc, layer: str) -> dict:
@@ -1929,6 +1965,16 @@ def _entity_info(entity) -> EntityInfo:
         log.debug("Linetype read failed, using ByLayer: %s", exc)
         linetype = "ByLayer"
 
+    # 1.8-05: an entity this job built in a paper-space target names its
+    # space; model space (the default) is never announced.
+    space = getattr(getattr(_JOB_STATE, "guard", None), "space", None)
+    if space is not None:
+        try:
+            if entity.OwnerID == space[1]:
+                props["space"] = space[0]
+        except Exception as exc:  # evidence only
+            log.debug("OwnerID read failed: %s", exc)
+
     return EntityInfo(
         handle=entity.Handle,
         type=ent_type,
@@ -2048,6 +2094,163 @@ def _capture_window(hwnd: int) -> bytes | None:
                 win32gui.ReleaseDC(hwnd, hwnd_dc)
         except Exception as exc:
             log.debug("GDI resource cleanup failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Commands sent to the command line (1.8-05)
+# ---------------------------------------------------------------------------
+
+#: How many created entities a command report lists; ``created_count`` has them all.
+COMMAND_CREATED_ROWS = 50
+
+#: The warning a command report carries when it created something outside
+#: the bound document's target space.
+CREATED_OUTSIDE_TARGET = "created_outside_target_space"
+
+
+@dataclass
+class CommandOutcome:
+    """What ``ComBackend._safe_send_command`` saw a completed command do.
+
+    ``handles`` is every entity created, oldest first (the corner ops pick
+    their new ARC / LINE from it); ``created`` the first
+    ``COMMAND_CREATED_ROWS`` as ``{handle, type, space}``; ``created_count``
+    None when no space could be read. ``entities_before`` / ``_after`` are the
+    totals over every layout block (model space and each sheet).
+    """
+
+    command: str
+    target_space: str
+    handles: list
+    created: list
+    created_count: int | None
+    last_prompt: str | None
+    entities_before: int | None = None
+    entities_after: int | None = None
+
+    @property
+    def outside_target(self) -> list[str]:
+        wanted = self.target_space.lower()
+        return [row["handle"] for row in self.created if str(row["space"]).lower() != wanted]
+
+    def report(self) -> dict:
+        """The tool-facing half: ``{completed, created, created_count, last_prompt, ...}``."""
+        row = {
+            "completed": True,
+            "created": list(self.created),
+            "created_count": self.created_count,
+            "last_prompt": self.last_prompt,
+            "target_space": self.target_space,
+        }
+        outside = self.outside_target
+        if outside:
+            row["warning"] = CREATED_OUTSIDE_TARGET
+            row["outside_target"] = outside
+        return row
+
+
+@contextlib.contextmanager
+def _target_tab(doc):
+    """Run a command-line corner op with the target space's tab active (1.8-05).
+
+    TRIM / EXTEND / FILLET / CHAMFER are commands, and AutoCAD runs a command
+    in the active space: with the operator on Layout1 and the target in model
+    space, ``(handent ...)`` of a model-space line is "not in current space"
+    and nothing is trimmed. The target's tab is activated for the command and
+    the operator's tab restored afterwards, also when it fails.
+    """
+    name = _target_space_name()
+    try:
+        previous = str(doc.ActiveLayout.Name)
+    except Exception as exc:  # no layout members: run where AutoCAD is
+        log.debug("ActiveLayout unreadable (%s); running in the active space", exc)
+        previous = None
+    switch = previous is not None and previous.lower() != name.lower()
+    if switch:
+        doc.ActiveLayout = doc.Layouts.Item(name)
+    try:
+        yield
+    finally:
+        if switch:
+            try:
+                doc.ActiveLayout = doc.Layouts.Item(previous)
+            except Exception as exc:
+                log.warning("could not restore the operator's layout tab %r: %s", previous, exc)
+
+
+def _read_last_prompt(doc) -> str | None:
+    """AutoCAD's ``LASTPROMPT``, verbatim (localised), or None when unreadable."""
+    try:
+        value = doc.GetVariable("LASTPROMPT")
+    except Exception as exc:  # evidence only
+        log.debug("LASTPROMPT unreadable: %s", exc)
+        return None
+    return None if value is None else str(value)
+
+
+def _space_snapshot(doc) -> tuple[int, int] | None:
+    """``(entities over every layout block, highest handle among their last items)``.
+
+    New objects take handles above every existing one (AutoCAD hands handles
+    out upwards from ``HANDSEED``) and are appended to the end of their block,
+    so after a command each block is read backwards only until a handle at or
+    below this mark: the cost is the number of new entities, not the drawing.
+    None when the layouts cannot be read (a seat without the members).
+    """
+    try:
+        layouts = doc.Layouts
+        total = 0
+        top = -1
+        for index in range(int(layouts.Count)):
+            block = layouts.Item(index).Block
+            count = int(block.Count)
+            total += count
+            if count:
+                top = max(top, int(str(block.Item(count - 1).Handle), 16))
+        return total, top
+    except Exception as exc:  # the report then falls back to model space
+        log.debug("layout snapshot unavailable: %s", exc)
+        return None
+
+
+def _created_since(doc, top: int) -> tuple[list[tuple[int, str, Any, str]], int]:
+    """Entities with a handle above ``top`` in every layout block, and the new total.
+
+    Rows are ``(handle value, handle, entity, space)``, oldest first. The
+    layouts are read again, so a sheet the command itself added is included.
+    """
+    layouts = doc.Layouts
+    rows: list[tuple[int, str, Any, str]] = []
+    total = 0
+    for index in range(int(layouts.Count)):
+        layout = layouts.Item(index)
+        block = layout.Block
+        count = int(block.Count)
+        total += count
+        name = str(layout.Name)
+        for position in range(count - 1, -1, -1):
+            entity = block.Item(position)
+            handle = str(entity.Handle)
+            value = int(handle, 16)
+            if value <= top:
+                break
+            rows.append((value, handle, entity, name))
+    rows.sort(key=lambda row: row[0])
+    return rows, total
+
+
+def _created_rows(found) -> tuple[list[str], list[dict]]:
+    """``(every handle, the first COMMAND_CREATED_ROWS as {handle, type, space})``."""
+    handles = [row[1] for row in found]
+    created = []
+    for _value, handle, entity, space in found[:COMMAND_CREATED_ROWS]:
+        try:
+            kind = str(entity.ObjectName).replace("AcDb", "").upper()
+        except Exception as exc:  # evidence only
+            log.debug("ObjectName unreadable for %s: %s", handle, exc)
+            kind = None
+        created.append({"handle": handle, "type": kind, "space": space})
+    return handles, created
 
 
 # ---------------------------------------------------------------------------
@@ -2536,11 +2739,15 @@ class ComBackend(AutoCADBackend):
             entry = {"document_id": uuid.uuid4().hex, "revision": 0}
             self._known_documents[entry_key] = entry
         previous = None if self._bound is None else self._bound["document_id"]
+        # 1.8-05: every (re)binding - drawing_new / drawing_open /
+        # document_activate, the first contact - starts in model space;
+        # only layout_set_current moves the target.
         self._bound = {
             "document_id": entry["document_id"],
             "name": key[0],
             "full_name": key[1],
             "app": application,
+            "space": "Model",
         }
         self._document_scope_key = key
         return previous != entry["document_id"]
@@ -2595,6 +2802,7 @@ class ComBackend(AutoCADBackend):
             "name": new[0],
             "full_name": new[1],
             "app": application,
+            "space": bound.get("space", "Model"),  # a SaveAs keeps the target
         }
         self._document_scope_key = new
 
@@ -3299,15 +3507,30 @@ class ComBackend(AutoCADBackend):
         return await self._run(_sync)
 
     async def layout_set_current(self, name: str) -> dict:
+        """Make ``name`` the server's target space and activate its tab (1.8-05).
+
+        The target - where ``entity_create_*`` and every other ``_msp()``
+        writer puts geometry - is kept on the bound document, so the operator
+        clicking another tab afterwards does not move it; the tab is still
+        activated so the operator sees where the session draws. Resolved
+        case-insensitively to the layout's own spelling, as AutoCAD does.
+        """
+
         def _sync():
             doc = _acad_doc()
-            try:
-                doc.ActiveLayout = doc.Layouts.Item(name)
-            except Exception:
+            resolved = self._find_layout(doc, name)
+            if resolved is None:
                 return {"ok": False, "error": f"Layout not found: {name}"}
-            return {"ok": True, "current": name}
+            doc.ActiveLayout = doc.Layouts.Item(resolved)
+            self._set_target_space(resolved)
+            return {"ok": True, "current": resolved}
 
         return await self._run(_sync)
+
+    def _set_target_space(self, name: str) -> None:
+        """Point the bound document's target at ``name`` (COM thread, after the guard)."""
+        if self._bound is not None:
+            self._bound["space"] = "Model" if name.lower() == "model" else name
 
     @staticmethod
     def _layout_name(raw: str) -> str:
@@ -3356,6 +3579,8 @@ class ComBackend(AutoCADBackend):
             if doc.ActiveLayout.Name == target:
                 doc.ActiveLayout = doc.Layouts.Item("Model")
             layout.Delete()
+            if self._bound is not None and self._bound.get("space") == target:
+                self._set_target_space("Model")  # 1.8-05: the target went with it
             return {
                 "ok": True,
                 "deleted": target,
@@ -3384,6 +3609,8 @@ class ComBackend(AutoCADBackend):
                 return {"ok": False, "error": f"Invalid layout name: {new!r}"}
 
             doc.Layouts.Item(old).Name = new
+            if self._bound is not None and self._bound.get("space") == old:
+                self._set_target_space(new)  # 1.8-05: the target follows its sheet
             return {"ok": True, "old": old, "new": new, "current": doc.ActiveLayout.Name}
 
         return await self._run(_sync)
@@ -5658,20 +5885,57 @@ class ComBackend(AutoCADBackend):
         return await self.document_close(None, save=save, discard=not save)
 
     async def drawing_undo(self) -> dict:
-        def _sync():
-            doc = _acad_doc()
-            doc.SendCommand("_UNDO 1\n")
-            return {"ok": True, "message": "Undo applied"}
-
-        return await self._run(_sync)
+        return await self._run(self._undo_step_sync, "_UNDO 1", "Undo")
 
     async def drawing_redo(self) -> dict:
-        def _sync():
-            doc = _acad_doc()
-            doc.SendCommand("_REDO\n")
-            return {"ok": True, "message": "Redo applied"}
+        return await self._run(self._undo_step_sync, "_REDO", "Redo")
 
-        return await self._run(_sync)
+    def _undo_step_sync(self, command: str, label: str) -> dict:
+        """One ``_UNDO 1`` / ``_REDO`` through ``_safe_send_command``, verified (1.8-05).
+
+        Up to 1.7.0 the raw ``SendCommand`` returned before AutoCAD had run
+        it, so ``ok: True`` said nothing. Now the command is waited on (an
+        undo left at a prompt is ``command_incomplete``) and ``verified`` says
+        whether the drawing observably changed: the entity total over every
+        layout block moved, or the bound document's edit counter (the
+        database reactor behind the live revision) counted a change. ``False``
+        is "no change seen" - nothing was left to undo, or (without Visual
+        LISP) an undo that only modified entities - never a claim it failed.
+        """
+        doc = _acad_doc()
+        entry = self._known_documents.get(self._bound_entry_key()) or {}
+        edits_before = entry.get("edits")
+        outcome = self._safe_send_command(doc, command)
+        edits_after = None
+        if edits_before is not None and entry.get("document_id"):
+            try:
+                edits_after = self._read_edit_count(
+                    _acad_app(), entry["document_id"], refetch=False
+                )
+            except Exception as exc:  # evidence only
+                log.debug("edit counter unreadable after %s: %s", command, exc)
+        counted = edits_before is not None and edits_after is not None
+        before, after = outcome.entities_before, outcome.entities_after
+        verified = (before is not None and after is not None and before != after) or (
+            counted and edits_after != edits_before
+        )
+        message = (
+            f"{label} applied"
+            if verified
+            else f"{label} sent and completed; no change observed in the drawing"
+        )
+        return {
+            "ok": True,
+            "message": message,
+            "verified": bool(verified),
+            "evidence": {
+                "entities_before": before,
+                "entities_after": after,
+                "edit_counter_before": edits_before if counted else None,
+                "edit_counter_after": edits_after if counted else None,
+            },
+            "last_prompt": outcome.last_prompt,
+        }
 
     # ── entity creation ───────────────────────────────────────────────────────
 
@@ -7938,7 +8202,14 @@ class ComBackend(AutoCADBackend):
             # empty, where `_UNDO 1` would be one step too many. Measured on
             # AutoCAD 2026: Mark + group + 2 entities + `_UNDO _B` -> entities
             # gone, CMDACTIVE 0, 47 ms; empty group -> nothing else undone.
-            doc.SendCommand("_.UNDO _M\n")
+            # 1.8-05: through _safe_send_command, so a Mark left at a prompt is
+            # command_incomplete (cancelled with ESC) instead of a transaction
+            # recorded over a mark that does not exist.
+            try:
+                self._safe_send_command(doc, "_.UNDO _M")
+            except CommandIncompleteError:
+                self._transaction_active = False
+                raise
             doc.StartUndoMark()
             return {"ok": True, "message": "Transaction begun (AutoCAD undo mark set)"}
 
@@ -8116,6 +8387,11 @@ class ComBackend(AutoCADBackend):
         # [?/Create/Load/Set] prompt) need a trailing blank line or _X to exit;
         # otherwise SendCommand returns but AutoCAD stays at a prompt and the
         # next COM call deadlocks. Example: "_-LINETYPE _LOAD CENTER acad.lin\n\n"
+        #
+        # 1.8-05: through _safe_send_command, which waits for CMDACTIVE to clear
+        # (COMMAND_DEADLINE_S), reports what the command created in which space
+        # and raises command_incomplete with LASTPROMPT when it stays at a prompt.
+        # Up to 1.7.0 this answered ok: True the moment SendCommand returned.
         def _sync():
             doc = _acad_doc()
             # CMDACTIVE is read on the document (the Application has no
@@ -8126,9 +8402,8 @@ class ComBackend(AutoCADBackend):
                     "AutoCAD has an active command or prompt (CMDACTIVE="
                     f"{cmd_active}). Press ESC in AutoCAD to cancel, then retry."
                 )
-            cmd = command if command.endswith("\n") else command + "\n"
-            doc.SendCommand(cmd)
-            return {"ok": True, "command": command}
+            outcome = self._safe_send_command(doc, command)
+            return {"ok": True, "command": command, **outcome.report()}
 
         return await self._run(_sync)
 
@@ -8487,14 +8762,38 @@ class ComBackend(AutoCADBackend):
     # ── corner ops ──────────────────────────────────────────────────────────
 
     @staticmethod
-    def _safe_send_command(doc, cmd: str, deadline_s: float = 8.0) -> list[str]:
+    def _safe_send_command(
+        doc, cmd: str, deadline_s: float | None = None, target_space: str | None = None
+    ) -> CommandOutcome:
         """Send `cmd`, polling CMDACTIVE until the command finishes.
 
         Snap/grid/echo are temporarily zeroed to avoid OSNAP-driven misclicks
         and chatty echoes; everything is restored in the finally block.
-        Returns a list of new entity handles created by the command (empty
-        list for in-place operations like TRIM/EXTEND).
+
+        1.8-05 - what the command did, not only that it was sent:
+
+        * **Before:** the entity total over every layout block and the highest
+          handle among their last items (``_space_snapshot``).
+        * **Overrun:** CMDACTIVE still set after ``deadline_s`` (default
+          ``COMMAND_DEADLINE_S``, 8 s) - ``LASTPROMPT`` is read first (the
+          prompt it stopped at), then ESC x3, then ``CommandIncompleteError``
+          (kind ``command_incomplete``, ``{command, last_prompt}``).
+        * **Completed:** a ``CommandOutcome`` with every entity created, in
+          which space (``{handle, type, space}``, the first 50 plus
+          ``created_count``), ``LASTPROMPT``, and the totals before and after;
+          ``report()`` adds ``warning: "created_outside_target_space"`` when a
+          new entity is not in ``target_space`` (default: the bound
+          document's target, ``_target_space_name()``).
+
+        A seat whose layouts cannot be read falls back to model space's own
+        handles (the 1.7 read); with neither, ``created_count`` is None -
+        unknown, never zero.
         """
+        if deadline_s is None:
+            deadline_s = config.settings.command_deadline_s
+        if target_space is None:
+            target_space = _target_space_name()
+        command = cmd.rstrip("\n")
         saved: dict[str, Any] = {}
         try:
             for var in ("OSMODE", "SNAPMODE", "CMDECHO"):
@@ -8503,11 +8802,13 @@ class ComBackend(AutoCADBackend):
                     doc.SetVariable(var, 0)
                 except Exception:
                     pass
-            # Snapshot model-space handles (best-effort).
-            try:
-                pre = {e.Handle for e in doc.ModelSpace}
-            except Exception:
-                pre = set()
+            snapshot = _space_snapshot(doc)
+            pre_model: set | None = None
+            if snapshot is None:
+                try:  # the 1.7 read: model space's handles (best-effort)
+                    pre_model = {e.Handle for e in doc.ModelSpace}
+                except Exception:
+                    pre_model = None
             payload = cmd if cmd.endswith("\n") else cmd + "\n"
             doc.SendCommand(payload)
             deadline = time.monotonic() + float(deadline_s)
@@ -8519,19 +8820,43 @@ class ComBackend(AutoCADBackend):
                 if active == 0:
                     break
                 if time.monotonic() > deadline:
+                    # Where it stopped, before the ESCs replace it with *Cancel*.
+                    last_prompt = _read_last_prompt(doc)
                     try:
                         doc.SendCommand("\x1b\x1b\x1b\n")  # ESC×3
                     except Exception:
                         pass
-                    raise RuntimeError(
-                        f"AutoCAD command did not finish within {deadline_s:.1f}s: {cmd!r}"
-                    )
+                    raise CommandIncompleteError(command, last_prompt, float(deadline_s))
                 time.sleep(0.05)
-            try:
-                post = {e.Handle for e in doc.ModelSpace}
-            except Exception:
-                post = pre
-            return list(post - pre)
+            last_prompt = _read_last_prompt(doc)
+            outcome = CommandOutcome(
+                command=command,
+                target_space=target_space,
+                handles=[],
+                created=[],
+                created_count=None,
+                last_prompt=last_prompt,
+            )
+            if snapshot is not None:
+                before, top = snapshot
+                try:
+                    found, after = _created_since(doc, top)
+                except Exception as exc:  # unknown, never zero
+                    log.debug("post-command layout read failed: %s", exc)
+                else:
+                    outcome.handles, outcome.created = _created_rows(found)
+                    outcome.created_count = len(found)
+                    outcome.entities_before, outcome.entities_after = before, after
+            elif pre_model is not None:
+                try:
+                    post = {e.Handle: e for e in doc.ModelSpace}
+                except Exception as exc:
+                    log.debug("post-command model-space read failed: %s", exc)
+                else:
+                    found = [(0, h, e, "Model") for h, e in post.items() if h not in pre_model]
+                    outcome.handles, outcome.created = _created_rows(found)
+                    outcome.created_count = len(found)
+            return outcome
         finally:
             for var, val in saved.items():
                 try:
@@ -8542,8 +8867,11 @@ class ComBackend(AutoCADBackend):
     async def entity_trim(self, target_handle, cutter_handle, keep_x, keep_y) -> EntityInfo:
         def _sync():
             doc = _acad_doc()
-            cmd = f'_TRIM\n(handent "{cutter_handle}")\n\n{float(keep_x)},{float(keep_y)}\n\n'
-            self._safe_send_command(doc, cmd)
+            # 1.8-05: ``*x,y`` is a WCS point whatever UCS is current, so a
+            # ucs_set cannot shift the pick (tool coordinates are WCS).
+            cmd = f'_TRIM\n(handent "{cutter_handle}")\n\n*{float(keep_x)},{float(keep_y)}\n\n'
+            with _target_tab(doc):
+                self._safe_send_command(doc, cmd)
             ent = doc.HandleToObject(target_handle)
             return _entity_info(ent)
 
@@ -8576,8 +8904,9 @@ class ComBackend(AutoCADBackend):
                     ex, ey = 0.0, 0.0
             else:
                 ex, ey = float(end_x), float(end_y)
-            cmd = f'_EXTEND\n(handent "{boundary_handle}")\n\n{ex},{ey}\n\n'
-            self._safe_send_command(doc, cmd)
+            cmd = f'_EXTEND\n(handent "{boundary_handle}")\n\n*{ex},{ey}\n\n'  # WCS pick
+            with _target_tab(doc):
+                self._safe_send_command(doc, cmd)
             return _entity_info(doc.HandleToObject(target_handle))
 
         return await self._run(_sync)
@@ -8590,7 +8919,8 @@ class ComBackend(AutoCADBackend):
                 f"_FILLET\n_R\n{float(radius)}\n_T\n_{t}\n"
                 f'(handent "{handle1}")\n(handent "{handle2}")\n'
             )
-            new_handles = self._safe_send_command(doc, cmd)
+            with _target_tab(doc):
+                new_handles = self._safe_send_command(doc, cmd).handles
             # Return the new ARC entity if one was created (radius > 0); else
             # fall back to handle1 (radius=0 = sharp corner, no arc).
             for h in new_handles:
@@ -8621,7 +8951,8 @@ class ComBackend(AutoCADBackend):
                 f"_CHAMFER\n_D\n{d1}\n{d2}\n_T\n_{t}\n"
                 f'(handent "{handle1}")\n(handent "{handle2}")\n'
             )
-            new_handles = self._safe_send_command(doc, cmd)
+            with _target_tab(doc):
+                new_handles = self._safe_send_command(doc, cmd).handles
             for h in new_handles:
                 try:
                     ent = doc.HandleToObject(h)
