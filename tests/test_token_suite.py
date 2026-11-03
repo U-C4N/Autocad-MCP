@@ -232,17 +232,29 @@ def test_the_idle_headline_is_what_the_model_pays_with_the_wire_beside_it(report
             assert row["prompt_cache"] == ts.cacheability(row["tokens"]["value"])
 
 
-def test_the_meta_card_no_longer_carries_the_alias_lists(report):
-    """1.8-14: acad/synonyms left meta["cad"], so the wire shrank by their size."""
+def test_the_meta_card_no_longer_carries_the_alias_lists(report, full_catalog):
+    """1.8-14: acad/synonyms left meta["cad"], so the wire shrank by their size.
 
-    async def _metas() -> list[dict]:
+    Read off the full catalog: under the 1.8-11 search default ``list_tools``
+    carries only the pins and the synthetic tools, which would leave every
+    other tool's card unchecked.
+    """
+
+    async def _tools() -> list:
         from fastmcp import Client
 
         async with Client(server.mcp) as client:
-            return [dict(tool.meta or {}) for tool in await client.list_tools()]
+            return list(await client.list_tools())
 
-    for meta in asyncio.run(_metas()):
-        assert set(meta.get("cad") or {}) <= {"summary", "cost"}
+    tools = asyncio.run(_tools())
+    names = {tool.name for tool in tools}
+    # The check must cover the catalog, not the search-mode surface.
+    assert not names & {"search_tools", "call_tool", "describe_tool"}
+    assert "entity_fillet" in names
+    assert len(names) > 50
+    for tool in tools:
+        meta = dict(tool.meta or {})
+        assert set(meta.get("cad") or {}) <= {"summary", "cost"}, tool.name
 
 
 def test_the_search_mode_prefix_falls_below_the_prompt_cache_minimum(report):
