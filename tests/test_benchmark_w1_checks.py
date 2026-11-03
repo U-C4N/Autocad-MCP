@@ -53,7 +53,7 @@ def test_the_suite_carries_the_six_w1_checks():
     # Appended after the 61 checks of 1.7.0, nothing reordered; W2 items
     # (1.8-08 `undo_after_restart`, ...) append after them.
     assert list(CHECKS)[61 : 61 + len(W1_CHECKS)] == list(W1_CHECKS), "appended, nothing reordered"
-    assert len(CHECKS) == 68
+    assert len(CHECKS) == 70
 
 
 def test_the_published_ab_report_shows_the_six_w1_checks_fixed():

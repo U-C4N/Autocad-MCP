@@ -59,6 +59,7 @@ __all__ = [
     "InvalidArgsError",
     "KindSpec",
     "PathRefusedError",
+    "UnknownHandleError",
     "annotate",
     "capability_of",
     "cause_chain",
@@ -351,6 +352,31 @@ class InvalidArgsError(ToolError):
     """
 
     kind = "invalid_args"
+
+
+class UnknownHandleError(ToolError):
+    """Literal handles a call names that the document does not hold (1.8-09).
+
+    Raised before anything runs, from one ``entity_fingerprints`` read, by
+    ``cad_batch`` (its validation), ``entity_delete_many`` and
+    ``entity_batch_modify``: nothing was written. ``missing`` is one row per
+    missing reference, ``{handle, i, tool}`` for a batch step and ``{handle,
+    index}`` for an item of a list; ``fields`` are the caller's own counters
+    (``executed: 0``, ``deleted: 0``) carried into the envelope. A
+    ``ToolError``, so ``except ToolError`` and ``raise_on_error`` see it as the
+    call refusing, which it is.
+    """
+
+    kind = "unknown_handle"
+
+    def __init__(self, message: str, *, missing, **fields):
+        super().__init__(message)
+        self.missing = [dict(row) for row in missing]
+        self.fields = dict(fields)
+
+    def to_fields(self) -> dict:
+        handles = list(dict.fromkeys(str(row.get("handle")) for row in self.missing))
+        return {"missing": [dict(row) for row in self.missing], "handles": handles, **self.fields}
 
 
 #: How many blocking rows a gate failure carries unless ``detail="full"``.
@@ -717,6 +743,10 @@ def classify(exc: BaseException) -> dict:
         if refused.symbols:
             row["symbols"] = list(refused.symbols)
         return row
+    unknown = _first_of(exc, UnknownHandleError)
+    if unknown is not None:
+        # 1.8-09: refused before anything ran; the rows name every missing handle.
+        return {"kind": "unknown_handle", **unknown.to_fields(), "message": message}
     for typed in (PathRefusedError, ApplicationBusyError, EntityNotFoundError, InvalidArgsError):
         found = _first_of(exc, typed)
         if found is not None:

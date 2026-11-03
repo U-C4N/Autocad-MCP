@@ -12,6 +12,11 @@ the end of ``NEW_TASKS_V9``.
   line back where it was before the move - no undo setting in the
   environment. Its broken twin: a move after the last save, then a kill; the
   file is untouched and the reopen reports ``lost_since_save.count == 1``.
+* ``atomic_batch_default`` (1.8-09, the rival's §4.3 probe): ``cad_batch``
+  with ``[entity_move(L), entity_delete("DEAD")]`` and no ``on_error`` is
+  refused ``unknown_handle`` with ``executed: 0`` and L's summary unchanged.
+  Its run-time twin (the second step fails while it runs) is rolled back by
+  the default ``on_error="auto"``, headless ``atomicity.verified: true``.
 """
 
 from __future__ import annotations
@@ -28,12 +33,20 @@ NEW_TASKS_V9: tuple[TaskSpec, ...] = (
         "untouched and lost_since_save.count is 1",
         1.0,
     ),
+    TaskSpec(
+        "atomic_batch_default",
+        "durability",
+        "Move a line and delete a handle that does not exist in one batch with no on_error: "
+        "refused unknown_handle, nothing executed, the line unchanged. Run-time twin: the "
+        "default rolls the move back, verified",
+        1.0,
+    ),
 )
 
 TASKS_V9: tuple[TaskSpec, ...] = TASKS_V8 + NEW_TASKS_V9
 
 #: v9 tasks that drive the headless engine (or a headless server process) by
 #: construction; on the live lane they are ``not_run``, never a zero.
-HEADLESS_ONLY_V9: frozenset[str] = frozenset({"undo_across_restart"})
+HEADLESS_ONLY_V9: frozenset[str] = frozenset({"undo_across_restart", "atomic_batch_default"})
 
 MATRICES["v9"] = TASKS_V9

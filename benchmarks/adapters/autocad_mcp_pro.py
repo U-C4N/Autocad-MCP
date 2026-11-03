@@ -2000,6 +2000,92 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
             [path],
         )
 
+    async def _task_atomic_batch_default(self):
+        """v9 (1.8-09, §4.3): a batch with no ``on_error`` is all or nothing.
+
+        The rival's probe through the real ``cad_batch`` tool: line L, then
+        ``[entity_move(L), entity_delete("DEAD")]`` with no ``on_error``. The
+        oracle is L's ``entity_get`` summary read straight from the engine
+        before and after - the batch must be refused ``unknown_handle`` with
+        ``executed: 0`` and the summary unchanged (1.7.0 kept the move). The
+        run-time twin, ``[entity_move(L), entity_edit_text(L)]`` (a LINE has
+        no text, so the second step fails while it runs), must be rolled back
+        by the default: ``ok: false``, ``atomicity.default_applied`` and
+        ``verified`` true, the summary unchanged again. Headless lane only:
+        the live engine's undo is ``scripts/smoke_durability_com.py``.
+        """
+        from dataclasses import asdict
+
+        line = await self.backend.entity_create_line(0, 0, 10, 0)
+        handle = line.handle
+
+        async def summary() -> dict:
+            return asdict(await self.backend.entity_get(handle))
+
+        original = await summary()
+        move = {"tool": "entity_move", "args": {"handle": handle, "dx": 5.0, "dy": 5.0}}
+        async with self._served() as client:
+            probe = await client.call_tool(
+                "cad_batch",
+                {"steps": [move, {"tool": "entity_delete", "args": {"handle": "DEAD"}}]},
+                raise_on_error=False,
+            )
+            refused = probe.structured_content or {}
+            after_probe = await summary()
+            runtime = await client.call_tool(
+                "cad_batch",
+                {
+                    "steps": [
+                        move,
+                        {"tool": "entity_edit_text", "args": {"handle": handle, "text": "X"}},
+                    ]
+                },
+                raise_on_error=False,
+            )
+            undone = runtime.structured_content or {}
+        after_runtime = await summary()
+        atomicity = undone.get("atomicity") or {}
+        passed = (
+            probe.is_error is True
+            and refused.get("kind") == "unknown_handle"
+            and refused.get("executed") == 0
+            and after_probe == original
+            and runtime.is_error is False
+            and undone.get("ok") is False
+            and undone.get("on_error") == "auto"
+            and atomicity.get("default_applied") is True
+            and atomicity.get("rolled_back") is True
+            and atomicity.get("verified") is True
+            and after_runtime == original
+        )
+        return (
+            passed,
+            {
+                "probe": {
+                    "kind": refused.get("kind"),
+                    "executed": refused.get("executed"),
+                    "missing": refused.get("missing"),
+                    "summary_unchanged": after_probe == original,
+                },
+                "runtime_twin": {
+                    "ok": undone.get("ok"),
+                    "on_error": undone.get("on_error"),
+                    "atomicity": {
+                        key: atomicity.get(key)
+                        for key in (
+                            "mode",
+                            "guarantee",
+                            "default_applied",
+                            "rolled_back",
+                            "verified",
+                        )
+                    },
+                    "summary_unchanged": after_runtime == original,
+                },
+            },
+            [],
+        )
+
 
 #: v9 (1.8.0): its headless-only tasks start their own headless server.
 from benchmarks.tasks_v9 import HEADLESS_ONLY_V9  # noqa: E402

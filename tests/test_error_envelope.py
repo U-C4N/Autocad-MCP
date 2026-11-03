@@ -261,8 +261,33 @@ async def test_a_provoked_error_has_one_kind_direct_and_as_a_batch_step(
         assert record["state"] in {"refused", "cancelled"}
 
     step = await _step_error(client, tool, args)
-    assert step["kind"] == kind, "the direct route and the batch step must agree"
+    assert step["kind"] == STEP_KINDS.get(case, kind), "the direct route and the batch step agree"
     assert step["category"] == spec.category and isinstance(step["retryable"], bool)
+
+
+#: 1.8-09: a LITERAL handle that names nothing never reaches its step - the
+#: batch's pre-check refuses the whole batch first, as unknown_handle (same
+#: category, not retryable either). A handle that goes missing while the batch
+#: runs still reaches its step, and is not_found there, as directly.
+STEP_KINDS = {"missing_handle": "unknown_handle"}
+
+
+@pytest.mark.asyncio
+async def test_a_handle_missing_at_run_time_is_not_found_in_a_step_too(client):
+    result = await client.call_tool(
+        "cad_batch",
+        {
+            "steps": [
+                {"tool": "entity_create_line", "args": _LINE, "bind": "gone"},
+                {"tool": "entity_delete", "args": {"handle": "$gone"}},
+                {"tool": "entity_move", "args": {"handle": "$gone", "dx": 1.0, "dy": 0.0}},
+            ],
+            "on_error": "continue",
+        },
+    )
+    step = result.structured_content["results"][2]["error"]
+    assert step["kind"] == "not_found"
+    assert step["category"] == errors.describe("not_found").category
 
 
 @pytest.mark.parametrize(
@@ -517,7 +542,6 @@ async def test_the_wire_text_is_byte_for_byte_what_it_was(client, tmp_path):
 #: Tools that decline a missing handle *by value* ({"ok": false, ...}) instead
 #: of raising, and why. Anything else must raise a typed not_found.
 DECLINE_BY_VALUE = {
-    "entity_delete_many": "reports per-handle errors; all-or-nothing is plan 1.8-09",
     "boundary_from_entities": "refuses fewer than two resolvable handles by value",
     "viewport_set_scale": "a viewport lookup returns {ok: false}",
     "viewport_lock": "a viewport lookup returns {ok: false}",
@@ -575,7 +599,12 @@ async def test_every_mutating_handle_tool_answers_not_found_never_internal(clien
             )
             continue
         assert result.is_error is True, f"{tool.name} accepted handle FFFFFF: {payload}"
-        assert payload.get("kind") in {"not_found", "invalid_args"}, (tool.name, payload)
+        # unknown_handle: the 1.8-09 pre-check (entity_delete_many refuses every
+        # missing handle before deleting anything).
+        assert payload.get("kind") in {"not_found", "invalid_args", "unknown_handle"}, (
+            tool.name,
+            payload,
+        )
         assert payload["kind"] != "internal"
     assert len(scanned) >= 25, scanned
 

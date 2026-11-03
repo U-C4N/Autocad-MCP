@@ -92,6 +92,14 @@ def _line(x1=0.0, y1=0.0, x2=10.0, y2=0.0, **extra):
     return {"tool": LINE, "args": {"x1": x1, "y1": y1, "x2": x2, "y2": y2}, **extra}
 
 
+def _fails_on(ref: str, **extra) -> dict:
+    """A step that passes validation and fails at run time (kind ``failed``):
+    editing the text of the LINE bound as ``ref``. Since 1.8-09 a literal
+    handle that names nothing is refused before anything runs, so a run-time
+    failure is staged on a real entity instead."""
+    return {"tool": "entity_edit_text", "args": {"handle": f"${ref}", "text": "X"}, **extra}
+
+
 # ---------------------------------------------------------------------------
 # Registration and metadata
 # ---------------------------------------------------------------------------
@@ -651,11 +659,20 @@ async def test_a_backend_failure_is_typed_as_failed(client):
 
 
 async def test_a_missing_handle_is_typed_as_not_found(client):
-    """1.8-02: EntityNotFoundError; it was ``failed`` (an untyped RuntimeError) in 1.7."""
+    """1.8-02: EntityNotFoundError; it was ``failed`` (an untyped RuntimeError) in 1.7.
+
+    A handle that goes missing at run time (deleted by an earlier step); a
+    literal one is refused before the run (1.8-09, below)."""
     result = await _batch(
-        client, [{"tool": "entity_get", "args": {"handle": "NOSUCH"}}], on_error="continue"
+        client,
+        [
+            _line(bind="gone"),
+            {"tool": "entity_delete", "args": {"handle": "$gone"}},
+            {"tool": "entity_get", "args": {"handle": "$gone"}},
+        ],
+        on_error="continue",
     )
-    assert result["results"][0]["error"]["kind"] == "not_found"
+    assert result["results"][2]["error"]["kind"] == "not_found"
 
 
 async def test_a_deliberate_tool_refusal_is_typed_as_refused(client, tmp_path):
@@ -694,7 +711,8 @@ async def test_every_reported_kind_is_a_declared_kind(client, tmp_path):
     result = await _batch(
         client,
         [
-            {"tool": "entity_get", "args": {"handle": "NOSUCH"}},
+            _line(bind="l"),
+            _fails_on("l"),
             {"tool": "drawing_save_as", "args": {"path": str(tmp_path / "p.dwg")}},
             _line(),
         ],
@@ -710,30 +728,139 @@ async def test_every_reported_kind_is_a_declared_kind(client, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-async def test_stop_is_the_default_because_both_backends_deliver_it(client):
+async def test_auto_is_the_default_and_makes_a_mutating_batch_all_or_nothing(client):
+    """1.8-09 (breaking): 1.7 defaulted to ``stop`` and kept what ran."""
+    result = await _batch(client, [_line(bind="l"), _fails_on("l"), _line(y1=9.0, y2=9.0)])
+    assert result["on_error"] == "auto"
+    assert result["ok"] is False
+    atomicity = result["atomicity"]
+    assert atomicity["mode"] == "rollback"
+    assert atomicity["default_applied"] is True
+    assert atomicity["guarantee"] == "snapshot"
+    assert atomicity["rolled_back"] is True
+    assert atomicity["verified"] is True
+    assert [row["status"] for row in result["results"]] == ["ok", "error"]
+    assert await _entity_count(client) == 0, "the first line is undone with the batch"
+
+
+async def test_auto_on_a_clean_batch_commits_and_keeps_its_work(client):
+    result = await _batch(client, [_line(), _line(y1=4.0, y2=4.0)])
+    assert result["ok"] is True
+    assert result["atomicity"]["default_applied"] is True
+    assert result["atomicity"]["committed"] is True
+    assert await _entity_count(client) == 2
+
+
+async def test_auto_opens_no_checkpoint_for_a_read_only_batch(client, monkeypatch):
+    from backends.ezdxf_backend import EzdxfBackend
+
+    line = (await client.call_tool(LINE, _line()["args"])).structured_content["handle"]
+    begun: list[bool] = []
+    real = EzdxfBackend.transaction_begin
+
+    async def counting(self):
+        begun.append(True)
+        return await real(self)
+
+    monkeypatch.setattr(EzdxfBackend, "transaction_begin", counting)
+    result = await _batch(
+        client,
+        [{"tool": "entity_get", "args": {"handle": line}}, {"tool": "drawing_info", "args": {}}],
+    )
+    assert result["ok"] is True
+    atomicity = result["atomicity"]
+    assert begun == [], "a read-only batch opens no checkpoint"
+    assert atomicity["transaction"] is False
+    assert atomicity["mode"] == "stop"
+    assert atomicity["default_applied"] is False
+    assert "read-only" in atomicity["note"]
+
+
+async def test_auto_runs_as_stop_when_its_checkpoint_is_declined(client, monkeypatch):
+    """Live: a transaction the caller opened, or AutoCAD at a prompt. The default
+    does not refuse what 1.7 ran; it says it could not apply."""
+    from backends.ezdxf_backend import EzdxfBackend
+
+    async def _decline(self):
+        return {"ok": False, "error": "A transaction is already active"}
+
+    monkeypatch.setattr(EzdxfBackend, "transaction_begin", _decline)
+    result = await _batch(client, [_line(bind="l"), _fails_on("l")])
+    atomicity = result["atomicity"]
+    assert atomicity["default_applied"] is False
+    assert atomicity["mode"] == "stop" and atomicity["transaction"] is False
+    assert "already active" in atomicity["note"]
+    assert await _entity_count(client) == 1, "ran as stop: the first line stays"
+
+
+async def test_auto_runs_as_stop_on_a_backend_without_transactions(client, monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_batch_rollback_guarantee",
+        lambda backend: ("none", server._BATCH_GUARANTEE_NOTES["none"]),
+    )
+    result = await _batch(client, [_line(bind="l"), _fails_on("l")])
+    assert result["atomicity"]["default_applied"] is False
+    assert result["atomicity"]["mode"] == "stop"
+    assert "fell back to stop" in result["atomicity"]["note"]
+    assert await _entity_count(client) == 1
+
+
+async def test_auto_runs_a_batch_that_switches_documents_as_stop(client):
+    """One document's checkpoint cannot undo a switch to another."""
+    result = await _batch(client, [_line(), {"tool": "drawing_new", "args": {}}, _line()])
+    assert result["ok"] is True
+    assert result["atomicity"]["mode"] == "stop"
+    assert result["atomicity"]["default_applied"] is False
+    assert "drawing_new" in result["atomicity"]["note"]
+
+
+async def test_auto_runs_as_stop_when_its_checkpoint_cannot_be_taken(client, monkeypatch):
+    """A begin that raises (headless: no document open yet) is not a refusal under auto."""
+    from backends.ezdxf_backend import EzdxfBackend
+
+    async def _broken(self):
+        raise RuntimeError("No document open. Call drawing_new() or drawing_open() first.")
+
+    monkeypatch.setattr(EzdxfBackend, "transaction_begin", _broken)
     result = await _batch(client, [_line()])
-    assert result["on_error"] == "stop"
+    assert result["ok"] is True
+    assert result["atomicity"]["default_applied"] is False
+    assert "No document open" in result["atomicity"]["note"]
+    with pytest.raises(ToolError, match="No document open"):
+        await _batch(client, [_line()], on_error="rollback")
+
+
+async def test_a_dry_run_reports_what_auto_would_do(client):
+    result = await _batch(client, [_line()], dry_run=True)
+    assert result["on_error"] == "auto"
+    assert result["atomicity"]["mode"] == "rollback"
+    assert result["atomicity"]["default_applied"] is True
+    assert result["atomicity"]["transaction"] is False, "planned only"
 
 
 async def test_stop_leaves_earlier_steps_applied_and_says_so(client):
+    """The migration route: a caller who wants partial results passes stop."""
     result = await _batch(
         client,
-        [_line(), {"tool": "entity_get", "args": {"handle": "NOSUCH"}}, _line(y1=9.0, y2=9.0)],
+        [_line(bind="l"), _fails_on("l"), _line(y1=9.0, y2=9.0)],
         on_error="stop",
     )
     assert result["ok"] is False
+    assert result["on_error"] == "stop"
     statuses = [row["status"] for row in result["results"]]
     assert statuses == ["ok", "error", "skipped"]
     assert result["skipped"] == 1
     assert await _entity_count(client) == 1
     assert result["atomicity"]["rolled_back"] is False
     assert result["atomicity"]["guarantee"] == "none"
+    assert "default_applied" not in result["atomicity"], "an explicit mode is no default"
 
 
 async def test_continue_runs_every_step(client):
     result = await _batch(
         client,
-        [_line(), {"tool": "entity_get", "args": {"handle": "NOSUCH"}}, _line(y1=9.0, y2=9.0)],
+        [_line(bind="l"), _fails_on("l"), _line(y1=9.0, y2=9.0)],
         on_error="continue",
     )
     assert [row["status"] for row in result["results"]] == ["ok", "error", "ok"]
@@ -746,16 +873,185 @@ async def test_continue_does_not_execute_a_step_whose_binding_never_landed(clien
     result = await _batch(
         client,
         [
-            {"tool": "entity_get", "args": {"handle": "NOSUCH"}, "bind": "ghost"},
+            _line(bind="l"),
+            _fails_on("l", bind="ghost"),
             {"tool": "entity_move", "args": {"handle": "$ghost", "dx": 1.0, "dy": 0.0}},
             _line(),
         ],
         on_error="continue",
     )
-    assert result["results"][0]["status"] == "error"
     assert result["results"][1]["status"] == "error"
-    assert result["results"][1]["error"]["kind"] == "unresolved_ref"
-    assert result["results"][2]["status"] == "ok"
+    assert result["results"][2]["status"] == "error"
+    assert result["results"][2]["error"]["kind"] == "unresolved_ref"
+    assert result["results"][3]["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# The literal-handle pre-check (1.8-09)
+# ---------------------------------------------------------------------------
+
+
+async def _line_handle(client) -> str:
+    return (await client.call_tool(LINE, _line()["args"])).structured_content["handle"]
+
+
+async def _start(client, handle: str) -> list:
+    return (await client.call_tool("entity_get", {"handle": handle})).structured_content[
+        "properties"
+    ]["start"][:2]
+
+
+@pytest.mark.parametrize("on_error", [None, "stop", "continue", "rollback"])
+async def test_a_missing_literal_handle_refuses_the_whole_batch_before_anything_runs(
+    client, on_error
+):
+    """§4.3, the rival's probe: move L, then delete a handle that does not exist.
+
+    1.7 moved L and then failed; now one fingerprint read refuses the batch
+    first - whatever on_error says, because nothing has run yet."""
+    line = await _line_handle(client)
+    steps = [
+        {"tool": "entity_move", "args": {"handle": line, "dx": 5.0, "dy": 5.0}},
+        {"tool": "entity_delete", "args": {"handle": "DEAD"}},
+    ]
+    extra = {} if on_error is None else {"on_error": on_error}
+    result = await client.call_tool("cad_batch", {"steps": steps, **extra}, raise_on_error=False)
+    payload = result.structured_content
+    assert result.is_error is True
+    assert payload["kind"] == "unknown_handle"
+    assert payload["executed"] == 0
+    assert payload["missing"] == [{"i": 1, "tool": "entity_delete", "handle": "DEAD"}]
+    assert payload["retryable"] is False
+    assert await _start(client, line) == [0.0, 0.0], "L must not have moved"
+    status = (await client.call_tool("system_status", {})).structured_content or {}
+    assert status.get("transaction_depth", 0) == 0, "no checkpoint was left open"
+
+
+async def test_the_pre_check_is_one_fingerprint_read(client, monkeypatch):
+    from engineering.changes import precheck
+
+    line = await _line_handle(client)
+    reads: list[list[str]] = []
+    real = precheck.entity_fingerprints
+
+    async def counting(backend, handles):
+        reads.append(list(handles))
+        return await real(backend, handles)
+
+    monkeypatch.setattr(precheck, "entity_fingerprints", counting)
+    steps = [
+        {"tool": "entity_move", "args": {"handle": line, "dx": 1.0, "dy": 0.0}},
+        {
+            "tool": "entity_rotate",
+            "args": {"handle": line, "base_x": 0, "base_y": 0, "angle_deg": 5},
+        },
+        {"tool": "entity_delete", "args": {"handle": "DEAD"}},
+        {"tool": "entity_delete", "args": {"handle": "BEEF"}},
+    ]
+    result = await client.call_tool("cad_batch", {"steps": steps}, raise_on_error=False)
+    assert result.structured_content["kind"] == "unknown_handle"
+    assert len(reads) == 1, reads
+    assert sorted(reads[0]) == sorted([line, "DEAD", "BEEF"])
+    assert [row["i"] for row in result.structured_content["missing"]] == [2, 3]
+
+
+async def test_a_dry_run_marks_the_step_with_the_missing_handle(client):
+    line = await _line_handle(client)
+    result = await _batch(
+        client,
+        [
+            {"tool": "entity_move", "args": {"handle": line, "dx": 5.0, "dy": 0.0}},
+            {"tool": "entity_delete", "args": {"handle": "DEAD"}},
+        ],
+        dry_run=True,
+    )
+    assert result["ok"] is False
+    assert result["invalid"] == 1
+    row = result["results"][1]
+    assert row["status"] == "invalid"
+    assert row["error"]["kind"] == "unknown_handle"
+    assert row["error"]["handles"] == ["DEAD"]
+    assert result["results"][0]["status"] == "valid"
+
+
+async def test_a_literal_handle_after_a_document_switch_is_checked_when_it_runs(client):
+    """drawing_new hands later steps another document: their literal handles
+    cannot be judged against this one, so they are left to run time."""
+    result = await _batch(
+        client,
+        [
+            {"tool": "drawing_new", "args": {}},
+            {"tool": "entity_get", "args": {"handle": "DEAD"}},
+        ],
+        on_error="continue",
+    )
+    assert result["results"][0]["status"] == "ok"
+    assert result["results"][1]["error"]["kind"] == "not_found"
+
+
+async def test_a_reference_is_not_pre_checked(client):
+    """A '$ref' resolves only when its step runs; the entity may not exist yet."""
+    result = await _batch(
+        client,
+        [_line(bind="l"), {"tool": "entity_move", "args": {"handle": "$l", "dx": 1.0, "dy": 0.0}}],
+    )
+    assert result["ok"] is True
+
+
+async def test_a_rollback_is_evidenced_by_the_pre_checks_handles(client):
+    line = await _line_handle(client)
+    result = await _batch(
+        client,
+        [
+            {"tool": "entity_move", "args": {"handle": line, "dx": 5.0, "dy": 5.0}},
+            {"tool": "entity_delete", "args": {"handle": line}},
+            _line(bind="x"),
+            _fails_on("x"),
+        ],
+    )
+    atomicity = result["atomicity"]
+    assert atomicity["rolled_back"] is True
+    assert atomicity["verified"] is True
+    assert atomicity["handles_checked"] == 1
+    assert await _start(client, line) == [0.0, 0.0]
+
+
+async def test_a_live_rollback_is_not_judged_while_autocad_is_busy():
+    """best_effort_undo: the evidence is read only once CMDACTIVE is 0."""
+
+    class _Busy:
+        async def system_get_variable(self, name):
+            assert name == "CMDACTIVE"
+            return 1
+
+    verified, extra = await server._batch_rollback_evidence(
+        _Busy(), "best_effort_undo", True, {"1F": "abc"}
+    )
+    assert verified is None
+    assert extra == {"cmdactive": 1}
+
+
+async def test_a_live_rollback_compares_the_handles_exactly(monkeypatch):
+    from engineering.changes import precheck
+
+    class _Idle:
+        async def system_get_variable(self, name):
+            return 0
+
+    async def after(backend, handles):
+        return {"1F": "abc", "20": "changed"}
+
+    monkeypatch.setattr(precheck, "entity_fingerprints", after)
+    verified, extra = await server._batch_rollback_evidence(
+        _Idle(), "best_effort_undo", True, {"1F": "abc", "20": "def"}
+    )
+    assert verified is False
+    assert extra == {"cmdactive": 0, "handles_checked": 2, "handles_changed": ["20"]}
+    # The same reads headless compare presence only (see precheck's docstring).
+    verified, extra = await server._batch_rollback_evidence(
+        _Idle(), "snapshot", True, {"1F": "abc", "20": "def"}
+    )
+    assert verified is True and extra == {"handles_checked": 2}
 
 
 async def test_an_unknown_on_error_mode_is_rejected(client):
@@ -810,7 +1106,7 @@ async def test_rollback_restores_the_document_on_ezdxf(client):
     await client.call_tool("entity_create_circle", {"cx": 0, "cy": 0, "radius": 1})
     result = await _batch(
         client,
-        [_line(), _line(y1=4.0, y2=4.0), {"tool": "entity_get", "args": {"handle": "NOSUCH"}}],
+        [_line(bind="l"), _line(y1=4.0, y2=4.0), _fails_on("l")],
         on_error="rollback",
     )
     assert result["ok"] is False
@@ -867,7 +1163,7 @@ async def test_a_rollback_batch_does_not_disturb_a_transaction_the_caller_opened
     await client.call_tool("entity_create_circle", {"cx": 0, "cy": 0, "radius": 1})
     result = await _batch(
         client,
-        [_line(), {"tool": "entity_get", "args": {"handle": "NOSUCH"}}],
+        [_line(bind="l"), _fails_on("l")],
         on_error="rollback",
     )
     assert result["atomicity"]["rolled_back"] is True
@@ -942,9 +1238,9 @@ async def test_rollback_is_not_claimed_when_the_backend_declines_it(client):
     flow would be the same class of lie as writing DXF bytes into a .dwg.
     """
     steps = [
-        _line(),
+        _line(bind="l"),
         {"tool": "transaction_commit", "args": {}},
-        {"tool": "entity_get", "args": {"handle": "NOSUCH"}},
+        _fails_on("l"),
     ]
     result = await _batch(client, steps, on_error="rollback")
 

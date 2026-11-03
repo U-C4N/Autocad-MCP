@@ -3595,21 +3595,103 @@ async def entity_delete_many(
     handles: Annotated[list[str], "List of entity handles to delete"],
     ctx: Context = None,
 ) -> dict:
-    """Delete multiple entities in one call. Returns count of deleted entities."""
+    """Delete multiple entities in one call. Returns count of deleted entities.
+
+    All or none (unknown_handle, rolled_back).
+    """
+    # 1.8-09 in full: every handle is checked first, in one read, and a missing
+    # one refuses the call with each index in `missing` - nothing deleted. The
+    # deletes run inside a transaction; a failure rolls it back (headless: the
+    # snapshot; live: an UNDO back to the mark, `verified` by reading the
+    # handles again) and answers ok: false, errors, deleted: 0. A handle listed
+    # twice is deleted once (`duplicates_ignored`). The docstring stays short:
+    # it is what the discovery index ranks.
+    from engineering.changes.precheck import changed_since, normalise, require_handles
+
     await ctx.info(f"Deleting {len(handles)} entities")
     b = _backend(ctx)
-    await _checkpoint_before(b, "entity_delete_many")  # 1.8-08: live AutoCAD only
+    # 1.8-09: a duplicate would fail its second delete and roll back the
+    # whole call; it is the same entity, so it is deleted once.
+    unique: list[str] = []
+    keys: set = set()
+    for h in handles:
+        key = normalise(h)
+        if key is not None and key in keys:
+            continue
+        keys.add(key)
+        unique.append(h)
+    duplicates = len(handles) - len(unique)
+    before = await require_handles(
+        b,
+        [{"index": i, "handle": h} for i, h in enumerate(handles)],
+        subject=f"entity_delete_many refused all {len(handles)} handle(s) - nothing was deleted",
+        deleted=0,
+    )
+    total = len(unique)
+    if not total:
+        return {"ok": True, "deleted": 0, "errors": []}
+    # The transaction is the all-or-nothing; on the live engine its begin also
+    # takes the 1.8-08 checkpoint, so a second export is taken only without it.
+    with anyio.CancelScope(shield=True):
+        opened = await b.transaction_begin()
+    in_transaction = isinstance(opened, dict) and bool(opened.get("ok"))
+    if not (in_transaction and opened.get("checkpoint")):
+        await _checkpoint_before(b, "entity_delete_many")  # 1.8-08: live AutoCAD only
     deleted = 0
     errors = []
-    for i, h in enumerate(handles):
-        await ctx.report_progress(i, len(handles))
-        try:
-            await b.entity_delete(h)
-            deleted += 1
-        except Exception as exc:
-            errors.append({"handle": h, "error": str(exc)})
-    await ctx.report_progress(len(handles), len(handles))
-    return {"ok": True, "deleted": deleted, "errors": errors}
+    try:
+        await anyio.lowlevel.checkpoint_if_cancelled()
+        for i, h in enumerate(unique):
+            await ctx.report_progress(i, total)
+            try:
+                await b.entity_delete(h)
+                deleted += 1
+            except Exception as exc:
+                errors.append({"handle": h, "error": str(exc)})
+                if in_transaction:
+                    break  # all or nothing: the rest would be undone anyway
+    except BaseException:
+        # A cancellation (or anything else) mid-loop: the deletes that ran are
+        # undone before the exception goes on, as cad_batch does (B01).
+        if in_transaction:
+            with anyio.CancelScope(shield=True):
+                try:
+                    await b.transaction_rollback()
+                except Exception as rollback_exc:  # never raised over the cause
+                    log.error(
+                        "entity_delete_many: rollback after an abort failed: %s", rollback_exc
+                    )
+        raise
+    await ctx.report_progress(total, total)
+    result: dict = {"ok": not errors, "deleted": deleted, "errors": errors}
+    if duplicates:
+        result["duplicates_ignored"] = duplicates
+    if not in_transaction:
+        reason = (opened or {}).get("error") if isinstance(opened, dict) else None
+        result["transaction"] = False
+        if errors:
+            result["rolled_back"] = False
+            result["note"] = (
+                f"No transaction could be opened ({reason or 'declined'}), so the "
+                f"{deleted} delete(s) that ran stay applied."
+            )
+        return result
+    with anyio.CancelScope(shield=True):
+        if errors:
+            outcome = await b.transaction_rollback()
+            rolled_back = not isinstance(outcome, dict) or bool(outcome.get("ok", True))
+            result["rolled_back"] = rolled_back
+            if rolled_back:
+                result["deleted"] = 0
+                live = getattr(b, "name", None) == "com"
+                changed = await changed_since(b, before, exact=live)
+                result["verified"] = not changed
+                if changed:
+                    result["handles_changed"] = changed
+        else:
+            await b.transaction_commit()
+    await anyio.lowlevel.checkpoint_if_cancelled()
+    return result
 
 
 @cad_tool(
@@ -4526,10 +4608,37 @@ async def analysis_layer_stats(ctx: Context = None) -> dict:
 
 # ── cad_batch: the ordered multi-tool executor ──────────────────────────────
 
-#: What ``on_error`` accepts. ``stop`` is the default because it is the only
-#: mode whose guarantee is identical on both backends (see
-#: :func:`_batch_rollback_guarantee`).
-BATCH_ON_ERROR_MODES = ("stop", "continue", "rollback")
+#: What ``on_error`` accepts. ``auto`` is the default since 1.8.0 (plan
+#: 1.8-09, a breaking change from 1.7's ``stop``): a batch with at least one
+#: mutating step runs as ``rollback`` - a snapshot headless, a verified
+#: best-effort UNDO live - and a read-only batch as ``stop``, opening no
+#: checkpoint. ``stop`` still keeps whatever ran (the 1.7 behaviour, by name).
+BATCH_ON_ERROR_MODES = ("stop", "continue", "rollback", "auto")
+
+#: Steps after which a literal handle is not pre-checked against the document
+#: as it is when the batch starts: they open, switch to or restore a document
+#: (or bring back an earlier state of it), so a later literal handle may name
+#: an entity of that document instead. Such a handle is still checked at run
+#: time by the step itself (``not_found``).
+_BATCH_PRECHECK_BARRIERS = frozenset(
+    {
+        "drawing_new",
+        "drawing_open",
+        "document_activate",
+        "document_close",
+        "checkpoint_restore",
+        "drawing_undo",
+        "drawing_redo",
+        "transaction_rollback",
+    }
+)
+
+#: Steps that hand later steps another document. A checkpoint is one
+#: document's, so it cannot undo them: on_error="auto" runs such a batch as
+#: stop (an explicit "rollback" is still honoured as before).
+_BATCH_DOCUMENT_SWITCHES = frozenset(
+    {"drawing_new", "drawing_open", "document_activate", "document_close", "checkpoint_restore"}
+)
 
 #: Every ``error.kind`` a step row (and, since 1.8-02, every error envelope)
 #: can carry. Closed on purpose: a client that branches on the taxonomy needs
@@ -4795,6 +4904,55 @@ def _batch_literal_handles(args: dict) -> list[str]:
     return found
 
 
+def _batch_handle_refs(plans: list[dict]) -> list[dict]:
+    """``{i, tool, handle}`` for every literal handle the pre-check reads (1.8-09).
+
+    Valid steps only, up to and including the first step that changes which
+    document - or which state of it - later steps work on
+    (:data:`_BATCH_PRECHECK_BARRIERS`).
+    """
+    refs: list[dict] = []
+    for row in plans:
+        if row.get("status") != "valid":
+            continue
+        for handle in _batch_literal_handles(row["_args"]):
+            refs.append({"i": row["i"], "tool": row["tool"], "handle": handle})
+        if row["tool"] in _BATCH_PRECHECK_BARRIERS:
+            break
+    return refs
+
+
+def _batch_mark_unknown_handles(plans: list[dict], refs: list[dict], fingerprints: dict) -> int:
+    """A dry run's pre-check: mark each step naming a missing handle invalid.
+
+    ``fingerprints`` is the preview's own read (one read serves both). Returns
+    how many steps were marked.
+    """
+    from engineering.changes.preview import MISSING
+
+    by_step: dict[int, list[str]] = {}
+    for ref in refs:
+        if fingerprints.get(ref["handle"], MISSING) == MISSING:
+            by_step.setdefault(ref["i"], [])
+            if ref["handle"] not in by_step[ref["i"]]:
+                by_step[ref["i"]].append(ref["handle"])
+    for index, handles in by_step.items():
+        row = plans[index]
+        row["status"] = "invalid"
+        row["error"] = annotate(
+            {
+                "kind": "unknown_handle",
+                "handles": handles,
+                "message": (
+                    f"step {index} ({row['tool']}) names {handles} - no such entity in the "
+                    "document; a real run refuses the whole batch with nothing run."
+                ),
+            },
+            "refused",
+        )
+    return len(by_step)
+
+
 # ── schema validation (dry_run, and the pre-flight of every real run) ───────
 
 
@@ -5053,6 +5211,55 @@ async def _batch_fingerprint(backend) -> dict | None:
     }
 
 
+async def _batch_undo_idle(backend) -> int | None:
+    """CMDACTIVE after a live rollback (1.8-09), or None when it cannot be read.
+
+    ``transaction_rollback`` sends ``_UNDO _B`` through ``_safe_send_command``,
+    which waits for the command to finish; the before/after evidence is read
+    only once AutoCAD is idle, or it would judge an undo still in flight.
+    """
+    try:
+        return int(await backend.system_get_variable("CMDACTIVE"))
+    except Exception as exc:  # evidence only
+        log.debug("CMDACTIVE unreadable after the rollback: %s", exc)
+        return None
+
+
+async def _batch_rollback_evidence(
+    backend, guarantee: str, verified: bool | None, handles_before: dict
+) -> tuple[bool | None, dict]:
+    """Strengthen a rollback's ``verified`` with the pre-check's handle fingerprints.
+
+    1.8-09: the literal handles read before step 1 are read again. Live
+    (``best_effort_undo``) the comparison is exact and runs only while
+    CMDACTIVE is 0; headless (``snapshot``) it is presence only (see
+    engineering/changes/precheck.py). Returns the new ``verified`` and the
+    extra atomicity keys.
+    """
+    from engineering.changes.precheck import changed_since
+
+    extra: dict = {}
+    if guarantee == "best_effort_undo":
+        idle = await _batch_undo_idle(backend)
+        extra["cmdactive"] = idle
+        if idle:
+            return None, extra
+    if not handles_before:
+        return verified, extra
+    try:
+        changed = await changed_since(
+            backend, handles_before, exact=guarantee == "best_effort_undo"
+        )
+    except Exception as exc:  # evidence only; the count/extents check stands
+        log.debug("handle evidence unreadable after the rollback: %s", exc)
+        return verified, extra
+    extra["handles_checked"] = len(handles_before)
+    if changed:
+        extra["handles_changed"] = changed
+        return False, extra
+    return verified, extra
+
+
 # ── result compaction ───────────────────────────────────────────────────────
 
 
@@ -5131,13 +5338,14 @@ async def cad_batch(
         str,
         Field(
             description=(
-                "stop (default): halt at the first failure, keep what already ran. "
-                "continue: run every step. rollback: open a checkpoint first and undo "
-                "on failure - read the returned `atomicity` block for what that is "
-                "worth on this backend."
+                "auto (default): all or nothing - a batch with a mutating step runs as "
+                "rollback, a read-only one as stop. stop: halt at the first failure, keep "
+                "what already ran. continue: run every step. rollback: open a checkpoint "
+                "first and undo on failure - the returned `atomicity` block says what that "
+                "is worth on this backend."
             )
         ),
-    ] = "stop",
+    ] = "auto",
     dry_run: Annotated[
         bool,
         "Validate every step against its tool's real JSON Schema and execute nothing.",
@@ -5201,16 +5409,21 @@ async def cad_batch(
 
     VALIDATION runs first, always: an unknown tool, a schema-invalid argument or
     a reference no earlier step binds refuses the whole batch before anything
-    executes. `on_error` governs run-time failures only. dry_run=True returns
-    that validation report and executes nothing.
+    executes. So does a LITERAL handle (in a handle parameter) that names no
+    entity: one fingerprint read checks them all, and a missing one refuses
+    the batch with kind unknown_handle, naming each step index and handle -
+    executed 0. A literal handle after a step that opens, switches or restores
+    a document (drawing_open, drawing_undo, ...) is checked when its step runs.
+    `on_error` governs run-time failures only. dry_run=True returns that
+    validation report and executes nothing.
 
     ERRORS are typed, never text: each failed step carries error.kind - one of
     unsupported (with the backend `capability`), invalid_args, refused, failed,
     unknown_tool, unresolved_ref, denied, malformed_step, quarantined, busy,
     active_document_changed (live engine: the operator switched documents),
     stale_revision, scan_incomplete, timed_out, unknown_commit (a write that
-    outran its deadline while its worker ran), cancelled, operation_conflict -
-    and its own `operation_id`.
+    outran its deadline while its worker ran), cancelled, operation_conflict,
+    unknown_handle - and its own `operation_id`.
 
     PREVIEW AND APPLY. dry_run=True also returns `preview`: the document id and
     content revision, the exact fingerprint of every LITERAL handle in a handle
@@ -5229,11 +5442,16 @@ async def cad_batch(
     same steps replays the recorded result instead of drawing twice. The
     journal is in memory: a server restart forgets it (durable in 1.8.0, B13).
 
-    ATOMICITY is reported, not assumed. Read the `atomicity` block: on the
-    headless backend rollback restores a full document snapshot; on live AutoCAD
-    it sends an UNDO whose landing AutoCAD never confirms. The default
-    on_error="stop" claims nothing and is exact on both. A checkpoint a step
-    opens with transaction_begin is closed with the batch's (`unwound`).
+    ATOMICITY is reported, not assumed. The default on_error="auto" (since
+    1.8.0; 1.7 defaulted to "stop") makes a batch with at least one mutating
+    step all or nothing: on the headless backend a run-time failure restores a
+    full document snapshot; on live AutoCAD it sends an UNDO, judged by the
+    before/after fingerprints once AutoCAD is idle (CMDACTIVE 0). A read-only
+    batch opens no checkpoint. Read the `atomicity` block: `mode` is what ran,
+    `default_applied` (auto only) whether auto's checkpoint was opened,
+    `verified` whether the rollback was evidenced. Pass on_error="stop" to
+    keep the steps that ran before a failure. A checkpoint a step opens with
+    transaction_begin is closed with the batch's (`unwound`).
 
     NOT CALLABLE from a batch: the raw command/LISP escape hatches, and
     cad_batch itself. Call those directly.
@@ -5241,7 +5459,7 @@ async def cad_batch(
     For a few hundred entities of the same kind, entity_batch_create is denser
     still (no per-step tool name) - and it can be one step of a cad_batch.
     """
-    mode = (on_error or "stop").lower().strip()
+    mode = (on_error or "auto").lower().strip()
     if mode not in BATCH_ON_ERROR_MODES:
         raise ToolError(
             f"cad_batch: on_error must be one of {BATCH_ON_ERROR_MODES}, got {on_error!r}."
@@ -5362,9 +5580,29 @@ async def cad_batch(
                             bound_names.add(bind)
         plans.append(row)
 
+    # 1.8-09: on_error="auto" (the default) is all or nothing when the batch
+    # can write - rollback - and opens no checkpoint when it cannot - stop.
+    requested = mode
+    auto_note = ""
+    if mode == "auto":
+        tools = [row["tool"] for row in plans if row["status"] == "valid"]
+        mutating = any(tool not in read_only for tool in tools)
+        switches = sorted({tool for tool in tools if tool in _BATCH_DOCUMENT_SWITCHES})
+        mode = "rollback" if mutating and not switches else "stop"
+        if switches:
+            auto_note = (
+                f"on_error='auto' with {switches}: a checkpoint is one document's and "
+                "cannot undo a switch to another, so no checkpoint was opened; it halts "
+                "at the first failure. "
+            )
+        elif not mutating:
+            auto_note = (
+                "on_error='auto' on a read-only batch: no checkpoint opened; it halts at "
+                "the first failure. "
+            )
+
     if dry_run:
-        invalid = sum(1 for row in plans if row["status"] == "invalid")
-        guarantee, note = ("none", _BATCH_NO_CLAIM_NOTE.format(mode=mode))
+        guarantee, note = ("none", auto_note + _BATCH_NO_CLAIM_NOTE.format(mode=mode))
         if mode == "rollback":
             guarantee, note = _batch_rollback_guarantee(_backend(ctx))
             note = f"Planned only - a dry run opens no checkpoint. {note}"
@@ -5376,19 +5614,30 @@ async def cad_batch(
             handles=sorted({h for row in valid for h in _batch_literal_handles(row["_args"])}),
             planned=[{"i": row["i"], "tool": row["tool"], "args": row["_args"]} for row in valid],
         )
+        preview_dict = preview.to_dict()
+        # 1.8-09: the preview's fingerprint read is the pre-check's read too.
+        _batch_mark_unknown_handles(
+            plans,
+            _batch_handle_refs(plans),
+            {row["handle"]: row["fingerprint"] for row in preview_dict["preconditions"]},
+        )
+        invalid = sum(1 for row in plans if row["status"] == "invalid")
+        dry_atomicity = _batch_atomicity(mode=mode, guarantee=guarantee, note=note)
+        if requested == "auto":
+            dry_atomicity["default_applied"] = mode == "rollback"
         return {
             "ok": invalid == 0,
             "dry_run": True,
             "operation_id": CURRENT_OPERATION.get() or operation_id,
-            "on_error": mode,
+            "on_error": requested,
             "steps": len(steps),
             "executed": 0,
             "valid": len(plans) - invalid,
             "invalid": invalid,
             "bindings": sorted(bound_names),
             "results": [{k: v for k, v in row.items() if not k.startswith("_")} for row in plans],
-            "atomicity": _batch_atomicity(mode=mode, guarantee=guarantee, note=note),
-            "preview": preview.to_dict(),
+            "atomicity": dry_atomicity,
+            "preview": preview_dict,
             "note": (
                 "Validated against each tool's real JSON Schema; nothing was executed. "
                 "A '$reference' validates as a wildcard because its type is only known "
@@ -5404,6 +5653,21 @@ async def cad_batch(
         )
 
     backend = _backend(ctx)
+    # 1.8-09: every literal handle, in one read, before anything runs (and
+    # before any checkpoint opens, so a refusal leaves nothing to close). The
+    # fingerprints are a rollback's "before" evidence too.
+    handles_before: dict = {}
+    handle_refs = _batch_handle_refs(plans)
+    if handle_refs:
+        from engineering.changes.precheck import require_handles
+
+        handles_before = await require_handles(
+            backend,
+            handle_refs,
+            subject=f"cad_batch refused all {len(steps)} steps - nothing was executed",
+            executed=0,
+            steps=len(steps),
+        )
     journal = _operations_journal(ctx.lifespan_context)
     # The middleware set the batch's own operation (a client's id included).
     batch_id = CURRENT_OPERATION.get() or operation_id
@@ -5417,14 +5681,23 @@ async def cad_batch(
             backend, expected_revision=expected_revision, preconditions=preconditions
         )
         watch = await RevisionWatch.begin(backend)
-    guarantee, note = "none", _BATCH_NO_CLAIM_NOTE.format(mode=mode)
+    guarantee, note = "none", auto_note + _BATCH_NO_CLAIM_NOTE.format(mode=mode)
     transaction = False
     before = None
     base_depth = None
     if mode == "rollback":
         guarantee, note = _batch_rollback_guarantee(backend)
-        if guarantee == "none":
+        if guarantee == "none" and requested == "auto":
+            # A default must not refuse what 1.7 ran: no transactions here, so
+            # auto runs as stop and says so.
+            mode = "stop"
+            note = (
+                f"on_error='auto' fell back to stop: this backend has no transactions. "
+                f"{_BATCH_NO_CLAIM_NOTE.format(mode=mode)}"
+            )
+        elif guarantee == "none":
             raise ToolError(f"cad_batch: on_error='rollback' is unavailable here. {note}")
+    if mode == "rollback":
         before = await _batch_fingerprint(backend)
         base_depth = _read_transaction_depth(backend)
         # B01: the begin runs shielded. Cancelled mid-await, its worker would
@@ -5434,19 +5707,40 @@ async def cad_batch(
         # blocks every later batch. Shielded, the outcome is always known: a
         # cancellation that arrived meanwhile is delivered by the checkpoint
         # at the top of the try below, whose handler rolls the begin back.
-        with anyio.CancelScope(shield=True):
-            opened = await backend.transaction_begin()
-        if not (isinstance(opened, dict) and opened.get("ok")):
+        try:
+            with anyio.CancelScope(shield=True):
+                opened = await backend.transaction_begin()
+        except Exception as exc:
+            # 1.8-09: auto's own checkpoint failing (no document open yet, a
+            # busy or quarantined document, an export that broke) must not
+            # refuse a batch 1.7 ran: it runs as stop and each step reports
+            # its own refusal, as in 1.7. An explicit rollback still raises.
+            if requested != "auto":
+                raise
+            opened = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        begun = isinstance(opened, dict) and bool(opened.get("ok"))
+        if not begun:
             # Nothing to close; a cancellation that arrived during the begin
             # must still end the request as one (answering it normally makes
             # the SDK answer it twice).
             await anyio.lowlevel.checkpoint_if_cancelled()
             reason = (opened or {}).get("error", "transaction_begin declined")
+        if not begun and requested == "auto":
+            # 1.8-09: auto's checkpoint was declined (live: a transaction the
+            # caller opened, or AutoCAD at a prompt - CMDACTIVE). The default
+            # does not refuse what 1.7 ran: it runs as stop, with no claim.
+            mode, guarantee = "stop", "none"
+            before = None
+            note = (
+                f"on_error='auto' could not open its checkpoint ({reason}), so it ran as "
+                f"stop. {_BATCH_NO_CLAIM_NOTE.format(mode=mode)}"
+            )
+        elif not begun:
             return {
                 "ok": False,
                 "dry_run": False,
                 "operation_id": batch_id,
-                "on_error": mode,
+                "on_error": requested,
                 "steps": len(steps),
                 "executed": 0,
                 "succeeded": 0,
@@ -5467,7 +5761,8 @@ async def cad_batch(
                     ),
                 ),
             }
-        transaction = True
+        else:
+            transaction = True
 
     bindings: dict[str, Any] = {}
     results: list[dict] = []
@@ -5662,6 +5957,7 @@ async def cad_batch(
     declined = None
     unwound = 0
     depth_left = None
+    evidence: dict = {}
     if transaction:
         # B01: the commit or rollback that closes the checkpoint runs shielded;
         # a cancellation arriving now must not leave it half-closed.
@@ -5680,6 +5976,12 @@ async def cad_batch(
                 )
                 after = await _batch_fingerprint(backend)
                 verified = None if (before is None or after is None) else before == after
+                if rolled_back:
+                    # 1.8-09: the pre-check's handle fingerprints, read again
+                    # (live: only once AutoCAD is idle).
+                    verified, evidence = await _batch_rollback_evidence(
+                        backend, guarantee, verified, handles_before
+                    )
             else:
                 committed, declined, unwound, depth_left = await _close_batch_checkpoint(
                     backend, backend.transaction_commit, base_depth
@@ -5698,13 +6000,18 @@ async def cad_batch(
         atomicity.update(
             {"committed": committed, "verified": verified, "before": before, "after": after}
         )
+        atomicity.update(evidence)
         if unwound:
             atomicity["unwound"] = unwound
+    if requested == "auto":
+        # 1.8-09: whether auto's checkpoint was opened (false: a read-only
+        # batch, or a backend that could not open one - `note` says which).
+        atomicity["default_applied"] = transaction
     payload = {
         "ok": ok,
         "dry_run": False,
         "operation_id": batch_id,
-        "on_error": mode,
+        "on_error": requested,
         "steps": total,
         "executed": executed,
         "succeeded": succeeded,
@@ -5724,9 +6031,16 @@ async def cad_batch(
             f"the steps that succeeded are still in the document. {note}"
         )
     elif rolled_back and verified is False:
+        changed = evidence.get("handles_changed")
+        what = f"; handles {changed} differ" if changed else ""
         payload["atomicity"]["note"] = (
             "ROLLBACK NOT VERIFIED - the document fingerprint differs from the one "
-            f"taken before step 1. {note}"
+            f"taken before step 1{what}. {note}"
+        )
+    elif rolled_back and evidence.get("cmdactive"):
+        payload["atomicity"]["note"] = (
+            f"ROLLBACK NOT VERIFIED - AutoCAD was not idle after the UNDO "
+            f"(CMDACTIVE={evidence['cmdactive']}), so the evidence was not read. {note}"
         )
     elif base_depth is not None and depth_left is not None and depth_left > base_depth:
         payload["atomicity"]["note"] = (
@@ -5831,8 +6145,26 @@ async def entity_batch_modify(
 
     Covers move/rotate/scale/delete/set_properties only. For anything else, for
     ordering, or to feed one step's result into the next, use cad_batch.
+
+    Every handle is checked first, in one read: one that names no entity
+    refuses the whole call with kind unknown_handle (`missing` lists each
+    index and handle) and nothing is modified.
     """
+    from engineering.changes.precheck import require_handles
+
     b = _backend(ctx)
+    # 1.8-09: the pre-check; an operation without a handle is still reported
+    # per row below, as before.
+    await require_handles(
+        b,
+        [
+            {"index": i, "handle": op.get("handle")}
+            for i, op in enumerate(operations)
+            if isinstance(op, dict) and op.get("handle")
+        ],
+        subject=f"entity_batch_modify refused all {len(operations)} operation(s) - nothing was modified",
+        modified=0,
+    )
     results = []
     errors = []
     total = len(operations)

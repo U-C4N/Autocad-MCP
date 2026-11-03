@@ -1812,11 +1812,35 @@ async def lineweight_truth():
 
 async def _step_error(client, tool: str, args: dict) -> dict | None:
     """The one step row's error of ``cad_batch``; a step the batch refuses before
-    running anything is read off the dry run, where its row is reported."""
+    running anything is read off the dry run, where its row is reported.
+
+    1.8.0 (plan 1.8-09) refuses a LITERAL handle that names nothing before any
+    step runs (``unknown_handle``). The step route is then staged so that the
+    handle goes missing while the batch runs - a line created and deleted by
+    two earlier steps, referenced as ``$gone`` - and the last row is read: that
+    is the route on which the step itself meets the missing handle.
+    """
     steps = [{"tool": tool, "args": args}]
     result = await client.call_tool(
         "cad_batch", {"steps": steps, "on_error": "continue"}, raise_on_error=False
     )
+    refused = result.structured_content if result.is_error else None
+    if isinstance(refused, dict) and refused.get("kind") == "unknown_handle":
+        staged = [
+            {
+                "tool": "entity_create_line",
+                "args": {"x1": 0, "y1": 0, "x2": 1, "y2": 0},
+                "bind": "gone",
+            },
+            {"tool": "entity_delete", "args": {"handle": "$gone"}},
+            {"tool": tool, "args": {**args, "handle": "$gone"}},
+        ]
+        result = await client.call_tool(
+            "cad_batch", {"steps": staged, "on_error": "continue"}, raise_on_error=False
+        )
+        rows = (result.structured_content or {}).get("results") or []
+        last = rows[-1] if len(rows) == 3 else {}
+        return last.get("error") if isinstance(last.get("error"), dict) else None
     if result.is_error:
         result = await client.call_tool(
             "cad_batch", {"steps": steps, "dry_run": True}, raise_on_error=False
@@ -2301,6 +2325,114 @@ async def undo_after_restart():
     return await asyncio.to_thread(_undo_after_restart)
 
 
+async def atomic_batch_default():
+    """A batch with no on_error is all or nothing (1.8-09, §4.3).
+
+    The rival's probe through the real tool: line L, then ``cad_batch`` with
+    ``[entity_move(L), entity_delete("DEAD")]`` and no ``on_error``. The batch
+    must be refused ``unknown_handle`` with ``executed: 0`` and L's
+    ``entity_get`` summary must be what it was - 1.7.0 moved L, then failed
+    the delete and kept the move (default ``stop``). The run-time twin:
+    ``[entity_move(L), entity_edit_text(L)]`` (a LINE has no text, so the
+    second step fails while it runs) must come back ``ok: false``, rolled
+    back by the default with ``atomicity.verified`` true, L unchanged again.
+    """
+    async with _served_headless() as client:
+        created = await client.call_tool(
+            "entity_create_line", {"x1": 0, "y1": 0, "x2": 10, "y2": 0}
+        )
+        line = (created.structured_content or {}).get("handle")
+
+        async def summary():
+            got = await client.call_tool("entity_get", {"handle": line}, raise_on_error=False)
+            return None if got.is_error else got.structured_content
+
+        original = await summary()
+        move = {"tool": "entity_move", "args": {"handle": line, "dx": 5.0, "dy": 5.0}}
+        probe = await client.call_tool(
+            "cad_batch",
+            {"steps": [move, {"tool": "entity_delete", "args": {"handle": "DEAD"}}]},
+            raise_on_error=False,
+        )
+        refused = probe.structured_content or {}
+        after_probe = await summary()
+        runtime = await client.call_tool(
+            "cad_batch",
+            {
+                "steps": [
+                    move,
+                    {"tool": "entity_edit_text", "args": {"handle": line, "text": "X"}},
+                ]
+            },
+            raise_on_error=False,
+        )
+        undone = runtime.structured_content or {}
+        atomicity = undone.get("atomicity") or {}
+        after_runtime = await summary()
+    return (
+        original is not None
+        and probe.is_error is True
+        and refused.get("kind") == "unknown_handle"
+        and refused.get("executed") == 0
+        and after_probe == original
+        and runtime.is_error is False
+        and undone.get("ok") is False
+        and atomicity.get("rolled_back") is True
+        and atomicity.get("verified") is True
+        and after_runtime == original
+    )
+
+
+async def delete_many_all_or_nothing():
+    """``entity_delete_many`` deletes all of its handles or none (1.8-09).
+
+    Three lines A, B, C. ``[A, "DEAD"]`` must not answer ``ok: true`` and A
+    must still exist - 1.7.0 deleted A and answered ``ok: true`` with an
+    ``errors`` row. Then the delete of B is made to fail while the call runs
+    (a locked layer, staged on the engine class): ``[A, B, C]`` must answer
+    ``ok: false`` with all three still in the drawing - 1.7.0 kept A and C
+    deleted.
+    """
+    from backends.ezdxf_backend import EzdxfBackend
+
+    async with _served_headless() as client:
+        handles = []
+        for y in (0.0, 5.0, 10.0):
+            made = await client.call_tool(
+                "entity_create_line", {"x1": 0, "y1": y, "x2": 10, "y2": y}
+            )
+            handles.append((made.structured_content or {}).get("handle"))
+        a, b, c = handles
+
+        async def exists(handle):
+            got = await client.call_tool("entity_get", {"handle": handle}, raise_on_error=False)
+            return not got.is_error
+
+        missing = await client.call_tool(
+            "entity_delete_many", {"handles": [a, "DEAD"]}, raise_on_error=False
+        )
+        missing_ok = (missing.structured_content or {}).get("ok")
+        a_kept = await exists(a)
+
+        real = EzdxfBackend.entity_delete
+
+        async def locked(self, handle):
+            if str(handle).upper() == str(b).upper():
+                raise RuntimeError("the entity is on a locked layer")
+            return await real(self, handle)
+
+        EzdxfBackend.entity_delete = locked
+        try:
+            midway = await client.call_tool(
+                "entity_delete_many", {"handles": [a, b, c]}, raise_on_error=False
+            )
+        finally:
+            EzdxfBackend.entity_delete = real
+        midway_ok = (midway.structured_content or {}).get("ok")
+        all_kept = [await exists(h) for h in (a, b, c)]
+    return missing_ok is not True and a_kept and midway_ok is False and all(all_kept)
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -2385,6 +2517,8 @@ CHECKS = {
     "lineage_revision_continues": (lineage_revision_continues, "Durability"),
     "region_render_applied": (region_render_applied, "Render"),
     "undo_after_restart": (undo_after_restart, "Durability"),
+    "atomic_batch_default": (atomic_batch_default, "Durability"),
+    "delete_many_all_or_nothing": (delete_many_all_or_nothing, "Durability"),
 }
 
 
