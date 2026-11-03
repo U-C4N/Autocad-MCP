@@ -16,6 +16,37 @@ import config
 
 log = logging.getLogger("autocad_mcp.security")
 
+
+class PathRefusedError(ToolError):
+    """``validate_path`` refused a path: a traversal pattern, a non-local
+    anchor, a system directory, or a path outside ``ALLOWED_PATHS``.
+
+    A ``ToolError`` as before (same message, same handling everywhere); the
+    type is what lets ``engineering.errors.classify`` say ``path_refused``.
+    """
+
+    kind = "path_refused"
+
+
+class CommandRefusedError(ToolError):
+    """The raw command / LISP denylist refused the string (plan 1.8-02).
+
+    ``verbs`` are the refused command verbs - for LISP, the command names its
+    ``(command "...")`` forms carry - and ``symbols`` the restricted LISP
+    symbols found. ``alternatives`` (``[{tool, summary}]``) is filled by the
+    server, which knows the tools the active profile and packs advertise.
+    """
+
+    kind = "policy_refused"
+
+    def __init__(self, message: str, *, verbs=(), symbols=(), channel: str = "command"):
+        super().__init__(message)
+        self.verbs = [str(v) for v in verbs]
+        self.symbols = [str(s) for s in symbols]
+        self.channel = channel
+        self.alternatives: list[dict] = []
+
+
 # ---------------------------------------------------------------------------
 # Path validation
 # ---------------------------------------------------------------------------
@@ -53,7 +84,7 @@ def _reject_non_local_anchor(original: str, resolved: Path) -> None:
     if _DRIVE_ANCHOR.match(drive):
         return
     log.warning("Blocked non-local path anchor: %s -> %s", original, resolved)
-    raise ToolError(
+    raise PathRefusedError(
         f"Path rejected: '{original}' resolves to '{resolved}', which is not a "
         f"plain local drive path (anchor '{drive}'). Extended-length (\\\\?\\), "
         "device and UNC (\\\\host\\share, \\\\localhost\\C$) paths bypass the "
@@ -75,7 +106,7 @@ def validate_path(path: str, *, allow_write: bool = False) -> Path:
 
     if _BLOCKED_PATH_PATTERNS.search(path):
         log.warning("Blocked path traversal attempt: %s", path)
-        raise ToolError(
+        raise PathRefusedError(
             f"Path rejected: suspicious traversal pattern detected in '{path}'. "
             "Use absolute paths without '..' components."
         )
@@ -104,7 +135,7 @@ def validate_path(path: str, *, allow_write: bool = False) -> Path:
         try:
             if resolved.is_relative_to(sys_dir):
                 log.warning("Blocked system directory access: %s", resolved)
-                raise ToolError(
+                raise PathRefusedError(
                     f"Path rejected: '{resolved}' is inside a system directory. "
                     "File operations in system directories are not allowed."
                 )
@@ -123,7 +154,7 @@ def validate_path(path: str, *, allow_write: bool = False) -> Path:
         if not allowed:
             allowed_str = ", ".join(str(p) for p in config.settings.allowed_paths)
             log.warning("Path outside allowed directories: %s", resolved)
-            raise ToolError(
+            raise PathRefusedError(
                 f"Path rejected: '{resolved}' is not inside any allowed directory. "
                 f"Allowed directories: {allowed_str}. "
                 "Set ALLOWED_PATHS environment variable to configure."
@@ -317,14 +348,16 @@ def sanitize_command(command: str) -> str:
     blocked = {verb for verb in command_verbs(command) if verb in _DANGEROUS_COMMANDS}
     if blocked:
         log.warning("Blocked dangerous command: %s", command[:120])
-        raise ToolError(
+        raise CommandRefusedError(
             f"Command rejected: {', '.join(sorted(blocked))} "
             f"{'is a restricted command' if len(blocked) == 1 else 'are restricted commands'}. "
             "This denylist is a guardrail against accidental destruction, not a "
             "security boundary — "
             "prefer the typed tools (entity_delete, drawing_save_as, block_insert, "
             "drawing_purge), which validate their arguments. Set "
-            "DANGEROUS_COMMANDS_ENABLED=true to allow all commands."
+            "DANGEROUS_COMMANDS_ENABLED=true to allow all commands.",
+            verbs=sorted(blocked),
+            channel="command",
         )
 
     return command
@@ -350,13 +383,38 @@ def sanitize_lisp(expression: str) -> str:
     code_only = _LISP_STRING_LITERAL.sub('""', expression)
     if _DANGEROUS_LISP_PATTERN.search(code_only):
         log.warning("Blocked dangerous LISP expression: %s", expression[:120])
-        raise ToolError(
+        symbols = sorted(
+            {match.group(0).lower() for match in _DANGEROUS_LISP_PATTERN.finditer(code_only)}
+        )
+        raise CommandRefusedError(
             "LISP expression rejected: contains a restricted function. "
             "Restricted functions include startapp, command, load, eval, file I/O, etc. "
-            "Set DANGEROUS_COMMANDS_ENABLED=true to allow all LISP expressions."
+            "Set DANGEROUS_COMMANDS_ENABLED=true to allow all LISP expressions.",
+            verbs=lisp_command_verbs(expression),
+            symbols=symbols,
+            channel="lisp",
         )
 
     return expression
+
+
+#: ``(command "_.ERASE" ...)`` / ``(command-s ...)`` / ``(vl-cmdf ...)``: the
+#: command name is the first token of the first string argument.
+_LISP_COMMAND_FORM = re.compile(r'\(\s*(?:command-s|command|vl-cmdf)\s+"([^"]*)"', re.IGNORECASE)
+
+
+def lisp_command_verbs(expression: str) -> list[str]:
+    """The AutoCAD command names a LISP expression's command forms invoke.
+
+    Only for naming typed alternatives to a refused expression - never a
+    security decision (the symbol denylist above is that).
+    """
+    verbs: list[str] = []
+    for match in _LISP_COMMAND_FORM.finditer(expression or ""):
+        for verb in command_verbs(match.group(1)):
+            if verb not in verbs:
+                verbs.append(verb)
+    return verbs
 
 
 # ---------------------------------------------------------------------------

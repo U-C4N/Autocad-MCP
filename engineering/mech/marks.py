@@ -502,7 +502,14 @@ async def draw_material_hatch(
     else:
         loop = await backend.boundary_from_entities(list(handles or []))
         if not loop.get("ok"):
-            raise ValueError(f"hatch_material could not close a loop: {loop.get('error')}")
+            refusal = ValueError(f"hatch_material could not close a loop: {loop.get('error')}")
+            if loop.get("kind") == "not_found":
+                # 1.8-02: the ValueError (and its prose) stays; the typed cause
+                # makes the error kind not_found.
+                from engineering.errors import EntityNotFoundError
+
+                raise refusal from EntityNotFoundError(loop.get("handle"))
+            raise refusal
         traced_handle = loop.get("handle")
         if loop.get("area") is not None:
             boundary_area = float(loop["area"])

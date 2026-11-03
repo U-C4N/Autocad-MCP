@@ -50,10 +50,29 @@ from backends.operations import (
     OperationJournal,
     RequiresReconcileError,
 )
-from discovery.aliases import aliases_for
+from discovery.aliases import aliases_for, tools_for_command
+from engineering.errors import (
+    ERROR_KINDS,
+    CommandRefusedError,
+    GateFailure,
+    annotate,
+    capability_of,
+    cause_chain,
+    classify,
+    compact_message,
+    describe,
+    document_changed_of,
+    gate_failure_payload,
+    quarantine_of,
+    refusal_kind,
+    refusal_message,
+    retryable_for,
+    short_message,
+    stale_of,
+)
 from engineering.fits import fit_lookup
 from engineering.measure import is_self_intersecting, polygon_area_perimeter
-from security import sanitize_command, sanitize_lisp, validate_path
+from security import command_verbs, sanitize_command, sanitize_lisp, validate_path
 from version import __version__
 
 # ---------------------------------------------------------------------------
@@ -255,15 +274,20 @@ class AuditMiddleware(Middleware):
             raise
         except Exception as exc:
             state, kind = _exception_outcome(backend, record.operation_id, effective, exc)
+            kept = None if retryable_for(kind, state) else exc
             journal.finish(
-                record, state, result=exc, error_kind=kind, document=_identity_of(backend)
+                record, state, result=kept, error_kind=kind, document=_identity_of(backend)
             )
             raise
         finally:
             CURRENT_OPERATION.reset(token)
-        state, kind = _result_outcome(effective, result)
+        state, kind = _result_outcome(effective, result, backend, record.operation_id)
         journal.finish(
-            record, state, result=result, error_kind=kind, document=_identity_of(backend)
+            record,
+            state,
+            result=None if _retryable_result(result) else result,
+            error_kind=kind,
+            document=_identity_of(backend),
         )
         return result
 
@@ -276,7 +300,16 @@ class AuditMiddleware(Middleware):
             # (see CapabilityRefusalMiddleware), so control flow alone would
             # log it as TOOL OK.
             if getattr(result, "is_error", False):
-                log.warning("TOOL ERR %-40s %6.1fms  (refused)", tool_name, elapsed)
+                structured = getattr(result, "structured_content", None)
+                kind = structured.get("kind") if isinstance(structured, dict) else None
+                message = structured.get("message") if isinstance(structured, dict) else None
+                log.warning(
+                    "TOOL ERR %-40s %6.1fms  (%s) %s",
+                    tool_name,
+                    elapsed,
+                    kind or "refused",
+                    message or "",
+                )
             else:
                 log.info("TOOL OK  %-40s %6.1fms", tool_name, elapsed)
             return result
@@ -303,10 +336,17 @@ _RAN_PAST_THE_CALLER = frozenset(
 )
 
 #: The record state for an error kind. Every kind not listed declined before
-#: doing its work, so it is ``refused``.
+#: doing its work, so it is ``refused``. 1.8-02: ``internal`` (a bug mid-call),
+#: ``command_incomplete`` (a command left at a prompt) and the finalize gates
+#: (the gate ran - and may have saved - then found the drawing wanting) did work.
 _STATE_OF_KIND = {
     "failed": "failed",
     "timed_out": "failed",
+    "internal": "failed",
+    "command_incomplete": "failed",
+    "validation_failed": "failed",
+    "critique_gate_failed": "failed",
+    "failed_acceptance": "failed",
     "quarantined": "quarantined",
     "unknown_commit": "unknown_commit",
     "cancelled": "cancelled",
@@ -399,24 +439,36 @@ def _interrupted_state(backend, operation_id: str, tool: str) -> str:
     return "cancelled"
 
 
-def _exception_outcome(
-    backend, operation_id: str, tool: str, exc: BaseException
-) -> tuple[str, str]:
-    timed = _timeout_kind(backend, operation_id, tool)
+def _kind_outcome(backend, operation_id: str | None, tool: str, kind: str) -> tuple[str, str]:
+    """``(record state, error kind)`` for an error of ``kind`` (1.8-02).
+
+    A worker that outran its deadline overrides the kind: ``timed_out``, and a
+    write's record is ``unknown_commit`` - it may have landed.
+    """
+    timed = _timeout_kind(backend, operation_id, tool) if operation_id else None
     if timed == "unknown_commit":
         return "unknown_commit", "timed_out"
     if timed == "timed_out":
         return "failed", "timed_out"
-    kind = _classify_batch_error(exc)["kind"]
     return _STATE_OF_KIND.get(kind, "refused"), kind
 
 
-def _result_outcome(tool: str, result) -> tuple[str, str | None]:
+def _exception_outcome(
+    backend, operation_id: str, tool: str, exc: BaseException
+) -> tuple[str, str]:
+    return _kind_outcome(backend, operation_id, tool, classify(exc)["kind"])
+
+
+def _result_outcome(
+    tool: str, result, backend=None, operation_id: str | None = None
+) -> tuple[str, str | None]:
     structured = getattr(result, "structured_content", None)
     payload = structured if isinstance(structured, dict) else {}
     if getattr(result, "is_error", False):
+        # 1.8-02: every failure now arrives here as an enveloped result, so the
+        # state follows the kind, exactly as it did for a raised exception.
         kind = str(payload.get("kind") or "refused")
-        return ("quarantined" if kind == "quarantined" else "refused"), kind
+        return _kind_outcome(backend, operation_id, tool, kind)
     if tool == "cad_batch" and payload.get("dry_run") is False:
         if payload.get("ok") is True:
             return "committed", None
@@ -436,6 +488,19 @@ def _result_outcome(tool: str, result) -> tuple[str, str | None]:
     return "committed", None
 
 
+def _retryable_result(result) -> bool:
+    """An error envelope that says ``retryable: true`` (1.8-02).
+
+    Its record is kept, but not its answer: nothing was written, so the same
+    request under the same client ``operation_id`` must run again rather than
+    replay a refusal that tells the client to retry.
+    """
+    if not getattr(result, "is_error", False):
+        return False
+    structured = getattr(result, "structured_content", None)
+    return isinstance(structured, dict) and structured.get("retryable") is True
+
+
 def _replayed_result(stored, operation_id: str):
     """The recorded answer of ``operation_id``, marked ``replayed`` - nothing runs again."""
     if isinstance(stored, BaseException):
@@ -447,6 +512,9 @@ def _replayed_result(stored, operation_id: str):
     if not isinstance(structured, dict):
         return stored
     payload = {**structured, "replayed": True, "operation_id": operation_id}
+    if getattr(stored, "is_error", False):
+        # 1.8-02: a recorded error envelope replays with its own sentence.
+        return ToolResult(content=stored.content, structured_content=payload, is_error=True)
     return ToolResult(
         content=json.dumps(payload, ensure_ascii=False, default=str),
         structured_content=payload,
@@ -487,62 +555,85 @@ class CapabilityRefusalMiddleware(Middleware):
     v1.7.0 (B11) added a third kind: ``active_document_changed``, the live
     engine's refusal when AutoCAD's active document is not the bound one. It
     carries ``bound`` and ``active`` instead of a capability or a quarantine.
+
+    1.8-02 makes it the one error envelope: it no longer re-raises anything.
+    Every exception a tool call ends in is typed by ``engineering.errors.classify``
+    - the function ``cad_batch`` types a step with, so both routes give one kind
+    - and returned as ``ToolResult(is_error=True)`` whose structured content is
+    ``{ok: false, kind, category, retryable, hint, tool, backend, operation_id,
+    message, ...the kind's own fields}``. The text content is what the client
+    read before, byte for byte: the full sentence for the 1.7 refusal kinds,
+    and for everything else the text FastMCP's ``ErrorHandlingMiddleware``
+    used to put on the wire (``Internal error: ...``), computed by that same
+    middleware's transform. ``error`` stays on the 1.7 refusal kinds
+    (``_LEGACY_ERROR_KEY``) beside ``message``. ``retryable`` is true only when
+    the operation record is ``refused`` or ``cancelled`` - nothing was written.
     """
 
     async def on_call_tool(self, context: MiddlewareContext, call_next):
         try:
             return await call_next(context)
         except Exception as exc:
-            # B12: a refusal names the operation it ended.
-            operation_id = CURRENT_OPERATION.get()
-            changed = _document_changed_of(exc)
-            if changed is not None:
-                # B11: not a capability boundary and not a quarantine - the
-                # operator switched AutoCAD's active document; nothing was written.
-                payload = {
-                    **changed,
-                    "tool": context.message.name,
-                    "backend": _backend_name_or_none(context),
-                }
-                if operation_id is not None:
-                    payload["operation_id"] = operation_id
-                return ToolResult(
-                    content=payload["error"], structured_content=payload, is_error=True
-                )
-            capability = _batch_capability_of(exc)
-            quarantine = None if capability else _batch_quarantine_of(exc)
-            stale = None if (capability or quarantine is not None) else _batch_stale_of(exc)
-            if capability is None and quarantine is None and stale is None:
-                raise  # not ours — leave it byte-for-byte as it was
-            message = _refusal_message(exc)
-            payload = {
-                "ok": False,
-                "error": message,
-                "tool": context.message.name,
-                "backend": _backend_name_or_none(context),
-            }
-            if operation_id is not None:
-                payload["operation_id"] = operation_id
-            if capability is not None:
-                payload["kind"] = "unsupported"
-                payload["capability"] = capability
-            elif stale is not None:
-                # Task 12: the preview no longer holds; nothing was changed.
-                payload["kind"] = "stale_revision"
-                for key in ("expected_revision", "actual_revision", "changed"):
-                    payload[key] = stale[key]
-            elif _batch_refusal_kind(exc) == "busy":
-                # A detached read holds the document: not untrusted, busy.
-                payload["kind"] = "busy"
-                payload["detached_read"] = quarantine
-            else:
-                payload["kind"] = "quarantined"
-                payload["quarantine"] = quarantine
-            return ToolResult(
-                content=message,  # prose-only clients still get a full sentence
-                structured_content=payload,
-                is_error=True,
-            )
+            return _error_envelope(context, exc)
+
+
+#: The kinds whose 1.7 envelope carried the sentence as ``error`` and as the
+#: text content; kept so a 1.7 client reading either still finds it.
+_LEGACY_ERROR_KEY = frozenset(
+    {"unsupported", "stale_revision", "busy", "quarantined", "active_document_changed"}
+)
+
+#: Used only for its transform: the text a non-legacy error had on the wire.
+_WIRE_ERRORS = ErrorHandlingMiddleware(logger=log)
+
+
+def _wire_text(context, exc: BaseException) -> str:
+    """The text FastMCP's ErrorHandlingMiddleware put on the wire for ``exc``."""
+    try:
+        transformed = _WIRE_ERRORS._transform_error(exc, context)
+        data = getattr(transformed, "error", None)
+        text = getattr(data, "message", None)
+        return text if isinstance(text, str) and text else str(transformed)
+    except Exception:  # the envelope must never fail over its prose
+        return f"Internal error: {exc}"
+
+
+def _error_envelope(context, exc: BaseException) -> ToolResult:
+    """One tool call's exception as a typed, structured error result (1.8-02)."""
+    # B12: a refusal names the operation it ended.
+    operation_id = CURRENT_OPERATION.get()
+    tool = context.message.name
+    lifespan = _lifespan_context_or_none(context)
+    backend = lifespan.get("backend") if lifespan is not None else None
+    arguments = dict(getattr(context.message, "arguments", None) or {})
+    classified = classify(exc)
+    state, kind = _kind_outcome(
+        backend, operation_id, _effective_tool(tool, arguments), classified["kind"]
+    )
+    spec = describe(kind)
+    message = refusal_message(exc)
+    payload = {
+        "ok": False,
+        "kind": kind,
+        "category": spec.category,
+        "retryable": retryable_for(kind, state),
+        "hint": spec.hint,
+        "tool": tool,
+        "backend": _backend_name_or_none(context),
+        "message": message,
+    }
+    payload.update({k: v for k, v in classified.items() if k not in ("kind", "message")})
+    if operation_id is not None:
+        payload["operation_id"] = operation_id
+    if kind == "active_document_changed":
+        content = document_changed_of(exc)["error"]
+        payload["error"] = content
+    elif kind in _LEGACY_ERROR_KEY:
+        content = message  # prose-only clients still get a full sentence
+        payload["error"] = message
+    else:
+        content = _wire_text(context, exc)
+    return ToolResult(content=content, structured_content=payload, is_error=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1859,6 +1950,11 @@ async def drawing_undo(ctx: Context = None) -> dict:
     `transaction_rollback` is far cheaper.
 
     Drawing something after an undo discards the redo branch, as in AutoCAD.
+
+    `verified` says whether the drawing observably changed: always true for a
+    headless snapshot restore; live, true when the entity count over every
+    layout or the document's edit counter moved (`evidence` has both), false
+    for "no change seen". An undo left at a prompt is `command_incomplete`.
     """
     return await _backend(ctx).drawing_undo()
 
@@ -1875,6 +1971,7 @@ async def drawing_redo(ctx: Context = None) -> dict:
     `EZDXF_UNDO_DEPTH` set. Anything drawn after an undo discards the redo
     branch — otherwise redo would restore a state that never existed, with
     geometry you had removed reappearing beside geometry you drew afterwards.
+    Reports `verified` the same way `drawing_undo` does.
     """
     return await _backend(ctx).drawing_redo()
 
@@ -4244,27 +4341,12 @@ async def analysis_layer_stats(ctx: Context = None) -> dict:
 #: :func:`_batch_rollback_guarantee`).
 BATCH_ON_ERROR_MODES = ("stop", "continue", "rollback")
 
-#: Every ``error.kind`` a step row can carry. Closed on purpose: a client that
-#: branches on the taxonomy needs it to be enumerable.
-BATCH_ERROR_KINDS = (
-    "denied",  # on cad_batch's deny set; never executed
-    "malformed_step",  # not a {tool, args, bind} object
-    "unknown_tool",  # not registered, or hidden by TOOL_PROFILE / TOOL_PACKS / ENABLE_3D
-    "invalid_args",  # rejected by the tool's own JSON Schema
-    "unresolved_ref",  # a $reference that no earlier step successfully bound
-    "unsupported",  # this backend cannot do it (carries `capability`)
-    "refused",  # the tool declined on purpose (path/command validation, ...)
-    "failed",  # attempted and broke
-    "quarantined",  # the document is quarantined after an abandoned call (R32)
-    "busy",  # a detached read holds the document (W1 review follow-up)
-    "stale_revision",  # the document moved since its preview (Task 12)
-    "active_document_changed",  # live engine: the operator switched documents (B11)
-    "scan_incomplete",  # a QA or verification read could not read everything (B02)
-    "unknown_commit",  # a write that outran its deadline: it may have landed (B12)
-    "timed_out",  # a read that outran its deadline
-    "cancelled",  # the request was cancelled
-    "operation_conflict",  # an operation id reused for another request (B12)
-)
+#: Every ``error.kind`` a step row (and, since 1.8-02, every error envelope)
+#: can carry. Closed on purpose: a client that branches on the taxonomy needs
+#: it to be enumerable. The table - each kind's category, retryable default
+#: and hint - is ``engineering/errors.py``; the 1.7.0 kinds come first, in
+#: their 1.7.0 order (``BATCH_KINDS_1_7``).
+BATCH_ERROR_KINDS = ERROR_KINDS
 
 #: What a rollback is actually worth, per backend transaction implementation.
 BATCH_ROLLBACK_GUARANTEES = ("snapshot", "best_effort_undo", "unverified", "none")
@@ -4344,245 +4426,57 @@ def _batch_read_only_tools() -> frozenset[str]:
 
 # ── error typing ────────────────────────────────────────────────────────────
 #
-# `ctx.fastmcp.call_tool` re-raises FastMCP's own exceptions untouched but wraps
-# everything else as `ToolError(f"Error calling tool {name!r}: {e}") from e`. The
-# `from e` is what makes a typed taxonomy possible: the real exception is still
-# on the `__cause__` chain, so nothing here ever has to read message text. It
-# must not, either — "this backend cannot write DWG" and a RuntimeError that
-# happens to say the same words are different facts, and only the type knows.
+# Lifted into engineering/errors.py by 1.8-02, so the refusal middleware (a
+# direct call) and cad_batch (a step) type an exception with one function. The
+# underscore names stay as aliases for the code and tests that use them.
 
-_BATCH_CAUSE_CHAIN_LIMIT = 8
+_batch_cause_chain = cause_chain
+_batch_capability_of = capability_of
+_batch_quarantine_of = quarantine_of
+_document_changed_of = document_changed_of
+_batch_refusal_kind = refusal_kind
+_batch_stale_of = stale_of
+_refusal_message = refusal_message
+_compact_batch_message = compact_message
+_batch_message = short_message
 
-_capability_error_types: tuple[type, ...] | None = None
+
+#: The raw escape hatches and the string argument their own denylist checks.
+_ESCAPE_HATCH_SANITIZERS = {
+    "system_run_command": ("command", sanitize_command),
+    "system_run_lisp": ("expression", sanitize_lisp),
+}
 
 
-def _capability_refusal_types() -> tuple[type, ...]:
-    """Backend exception classes meaning "this engine cannot do that".
+async def _escape_hatch_refusal(name, args: dict) -> CommandRefusedError | None:
+    """The ``CommandRefusedError`` a direct call of ``name`` with ``args`` would
+    raise, alternatives filled, or None (1.8-02).
 
-    Imported lazily, exactly as the backends themselves are: server.py must
-    still import on a box where a backend's dependencies are missing.
+    ``cad_batch`` denies the escape hatches whatever the string; this only lets
+    a step whose string the denylist refuses carry the direct route's kind. It
+    never runs anything, and any other outcome (an allowed or empty string) is
+    None, so the step is still ``denied``.
     """
-    global _capability_error_types
-    if _capability_error_types is None:
-        found: list[type] = []
-        try:
-            from backends.ezdxf_backend import UnsupportedCapabilityError
-
-            found.append(UnsupportedCapabilityError)
-        except Exception as exc:  # pragma: no cover - ezdxf is a core dependency
-            log.debug("capability refusal type unavailable: %s", exc)
-        _capability_error_types = tuple(found)
-    return _capability_error_types
-
-
-def _batch_cause_chain(exc: BaseException) -> list[BaseException]:
-    """``exc`` and its ``__cause__`` ancestors, outermost first, bounded."""
-    chain: list[BaseException] = []
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and len(chain) < _BATCH_CAUSE_CHAIN_LIMIT:
-        if id(current) in seen:
-            break
-        seen.add(id(current))
-        chain.append(current)
-        current = current.__cause__
-    return chain
-
-
-def _batch_capability_of(exc: BaseException) -> str | None:
-    """The backend capability ``exc`` refuses, or None.
-
-    Recognised by type, and — because a backend may ship its own refusal class —
-    also by the contract every such refusal implements: a non-empty
-    ``capability`` string plus the ``to_dict()`` that carries the
-    ``{ok, error, capability}`` payload. Structural, not textual.
-    """
-    types = _capability_refusal_types()
-    for error in _batch_cause_chain(exc):
-        if types and isinstance(error, types):
-            return str(getattr(error, "capability", "") or "unknown")
-        capability = getattr(error, "capability", None)
-        if isinstance(capability, str) and capability and callable(getattr(error, "to_dict", None)):
-            return capability
-    return None
-
-
-_quarantine_error_type: type | None = None
-
-
-def _quarantine_refusal_type() -> type | None:
-    """``DocumentQuarantineError``, imported lazily like the capability types.
-
-    It lives in ``backends.quarantine``, which deliberately imports no ezdxf, so
-    this resolves even on a box where a backend's dependencies are missing.
-    """
-    global _quarantine_error_type
-    if _quarantine_error_type is None:
-        from backends.quarantine import DocumentQuarantineError
-
-        _quarantine_error_type = DocumentQuarantineError
-    return _quarantine_error_type
-
-
-def _batch_quarantine_of(exc: BaseException) -> dict | None:
-    """The abandoned-call record ``exc`` refuses on behalf of, or None.
-
-    Recognised by type, not structurally: ``DocumentQuarantineError``
-    deliberately has no ``capability`` attribute, because
-    ``_batch_capability_of`` would then report it to the client as
-    ``kind: "unsupported"`` — telling them the ezdxf engine cannot draw a circle
-    when the engine is fine and the document is not.
-    """
-    try:
-        quarantine_type = _quarantine_refusal_type()
-    except Exception as exc_import:  # pragma: no cover - core module
-        log.debug("quarantine refusal type unavailable: %s", exc_import)
+    spec = _ESCAPE_HATCH_SANITIZERS.get(name) if isinstance(name, str) else None
+    if spec is None:
         return None
-    for error in _batch_cause_chain(exc):
-        if isinstance(error, quarantine_type):
-            return getattr(error, "quarantine", None) or {}
-    return None
-
-
-def _document_changed_of(exc: BaseException) -> dict | None:
-    """The ``ActiveDocumentChangedError`` payload on ``exc``'s cause chain, or None (B11).
-
-    Recognised by type; the error lives in ``backends.document_guard``, which
-    imports nothing, so this resolves on any box.
-    """
-    from backends.document_guard import ActiveDocumentChangedError
-
-    for error in _batch_cause_chain(exc):
-        if isinstance(error, ActiveDocumentChangedError):
-            return error.to_dict()
-    return None
-
-
-def _batch_refusal_kind(exc: BaseException) -> str:
-    """``"busy"`` for a detached read's ``DocumentBusyError``, else ``"quarantined"``.
-
-    ``DocumentBusyError`` subclasses ``DocumentQuarantineError`` so every QA
-    reader lets it propagate; its ``kind`` keeps a busy document from being
-    reported to the client as an untrusted one.
-    """
+    key, sanitizer = spec
+    value = args.get(key)
+    if not isinstance(value, str) or not value.strip():
+        return None
     try:
-        quarantine_type = _quarantine_refusal_type()
-    except Exception:  # pragma: no cover - core module
-        return "quarantined"
-    for error in _batch_cause_chain(exc):
-        if isinstance(error, quarantine_type):
-            return str(getattr(error, "kind", "quarantined"))
-    return "quarantined"
-
-
-def _batch_stale_of(exc: BaseException) -> dict | None:
-    """The ``StaleRevisionError.to_dict()`` refusal ``exc`` carries, or None.
-
-    By type, like the quarantine: a preview whose precondition no longer holds
-    is neither an engine boundary nor a failure to act - the caller re-runs the
-    dry run and applies its new preview (spec section 5, Task 12).
-    """
-    from engineering.changes.preview import StaleRevisionError
-
-    for error in _batch_cause_chain(exc):
-        if isinstance(error, StaleRevisionError):
-            return error.to_dict()
+        sanitizer(value)
+    except CommandRefusedError as exc:
+        exc.alternatives = await _command_alternatives(exc.verbs)
+        return exc
+    except Exception:  # anything else is the denial's business, not a policy kind
+        return None
     return None
-
-
-def _refusal_message(exc: BaseException) -> str:
-    """The most specific message on the cause chain, in full.
-
-    Deliberately not ``_batch_message``: that truncates to
-    ``_BATCH_MESSAGE_CHARS`` for a compact step row, and a refusal that gets cut
-    off mid-word ("...or switc") loses the escape hatch it was pointing at.
-    """
-    for error in reversed(_batch_cause_chain(exc)):
-        text = " ".join(str(error).split())
-        if text:
-            return text
-    return type(exc).__name__
-
-
-def _compact_batch_message(text: str) -> str:
-    """One short line, for a step row that sits alongside dozens of others."""
-    text = " ".join(text.split())
-    if len(text) > _BATCH_MESSAGE_CHARS:
-        text = text[: _BATCH_MESSAGE_CHARS - 3].rstrip() + "..."
-    return text
-
-
-def _batch_message(exc: BaseException) -> str:
-    """The most specific message on the chain, collapsed onto one short line."""
-    chain = _batch_cause_chain(exc)
-    text = ""
-    for error in reversed(chain):
-        text = str(error).strip()
-        if text:
-            break
-    return _compact_batch_message(text) or type(chain[0]).__name__
 
 
 def _classify_batch_error(exc: BaseException) -> dict:
     """Turn an exception from a nested tool call into a typed step error."""
-    from fastmcp.exceptions import NotFoundError
-    from fastmcp.exceptions import ValidationError as FastMCPValidationError
-    from pydantic import ValidationError as PydanticValidationError
-
-    changed = _document_changed_of(exc)
-    if changed is not None:
-        # B11: its own kind - the step was refused before anything was written,
-        # and every later step is refused the same way until the operator
-        # switches back or document_activate binds the other document.
-        return {
-            "kind": "active_document_changed",
-            "bound": changed["bound"],
-            "active": changed["active"],
-            "message": _batch_message(exc),
-        }
-    capability = _batch_capability_of(exc)
-    if capability:
-        return {
-            "kind": "unsupported",
-            "capability": capability,
-            "message": _batch_message(exc),
-        }
-    quarantine = _batch_quarantine_of(exc)
-    if quarantine is not None:
-        # R32: its own kind. Filing it under "unsupported" would tell the batch
-        # reader the engine lacks a feature; filing it under "failed" would hide
-        # that every remaining step will refuse for the same reason.
-        if _batch_refusal_kind(exc) == "busy":
-            return {
-                "kind": "busy",
-                "detached_read": quarantine,
-                "message": _batch_message(exc),
-            }
-        return {
-            "kind": "quarantined",
-            "quarantine": quarantine,
-            "message": _batch_message(exc),
-        }
-    stale = _batch_stale_of(exc)
-    if stale is not None:
-        return {
-            "kind": "stale_revision",
-            "expected_revision": stale["expected_revision"],
-            "actual_revision": stale["actual_revision"],
-            "changed": stale["changed"],
-            "message": _batch_message(exc),
-        }
-    chain = _batch_cause_chain(exc)
-    if any(isinstance(error, NotFoundError) for error in chain):
-        return {"kind": "unknown_tool", "message": _batch_message(exc)}
-    if any(isinstance(error, (FastMCPValidationError, PydanticValidationError)) for error in chain):
-        return {"kind": "invalid_args", "message": _batch_message(exc)}
-    if isinstance(chain[-1], ToolError):
-        # call_tool re-raises a FastMCPError untouched, so an *unwrapped*
-        # ToolError is the tool itself declining on purpose: a rejected path, a
-        # sanitized command, an unavailable backend.
-        return {"kind": "refused", "message": _batch_message(exc)}
-    return {"kind": "failed", "message": _batch_message(exc)}
+    return classify(exc)
 
 
 # ── $references ─────────────────────────────────────────────────────────────
@@ -5181,7 +5075,7 @@ async def cad_batch(
 
         def _invalid(kind: str, message: str, row: dict = row, index: int = index) -> None:
             row["status"] = "invalid"
-            row["error"] = {"kind": kind, "message": message}
+            row["error"] = annotate({"kind": kind, "message": message}, "refused")
             problems.append(f"step {index}: {message}")
 
         if not isinstance(step, dict):
@@ -5205,6 +5099,14 @@ async def cad_batch(
                 f"step {index} has unexpected key(s) {unknown_keys}; a step is "
                 "{'tool', 'args', 'bind'}",
             )
+        elif (refusal := await _escape_hatch_refusal(name, args)) is not None:
+            # 1.8-02: a command or LISP string the denylist refuses is the same
+            # policy_refused (verbs, symbols, alternatives) a direct call gets,
+            # so both routes name one kind; `denied` below is only for a string
+            # a direct call would run.
+            row["status"] = "invalid"
+            row["error"] = annotate(classify(refusal), "refused")
+            problems.append(f"step {index}: {row['error']['message']}")
         elif name in denied:
             _invalid(
                 "denied",
@@ -5402,7 +5304,9 @@ async def cad_batch(
             except BatchReferenceError as exc:
                 failed += 1
                 row["status"] = "error"
-                row["error"] = {"kind": "unresolved_ref", "message": _batch_message(exc)}
+                row["error"] = annotate(
+                    {"kind": "unresolved_ref", "message": _batch_message(exc)}, "refused"
+                )
                 log.warning("BATCH %d/%d %-38s unresolved_ref", position + 1, total, name)
                 results.append(row)
                 continue
@@ -5439,9 +5343,12 @@ async def cad_batch(
                     row["error"]["kind"] = timed
                 row["error"]["operation_id"] = step.operation_id
                 kind = row["error"]["kind"]
+                step_state = _STATE_OF_KIND.get(kind, "refused")
+                # 1.8-02: the direct envelope's category / retryable / hint.
+                annotate(row["error"], step_state)
                 journal.finish(
                     step,
-                    _STATE_OF_KIND.get(kind, "refused"),
+                    step_state,
                     error_kind=kind,
                     document=_identity_of(backend),
                 )
@@ -5484,6 +5391,7 @@ async def cad_batch(
                     ),
                     "operation_id": step.operation_id,
                 }
+                annotate(row["error"], "refused")
                 journal.finish(
                     step,
                     "refused",
@@ -6407,10 +6315,59 @@ async def system_run_command(
     accepts hundreds of commands and any loaded ARX/LISP adds more. Prefer the
     typed tools (entity_delete, drawing_save_as, block_insert, drawing_purge):
     they validate their arguments, which a free-text command string cannot.
+
+    A refused command is error kind `policy_refused` with `verbs` and
+    `alternatives` ([{tool, summary}], the typed tools for those verbs that the
+    active profile advertises); an allowed one that a typed tool also does
+    carries `typed_alternative` in the same shape.
+
+    The call waits for the command to finish (CMDACTIVE, `COMMAND_DEADLINE_S`,
+    default 8 s) and returns `{completed: true, created: [{handle, type, space}]
+    (first 50), created_count, last_prompt, target_space}`; a new entity
+    outside the target space (model space unless `layout_set_current` chose a
+    sheet) adds `warning: "created_outside_target_space"`. A command still at a
+    prompt is cancelled with ESC x3 and fails with kind `command_incomplete`
+    carrying AutoCAD's own `last_prompt`.
     """
-    sanitize_command(command)
+    try:
+        sanitize_command(command)
+    except CommandRefusedError as exc:
+        exc.alternatives = await _command_alternatives(exc.verbs)
+        raise
     await ctx.warning(f"Running command: {command}")
-    return await _backend(ctx).system_run_command(command)
+    result = await _backend(ctx).system_run_command(command)
+    typed = await _command_alternatives(command_verbs(command))
+    if typed and isinstance(result, dict):
+        result = {**result, "typed_alternative": typed}
+    return result
+
+
+async def _command_alternatives(verbs) -> list[dict]:
+    """``[{tool, summary}]``: the typed tools for ``verbs`` this server advertises now.
+
+    ``discovery.aliases.tools_for_command`` over every verb, then only the
+    tools the active TOOL_PROFILE / TOOL_PACKS / ENABLE_3D leave callable
+    (``mcp.get_tool`` answers None for a hidden one) and never an escape hatch.
+    Evidence for a refusal, so it never raises.
+    """
+    found: list[dict] = []
+    seen: set[str] = set()
+    try:
+        for verb in verbs:
+            for name in tools_for_command(verb):
+                if name in seen:
+                    continue
+                seen.add(name)
+                tool = await mcp.get_tool(name)
+                if tool is None:
+                    continue
+                card = (getattr(tool, "meta", None) or {}).get("cad") or {}
+                if card.get("cost") == "escape":
+                    continue
+                found.append({"tool": name, "summary": str(card.get("summary") or "")})
+    except Exception as exc:  # an alternative list is never worth failing a refusal over
+        log.debug("typed alternatives for %s: %s", verbs, exc)
+    return found
 
 
 @cad_tool(summary="Evaluate an AutoLISP expression inside AutoCAD (COM only).", cost="escape")
@@ -6430,8 +6387,16 @@ async def system_run_lisp(
     text inside double quotes is treated as data, so drawing notes are not
     mistaken for code. It is a guardrail, NOT a security boundary — AutoLISP has
     more write channels than any denylist enumerates. Prefer the typed tools.
+
+    A refused expression is error kind `policy_refused` with `symbols` (the
+    restricted ones found), `verbs` (the commands its `(command "...")` forms
+    name) and `alternatives` ([{tool, summary}], the typed tools for them).
     """
-    sanitize_lisp(expression)
+    try:
+        sanitize_lisp(expression)
+    except CommandRefusedError as exc:
+        exc.alternatives = await _command_alternatives(exc.verbs)
+        raise
     await ctx.warning(f"Running LISP: {expression[:80]}")
     return await _backend(ctx).system_run_lisp(expression)
 
@@ -6741,6 +6706,10 @@ async def titleblock_apply_iso_a3(
     )
 
 
+#: ``detail`` of drawing_finalize / drawing_deliver: how much a failed gate returns.
+GATE_DETAILS = ("summary", "full")
+
+
 @cad_tool(
     summary="Finish the drawing: validate, critique, save, screenshot and score it.",
     cost="destructive",
@@ -6788,6 +6757,14 @@ async def drawing_finalize(
             "gate (failed_acceptance), whatever the drafting score.",
         ),
     ] = None,
+    detail: Annotated[
+        str,
+        Field(
+            default="summary",
+            description="On a failed gate: 'summary' returns the first 10 blocking rows with "
+            "up to 5 handles each; 'full' every row, every handle and the whole report.",
+        ),
+    ] = "summary",
     ctx: Context = None,
 ) -> dict:
     """Premium completion gate: runs BOTH the 8-step validator AND the premium critique focuses
@@ -6811,8 +6788,11 @@ async def drawing_finalize(
     detail.code `scan_incomplete`, so the gate fails. A check that raises is an `error`
     issue with detail.code `check_failed`, never a clean result.
 
-    Raises ToolError if any validator 'error' finding is present, or if critique reports an
-    'error' (or, with strict_critique=True, any critique issue). Critique warnings are surfaced
+    Fails (error kind validation_failed / critique_gate_failed / failed_acceptance) if any
+    validator 'error' finding is present, or if critique reports an 'error' (or, with
+    strict_critique=True, any critique issue); the error carries what the gate computed -
+    score, blocking [{code, severity, handles, message}], blocking_count, qa_coverage - and
+    detail="full" adds every row and the whole report. Critique warnings are surfaced
     under payload['critique'] without failing the gate by default. A quarantined document
     is refused.
 
@@ -6830,6 +6810,8 @@ async def drawing_finalize(
     """
     from engineering import DrawingValidator
 
+    if detail not in GATE_DETAILS:
+        raise ToolError(f"invalid_args: detail must be one of {GATE_DETAILS}, got {detail!r}")
     rs = None
     if requirements is not None:
         from engineering.verification.requirements import parse_requirements
@@ -6925,37 +6907,64 @@ async def drawing_finalize(
             if issue.severity == "warning":
                 await ctx.warning(f"critique[{issue.focus}]: {issue.message}")
 
-    if not result.ok:
-        raise ToolError(
-            f"drawing_finalize: validation failed with {result.summary['error']} error(s). "
-            f"First: {result.findings[0].code}: {result.findings[0].message}"
-        )
-
+    validator_blocking = [f for f in result.findings if f.severity == "error"]
     gate_failures = [
         i
         for i in critique_issues
         if i.severity == "error" or (strict_critique and i.severity != "info")
     ]
-    if gate_failures:
-        first = gate_failures[0]
-        raise ToolError(
-            f"drawing_finalize: critique gate failed with {len(gate_failures)} blocking issue(s). "
-            f"First: {first.focus}: {first.message}"
-        )
+    blocking: list[str] = []
     if rs is not None:
         report = payload["geometry_acceptance"]
         blocking = list(report["blocking"])
         reverified = payload["artifact_integrity"]["reverified"]
         if reverified is not None and not reverified["accepted"]:
             blocking.extend(f"saved file: {item}" for item in reverified["blocking"])
-        if blocking:
-            raise ToolError(
-                "drawing_finalize: failed_acceptance - "
-                + "; ".join(blocking[:5])
-                + f" ({report['counts']['pass']} of {report['counts']['required']} "
-                "requirement(s) pass on the drawing; drawing_verify_requirements returns the "
-                "full report)"
-            )
+
+    def _gate(kind: str, message: str) -> GateFailure:
+        # 1.8-02: what the gate computed travels with the refusal (every
+        # blocking reason, whichever gate failed first), so a failed finalize
+        # needs no second QA read; detail="full" adds the whole report.
+        from engineering.qa_scan import QA_SNAPSHOT_KEY
+
+        coverage = (qa_shared.get(QA_SNAPSHOT_KEY) or (None, None))[1]
+        gate = gate_failure_payload(
+            kind,
+            score=payload["score"],
+            findings=validator_blocking,
+            issues=gate_failures,
+            requirements=blocking,
+            qa_coverage=coverage.to_dict() if coverage is not None else None,
+            detail=detail,
+        )
+        if detail == "full":
+            gate["report"] = payload
+        return GateFailure(message, gate)
+
+    if not result.ok:
+        raise _gate(
+            "validation_failed",
+            f"drawing_finalize: validation failed with {result.summary['error']} error(s). "
+            f"First: {result.findings[0].code}: {result.findings[0].message}",
+        )
+
+    if gate_failures:
+        first = gate_failures[0]
+        raise _gate(
+            "critique_gate_failed",
+            f"drawing_finalize: critique gate failed with {len(gate_failures)} blocking issue(s). "
+            f"First: {first.focus}: {first.message}",
+        )
+    if blocking:
+        report = payload["geometry_acceptance"]
+        raise _gate(
+            "failed_acceptance",
+            "drawing_finalize: failed_acceptance - "
+            + "; ".join(blocking[:5])
+            + f" ({report['counts']['pass']} of {report['counts']['required']} "
+            "requirement(s) pass on the drawing; drawing_verify_requirements returns the "
+            "full report)",
+        )
     return payload
 
 
@@ -7000,6 +7009,14 @@ async def drawing_deliver(
             "whatever the drafting score.",
         ),
     ] = None,
+    detail: Annotated[
+        str,
+        Field(
+            default="summary",
+            description="On a failed status, gate_failure carries the first 10 blocking rows "
+            "with up to 5 handles each ('summary') or every row and handle ('full').",
+        ),
+    ] = "summary",
     ctx: Context = None,
 ) -> dict:
     """Create a hashed, validated delivery bundle and verify DXF save/reopen parity.
@@ -7025,9 +7042,15 @@ async def drawing_deliver(
     with its geometry makes the status ``failed_acceptance`` whatever the score
     (``failed_export`` and ``failed_validation`` are reported first). Refused before
     any work: requirements that do not parse (invalid_args).
+
+    A ``failed_validation`` / ``failed_acceptance`` result carries ``gate_failure``,
+    drawing_finalize's gate payload (kind, score, blocking rows with handles,
+    blocking_count, qa_coverage).
     """
     from engineering import deliver_drawing
 
+    if detail not in GATE_DETAILS:
+        raise ToolError(f"invalid_args: detail must be one of {GATE_DETAILS}, got {detail!r}")
     rs = None
     if requirements is not None:
         from engineering.verification.requirements import parse_requirements
@@ -7045,6 +7068,7 @@ async def drawing_deliver(
         strict_critique=strict_critique,
         expected=expected,
         requirements=rs,
+        detail=detail,
     )
     return result.to_dict()
 
@@ -7665,7 +7689,14 @@ async def layout_set_current(
     name: Annotated[str, "Layout tab to activate ('Model' or a paper-space layout)."],
     ctx: Context = None,
 ) -> dict:
-    """Activate a layout tab."""
+    """Activate a layout tab and make it where new geometry goes.
+
+    Every document starts in model space (drawing_new, drawing_open and
+    document_activate reset it); only this tool moves the target. On a live
+    AutoCAD a tab the operator clicks afterwards does not move it - drawing on
+    a sheet takes this call, as headlessly. An entity created outside model
+    space reports `space` in its properties.
+    """
     return await _backend(ctx).layout_set_current(name)
 
 

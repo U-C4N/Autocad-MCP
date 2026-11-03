@@ -29,6 +29,7 @@ from typing import Any
 
 import config
 from engineering import measure
+from engineering.errors import EntityNotFoundError
 
 from . import ocs
 from .base import (
@@ -1195,6 +1196,20 @@ _OCS_ENTITY_TYPES = frozenset(
 )
 
 
+def _paper_space_of(ent) -> str | None:
+    """The paper layout ``ent`` lives on, or None (model space, a block, no document)."""
+    doc = getattr(ent, "doc", None)
+    owner = ent.dxf.get("owner")
+    if doc is None or not owner:
+        return None
+    try:
+        if owner == doc.modelspace().layout_key:
+            return None
+        return str(doc.layouts.get_layout_by_key(owner).name)
+    except KeyError:  # DXFKeyError: a block definition's member, not a layout
+        return None
+
+
 def _entity_info_dxf(ent, *, detail: bool = False) -> EntityInfo:
     """Convert an ezdxf entity to EntityInfo. Coordinates out are always WCS.
 
@@ -1210,6 +1225,11 @@ def _entity_info_dxf(ent, *, detail: bool = False) -> EntityInfo:
     visible = ent.dxf.get("invisible", False) is False
 
     props: dict = {}
+    # 1.8-05: an entity on a paper layout names its space (the live engine's
+    # creation results do the same); model space is the default, never said.
+    space = _paper_space_of(ent)
+    if space is not None:
+        props["space"] = space
 
     # T0.4 — everything leaving this function is WCS. CIRCLE/ARC/LWPOLYLINE/TEXT/
     # INSERT and a dimension's text position are stored in the entity's own frame,
@@ -5101,6 +5121,9 @@ class EzdxfBackend(AutoCADBackend):
             self._restore_snapshot(self._undo_stack[-1])
             return {
                 "ok": True,
+                # 1.8-05 parity with the live engine: a snapshot restore is the
+                # previous state by construction, so the step is verified.
+                "verified": True,
                 "message": "Stepped back one operation.",
                 "undo_depth": len(self._undo_stack) - 1,
                 "redo_depth": len(self._redo_stack),
@@ -5124,6 +5147,7 @@ class EzdxfBackend(AutoCADBackend):
             self._restore_snapshot(snapshot)
             return {
                 "ok": True,
+                "verified": True,  # 1.8-05: the snapshot restore is the evidence
                 "message": "Reapplied the operation you undid.",
                 "undo_depth": len(self._undo_stack) - 1,
                 "redo_depth": len(self._redo_stack),
@@ -6191,7 +6215,8 @@ class EzdxfBackend(AutoCADBackend):
         # handle from a deleted layout used to pass this guard and then die on
         # the first attribute access with an AttributeError.
         if ent is None or not ent.is_alive:
-            raise RuntimeError(f"Entity with handle '{handle}' not found.")
+            # 1.8-02: typed (kind not_found), still a RuntimeError with this text.
+            raise EntityNotFoundError(handle)
         return ent
 
     async def entity_move(self, handle, dx, dy, dz=0.0) -> dict:
@@ -7751,10 +7776,11 @@ class EzdxfBackend(AutoCADBackend):
                     log.debug("resolving %s for block %s: %s", handle, name, exc)
                     skipped.append(str(handle))
             if not entities:
-                raise RuntimeError(
+                raise EntityNotFoundError(
+                    ", ".join(skipped),
                     f"block_create_from_entities: none of the handles resolved "
                     f"({', '.join(skipped) or 'no handles given'}), so there is nothing "
-                    f"to put in block {name!r}. No definition was created."
+                    f"to put in block {name!r}. No definition was created.",
                 )
 
             blk = doc.blocks.new(name=name)
@@ -8280,7 +8306,12 @@ class EzdxfBackend(AutoCADBackend):
                 key = str(raw or "").strip().upper()
                 entity = doc.entitydb.get(key)
                 if entity is None or not entity.is_alive:
-                    return {"ok": False, "error": f"Entity handle not found: {raw}"}
+                    return {
+                        "ok": False,
+                        "error": f"Entity handle not found: {raw}",
+                        "kind": "not_found",  # 1.8-02: typed for the callers that raise
+                        "handle": str(raw),
+                    }
                 if not edgesmith.is_pure_2d_entity(entity):
                     return {
                         "ok": False,
