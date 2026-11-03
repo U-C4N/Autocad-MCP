@@ -171,8 +171,8 @@ It works with Claude Desktop, Cursor, or any stdio MCP host. For HTTP, run `auto
 
 | Area | What it does |
 |---|---|
-| Drawing lifecycle | create, open, save, export DXF/PDF, audit *(repairs)*, purge, undo/redo |
-| Geometry | lines, arcs, polylines, splines, hatches, trim/extend/fillet/chamfer, handle-preserving edits |
+| Drawing lifecycle | create, open (a damaged DXF with `drawing_open(recover=True)`, which reports every fix and protects the source), save *(atomic headlessly: a checked temporary file renamed over the target)*, export DXF/PDF, audit *(repairs)*, purge, undo/redo *(reporting `verified`)*. A reopened file continues its document id and revision; a file changed outside the server says `external_change` |
+| Geometry | lines, arcs, polylines (with `bulges`), splines, hatches, trim/extend/fillet/chamfer, handle-preserving edits: `entity_edit_geometry` moves circle, line and arc geometry, rewrites a polyline's `points` / `bulges` (the vertex count may change) and moves a TEXT/MTEXT by `x` / `y`; `entity_edit_text` edits content, height, rotation and position |
 | Annotation | ISO 129 toleranced dimensions, ISO 286 fits (`fit="H7"`, interference shafts r/s/t/u included), TABLE, MLEADER, GD&T frames and datums (ISO 1101) |
 | Engineering generators | involute gears (front + section A-A), DIN 6885 keyed bores, ISO A3 title block |
 | Mechanical parts | one part model (segments or outline + typed features) and one view engine: front / side / top / section / detail with hidden lines, ISO 128-50 cut faces and ISO 129 dimensions. ISO 4014/4017/4032/7089/4762 fasteners and ISO 15 bearings insert as real blocks with attributes. DIN 471/472, DIN 509, DIN 332 and ISO 3601-2 features have their drawing code, but *their tables still ship empty in 1.7* (see [limits](#what-this-release-is-bad-at)). Also ISO 21920-1 surface texture, ISO 2553 welds and ISO 128-40 section lines |
@@ -192,17 +192,19 @@ It works with Claude Desktop, Cursor, or any stdio MCP host. For HTTP, run `auto
 | Hatch depth | gradients, in-place edits, typed edge boundaries *(headless)*, island styles |
 | Annotation objects | WIPEOUT, REVCLOUD, MTEXT background masks *(headless)*, text find/replace |
 | 3D solids | `solid_box/cylinder/extrude/revolve/boolean` on live AutoCAD (`ENABLE_3D=true`) |
-| Quality loop | `drawing_preflight` → `drawing_plan` → `drawing_critique` → `drawing_refine` → `drawing_finalize` (0–100 score); 18 domain critique focuses (P&ID 6, mechanical 6, architecture 3, topology 3), each silent on a drawing outside its domain. Every check reads every entity of every space, and a check that fails says so |
+| Quality loop | `drawing_preflight` → `drawing_plan` → `drawing_critique` → `drawing_refine` → `drawing_finalize` (0–100 score); the general focuses (`iso128`, `layer_color`, `dim_overlap`, `untrimmed_corner`, `duplicate_entities`, `construction_left`, `property_override` (an entity on an engineering layer that overrides the layer's lineweight, colour or linetype; `drawing_refine` sets it back to ByLayer), `gdt`) plus 18 domain critique focuses (P&ID 6, mechanical 6, architecture 3, topology 3), each silent on a drawing outside its domain. Every check reads every entity of every space, and a check that fails says so. A failed `drawing_finalize` returns its `score` and `blocking` rows (`detail="full"` for all of them) |
 | Verification | `drawing_verify_requirements` binds typed source requirements to the real features (handle, feature tag, geometry or DIMENSION) and measures them on the drawing or on a saved file: distance, radius, diameter, angle, concentric, parallel, perpendicular, tangent, counts and absence, each **pass / fail / unknown / unsupported / ambiguous** with its evidence, as JSON or Markdown. The set can be stored in the drawing itself |
 | Delivery | `drawing_deliver`: DXF/PDF/PNG + SHA-256 manifest, reopen parity against a second export over every space and block definition (its `scope` says what that can and cannot see), and with `requirements=` every requirement measured again on the reopened file; the open document is never re-pointed at the export |
-| Safe edits | documents carry an id and a content revision; `cad_batch` / `drawing_refine` / `text_find_replace` / `pid_from_spec` preview exactly and apply only against an unchanged revision; a client operation id replays a retried call instead of repeating it |
+| Safe edits | documents carry an id and a content revision; `cad_batch` / `drawing_refine` / `text_find_replace` / `pid_from_spec` preview exactly and apply only against an unchanged revision; a client operation id replays a retried call instead of repeating it, also after a restart (the journal is durable, in `ACADMCP_STATE_DIR`) |
+| Errors | every failure on every route is one typed envelope: `{ok: false, kind, category, retryable, hint, tool, backend, operation_id, message}` beside the unchanged sentence. `retryable` is true only when nothing was written; a refused raw command lists the typed tools that do the same job (`alternatives`) |
 
 <sub>248 tools in 28 groups. <code>TOOL_PACKS=core</code> hides these from a client that needs none of them: the nine <code>pid_*</code> tools, the 22 environment tools, the 14 mechanical tools, the 12 architectural tools and the two plant takeoffs. <code>TOOL_PACKS=core,mech</code> keeps the mechanical ones, <code>TOOL_PACKS=core,arch</code> the architectural ones, and <code>TOOL_PACKS=core,plant</code> the takeoffs. There are also 11 resources that cost nothing in the tool budget (<code>autocad://drawing/info</code>, <code>layers</code>, <code>blocks</code>, <code>entities/stats</code>, <code>entities/{layer_name}</code>, <code>system/status</code>, <code>pid/symbols</code>, <code>standards/isa51</code>, <code>standards/coverage</code>, and the task recipes <code>recipes/index</code> and <code>recipes/{recipe_id}</code>) and 5 prompt templates.</sub>
 
-**Two rules worth knowing.**
+**Three rules worth knowing.**
 
 - Every coordinate in and out of a tool is WCS on both engines. The one exception is TEXT `rotation`, which stays in the entity frame: a mirrored TEXT is mirror-imaged, and no scalar angle expresses that.
 - Never read vertices back and shoelace them. That silently loses **28.2%** of the area on a semicircular edge. `analysis_measure_entity(handle)` reads the real geometry and states its own accuracy.
+- A lineweight of **-3 is Default** (the LWDEFAULT setting), not ByLayer: ByLayer is -1 and ByBlock -2. Every lineweight input also takes the names `"ByLayer"`, `"ByBlock"` and `"Default"`, a layer refuses ByLayer and ByBlock by name, and entity rows carry `lineweight_name`.
 
 ## The two engines
 
@@ -220,6 +222,8 @@ One contract across 23 modules in `backends/contracts/`. `@capability(key, reaso
 | HATCH filled area (islands subtracted) | AutoCAD's own number | Loops walked, `hatch_style` reported |
 | HATCH loops and DIMENSION fields in `entity_get` | ✅ read from a `Document.Export` snapshot | ✅ |
 | A session bound to its document | ✅ an active-tab switch is refused, `view_screenshot` included; a restarted AutoCAD is a new document (`application_changed`); the operator's object edits move the revision | — *only the server switches documents* |
+| Where new geometry goes | model space until `layout_set_current` names a sheet; the layout tab the operator clicks never moves it | model space until `layout_set_current` |
+| Raw commands | `system_run_command` waits for the command (`COMMAND_DEADLINE_S`) and reports `created` entities and `last_prompt`; a command left at a prompt is `command_incomplete` | — *refused by name* |
 | REGION / 3DSOLID area | ✅ | — *ACIS is opaque to ezdxf* |
 | 3D solids | ✅ *with `ENABLE_3D=true`* | — |
 | DWG write | ✅ `SaveAs` | via the ODA File Converter, if installed |
@@ -233,6 +237,7 @@ One contract across 23 modules in `backends/contracts/`. `@capability(key, reaso
 | Undo history | ✅ | opt-in — `EZDXF_UNDO_DEPTH` |
 | TABLE and MLEADER | Native | Portable composite |
 | Screenshots and PDF | Window capture | Matplotlib ᵐ |
+| A region screenshot (`view_screenshot(region=[x0, y0, x1, y1], max_px=)`) | ✅ the `Document.Export` snapshot drawn by the headless renderer (`source: "export_snapshot"`) | ✅ ᵐ |
 
 <sub>ᵐ Needs matplotlib (<code>[pdf]</code>/<code>[full]</code>). Without it, <code>png</code>, <code>pdf</code>, <code>viewport_render</code> and <code>handle_overlay</code> report unsupported headlessly.<br>
 ᵒ Needs openpyxl (<code>[office]</code>/<code>[full]</code>). Without it, XLSX is refused with <code>xlsx_write</code> and CSV is still written.<br>
@@ -333,7 +338,7 @@ An early matrix scored this server 10/10, which carried no information: every ta
 
 - `requirements_roundtrip`: a plate verified on the document; then its bore is moved 3 mm inside the saved file, with counts and extents unchanged. Exactly that requirement must fail on the reopened file;
 - `cancel_safety`, `qa_large_drawing` (offenders at the 5,001st entity, after the 10,000th and on a paper layout), `export_safety` and `stale_preview`;
-- `revision_guarded_edit` (beiming183's revision discipline), `pid_file_roundtrip` (puran-water's P&ID tools), `foreign_edit_verified`, `damaged_dxf_refusal` (refused by name; recovery is 1.7.1) and `dimension_binding`.
+- `revision_guarded_edit` (beiming183's revision discipline), `pid_file_roundtrip` (puran-water's P&ID tools), `foreign_edit_verified`, `damaged_dxf_refusal` (refused by name; since 1.8.0, recovered only on request with `drawing_open(recover=True)`) and `dimension_binding`.
 
 The tasks added in 1.5 and 1.6, with what each is verified against:
 
@@ -398,15 +403,17 @@ The readers were tuned on the synthetic plant pair and on one real P&ID / layout
 
 **Verification measures what it can bind, and says so when it cannot.** A requirement is measured on a feature it can identify: by handle, by the feature tag this server's generators write, by an architectural element, by a geometric predicate or by a DIMENSION's defpoints. On somebody else's drawing that usually means a predicate. Two equal candidates are `ambiguous`, and a spline or a tilted plane is `unsupported`. Neither is a pass, so a report full of `unknown` is a report that needs better selectors, not a clean part.
 
-**A live revision sees the operator's object edits, not everything.** No COM event sink is used (one left the seat refusing `Documents.Add()`); a transient AutoLISP database reactor in the bound document, read through `VL.Application.16`, counts object changes, and a change since the server's previous call is one more `revision`. Measured on AutoCAD 2026: an entity added, moved, re-propertied or deleted, a layer added or changed, ERASE and U each move it by one. A view change and a system variable written with `SetVariable` do not, an edit made while a server call runs is folded into that call, and without Visual LISP the revision counts this server's writes only (`system_status.operator_edits` says which). Two counter reads per live call, 0.6-1.2 ms each (median, two runs). Two servers bound to one document each keep their own counter id, so a read by one never moves the other's revision; a write by one is an outside edit to the other. The preview's entity fingerprints still back every apply. The operation journal is in memory: a server restart forgets every operation id (durable in 1.8).
+**A live revision sees the operator's object edits, not everything.** No COM event sink is used (one left the seat refusing `Documents.Add()`); a transient AutoLISP database reactor in the bound document, read through `VL.Application.16`, counts object changes, and a change since the server's previous call is one more `revision`. Measured on AutoCAD 2026: an entity added, moved, re-propertied or deleted, a layer added or changed, ERASE and U each move it by one. A view change and a system variable written with `SetVariable` do not, an edit made while a server call runs is folded into that call, and without Visual LISP the revision counts this server's writes only (`system_status.operator_edits` says which). Two counter reads per live call, 0.6-1.2 ms each (median, two runs). Two servers bound to one document each keep their own counter id, so a read by one never moves the other's revision; a write by one is an outside edit to the other. The preview's entity fingerprints still back every apply.
 
-**A damaged DXF is refused, not recovered.** A truncated file is refused by name and the open document is kept. `ezdxf.recover` arrives in 1.7.1.
+**The operation journal is durable, and it writes to disk.** Every call's record goes into `<ACADMCP_STATE_DIR>/journal.sqlite3` (default `%LOCALAPPDATA%\autocad-mcp-pro\state`), so a client operation id replays after a restart, and a call that was running when its server died answers `requires_reconcile` (`error_kind: "process_exit"`). By default the arguments are kept up to 4,096 bytes; `JOURNAL_ARGS=digest` keeps only their sha256, and `JOURNAL_DURABLE=off` restores the in-memory journal. A folder inside a repository checkout or beside drawings is refused, and an unusable store leaves the journal in memory with `system_status.state_store.degraded`. No call fails because of its journal, but a restart then forgets.
+
+**A damaged DXF is recovered only when you ask, and only partly.** A file that does not parse is refused by name (`damaged_drawing`, naming `recover=True`) and the open document is kept. `drawing_open(path, recover=True)` reads it with `ezdxf.recover`, which drops what it cannot parse, not always with a fix entry: read `recovered.entities_read` before trusting the result. The recovered drawing will not save over the damaged file without `drawing_save(overwrite_source=True)`. A DWG is not recovered (`recover_unsupported`; use AutoCAD's own RECOVER).
 
 **No Plant 3D.** The roadmap's track D (read-only queries of a Plant 3D project) was dropped: the maintainer does not use Plant 3D, and a reader tested against nobody's real projects would be a guess. Roadmap criterion 5 is withdrawn, not met.
 
 **No REGION or 2D booleans headlessly.** `add_region()` produces a REGION with **zero ACIS bytes**, and the `greiner_hormann` substitute loses **28.2%** of the area on a square with one semicircular edge.
 
-**`system_run_command` / `system_run_lisp` are a guardrail, not a security boundary.** The rejection message says so in those words. A 36-verb denylist refuses the obvious cases, but AutoCAD accepts hundreds of commands, and `DANGEROUS_COMMANDS_ENABLED=true` switches the list off entirely.
+**`system_run_command` / `system_run_lisp` are a guardrail, not a security boundary.** The rejection message says so in those words. A 36-verb denylist refuses the obvious cases (`policy_refused`, with the typed tools for the refused verbs in `alternatives`), but AutoCAD accepts hundreds of commands, and `DANGEROUS_COMMANDS_ENABLED=true` switches the list off entirely.
 
 **Path validation is per-tool, and unscoped until you scope it.** With `ALLOWED_PATHS` empty (the default), the only positive bound is a ten-entry system-directory denylist that does not include `C:/Users`, `/home`, `/root` or `/var`. **Set `ALLOWED_PATHS`.**
 
@@ -448,7 +455,7 @@ A `.dwt` template is the same case (`dwt_write`): a `.dwt` is a DWG container, s
 Nothing loads a `.env` file — export these, or set them in your MCP client's `env` block.
 
 <details>
-<summary><b>All 21 environment variables</b></summary>
+<summary><b>All 32 environment variables</b></summary>
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -468,8 +475,19 @@ Nothing loads a `.env` file — export these, or set them in your MCP client's `
 | `MAX_SPEC_ITEMS` | `2000` | Items per list of a `pid_from_spec` / `arch_plan_from_spec` document; `0` disables |
 | `MAX_VESSEL_TRAYS` | `500` | Trays a parametric column may carry; `0` disables |
 | `COM_CALL_TIMEOUT` | `60` | Per-call live AutoCAD timeout (s); `0` disables |
+| `COMMAND_DEADLINE_S` | `8` | How long a command sent to AutoCAD's command line (`system_run_command`, live undo / redo, corner operations, the transaction mark) may stay active; past it AutoCAD's `LASTPROMPT` is read, ESC is sent three times and the call fails `command_incomplete` |
 | `EZDXF_CALL_TIMEOUT` | `120` | Per-call headless timeout (s). A read that overruns is never quarantined: until it ends, other calls on its document are refused by name (`kind: "busy"`) while `drawing_open` / `drawing_new` / `drawing_close` / `document_activate` / `document_close` and `document_list` go through without waiting for it — no restart is needed. They do not wait on its lock, but a read that computes holds Python's GIL, so the server answers slowly until it ends: an 8 s CPU-bound read at `1` s gave its own error at 5.1–5.5 s, a busy refusal in 1.2–1.8 s and `drawing_new` in 0.6–1.3 s (a read that waits on I/O answers in milliseconds). `0` disables the timeout: nothing is quarantined or detached, so a call that never ends keeps the document — every later call, the exits included, queues behind it, and only its end or a restart frees it |
 | `SHUTDOWN_GRACE` | `5` | Seconds shutdown waits for a worker still inside a call before exiting without it; `0` does not wait |
+| `ACADMCP_STATE_DIR` | `%LOCALAPPDATA%\autocad-mcp-pro\state` (`$XDG_STATE_HOME/autocad-mcp-pro` elsewhere) | The operation journal, pending-save markers and file lineage. A folder inside a repository checkout or one holding drawings is refused at startup and the journal runs in memory (`system_status.state_store.degraded`) |
+| `JOURNAL_DURABLE` | `on` | `off` keeps the operation journal in memory only (the 1.7 behaviour: a restart forgets every operation id) |
+| `JOURNAL_ARGS` | `bounded` | What a journal row keeps of the arguments: `bounded` (canonical JSON up to 4,096 bytes), `digest` (sha256 only; answers kept as a hash too) or `off` |
+| `JOURNAL_SYNC` | `normal` | sqlite `synchronous`: `normal` loses nothing on a process kill; `full` also covers an OS crash or power loss, at about 30× the cost per commit |
+| `JOURNAL_RETAIN_DAYS` | `30` | Journal rows older than this are dropped when the store opens |
+| `JOURNAL_RESULT_MAX_KB` | `64` | A client id's answer above this keeps only its sha256 and replays as `result_truncated: true` |
+| `CHECKPOINT_KEEP` | `20` | Read and reported in `state_store`, for the checkpoints a later 1.8 phase adds |
+| `CHECKPOINT_BUDGET_MB` | `512` | Same: the checkpoint disk budget |
+| `CHECKPOINT_MAX_DOC_MB` | `32` | Same: the largest document a checkpoint is taken of |
+| `SAVE_BACKUP` | *(off)* | `1` copies the previous file to `<name>.bak` before a headless save replaces it |
 | `DANGEROUS_COMMANDS_ENABLED` | `false` | Allow blocked commands/LISP; reported as unsafe mode |
 | `ALLOW_REMOTE_HTTP` | `false` | Permit a non-loopback HTTP bind |
 | `MCP_AUTH_TOKEN` | *(empty)* | Bearer token required for remote HTTP |
@@ -528,19 +546,18 @@ uv run ruff check . && uv run ruff format --check .
 
 `uv.lock` pins the whole transitive graph, so this reproduces CI exactly. CI runs Linux (3.11 / 3.12) and Windows (mocked COM), plus package, Docker and MCP-registry jobs. It also runs `claude plugin validate --strict` on the marketplace and the plugin, the generated-file gates (`build_plugin.py --check`, `generate_tool_inventory.py --check`, `check_doc_numbers.py`) and a contents check of the built wheel and sdist: the wheel holds the server and nothing else, and the sdist holds only what git tracks. The release gate runs the same three test lanes, plus a headless lane that runs the correctness suite against the previous tag with `--fail-on-regression`, before anything reaches PyPI. Releases are tag-driven: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 
-The live COM paths are checked on a running AutoCAD, never in CI: `python scripts/smoke_verify_com.py --json out/verify.json` (and the seven other `scripts/smoke_*_com.py`) attaches to the open seat, works only in documents it creates, and closes them.
+The live COM paths are checked on a running AutoCAD, never in CI: `python scripts/smoke_verify_com.py --json out/verify.json` (and the ten other `scripts/smoke_*_com.py`) attaches to the open seat, works only in documents it creates, and closes them. Three of them - `smoke_space_com.py`, `smoke_edit_com.py` and `smoke_render_com.py`, written for 1.8.0's first phase - have not been run on a live seat yet.
 
 ## Roadmap
 
 **1.7.1**
 
 - **Speed.** Win back the headless creation throughput that 1.6 lost against v1.4.0 (criterion 7). Arm the per-call timeout only where a call can block, and remove the per-call work that came with it.
-- **`ezdxf.recover` as a fallback** on `drawing_open`.
 - **The XDATA rework**: chunking, case and budget.
 
 **1.8**
 
-- **A durable operation journal** and idempotency across restarts.
+- *On the 1.8.0 branch already (first phase, see the [changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md)):* the durable operation journal with idempotency across restarts, atomic saves, `drawing_open(recover=True)` (`ezdxf.recover`, first planned for 1.7.1), one typed error envelope, the `property_override` focus, in-place polyline and label edits, region screenshots, and the live engine's target space.
 - **Parametric edit and rebuild** of a part from its stored model.
 - **Obstacle-aware P&ID routing**, and P&ID projects across files.
 - **Transcribed rows** for DIN 471/472, DIN 509, DIN 332 and ISO 3601-2, each verified against the standard's own table.

@@ -13,6 +13,11 @@ Ask it instead of assuming.
 | 3D solids | `solid_*` when `ENABLE_3D=true` | refused (`"solid_3d"`) |
 | Undo / rollback | AutoCAD UNDO marks - the landing is not confirmed | full document snapshots |
 | Views | real zoom and screenshots | zoom is a no-op; screenshots are rendered |
+| A region picture: `view_screenshot(region=[x0, y0, x1, y1], max_px=...)` | the document's export, rendered (`source: "export_snapshot"`) | rendered |
+
+A screenshot comes with a report: `applied`, `px`, `region` (the window drawn)
+and `px_per_unit` - drawing point (x, y) is pixel ((x - x0) * ppu, (y1 - y) *
+ppu). A detail costs fewer tokens as a region than as a whole sheet.
 
 A refusal by capability is an engine boundary, not a bug: report it with its
 `capability` key and the route it names (an ODA install, a live seat), and
@@ -35,10 +40,20 @@ UCS set with `ucs_set` is for the operator only - no tool reads input in it.
 - **The revision** counts this server's own writes. Edits the operator makes
   by hand in AutoCAD are not counted; before trusting a preview, compare the
   entity fingerprints (`preconditions`), not only the revision.
+- **Where new geometry goes.** Model space, until `layout_set_current` names a
+  sheet; a layout tab the operator clicks does not move it. To draw on a sheet,
+  call `layout_set_current` first.
+- **Raw commands** (`system_run_command`) wait for the command to finish (up
+  to `COMMAND_DEADLINE_S`, default 8 s) and report `completed`, `created`
+  (handle, type, space) and `last_prompt`; a command left at a prompt is
+  cancelled and fails `command_incomplete`. A refused command lists the typed
+  tools to use instead (`alternatives`), and an allowed one that a typed tool
+  also does names it (`typed_alternative`) - prefer the typed tool.
 - **Layers** are not created on assignment; create them before placing raw
   entities.
-- **One seat, many callers.** A busy or rejected call (`busy`, a COM
-  rejection) is contention; wait and retry the same call, do not change it.
+- **One seat, many callers.** A busy or rejected call (`busy`,
+  `application_busy`) is contention; wait and retry the same call, do not
+  change it.
 
 ## Quarantine
 

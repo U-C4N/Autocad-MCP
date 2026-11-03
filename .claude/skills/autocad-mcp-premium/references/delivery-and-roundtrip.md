@@ -24,7 +24,12 @@ and **again on the saved file**, read fresh and re-bound (by handle while
 handles are stable, then by feature tag, then by geometry; two candidates are
 `unknown`). A requirement that does not pass, stale evidence or a dimension
 that disagrees with its geometry raises `failed_acceptance` - whatever the
-score.
+score. A failed gate (kind `"validation_failed"`, `"critique_gate_failed"`,
+`"failed_acceptance"`) carries what it computed: `score`, `blocking` rows
+(`code`, `severity`, `handles`, `message`), `blocking_count` and
+`qa_coverage`; `detail="full"` returns every row and handle. Fix from those
+rows instead of reading the drawing again; `drawing_deliver` puts the same
+payload in `gate_failure`.
 
 To check a saved file yourself - after a colleague edited it, or months later:
 

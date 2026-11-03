@@ -7,6 +7,366 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+1.8.0, first phase (W1, "the trust foundation"). 1.7.0 made what the server
+draws provable; W1 makes what it **says** true. A lineweight of -3 is called
+*Default* - never ByLayer - and the critique sees an entity that overrides its
+layer. Every error on every route is one typed envelope that says what to do
+next, with the 1.7 sentence unchanged beside it. The operation journal
+survives the process; a headless save is atomic; a reopened drawing continues
+its revision; a damaged DXF can be recovered on request. On a live seat the
+server draws where it means to, and a raw command reports what it did. A
+polyline is edited in place, and mechanical dimensions carry feature tags. A
+region screenshot really shows the region. No tool is added or removed in W1
+(`system_about` is the authority for the count). The correctness suite has
+67 checks: 61/67 on v1.7.0, 0 regressions. Spec:
+`docs/superpowers/specs/2026-11-03-v1.8.0-design.md`; plan:
+`docs/superpowers/plans/2026-11-03-v1.8.0-w1-implementation.md`. Spike
+evidence is in `docs/analysis/spikes-1.8.0.json`, rows S1-S3, all headless:
+- **S1**: with `DISCOVERY_MODE=search`, hidden tools stay directly callable
+  by name. Search plus three pinned tools measured 2,730 tokens against the
+  plan's 1,500 ceiling, so 1.8-11 re-sets that ceiling.
+- **S2**: sqlite WAL with `synchronous=NORMAL` survived 14 process kills
+  with no lost or partial commit, at about 12 µs per commit.
+- **S3**: the HTTP guard for 1.8-17 wraps `mcp.http_app` beside the
+  existing `run_async` wrap.
+
+### Added
+
+- **One typed error envelope (1.8-02).** Every exception a tool call ends in
+  is returned as `ToolResult(is_error=True)`. Its structured content is
+  `{ok: false, kind, category, retryable, hint, tool, backend, operation_id,
+  message, ...the kind's own fields}`. The text content is byte-for-byte what
+  a 1.7 client read: the refusal sentence for the 1.7 refusal kinds,
+  FastMCP's `Internal error: ...` line for the rest.
+  `engineering/errors.py` holds the shared parts:
+  - the closed `ERROR_KINDS`: the 17 1.7 batch kinds, then `not_found`,
+    `unknown_handle`, `path_refused`, `policy_refused`, `file_not_found`,
+    `application_busy`, `command_incomplete`, `internal`,
+    `requires_reconcile`, the gate kinds `validation_failed`,
+    `critique_gate_failed` and `failed_acceptance`, the 1.8-04 open / save
+    kinds `damaged_drawing`, `recover_unsupported`,
+    `recovered_source_protected`, `save_locked`, `save_verify_failed` and
+    `save_failed`, and the journal's `process_exit`. Every kind a tool can
+    put on the wire is declared, with its category, retry default and hint;
+  - eight categories (`input`, `spec`, `geometry`, `file`, `policy`,
+    `validation`, `dependency`, `internal`);
+  - one hint per kind;
+  - `classify(exc)`, which types by exception class along the cause chain
+    and never by message text.
+
+  The refusal middleware and `cad_batch` both call `classify(exc)`, so a
+  direct call and a batch step give one kind, category and `retryable`
+  (`tests/test_error_envelope.py` provokes each kind both ways, the 1.8-04
+  kinds included). A damaged, DWG or recovered source and a locked target
+  are recorded `refused` (nothing was opened or written; `save_locked` is
+  the one retryable save kind), `save_verify_failed` / `save_failed` are
+  `failed`, and the envelope's message for those kinds is the typed
+  sentence that names `recover=True` or `overwrite_source=True`, not the
+  parser's or the OS's text. The journal's own refusals -
+  `operation_conflict`, `requires_reconcile` and a malformed client id
+  (`invalid_args`) - carry the same envelope with the 1.7 text content
+  byte for byte, and a bad `detail` on `drawing_finalize` /
+  `drawing_deliver` is `invalid_args` (`InvalidArgsError`), not
+  `refused`. `retryable` is true only when
+  the kind allows a retry **and** the operation record is `refused` or
+  `cancelled`, which means nothing was written. `internal` is kept for the
+  builtin bug types (`AttributeError`, `NameError`, `UnboundLocalError`,
+  `AssertionError`, `RecursionError`). A caller's `TypeError`, `KeyError`,
+  `IndexError` or `ZeroDivisionError` stays `failed`, as in 1.7. Typed
+  exceptions at the sources: `EntityNotFoundError` (headless
+  `_get_entity`, live `_handle_to_object`), `PathRefusedError`,
+  `CommandRefusedError` (`verbs`, `symbols`, `alternatives`),
+  `ApplicationBusyError` (`RPC_E_CALL_REJECTED` before the job touched the
+  document; no revision moves), `CommandIncompleteError` and
+  `GateFailure`.
+- **The finalize gate returns what it computed.** A failed
+  `drawing_finalize` carries `score`, `blocking` (`[{code, severity,
+  handles, message}]`), `blocking_count` and `qa_coverage`. By default
+  `blocking` holds the first 10 rows with up to 5 handles each (a longer
+  list adds `handle_count`). `detail="full"` returns every row, every
+  handle and the whole report. `drawing_deliver` adds the same payload as
+  `gate_failure` to a `failed_validation` / `failed_acceptance` result. No
+  second QA read is needed to see why a gate failed.
+- **Refused commands name the typed tools (1.8-02).** A
+  `system_run_command` or `system_run_lisp` refusal is `policy_refused`. It
+  carries `verbs` (and `symbols` for LISP) and `alternatives`
+  (`[{tool, summary}]`, from `discovery.aliases.tools_for_command`).
+  `alternatives` lists only tools the active profile, packs and `ENABLE_3D`
+  leave callable, never an escape hatch. A permitted command that a typed
+  tool also performs carries `typed_alternative` in the same shape.
+- **A durable operation journal (B13, 1.8-03).** `DurableJournal`
+  (`backends/journal_store.py`) keeps the in-memory journal's API and writes
+  every record through to `<ACADMCP_STATE_DIR>/journal.sqlite3` (sqlite WAL,
+  `synchronous=NORMAL`, `busy_timeout=5000`). The default folder is
+  `%LOCALAPPDATA%\autocad-mcp-pro\state`; off Windows it is
+  `$XDG_STATE_HOME/autocad-mcp-pro`.
+  - **Replay across restarts:** a client id replays its recorded result
+    after a restart. An answer over `JOURNAL_RESULT_MAX_KB`, and every
+    answer under `JOURNAL_ARGS=digest` / `off`, keeps only its sha256 and
+    replays as `result_truncated: true` with `revision_after`.
+  - **A dead owner's rows:** at open, a `running` row whose owner (pid plus
+    process start time) is dead becomes `unknown_commit` with
+    `error_kind: "process_exit"`; a read-only tool's row becomes
+    `cancelled` instead. A retry under that id is `requires_reconcile`. The
+    rows of a live second server sharing the file are never touched.
+  - **One commit per call:** a mutating call pays one commit, its `running`
+    row committed before the call runs. Its final state, and a read's row,
+    are flushed in the background 0.1 s later, while a client id's final
+    state is committed before the call returns. Measured inside the server:
+    about 125 µs over the in-memory journal per call.
+  - **Refused folders:** a folder inside a repository checkout (this
+    server's tree or any folder with a `.git` above it) or a folder holding
+    drawings is refused at startup.
+  - **Degraded mode:** a refused folder, a bad setting, an unusable file or
+    a lock held past the timeout leaves the journal in memory. It is
+    reported in `system_status.state_store` (`mode`, `path`, `bytes`,
+    `documents`, `operations`, `checkpoints`, `write_failures`, `degraded`),
+    and no tool call ever fails because of its journal.
+- **Atomic saves, lineage and recovery (1.8-04, B09).**
+  - **Atomic writes:** every headless DXF write goes through
+    `backends/atomic_write.py`. That covers `drawing_save`,
+    `drawing_save_as`, `drawing_export_dxf`, `document_close(save=True)`,
+    and through them the finalize / deliver writes and
+    `drawing_template_save`. The protocol: a pending marker under
+    `<STATE_DIR>/pending`, `<target>.acadmcp-<pid>.tmp` beside the target,
+    flush and fsync, a check (HEADER first, `EOF` last, `$ACADVER`,
+    `$HANDSEED` and the ENTITIES count), the marker completed with the
+    expected sha256, `SAVE_BACKUP=1` → `<name>.bak`, then `os.replace`. The
+    replace is retried 3 × 50 ms on a sharing violation, after which it is
+    `save_locked`.
+  - **Interrupted saves:** a save a dead process left half done is resolved
+    at startup and by a `drawing_open` of the same path, reported as
+    `save_recovery` (`completed`, `finished`, `rolled_back`, `orphan_tmp`).
+  - **Lineage:** kept in the state folder, never in the DXF. Reopening an
+    unchanged file continues its `document_id` and `revision`. A file
+    changed outside the server reports `external_change: true` and moves
+    the revision by one, with an `external_edit` journal row. The same
+    lineage opened under a second path forks (`lineage_parent`), and a
+    revision already issued is never issued again.
+  - **Recovery:** `drawing_open(path, recover=True)` reads a damaged DXF
+    through `ezdxf.recover` and reports
+    `recovered: {fixes, errors, messages[:20], entities_read}`, with a
+    warning when nothing was read back. The recovered drawing starts a new
+    lineage with `recovered_from`. Its source is protected:
+    `recovered_source_protected` refuses a save onto it unless
+    `drawing_save(overwrite_source=True)`. A DWG is `recover_unsupported`.
+    Live, the repair goes into a private temporary DXF that
+    `Documents.Open` then opens.
+  - **Cost:** measured with the marker files fsynced, the protocol cost
+    about 35 ms on a 2,000-entity save, about 10 ms of it those two fsyncs.
+    The marker files are therefore written without fsync; the DXF tmp
+    still is fsynced, and a power loss resolves it as an orphan.
+- **The `property_override` critique focus (1.8-01).** One issue per layer
+  and code - `lineweight_not_bylayer`, `color_not_bylayer`,
+  `linetype_not_bylayer` - with the count, a value histogram and up to 50
+  handles. An explicit lineweight outside ISO 128 is an `error`; -2, -3 or
+  an ISO value is a `warning`.
+  - **Scope:** the engineering layers plus the layer set applied to the
+    drawing. Title-block and construction layers are exempt, and so is every
+    member of a block definition, layer 0 included. Any other layer is
+    `info` with `in_scope: false`.
+  - **Where it runs:** under `focus=None` and inside `drawing_finalize`,
+    reading the run's all-spaces snapshot.
+  - **Repair:** `drawing_refine` re-reads the layer and sets ByLayer.
+- **In-place vertex and label edits (1.8-06).**
+  - `entity_edit_geometry` takes `points` and `bulges` for an LWPOLYLINE
+    (the vertex count may change), and `x` / `y` for TEXT and MTEXT.
+    `entity_edit_text` takes `x` / `y`, and `entity_create_polyline` takes
+    `bulges`.
+  - An argument the entity's type does not take is refused by name. A
+    tilted plane is refused `ocs_tilted_plane`.
+  - Behind these is the new contract member `entity_set_vertices` on both
+    engines; it is not a tool. Headless it runs through `backends/ocs.py`.
+    Live it writes `Coordinates`, `SetBulge` and `Closed` in place and is
+    registered in `_MUTATING_METHODS` (98 → 99). When the seat refuses or
+    ignores a changed vertex count, the polyline is recreated with its
+    layer, colour, linetype, ltscale, lineweight and XDATA. The result then
+    reports `replaced: [{old, new}]`.
+- **Tagged mechanical dimensions (1.8-06).** `xdata=` reaches
+  `dimension_linear`, `dimension_aligned`, `dimension_radius`,
+  `dimension_diameter` and `entity_create_table`, written in the same create
+  job. `mech_dimension_part` tags each DIMENSION in `ACADMCP_MECH` XDATA
+  (`{kind: "feature", part, feature, view, role: "dim"}`) on the dimension
+  object itself, not on its anonymous block. The hole table is tagged
+  `role: "hole_table"`, and `draw_prims` writes an ordinal `i` on every
+  primitive.
+- **Region screenshots (1.8-07).** `view_screenshot(region=[x0, y0, x1, y1],
+  max_px=1568)` and `view_zoom_and_screenshot(..., max_px=)` draw the window
+  they are given on both engines. Beside the image they report `applied`,
+  `framing`, `source`, `px` (read from the PNG's IHDR), `region` (the window
+  drawn, widened by under a pixel so x and y share one scale),
+  `requested_region` and `px_per_unit`.
+  - **Headless:** the current space is drawn through
+    `backends/region_render.py`.
+  - **Live:** a region is the bound document's `Document.Export` snapshot
+    drawn by the same renderer (`source: "export_snapshot"`). With no
+    region, the result is the window capture (`source: "window"`), with
+    `region` and `px_per_unit` null.
+  - **Refused by name:** a zero-area region, a `max_px` outside 64-4096,
+    and a partial `view_zoom_and_screenshot` window.
+- **Lineweight names (1.8-01).** One parser (`backends.base.parse_lineweight`)
+  for every lineweight input. It takes an integer (hundredths of a mm),
+  a millimetre float, a numeric string, or `"ByLayer"` / `"ByBlock"` /
+  `"Default"` in any case. It serves `entity_set_properties`,
+  `layer_create`, `layer_modify`, and every row of `entity_batch_create` /
+  `entity_batch_modify`. Entity rows (`entity_get`, `entity_list`) carry
+  `lineweight_name`. The QA snapshot's entity records gain `lineweight`,
+  `color`, `linetype` and `transparency`, and its layers gain `lineweight`,
+  `plot`, `on` and `frozen`, on both engines.
+- **Six W1 correctness checks.** `benchmarks/correctness_suite.py` gains
+  `lineweight_truth` (Entities), `error_envelope_routes_agree`
+  (Reliability), `journal_replay_after_kill`,
+  `atomic_save_untouched_on_failure`, `lineage_revision_continues`
+  (Durability) and `region_render_applied` (Render): 61 → 67 checks. Each
+  imports its 1.8.0 modules inside the check, so the suite still runs
+  against the v1.7.0 tree; the journal check runs the tree's own
+  `server.py` over stdio twice on a private `ACADMCP_STATE_DIR` and kills
+  the first with `Popen.kill()`. Against v1.7.0 the six are old fail /
+  miss and new pass: 61/67 on v1.7.0, 67/67 here, 0 regressions.
+  `tests/test_benchmark_w1_checks.py` also holds that a write straight
+  into the target (1.7.0's save) fails the atomic check.
+- **Environment variables:**
+  - `ACADMCP_STATE_DIR`, the default folder above.
+  - `JOURNAL_DURABLE` (`on`).
+  - `JOURNAL_ARGS` (`bounded` - canonical JSON up to 4,096 bytes; `digest`
+    - sha256 only; `off`).
+  - `JOURNAL_SYNC` (`normal`; `full` covers an OS crash at about 30 × the
+    cost per commit).
+  - `JOURNAL_RETAIN_DAYS` (30).
+  - `JOURNAL_RESULT_MAX_KB` (64).
+  - `CHECKPOINT_KEEP` (20), `CHECKPOINT_BUDGET_MB` (512) and
+    `CHECKPOINT_MAX_DOC_MB` (32). These are read and reported for 1.8-08's
+    checkpoints.
+  - `SAVE_BACKUP` (off).
+  - `COMMAND_DEADLINE_S` (8).
+
+### Changed
+
+- **Error kinds, renamed where 1.7 had only a generic one.** These names
+  appear in `cad_batch` step rows, in the envelope and in the journal's
+  `error_kind`:
+  - a handle that names no entity is `not_found` (was `failed`);
+  - a path refusal is `path_refused` (was `refused`);
+  - a refused command or LISP expression is `policy_refused` on both routes
+    (the direct call was `refused`, a batch step `denied`; `denied` stays
+    for a permitted string, because `cad_batch` never runs the escape
+    hatches);
+  - a missing file is `file_not_found` (was `failed`).
+- **A missing handle on a live seat reads like the headless one:**
+  `Entity with handle '…' not found.` instead of a raw COM error. A
+  caller's handle is resolved through `_handle_to_object` (or a local
+  `try` that raises `EntityNotFoundError`), which leaves connection-level
+  HRESULTs untouched. Not yet everywhere: `entity_trim`, `entity_extend`,
+  `entity_fillet` and `entity_chamfer` still read the caller's handle back
+  with a bare `HandleToObject` after the command has run.
+- **A retryable refusal is not replayed by its operation id.** Its record
+  is kept, but not its answer, so the same request under the same client
+  id runs again. A `not_found` or any other non-retryable error still
+  replays.
+- **Revisions survive a reopen.** `drawing_open` of a file this server saved
+  continues its `document_id` and `revision`; the refusal of a file that
+  does not parse is `damaged_drawing` and names `recover=True`.
+- **COM: the server's target space (1.8-05).**
+  - **Model space by default.** The bound document carries a target space:
+    model space until `layout_set_current` names a sheet.
+    `drawing_new`, `drawing_open` and `document_activate` reset it,
+    `layout_rename` follows it and `layout_delete` falls back from it.
+  - **Never the operator's tab.** `_msp()` returns the target, never the
+    tab the operator has active. A create on a sheet reports its `space`
+    on both engines.
+  - **Corner operations** pick with the `*x,y` WCS override, with the
+    target's tab active, and restore the operator's tab afterwards.
+- **`system_run_command` reports what the command did (1.8-05).** The call
+  waits until the command finishes: it polls CMDACTIVE up to
+  `COMMAND_DEADLINE_S` (default 8 s). It returns `{completed: true,
+  created: [{handle, type, space}]` (the first 50), `created_count`,
+  `last_prompt`, `target_space}`. A new entity outside the target space
+  adds `warning: "created_outside_target_space"`. A command still at a
+  prompt has AutoCAD's own `LASTPROMPT` read, is cancelled with ESC × 3,
+  and fails with kind `command_incomplete` (`{command, last_prompt}`).
+  `drawing_undo`, `drawing_redo` and `transaction_begin`'s `_.UNDO _M` go
+  through the same deadline-guarded send.
+- **`drawing_undo` / `drawing_redo` report `verified`.** A headless
+  snapshot restore is always `true`. Live, `verified` is true when the
+  entity total over every layout or the document's edit counter moved,
+  with `evidence` holding both.
+- **The view tools return the image and a JSON report.**
+  `view_screenshot` and `view_zoom_and_screenshot` answer with two content
+  blocks, the PNG and the report as JSON text. The report is also the
+  structured content.
+- **Lineweight descriptions.** No registered schema maps -3 to ByLayer any
+  more (`tests/test_lineweight_truth.py` sweeps every tool). A layer's
+  lineweight refuses ByLayer and ByBlock, by number or by name, before
+  anything is written.
+- **The headless hatch is created ByLayer.** ezdxf's `add_hatch` /
+  `set_pattern_fill` wrote an explicit ACI 7, which ActiveX `AddHatch`
+  does not; the new focus flagged it on `mech_assembly` and
+  `arch_roundtrip`.
+
+### Fixed
+
+- **-3 was described as ByLayer** in `entity_set_properties` and
+  `layer_create`. DXF has -1 ByLayer, -2 ByBlock and -3 Default
+  (LWDEFAULT), so an entity left at -3 was reported as following its layer,
+  and `drawing_critique(focus=None)` could not see it (rival claim 4.5).
+- **A region was silently ignored headlessly.** `view_zoom_and_screenshot`
+  with a window rendered the whole model space and still answered as if it
+  had zoomed.
+- **A killed headless save could truncate the drawing.** `doc.saveas`
+  wrote straight into the target; the atomic protocol above leaves the
+  previous file in place.
+- **Live, a create could land on a paper layout** when the operator (or a
+  DWG saved with a layout active) left a sheet tab current. Nothing is
+  drawn outside the target space any more (rival claim 4.6; which of the
+  three candidate mechanisms reproduces it on 1.7.0 is spike S5, pending).
+- **`system_run_command` returned before the command finished**
+  (`{ok, command}` straight after `SendCommand`). A command left at a
+  prompt then deadlocked the next COM call.
+- **In `DISCOVERY_MODE=search` an error through `call_tool` was wrapped
+  twice** (`Error calling tool 'call_tool': ...` around the real refusal).
+  It now carries the same text and envelope as the direct call, naming the
+  inner tool.
+
+### Migration notes
+
+- **Lineweights:** a lineweight input accepts `"ByLayer"`, `"ByBlock"` and
+  `"Default"`. -3 means Default. `layer_create` / `layer_modify` refuse
+  -1 / -2. The new `property_override` focus runs inside
+  `drawing_finalize`, so a drawing with an explicit non-ISO-128 lineweight
+  on an engineering layer now fails the gate. `drawing_refine` repairs it.
+- **Error kinds:** a client that branched on `failed` / `refused` /
+  `denied` for a missing handle, a path, a command or a missing file reads
+  the new kinds above. The text content is unchanged. `kind`, `category`,
+  `retryable` and `hint` are in the structured content.
+- **Journal folder:** the journal is durable by default and writes to
+  `ACADMCP_STATE_DIR`. Point it at a private folder, or set
+  `JOURNAL_DURABLE=off` for the 1.7 in-memory journal. A folder inside a
+  checkout or beside drawings runs the server in memory, with
+  `state_store.degraded`. Test suites should give each run its own folder
+  (this repository's `tests/conftest.py` does).
+- **Revisions:** a reopen no longer resets `document_id` / `revision`, so
+  an `expected_revision` taken by an earlier process is meaningful.
+- **Recovered drawings:** a drawing opened with `recover=True` will not
+  save over its source without `drawing_save(overwrite_source=True)`.
+- **COM sheets:** on a live seat, drawing on a sheet takes
+  `layout_set_current`. Clicking a layout tab no longer moves where the
+  server draws.
+- **COM commands and undo:** `system_run_command` and live undo / redo
+  wait up to `COMMAND_DEADLINE_S` and can fail `command_incomplete`. A
+  caller that read only `ok` should read `completed`.
+- **Screenshots:** a client that took `content[0]` as the whole answer
+  still gets the image there. The report is `content[1]` and the
+  structured content.
+
+**Live evidence pending.** AutoCAD 2026 was not running on 2026-11-03, so
+`scripts/smoke_space_com.py`, `scripts/smoke_edit_com.py` and
+`scripts/smoke_render_com.py` are written but not yet run. The S4 row
+(`Coordinates` with a changed vertex count, undo steps, nested undo marks,
+`*D` regen, `%%c<>`, hatch-loop deletion) and the S5 row (which mechanism
+puts the rival's circle in paper space on 1.7.0) are not yet run either:
+`spikes-1.8.0.json` records both as `pending`. Every COM path above is
+covered by fake-COM tests only.
+
 ## [1.7.0] — 2026-10-26
 
 1.6 taught the server to draw whole sheets and to read other people's
