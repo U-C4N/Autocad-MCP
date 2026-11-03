@@ -300,12 +300,173 @@ async def test_lost_since_save_counts_the_calls_past_the_saved_revision():
 async def test_journal_rows_carry_the_checkpoint_before_and_after(tmp_path):
     async with Client(server.mcp) as client:
         await client.call_tool("drawing_new", {})
-        await client.call_tool("entity_create_line", {"x1": 0, "y1": 0, "x2": 5, "y2": 0})
+        line = await client.call_tool("entity_create_line", {"x1": 0, "y1": 0, "x2": 5, "y2": 0})
         saved = await client.call_tool("drawing_save_as", {"path": str(tmp_path / "j.dxf")})
+        await client.call_tool(
+            "entity_move", {"handle": line.structured_content["handle"], "dx": 1, "dy": 0}
+        )
+        again = await client.call_tool("drawing_save", {})
         status = (await client.call_tool("system_status", {})).structured_content
-    save_row = [r for r in status["operations"] if r["tool"] == "drawing_save_as"][-1]
-    assert save_row["checkpoint_before"] == "cp-0"
-    assert save_row["checkpoint_after"] == saved.structured_content["checkpoint"]
+    first_save = [r for r in status["operations"] if r["tool"] == "drawing_save_as"][-1]
+    # Before the first save the S0 is still pending (nothing written): no row
+    # may name a checkpoint that does not exist yet.
+    assert "checkpoint_before" not in first_save
+    assert first_save["checkpoint_after"] == saved.structured_content["checkpoint"]
+    second_save = [r for r in status["operations"] if r["tool"] == "drawing_save"][-1]
+    assert second_save["checkpoint_before"] == saved.structured_content["checkpoint"]
+    assert second_save["checkpoint_after"] == again.structured_content["checkpoint"]
+
+
+async def test_without_a_store_no_journal_row_names_a_checkpoint(tmp_path, monkeypatch):
+    """JOURNAL_DURABLE=off is the 1.7 mode: no checkpoints, so no checkpoint fields."""
+    monkeypatch.setenv("JOURNAL_DURABLE", "off")
+    async with Client(server.mcp) as client:
+        await client.call_tool("drawing_new", {"bootstrap": False})
+        await client.call_tool("entity_create_line", {"x1": 0, "y1": 0, "x2": 5, "y2": 0})
+        status = (await client.call_tool("system_status", {})).structured_content
+        listed = await client.call_tool("checkpoint_list", {}, raise_on_error=False)
+    row = [r for r in status["operations"] if r["tool"] == "entity_create_line"][-1]
+    assert "checkpoint_before" not in row and "checkpoint_after" not in row, row
+    assert listed.is_error and listed.structured_content["kind"] == "unsupported"
+
+
+async def test_a_pending_s0_is_not_the_latest_checkpoint_until_written(backend, tmp_path):
+    assert backend.latest_checkpoint() is None, "S0 of a never-saved drawing is not written"
+    await backend.entity_create_line(0, 0, 1, 0)
+    saved = await backend.drawing_save_as(str(tmp_path / "s0.dxf"))
+    assert backend.latest_checkpoint() == saved["checkpoint"] != "cp-0"
+    assert _store().resolve(backend._state.lineage_id, "cp-0")["kind"] == "new"
+
+
+async def test_a_damaged_index_row_never_fails_the_save(backend, tmp_path):
+    target = tmp_path / "damaged.dxf"
+    await backend.entity_create_line(0, 0, 1, 0)
+    await backend.drawing_save_as(str(target))
+    index = _store()._index_path(backend._state.lineage_id)
+    payload = json.loads(index.read_text(encoding="utf-8"))
+    for row in payload["checkpoints"]:
+        row["rev"] = None
+    index.write_text(json.dumps(payload), encoding="utf-8")
+    await backend.entity_create_circle(0, 0, 2)
+    saved = await backend.drawing_save()
+    assert saved["ok"] is True and "CIRCLE" in target.read_text(encoding="utf-8")
+
+
+# ── drawing_new's S0 is the drawing the tool hands back ───────────────────
+
+
+async def test_undo_to_s0_keeps_the_layers_and_linetypes_drawing_new_bootstrapped():
+    async with Client(server.mcp) as client:
+        await client.call_tool("drawing_new", {})
+        before = (await client.call_tool("layer_list", {})).structured_content
+        await client.call_tool(
+            "entity_create_line", {"x1": 0, "y1": 0, "x2": 5, "y2": 0, "layer": "GEOMETRY"}
+        )
+        undone = (await client.call_tool("drawing_undo", {})).structured_content
+        after = (await client.call_tool("layer_list", {})).structured_content
+        lines = (await client.call_tool("entity_list", {})).structured_content
+        restored = (
+            await client.call_tool("checkpoint_restore", {"checkpoint": "cp-0"})
+        ).structured_content
+        again = (await client.call_tool("layer_list", {})).structured_content
+
+    def names(payload):
+        rows = payload.get("layers", payload.get("result", payload))
+        return sorted(r["name"] for r in rows)
+
+    assert undone["ok"] is True and undone["checkpoint"] == "cp-0", undone
+    assert {"GEOMETRY", "DIM", "CENTER", "HIDDEN", "TITLEBLOCK"} <= set(names(before))
+    assert names(after) == names(before), "the undo stripped what drawing_new bootstrapped"
+    assert names(again) == names(before)
+    assert restored["ok"] is True
+    assert not [e for e in _rows(lines) if e.get("type") == "LINE"], "the line is undone"
+
+
+def _rows(payload) -> list[dict]:
+    for key in ("entities", "result", "items"):
+        if isinstance(payload.get(key), list):
+            return payload[key]
+    raise AssertionError(f"no entity rows in {sorted(payload)}")
+
+
+async def test_anchoring_s0_does_not_shift_the_handles_drawn_after_it(monkeypatch):
+    """A checkpoint is a read: ``Drawing.write``'s ``update_all`` would spend three handles."""
+
+    async def first_handle() -> str:
+        async with Client(server.mcp) as client:
+            await client.call_tool("drawing_new", {})
+            made = await client.call_tool(
+                "entity_create_line", {"x1": 0, "y1": 0, "x2": 1, "y2": 0}
+            )
+        return made.structured_content["handle"]
+
+    with_store = await first_handle()
+    monkeypatch.setenv("JOURNAL_DURABLE", "off")  # no store: nothing is anchored
+    assert with_store == await first_handle()
+
+
+async def test_a_never_bootstrapped_drawing_keeps_its_blank_s0(backend):
+    await backend.checkpoint_anchor_new()  # nothing ran after drawing_new: unchanged
+    assert backend._state.s0 == {
+        "kind": "new",
+        "tool": "drawing_new",
+        "rev": backend._state.revision,
+        "blank": True,
+    }
+
+
+async def test_s0_re_anchored_after_the_bootstrap_restores_its_layers(backend):
+    await backend.layer_create("GEOMETRY")  # what the tool's bootstrap does
+    await backend.checkpoint_anchor_new()
+    await backend.entity_create_line(0, 0, 1, 0, layer="GEOMETRY")
+    undone = await backend.drawing_undo()
+    assert undone["ok"] and undone["checkpoint"] == "cp-0"
+    assert "GEOMETRY" in backend._doc.layers and _summary(backend._doc) == []
+    assert (await backend.drawing_undo())["ok"] is False, "nothing below the bootstrap"
+
+
+# ── the in-memory steps and the store, one history ────────────────────────
+
+
+async def test_redo_retraces_an_undo_that_crossed_from_memory_into_the_store(backend, monkeypatch):
+    import config
+
+    monkeypatch.setattr(config.settings, "ezdxf_undo_depth", 2)
+    await backend.drawing_new()  # the memory baseline under the new depth
+
+    def count() -> int:
+        return sum(1 for e in backend._doc.modelspace() if e.dxftype() == "LINE")
+
+    for i in range(5):
+        await backend.entity_create_line(0, i, 10, i)
+    trail = []
+    for _ in range(3):
+        r = await backend.drawing_undo()
+        trail.append((r["ok"], r.get("source", "memory"), count()))
+    assert trail == [(True, "memory", 4), (True, "memory", 3), (True, "checkpoint", 0)]
+    redo_trail = []
+    for _ in range(4):
+        r = await backend.drawing_redo()
+        redo_trail.append((r["ok"], count()))
+    assert redo_trail == [(True, 3), (True, 4), (True, 5), (False, 5)], (
+        "the two lines undone in memory were never saved; redo must bring them back"
+    )
+
+
+async def test_an_edit_after_the_crossing_abandons_the_set_aside_branch(backend, monkeypatch):
+    import config
+
+    monkeypatch.setattr(config.settings, "ezdxf_undo_depth", 1)
+    await backend.drawing_new()
+    for i in range(3):
+        await backend.entity_create_line(0, i, 10, i)
+    await backend.drawing_undo()  # memory -> 2 lines
+    crossed = await backend.drawing_undo()  # store -> S0
+    assert crossed["source"] == "checkpoint" and backend._state.parked_redo
+    parked = [p for branch in backend._state.parked_redo.values() for p in branch]
+    await backend.entity_create_circle(0, 0, 1)  # a new branch
+    assert (await backend.drawing_redo())["ok"] is False
+    assert not backend._state.parked_redo and not any(p.exists() for p in parked)
 
 
 async def test_an_evicted_checkpoint_is_refused_by_kind_through_the_server(tmp_path, monkeypatch):

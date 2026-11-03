@@ -9,9 +9,11 @@ and what an undo or a restore does with one.
 When (zero cost on an ordinary call - nothing here runs per mutation):
 
 * ``drawing_new``: S0, a blank row (no file - the engine rebuilds the blank
-  drawing on restore), or the template's bytes; held in memory until the
-  lineage writes its first checkpoint, so a drawing that is never saved
-  writes nothing;
+  drawing on restore), or the template's bytes; re-anchored on the
+  bootstrapped drawing when the ``drawing_new`` tool's bootstrap ran
+  (``checkpoint_anchor_new``); held in memory until the lineage writes its
+  first checkpoint, so a drawing that is never saved writes nothing, and no
+  journal row names it until then;
 * ``drawing_open``: S0, the bytes just read - skipped when the lineage's
   newest checkpoint already holds them (a reopen after a save);
 * ``drawing_save`` / ``drawing_save_as``: the bytes the atomic save just wrote,
@@ -76,9 +78,25 @@ class EzdxfCheckpoints:
 
     @staticmethod
     def _cp_doc_bytes(doc) -> bytes:
-        """The document as DXF bytes, written the way ``atomic_write_dxf`` writes it."""
+        """The document as DXF bytes, read without changing it.
+
+        ``Drawing.write`` first runs ``update_all``, which on a drawing never
+        written creates two APPIDs and a DICTIONARYVAR - three handles - so a
+        checkpoint would shift every handle drawn after it (a fresh drawing's
+        first entity would no longer be ``3E``). The sections are exported
+        directly instead; the next save adds those objects as it always does.
+        """
+        from ezdxf.lldxf.const import DXF12
+        from ezdxf.lldxf.tagwriter import TagWriter
+
+        doc.commit_pending_changes()
+        handles = True
+        if doc.dxfversion == DXF12:
+            handles = bool(doc.header.get("$HANDLING", 0))
+        else:
+            doc.classes.add_required_classes(doc.dxfversion)
         buffer = io.StringIO()
-        doc.write(buffer)
+        doc.export_sections(TagWriter(buffer, write_handles=handles, dxfversion=doc.dxfversion))
         return buffer.getvalue().encode(doc.output_encoding, errors="dxfreplace")
 
     def _cp_blank_doc(self):
@@ -167,7 +185,7 @@ class EzdxfCheckpoints:
                 sha256=sha256,
                 document_id=state.document_id,
             )
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, TypeError, KeyError) as exc:  # a damaged index too
             if source is not None:
                 _unlink(source)
             if strict:
@@ -222,9 +240,16 @@ class EzdxfCheckpoints:
     # ── hooks the engine calls ──
 
     def _cp_on_new(self, state, template: str | None) -> None:
-        """S0 of a new drawing, held until the lineage's first checkpoint."""
+        """S0 of a new drawing, held until the lineage's first checkpoint.
+
+        ``latest_cp`` stays unset: a pending S0 is not a checkpoint yet (a
+        drawing that is never saved writes nothing), so no journal row may name
+        it. Without a store there is no S0 at all.
+        """
         from backends import lineage
 
+        if self._cp_store() is None:
+            return
         if not state.lineage_id:
             state.lineage_id = lineage.new_lineage_id()
         s0: dict = {"kind": "new", "tool": "drawing_new", "rev": int(state.revision)}
@@ -237,7 +262,32 @@ class EzdxfCheckpoints:
         else:
             s0["blank"] = True
         state.s0 = s0
-        state.latest_cp = "cp-0"
+
+    async def checkpoint_anchor_new(self) -> None:
+        """Re-anchor a pending ``drawing_new`` S0 on the drawing the tool handed back.
+
+        The ``drawing_new`` tool bootstraps the engineering linetypes and layers
+        after the engine created the drawing, and those calls move the
+        revision. S0 must be that bootstrapped drawing - the blank one is a
+        state no tool ever returned, and restoring it would strip the layers.
+        Serialised once, here, and held in memory like the blank row was.
+        """
+
+        def _sync():
+            state = self._state
+            pending = state.s0
+            if pending is None or pending.get("kind") != "new" or self._doc is None:
+                return
+            if int(pending.get("rev", -1)) == state.revision:
+                return  # nothing ran after the engine's drawing_new
+            state.s0 = {
+                "kind": "new",
+                "tool": "drawing_new",
+                "rev": int(state.revision),
+                "data": self._cp_doc_bytes(self._doc),
+            }
+
+        await self._async(_sync, readonly=True)
 
     def _cp_on_open(
         self, state, path: str, sha: str | None, *, doc=None, unchanged: bool = False
@@ -285,13 +335,20 @@ class EzdxfCheckpoints:
         if store is None:
             return None
         sha = written.get("sha256")
-        rows = [r for r in self._cp_rows(store, state) if not r.get("evicted")]
-        newest = rows[-1] if rows else None
-        if (
-            newest is not None
-            and not newest.get("pending")
-            and int(newest.get("rev", -1)) == state.revision
-        ):
+        try:
+            rows = [r for r in self._cp_rows(store, state) if not r.get("evicted")]
+            newest = rows[-1] if rows else None
+            same = (
+                newest is not None
+                and not newest.get("pending")
+                and int(newest.get("rev", -1)) == state.revision
+            )
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            # The file is already written: a save never fails because of its
+            # checkpoint (a damaged index row is the store's problem).
+            log.warning("checkpoint of %s not written: %s", tool, exc)
+            return None
+        if same:
             # The same revision is the same content (a revision is never issued
             # twice); the bytes differ only by the header's save timestamps.
             self._cp_note_content(state, sha)
@@ -364,6 +421,7 @@ class EzdxfCheckpoints:
             and not (current_sha and row.get("sha256") == current_sha)
         ]
         if not candidates:
+            self._cp_redo_stack(state)  # drops a redo branch a later edit made stale
             evicted = [r for r in rows if r.get("evicted") and int(r.get("rev", 0)) < effective]
             message = f"Nothing to undo - no checkpoint below revision {effective}" + (
                 f" is kept ({len(evicted)} older were evicted by the CHECKPOINT_* budget)."
@@ -375,13 +433,28 @@ class EzdxfCheckpoints:
                 "error": message,
                 "source": "checkpoint",
                 "undo_depth": 0,
-                "redo_depth": len(self._cp_redo_stack(state)),
+                "redo_depth": self._cp_redo_depth(state),
             }
         target = max(candidates, key=lambda r: (int(r.get("rev", 0)), int(r.get("seq", 0))))
         data = self._cp_read(store, state, target)
         redo = self._cp_redo_stack(state)
         before = self._cp_capture_current(state, "pre_undo", "drawing_undo")
-        self._cp_replace_document(state, target, data)
+        # The in-memory steps run first, so an undo that crosses into the store
+        # can leave a memory redo branch behind (the states those undos
+        # replaced, possibly never saved). It is set aside, not discarded: the
+        # redo of `before` hands it back, so redo retraces every undo.
+        branch = list(state.redo_stack)
+        del state.redo_stack[:]
+        try:
+            self._cp_replace_document(state, target, data)
+        except BaseException:
+            state.redo_stack[:0] = branch
+            raise
+        if branch:
+            stale = state.parked_redo.pop(before, None)
+            if stale:
+                self._discard(stale)
+            state.parked_redo[before] = branch
         state.undo_base = int(target.get("base", target["rev"]))
         state.undo_base_rev = state.revision
         redo.append(before)
@@ -401,14 +474,27 @@ class EzdxfCheckpoints:
             "revision": state.revision,
             "checkpoint_before": before,
             "undo_depth": remaining,
-            "redo_depth": len(redo),
+            "redo_depth": self._cp_redo_depth(state),
         }
 
     def _cp_redo_stack(self, state) -> list[str]:
         """The undo-replaced states, valid while nothing else changed the document."""
-        if state.store_redo and state.undo_base_rev != state.revision:
-            state.store_redo = []
+        if (state.store_redo or state.parked_redo) and state.undo_base_rev != state.revision:
+            self._cp_drop_redo(state)
         return list(state.store_redo)
+
+    def _cp_drop_redo(self, state) -> None:
+        """Abandon the store's redo branch and the memory branches it set aside."""
+        state.store_redo = []
+        for branch in state.parked_redo.values():
+            self._discard(branch)
+        state.parked_redo.clear()
+
+    @staticmethod
+    def _cp_redo_depth(state) -> int:
+        """Redo steps left: the store's, the memory ones set aside, the live memory ones."""
+        parked = sum(len(branch) for branch in state.parked_redo.values())
+        return len(state.store_redo) + parked + len(state.redo_stack)
 
     def _cp_redo_sync(self) -> dict:
         state = self._state
@@ -430,6 +516,11 @@ class EzdxfCheckpoints:
         state.undo_base = int(row.get("base", row["rev"]))
         state.undo_base_rev = state.revision
         state.store_redo = redo
+        # The memory redo branch the crossing undo set aside: the next redo
+        # continues there (drawing_redo tries the memory stack first).
+        branch = state.parked_redo.pop(cp, None)
+        if branch:
+            state.redo_stack.extend(branch)
         return {
             "ok": True,
             "verified": True,
@@ -437,7 +528,7 @@ class EzdxfCheckpoints:
             "source": "checkpoint",
             "checkpoint": cp,
             "revision": state.revision,
-            "redo_depth": len(redo),
+            "redo_depth": self._cp_redo_depth(state),
         }
 
     # ── the three tools ──
@@ -538,7 +629,7 @@ class EzdxfCheckpoints:
             # `before`, not past it, so no undo base is carried over.
             state.undo_base = None
             state.undo_base_rev = None
-            state.store_redo = []
+            self._cp_drop_redo(state)
             return {
                 "ok": True,
                 "mode": "in_place",

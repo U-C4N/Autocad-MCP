@@ -54,6 +54,15 @@ class TransactionContract(ABC):
         """
         return None
 
+    async def checkpoint_anchor_new(self) -> None:
+        """After the ``drawing_new`` tool's bootstrap: S0 is the drawing it hands back.
+
+        The headless engine re-anchors its pending S0 on the bootstrapped
+        drawing (the blank one never reached a caller). The live engine keeps
+        no S0, so the default does nothing.
+        """
+        return None
+
     def transaction_depth(self) -> int | None:
         """How many checkpoints are open now, read without a backend call.
 

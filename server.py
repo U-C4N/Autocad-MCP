@@ -1840,6 +1840,14 @@ async def drawing_new(
             await ctx.warning(f"Engineering bootstrap failed: {exc}")
             result["bootstrap"] = {"ok": False, "error": str(exc)}
             result["status"] = "degraded"
+        # 1.8-08: S0 is the drawing this tool hands back, not the blank one the
+        # engine created before the bootstrap (an undo to it would strip layers).
+        anchor = getattr(backend, "checkpoint_anchor_new", None)
+        if callable(anchor):
+            try:
+                await anchor()
+            except Exception as exc:  # a safety net never fails drawing_new
+                log.warning("drawing_new: S0 not re-anchored after the bootstrap: %s", exc)
     return result
 
 

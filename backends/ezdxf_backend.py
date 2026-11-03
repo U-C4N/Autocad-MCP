@@ -1536,6 +1536,9 @@ class _DocState:
     undo_base: int | None = None
     undo_base_rev: int | None = None
     store_redo: list[str] = field(default_factory=list)
+    # The in-memory redo branch an undo that crossed into the store set aside,
+    # keyed by the `store_redo` entry whose redo brings it back.
+    parked_redo: dict[str, list[Path]] = field(default_factory=dict)
     snapshot_revs: dict[str, int] = field(default_factory=dict)
     transaction_revs: dict[str, tuple] = field(default_factory=dict)
 
@@ -1544,7 +1547,9 @@ class _DocState:
         return Path(self.path).name if self.path else self.key
 
     def discard_snapshots(self) -> None:
-        for stack in (self.undo_stack, self.redo_stack, self.transaction_stack):
+        parked = [path for branch in self.parked_redo.values() for path in branch]
+        self.parked_redo.clear()
+        for stack in (self.undo_stack, self.redo_stack, self.transaction_stack, parked):
             while stack:
                 try:
                     stack.pop().unlink()
@@ -5549,7 +5554,7 @@ class EzdxfBackend(EzdxfCheckpoints, AutoCADBackend):
         held = state.snapshot_revs.get(str(path))
         state.undo_base = held
         state.undo_base_rev = state.revision if held is not None else None
-        state.store_redo = []
+        self._cp_drop_redo(state)
 
     def _reset_history_baseline(self) -> None:
         """Start the history at the document as opened or created.
@@ -9162,7 +9167,7 @@ class EzdxfBackend(EzdxfCheckpoints, AutoCADBackend):
             if row is not None:
                 self._cp_note_content(state, row.get("sha256"))
                 state.undo_base, state.undo_base_rev = base, state.revision
-                state.store_redo = []
+                self._cp_drop_redo(state)
                 return {
                     "ok": True,
                     "message": "Transaction rolled back to snapshot",
