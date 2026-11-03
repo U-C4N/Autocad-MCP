@@ -71,6 +71,7 @@ from .quarantine import (
     quarantine_refusal,
     real_call_name,
 )
+from .region_render import DEFAULT_MAX_PX, check_max_px, normalize_region, render_layout
 from .xdata_specs import prepare_xdata
 
 __all__ = [
@@ -8439,11 +8440,51 @@ class EzdxfBackend(AutoCADBackend):
     async def view_zoom_window(self, x1, y1, x2, y2) -> dict:
         # R26/N9: window region is ignored (no viewport). Consistent shape with
         # view_zoom_extents; applied=False signals the framing was not honored.
+        # A picture of the window is view_render(region=...) (1.8-07).
         return {
             "ok": True,
             "applied": False,
-            "message": "Zoom window not applicable for ezdxf backend (no display/viewport)",
+            "message": (
+                "Zoom window not applicable for ezdxf backend (no display/viewport); "
+                "view_screenshot(region=[x0, y0, x1, y1]) renders that window"
+            ),
         }
+
+    async def view_render(
+        self,
+        region: list[float] | None = None,
+        max_px: int = DEFAULT_MAX_PX,
+        overlay_handles: bool = False,
+    ) -> dict:
+        """The current space drawn at a stated scale, the window applied (1.8-07)."""
+        wanted = normalize_region(region)
+        size = check_max_px(max_px)
+
+        def _sync():
+            doc = self._require_doc()
+            space = self._msp()
+            try:
+                report = render_layout(
+                    doc,
+                    space,
+                    region=wanted,
+                    max_px=size,
+                    overlay_handles=overlay_handles,
+                    max_labels=DEFAULT_MAX_HANDLE_LABELS,
+                    label_anchor=_label_anchor,
+                )
+            except ImportError:
+                log.warning("matplotlib not installed - region render unavailable")
+                return {
+                    "png": None,
+                    "applied": False,
+                    "source": "headless",
+                    "error": "matplotlib is not installed (pip install autocad-mcp-pro[pdf])",
+                }
+            report["source"] = "headless"
+            return report
+
+        return await self._async(_sync, readonly=True)
 
     async def view_screenshot(self, overlay_handles: bool = False) -> bytes | None:
         """Render drawing to PNG using matplotlib."""
