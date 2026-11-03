@@ -154,7 +154,7 @@ def plain(text: str | None) -> str:
     ±, ``%%nnn`` the character with that code, ``%%%`` a percent sign, and the
     ``%%u`` / ``%%o`` / ``%%k`` toggles disappear, and the caret notation of a
     TEXT (``^J`` a line break, ``^I`` a tab, ``^ `` a caret) is decoded. In
-    MTEXT, ``\\P`` is a line break, ``\\~`` a space, ``\\S a^b;`` / ``\\S a/b;`` the stacked ``a/b``,
+    MTEXT, ``\\P`` is a line break (and so is a dimension text's ``\\X``), ``\\~`` a space, ``\\S a^b;`` / ``\\S a/b;`` the stacked ``a/b``,
     ``\\\\`` ``\\{`` ``\\}`` the literal characters; every argument code
     (``\\f...;``, ``\\H...;``, ``\\C...;`` ...) and every toggle is dropped, and so
     are the grouping braces.
@@ -181,7 +181,8 @@ def plain(text: str | None) -> str:
             if code in "\\{}":
                 out.append(code)
                 i += 2
-            elif code == "P":
+            elif code in "PX":
+                # \X: a dimension text's break onto the far side of the line.
                 out.append("\n")
                 i += 2
             elif code == "~":

@@ -398,6 +398,166 @@ async def test_a_dimension_inside_a_block_reference_binds_through_the_explosion(
     assert await run_critique(backend, FOCUS) == []
 
 
+# -- MTEXT codes, a DIMPOST suffix, a refused redraw (1.8-15 fix round) ------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("override", "shown"),
+    [
+        ("<>\\PTYP", "40 TYP"),
+        ("<>\\XTYP", "40 TYP"),
+        ("{\\H0.7x;<>}", "40"),
+        ("\\A1;<>", "40"),
+        ("<>\\P(REF)", "40 (REF)"),
+        ("<> TYP", "40 TYP"),
+    ],
+)
+async def test_mtext_codes_in_a_value_override_are_formatting_not_a_stale_render(
+    backend, override, shown
+):
+    # They were a dim_render_stale error no redraw could clear: the shown text
+    # kept the codes, the *D block's text was read without them.
+    _posts(backend, 0, 40)
+    dim = await backend.dimension_linear(0, 0, 40, 0, 20, -10, text_override=override)
+    rendered, text, _ = _shown(backend, dim.handle)
+    assert text == shown
+    assert display(_fields(40.0, override=override), _style()).value == 40.0
+    assert await run_critique(backend, FOCUS) == [], (rendered, text)
+
+
+def test_a_code_without_a_value_marker_is_not_the_number_the_override_claims():
+    shown = display(_fields(40.0, override="{\\H0.7x;42}"), _style())
+    assert (shown.text, shown.value) == ("42", 42.0)
+
+
+def _dimpost_suffix(backend, suffix=" mm"):
+    style = backend._doc.dimstyles.get("Standard")
+    style.dxf.dimpost = suffix
+    return style
+
+
+@pytest.mark.asyncio
+async def test_a_dimpost_suffix_without_the_value_marker_is_redrawn_as_autocad_shows_it(backend):
+    # ezdxf refuses a DIMPOST without <>; AutoCAD reads it as a suffix. The
+    # redraw used to raise after dimstyle_modify / entity_scale had written.
+    _posts(backend, 0, 19.6)
+    d1 = await backend.dimension_linear(0, 0, 19.6, 0, 10, -10)
+    d2 = await backend.dimension_linear(0, 0, 19.6, 0, 10, -20)
+    style = _dimpost_suffix(backend)
+    result = await backend.dimstyle_modify("Standard", {"DIMDEC": 0})
+    assert sorted(result["rerendered"]) == sorted([d1.handle, d2.handle])
+    assert _shown(backend, d1.handle)[:2] == ("20 mm", "20 mm")
+    scaled = await backend.entity_scale(d2.handle, 0, 0, 2)
+    assert scaled["rerendered"] == [d2.handle]
+    assert _shown(backend, d2.handle)[:2] == ("39 mm", "39 mm")
+    assert style.dxf.dimpost == " mm", "the style keeps the suffix as AutoCAD stores it"
+    entity = backend._doc.entitydb[d1.handle]
+    assert not entity.has_xdata("ACAD"), "the render-only <> is never written as an override"
+    issues = await run_critique(backend, FOCUS)
+    # The scaled one measures 39.2 between no posts: unbound (info), never stale.
+    assert [(i.handles[0], i.detail["code"]) for i in issues] == [(d2.handle, "dim_unbound")]
+
+
+@pytest.fixture
+def refused_render(monkeypatch):
+    """The headless renderer refusing the DIMENSIONs whose handles are added."""
+    from backends import ezdxf_backend as module
+
+    refused: set[str] = set()
+    real = module._render_override
+
+    def _render(ent):
+        if ent.dxf.handle in refused:
+            raise ezdxf.DXFValueError("refused for the test")
+        return real(ent)
+
+    monkeypatch.setattr(module, "_render_override", _render)
+    return refused
+
+
+def _picture(entity):
+    """The *D block's content: every DXF attribute but the handle and owner."""
+    return [
+        (
+            e.dxftype(),
+            sorted((k, str(v)) for k, v in e.dxfattribs(drop={"handle", "owner"}).items()),
+        )
+        for e in entity.get_geometry_block()
+    ]
+
+
+def _d_blocks(backend):
+    return sorted(b.name for b in backend._doc.blocks if b.name.startswith("*D"))
+
+
+@pytest.mark.asyncio
+async def test_a_refused_redraw_leaves_the_style_and_every_dimension_as_they_were(
+    backend, refused_render
+):
+    from engineering.errors import DimensionRenderError, classify
+
+    _posts(backend, 0, 19.6)
+    d1 = await backend.dimension_linear(0, 0, 19.6, 0, 10, -10)
+    d2 = await backend.dimension_linear(0, 0, 19.6, 0, 10, -20)
+    geometry = {h: backend._doc.entitydb[h].dxf.geometry for h in (d1.handle, d2.handle)}
+    blocks = _d_blocks(backend)
+    revision = backend.document_identity()["revision"]
+    refused_render.add(d2.handle)  # d1 is redrawn first, then d2 is refused
+    with pytest.raises(DimensionRenderError, match=f"DIMENSION {d2.handle}") as caught:
+        await backend.dimstyle_modify("Standard", {"DIMDEC": 0})
+    assert classify(caught.value)["kind"] == "refused"
+    assert backend._doc.dimstyles.get("Standard").dxf.get("dimdec") in (None, 2)
+    assert {h: backend._doc.entitydb[h].dxf.geometry for h in geometry} == geometry
+    assert _d_blocks(backend) == blocks, "no new *D block left, no old one purged"
+    assert _shown(backend, d1.handle)[0] == "19.6"
+    assert backend.document_identity()["revision"] == revision
+
+
+@pytest.mark.asyncio
+async def test_a_refused_redraw_puts_a_scaled_or_edited_dimension_back(backend, refused_render):
+    from engineering.errors import DimensionRenderError
+
+    _posts(backend, 0, 40)
+    dim = await backend.dimension_linear(0, 0, 40, 0, 20, -10)
+    entity = backend._doc.entitydb[dim.handle]
+    attribs = dict(entity.dxfattribs())
+    picture = _picture(entity)
+    revision = backend.document_identity()["revision"]
+    refused_render.add(dim.handle)
+    with pytest.raises(DimensionRenderError):
+        await backend.entity_scale(dim.handle, 0, 0, 2)
+    with pytest.raises(DimensionRenderError):
+        await backend.entity_edit_geometry(dim.handle, x2=50.0, y2=0.0)
+    assert dict(entity.dxfattribs()) == attribs
+    assert _picture(entity) == picture, "the *D block's picture is not left scaled"
+    assert backend.document_identity()["revision"] == revision
+    assert _shown(backend, dim.handle)[:2] == ("40", "40")
+
+
+@pytest.mark.asyncio
+async def test_a_reflex_angle_the_headless_renderer_draws_is_not_offered_as_a_repair(backend):
+    # ezdxf 1.4.4 draws 315° for the 45° angle dimension_angular asks for; a
+    # redraw draws 315° again, so "drawing_refine redraws it" would be false.
+    msp = backend._doc.modelspace()
+    msp.add_line((0, 0), (50, 0))
+    msp.add_line((0, 0), (50, 50))
+    dim = await backend.dimension_angular(0, 0, 50, 0, 50, 50, 30, 10)
+    (issue,) = [
+        i for i in await run_critique(backend, FOCUS) if i.detail["code"] == "dim_render_stale"
+    ]
+    assert issue.handles == [dim.handle] and issue.severity == "error"
+    assert issue.detail["repairable"] is False and issue.detail["reflex_render"] is True
+    assert "redraw it in AutoCAD" in issue.message and "drawing_refine" not in issue.message
+    planned = await refine_drawing(backend, focus=FOCUS, dry_run=True)
+    (action,) = [
+        a
+        for a in planned.rounds[0].to_dict()["actions"]
+        if a["detail"].get("code") == "dim_render_stale"
+    ]
+    assert action["status"] == "manual_required"
+
+
 # -- the v9 matrix task ------------------------------------------------------
 
 

@@ -16,7 +16,7 @@ What it applies, in AutoCAD's order:
 * ``DIMRND`` rounds to the nearest multiple; ``0`` means *no rounding* (the
   AutoCAD meaning - ezdxf's renderer would round a stored 0 to an integer,
   which is why the headless redraw neutralises it, see
-  ``backends/ezdxf_backend.py::_rerender_dimension``).
+  ``backends/ezdxf_backend.py::_render_override``).
 * ``DIMDEC`` (``DIMADEC`` for an angle) decimal places, then ``DIMZIN``
   (``DIMAZIN``) zero suppression: bit 4 leading, bit 8 trailing zeros. Bits
   0-3 only concern feet-and-inch units, which this formatter does not render.
@@ -24,7 +24,11 @@ What it applies, in AutoCAD's order:
   reference and ezdxf's renderer; a live seat has not confirmed it.
 * ``DIMDSEP`` the decimal marker.
 * ``DIMPOST`` with ``<>`` standing for the value (``"<> mm"``); a DIMPOST
-  without ``<>`` is a suffix (AutoCAD's rule).
+  without ``<>`` is a suffix (AutoCAD's rule; the headless redraw renders it
+  as ``<>`` + the suffix, which ezdxf would otherwise refuse).
+* MTEXT format codes in an override or DIMPOST (``<>\\PTYP``,
+  ``{\\H0.7x;<>}``) are formatting: the shown text is read through
+  ``labels.plain``, the reader ``rendered_text`` comes from (:func:`shown_plain`).
 * A diameter dimension (type 3) prefixes ``Ø`` and a radius (type 4) ``R``
   unless the formatted value already starts with it - the renderer's rule.
 * An angle (type 2 / 5) in ``DIMAUNIT`` 0 (decimal degrees, ``°``), 1
@@ -68,6 +72,7 @@ __all__ = [
     "has_digit",
     "normalize",
     "rendered_matches",
+    "shown_plain",
     "style_dict",
 ]
 
@@ -280,6 +285,23 @@ def normalize(text: str | None) -> str | None:
     return " ".join(out.split())
 
 
+def shown_plain(text: str | None) -> str | None:
+    """What a DIMENSION text (an override, a DIMPOST, the two put together)
+    reads as on the sheet, in the :func:`normalize` spelling.
+
+    MTEXT format codes are formatting, not content: ``<>\\PTYP`` shows
+    ``40`` over ``TYP``, ``{\\H0.7x;<>}`` shows ``40``. ``rendered_text`` is
+    read through the same ``labels.plain`` (``backends/entity_fields.py::
+    dimension_rendered``), so the two sides of :func:`rendered_matches` are
+    one reading of one text - a code left on one side only was a
+    ``dim_render_stale`` no redraw could clear."""
+    if text is None:
+        return None
+    from engineering.understand.labels import plain  # pure; lazy against an import cycle
+
+    return normalize(plain(text))
+
+
 def has_digit(text: str | None) -> bool:
     return bool(text) and bool(_DIGIT.search(str(text)))
 
@@ -290,7 +312,7 @@ def double_prefix(dimtype: int, override: str | None) -> bool:
     (RR). **S4 pending:** the live double sign is not measured yet."""
     if dimtype not in (3, 4) or not override or "<>" not in override:
         return False
-    before = normalize(override.split("<>", 1)[0].replace("\\P", " ")) or ""
+    before = shown_plain(override.split("<>", 1)[0]) or ""
     before = before.rstrip()
     if not before:
         return False
@@ -321,7 +343,7 @@ def display(fields, style_vars) -> Display:
     if override == " ":
         return Display("", None, scaled, None, 0.0, "suppressed", known)
     if override and override != "<>" and "<>" not in override:
-        plain = normalize(override.replace("\\P", " ")) or ""
+        plain = shown_plain(override) or ""
         # "4x Ø13.5": the leading count is not the size the sheet claims.
         found = _NUMBER.search(_COUNT.sub("", plain, count=1))
         value = float(found.group().replace(",", ".")) if found else None
@@ -348,7 +370,7 @@ def display(fields, style_vars) -> Display:
         tolerance = 0.0
     text = override.replace("<>", formatted, 1) if override and override != "<>" else formatted
     rounding = round(shown - scaled, 12)
-    return Display(normalize(text), shown, scaled, rounding, tolerance, "measurement", known)
+    return Display(shown_plain(text), shown, scaled, rounding, tolerance, "measurement", known)
 
 
 def displayed_text(fields, style_vars) -> str | None:

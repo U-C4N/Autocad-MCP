@@ -29,7 +29,7 @@ from typing import Any
 
 import config
 from engineering import measure
-from engineering.errors import EntityNotFoundError
+from engineering.errors import DimensionRenderError, EntityNotFoundError
 
 from . import lineage, ocs
 from .atomic_write import atomic_write_dxf, file_sha256, resolve_pending
@@ -1118,25 +1118,51 @@ def _text_inserts(block) -> list:
     return [e for e in block if e.dxftype() in ("MTEXT", "TEXT")] if block is not None else []
 
 
-def _rerender_dimension(doc, ent, *, force: bool, references: collections.Counter) -> dict:
-    """Redraw one DIMENSION's ``*D`` block from its fields and style (1.8-15).
+#: DXF attributes a staged redraw never rewrites, so never restores.
+_DIM_FIXED_ATTRIBS = frozenset({"handle", "owner"})
+
+
+def _render_override(ent):
+    """The DIMENSION's ``DimStyleOverride``, neutralised for ezdxf's renderer.
+
+    On this render only - the entity's DSTYLE override is not rewritten
+    (``renderer.render`` / ``finalize`` never commit it; only
+    ``DimStyleOverride.render`` does):
 
     * ``DIMRND`` stored as 0 means "no rounding" (AutoCAD); ezdxf's renderer
-      would round to an integer, so the render runs with it neutralised - on
-      this render only: the entity's DSTYLE override is not rewritten.
+      would round to an integer.
+    * ``DIMPOST`` without ``<>`` is a suffix in AutoCAD (and in
+      ``engineering/dimtext.py``); ezdxf raises ``DXFValueError('Invalid
+      dimpost string')`` on it, so it renders as ``<>`` + the suffix. Braces
+      are doubled because ezdxf substitutes the value with ``str.format``.
+    """
+    from ezdxf.entities import DimStyleOverride
+
+    override = DimStyleOverride(ent)
+    stored_rnd = override.get("dimrnd", None)
+    if stored_rnd is not None and not float(stored_rnd):
+        override.dimstyle_attribs["dimrnd"] = None
+    post = override.get("dimpost", None)
+    if post:
+        post = str(post)
+        escaped = post.replace("{", "{{").replace("}", "}}")
+        override.dimstyle_attribs["dimpost"] = escaped if "<>" in post else "<>" + escaped
+    return override
+
+
+def _stage_rerender(doc, ent, *, force: bool) -> dict:
+    """Draw one DIMENSION's new ``*D`` block and point the entity at it (1.8-15).
+
     * Group 42 (``actual_measurement``) is written with the measurement the
       new block shows (an angle in radians, as AutoCAD stores it).
     * A text its author placed (group 70 bit 128) stays where it was: the new
       block's text is moved back onto the old position and ``text_midpoint``
       restored - unless ``force``, which lets the renderer place it.
-    * The old ``*D`` block is deleted once no other DIMENSION references it
-      (``references`` is the caller's running count; a copied dimension may
-      share its block).
 
-    Returns ``{handle, mode}`` (``full`` / ``text_kept``).
+    The old block is left in place: :func:`_commit_rerender` deletes it,
+    :func:`_revert_rerender` points the entity back at it. A render that raises
+    is reverted here before the exception leaves.
     """
-    from ezdxf.entities import DimStyleOverride
-
     dxf = ent.dxf
     old_name = dxf.get("geometry")
     old_block = doc.blocks.get(old_name) if old_name else None
@@ -1144,43 +1170,117 @@ def _rerender_dimension(doc, ent, *, force: bool, references: collections.Counte
     keep_text = user_text and not force
     old_texts = [t.dxf.insert for t in _text_inserts(old_block)]
     old_midpoint = dxf.get("text_midpoint")
-
-    override = DimStyleOverride(ent)
-    stored_rnd = override.get("dimrnd", None)
-    if stored_rnd is not None and not float(stored_rnd):
-        override.dimstyle_attribs["dimrnd"] = None
-    renderer = override.get_renderer(None)
-    block = doc.blocks.new_anonymous_block(type_char="D")
-    dxf.geometry = block.name
-    renderer.render(block)
-    renderer.finalize()
-
-    mode = "full"
-    new_texts = _text_inserts(block)
-    if keep_text and old_texts and len(old_texts) == len(new_texts):
-        delta = old_texts[0] - new_texts[0].dxf.insert
-        for text in new_texts:
-            text.translate(delta.x, delta.y, delta.z)
-        if old_midpoint is not None:
-            dxf.text_midpoint = old_midpoint
-        mode = "text_kept"
-
+    staged = {
+        "entity": ent,
+        "old_name": old_name,
+        "new_name": None,
+        "attribs": {k: v for k, v in ent.dxfattribs().items() if k not in _DIM_FIXED_ATTRIBS},
+        "mode": "full",
+    }
     try:
-        measured = ent.get_measurement()
-        if isinstance(measured, (int, float)):
-            value = float(measured)
-            if (int(dxf.get("dimtype", 0)) & 0x0F) in (2, 5):
-                value = math.radians(value)
-            dxf.actual_measurement = value
-    except Exception:  # noqa: BLE001 - an ordinate measures no scalar; group 42 stays as it was
-        pass
+        renderer = _render_override(ent).get_renderer(None)
+        block = doc.blocks.new_anonymous_block(type_char="D")
+        staged["new_name"] = block.name
+        dxf.geometry = block.name
+        renderer.render(block)
+        renderer.finalize()
 
-    if old_name and old_name != block.name:
+        new_texts = _text_inserts(block)
+        if keep_text and old_texts and len(old_texts) == len(new_texts):
+            delta = old_texts[0] - new_texts[0].dxf.insert
+            for text in new_texts:
+                text.translate(delta.x, delta.y, delta.z)
+            if old_midpoint is not None:
+                dxf.text_midpoint = old_midpoint
+            staged["mode"] = "text_kept"
+
+        try:
+            measured = ent.get_measurement()
+            if isinstance(measured, (int, float)):
+                value = float(measured)
+                if (int(dxf.get("dimtype", 0)) & 0x0F) in (2, 5):
+                    value = math.radians(value)
+                dxf.actual_measurement = value
+        except Exception:  # noqa: BLE001 - an ordinate measures no scalar; group 42 stays
+            pass
+    except Exception:
+        _revert_rerender(doc, staged)
+        raise
+    return staged
+
+
+def _revert_rerender(doc, staged: dict) -> None:
+    """Undo :func:`_stage_rerender`: every DXF attribute back, the new block gone."""
+    ent = staged["entity"]
+    saved = staged["attribs"]
+    for name in list(ent.dxfattribs()):
+        if name not in saved and name not in _DIM_FIXED_ATTRIBS:
+            ent.dxf.discard(name)
+    for name, value in saved.items():
+        ent.dxf.set(name, value)
+    new_name = staged["new_name"]
+    if new_name and doc.blocks.get(new_name) is not None:
+        doc.blocks.delete_block(new_name, safe=False)
+
+
+def _commit_rerender(doc, staged: dict, references: collections.Counter) -> dict:
+    """Delete the old ``*D`` block once no other DIMENSION references it
+    (``references`` is the caller's running count; a copied dimension may share
+    its block). Returns ``{handle, mode}`` (``full`` / ``text_kept``)."""
+    old_name, new_name = staged["old_name"], staged["new_name"]
+    if old_name and old_name != new_name:
         references[str(old_name)] -= 1
         if references[str(old_name)] <= 0 and doc.blocks.get(old_name) is not None:
             doc.blocks.delete_block(old_name, safe=False)
-    references[block.name] += 1
-    return {"handle": str(dxf.handle), "mode": mode}
+    references[new_name] += 1
+    return {"handle": str(staged["entity"].dxf.handle), "mode": staged["mode"]}
+
+
+def _dimension_checkpoint(doc, ent):
+    """A restore function for one DIMENSION about to be edited and redrawn.
+
+    It puts back every DXF attribute and the content of its current ``*D``
+    block (a transform moves that content in place). An edit that is followed
+    by a redraw the renderer refuses (:class:`DimensionRenderError`) calls it,
+    so the tool fails with the drawing as it was, never half-changed.
+    """
+    saved = {k: v for k, v in ent.dxfattribs().items() if k not in _DIM_FIXED_ATTRIBS}
+    name = ent.dxf.get("geometry")
+    block = doc.blocks.get(name) if name else None
+    content = [e.copy() for e in block] if block is not None else None
+
+    def restore() -> None:
+        for attr in list(ent.dxfattribs()):
+            if attr not in saved and attr not in _DIM_FIXED_ATTRIBS:
+                ent.dxf.discard(attr)
+        for attr, value in saved.items():
+            ent.dxf.set(attr, value)
+        if content is not None and doc.blocks.get(name) is not None:
+            target = doc.blocks.get(name)
+            target.delete_all_entities()
+            for item in content:
+                target.add_entity(item)
+
+    return restore
+
+
+def _rerender_dimensions(doc, targets, *, force: bool) -> list[dict]:
+    """Redraw ``targets`` all or nothing: every new block is drawn first, and a
+    DIMENSION that cannot be redrawn reverts the ones drawn before it and
+    raises :class:`DimensionRenderError` - the drawing is as it was."""
+    references = _dimension_geometry_counts(doc)  # before any entity is re-pointed
+    staged: list[dict] = []
+    for ent in targets:
+        try:
+            staged.append(_stage_rerender(doc, ent, force=force))
+        except Exception as exc:
+            for done in reversed(staged):
+                _revert_rerender(doc, done)
+            raise DimensionRenderError(
+                f"dimension_rerender: DIMENSION {ent.dxf.handle} cannot be redrawn by the "
+                f"headless renderer ({type(exc).__name__}: {exc}); nothing was changed"
+            ) from exc
+    return [_commit_rerender(doc, done, references) for done in staged]
 
 
 def _style_table_references(doc) -> tuple[set[str], set[str]]:
@@ -6539,11 +6639,9 @@ class EzdxfBackend(AutoCADBackend):
                         f"dimension_rerender: {handle} is a {ent.dxftype()}, not a DIMENSION"
                     )
                 targets.append(ent)
-        references = _dimension_geometry_counts(doc)
         rerendered: list[str] = []
         text_kept: list[str] = []
-        for ent in targets:
-            done = _rerender_dimension(doc, ent, force=force, references=references)
+        for done in _rerender_dimensions(doc, targets, force=force):
             rerendered.append(done["handle"])
             if done["mode"] == "text_kept":
                 text_kept.append(done["handle"])
@@ -6614,19 +6712,28 @@ class EzdxfBackend(AutoCADBackend):
 
             s = float(factor)
             bx, by = float(base_x), float(base_y)
+            is_dim = ent.dxftype() == "DIMENSION"
+            restore = _dimension_checkpoint(self._require_doc(), ent) if is_dim else None
             self._transform(
                 ent,
                 Matrix44.translate(-bx, -by, 0)
                 @ Matrix44.scale(s, s, s)
                 @ Matrix44.translate(bx, by, 0),
             )
-            self._mark_dirty()
-            if ent.dxftype() == "DIMENSION":
+            if is_dim:
                 # 1.8-15: the transform scaled the *D block's picture, not its
                 # number - "40" over 80. Redrawn from the new defpoints; the
-                # other transforms follow in 1.8.1.
-                done = self._rerender_sync([handle], False)
+                # other transforms follow in 1.8.1. A redraw the renderer
+                # refuses undoes the scale: the tool fails, the drawing is as
+                # it was.
+                try:
+                    done = self._rerender_sync([handle], False)
+                except DimensionRenderError:
+                    restore()
+                    raise
+                self._mark_dirty()
                 return {"ok": True, "handle": handle, "rerendered": done["rerendered"]}
+            self._mark_dirty()
             return {"ok": True, "handle": handle}
 
         return await self._async(_sync)
@@ -7152,6 +7259,7 @@ class EzdxfBackend(AutoCADBackend):
                         f"{DIMTYPE_NAMES.get(kind, kind)}; only a linear or aligned "
                         "dimension's measured points (x1, y1, x2, y2) can be edited."
                     )
+                restore = _dimension_checkpoint(self._require_doc(), ent)
                 for name, px, py in (("defpoint2", x1, y1), ("defpoint3", x2, y2)):
                     if px is None and py is None:
                         continue
@@ -7164,7 +7272,11 @@ class EzdxfBackend(AutoCADBackend):
                             old[2] if len(old) > 2 else 0.0,
                         ),
                     )
-                self._rerender_sync([handle], False)
+                try:
+                    self._rerender_sync([handle], False)
+                except DimensionRenderError:
+                    restore()  # the points go back with the refused redraw
+                    raise
                 self._mark_dirty()
                 return _entity_info_dxf(ent)
             # cx/cy arrive in WCS, because that is what entity_get reports. For a
@@ -9428,21 +9540,37 @@ class EzdxfBackend(AutoCADBackend):
                 )
             _require_arrowhead_blocks(doc, typed)
             before = _read_dimstyle_values(style, tuple(typed))
+            raw_before = {
+                var.lower(): style.dxf.get(var.lower())
+                for var in typed
+                if style.dxf.hasattr(var.lower())
+            }
             _write_dimstyle_values(style, typed)
             after = _read_dimstyle_values(style, tuple(typed))
             changed = {var: [before[var], after[var]] for var in typed if before[var] != after[var]}
-            if changed and style.dxf.name == _current_dimstyle_name(doc):
-                _sync_header_to_dimstyle(doc, style)
             using = _dimensions_using(doc, style.dxf.name)
-            if changed:
-                self._mark_dirty()
             rerendered: list[str] = []
             text_kept: list[str] = []
             if changed and using and rerender:
                 # 1.8-15: a headless DIMENSION carries its rendered block and
-                # shows the old style until redrawn - so it is redrawn here.
-                done = self._rerender_sync(using, bool(force))
+                # shows the old style until redrawn - so it is redrawn here,
+                # all or nothing: a dimension that cannot be redrawn puts the
+                # style back too, so a refusal leaves the drawing as it was.
+                try:
+                    done = self._rerender_sync(using, bool(force))
+                except DimensionRenderError:
+                    for var in typed:
+                        attr = var.lower()
+                        if attr in raw_before:
+                            style.dxf.set(attr, raw_before[attr])
+                        else:
+                            style.dxf.discard(attr)
+                    raise
                 rerendered, text_kept = done["rerendered"], done["text_kept"]
+            if changed and style.dxf.name == _current_dimstyle_name(doc):
+                _sync_header_to_dimstyle(doc, style)
+            if changed:
+                self._mark_dirty()
             return {
                 "ok": True,
                 "name": style.dxf.name,

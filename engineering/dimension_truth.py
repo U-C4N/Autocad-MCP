@@ -31,6 +31,9 @@ one issue per dimension and code:
 
 Only ``dim_render_stale`` and ``dim_group42_stale`` carry ``repairable:
 true``; the refiner leaves every other code to a person (``manual_required``).
+One ``dim_render_stale`` is not repairable headlessly: an angular dimension
+whose block shows the reflex angle (``reflex_render``) - ezdxf's renderer
+draws it so again.
 The read is the run's all-spaces QA snapshot (``engineering/qa_scan.py``); on
 the live engine that is the ``Document.Export`` DXF, read by the same code.
 INSERTs are exploded for binding only when the drawing holds a DIMENSION.
@@ -43,7 +46,14 @@ import re
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from .dimtext import display, double_prefix, has_digit, normalize, rendered_matches, style_dict
+from .dimtext import (
+    display,
+    double_prefix,
+    has_digit,
+    rendered_matches,
+    shown_plain,
+    style_dict,
+)
 from .plan_spec import Issue
 
 if TYPE_CHECKING:
@@ -105,7 +115,7 @@ def hidden_reasons(record, layers: dict) -> list[str]:
     if override == " ":
         reasons.append("the text is suppressed (override ' ')")
     elif override and override != "<>" and "<>" not in override:
-        if not has_digit(normalize(override.replace("\\P", " "))):
+        if not has_digit(shown_plain(override)):
             reasons.append(f"the override {override!r} carries no digit")
     dimtxt = style.get("dimtxt")
     if dimtxt is not None and float(dimtxt) <= 0.0:
@@ -161,8 +171,28 @@ def _issue(code: str, record, message: str, detail: dict, *, severity: str | Non
     )
 
 
-def dimension_issues(records, observed, layers: dict, epsilon: float) -> list[Issue]:
-    """Every code of every DIMENSION record, in record order then ``CODES`` order."""
+def reflex_render(dimtype: int, rendered: str | None, shown) -> bool:
+    """An angular dimension whose ``*D`` block shows the reflex of the angle its
+    fields say (315° for 45°): ezdxf 1.4.4's two-line renderer sweeps from the
+    second leg to the first and ignores the arc point AutoCAD picks the side
+    with, so a headless redraw draws 315° again - not a repair it can make."""
+    if dimtype not in (2, 5) or shown.value is None or not rendered:
+        return False
+    found = re.search(r"[-+]?\d+(?:[.,]\d+)?", rendered)
+    if found is None:
+        return False
+    other = float(found.group().replace(",", "."))
+    return abs(other + float(shown.value) - 360.0) <= 2.0 * float(shown.tolerance) + 1e-9
+
+
+def dimension_issues(
+    records, observed, layers: dict, epsilon: float, engine: str | None = None
+) -> list[Issue]:
+    """Every code of every DIMENSION record, in record order then ``CODES`` order.
+
+    ``engine`` is the backend's name: on ``com`` a reflex angle is AutoCAD's
+    to redraw (``dimension_rerender`` updates it from the arc point), so it
+    stays repairable; headless it is not (:func:`reflex_render`)."""
     from .verification.binding import DimensionIndex, bind_dimension
 
     index = DimensionIndex(observed, epsilon)
@@ -219,12 +249,23 @@ def dimension_issues(records, observed, layers: dict, epsilon: float) -> list[Is
                 evidence,
             )
         if rendered_matches(record.rendered_text, record.dimension, record.dim_vars) is False:
+            reflex = engine != "com" and reflex_render(dimtype, record.rendered_text, shown)
             found[DIM_RENDER_STALE] = _issue(
                 DIM_RENDER_STALE,
                 record,
                 f"its block shows {record.rendered_text!r}, its fields and style say "
-                f"{shown.text!r}. drawing_refine redraws it.",
-                {**evidence, "rendered_text": record.rendered_text},
+                f"{shown.text!r}. "
+                + (
+                    "The headless renderer (ezdxf) draws the other side of this angle and "
+                    "a redraw draws it again: redraw it in AutoCAD."
+                    if reflex
+                    else "drawing_refine redraws it."
+                ),
+                {
+                    **evidence,
+                    "rendered_text": record.rendered_text,
+                    **({"repairable": False, "reflex_render": True} if reflex else {}),
+                },
             )
         stale42, expected = _group42_stale(record, epsilon)
         if stale42:
@@ -298,7 +339,9 @@ async def check_dimension_truth(backend: AutoCADBackend, shared: dict) -> list[I
         return await _observed(backend, snap)
 
     observed = await shared_index(shared, OBSERVED_KEY, build, backend)
-    return dimension_issues(records, observed, snap.layers, default_epsilon(observed))
+    return dimension_issues(
+        records, observed, snap.layers, default_epsilon(observed), engine=backend.name
+    )
 
 
 check_dimension_truth.needs_shared = True  # type: ignore[attr-defined]

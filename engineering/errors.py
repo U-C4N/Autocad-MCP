@@ -53,6 +53,7 @@ __all__ = [
     "ApplicationBusyError",
     "CommandIncompleteError",
     "CommandRefusedError",
+    "DimensionRenderError",
     "EntityNotFoundError",
     "GateFailure",
     "InvalidArgsError",
@@ -287,6 +288,15 @@ class ApplicationBusyError(RuntimeError):
     touched the document: nothing was written, the same call may be sent again."""
 
     kind = "application_busy"
+
+
+class DimensionRenderError(RuntimeError):
+    """A DIMENSION the headless renderer cannot redraw (1.8-15): the redraw is
+    all or nothing and the edit that asked for it is put back, so nothing was
+    written - the tool declined (``refused``), its message names the dimension
+    and the renderer's own reason."""
+
+    kind = "refused"
 
 
 class CommandIncompleteError(RuntimeError):
@@ -708,7 +718,13 @@ def classify(exc: BaseException) -> dict:
         if refused.symbols:
             row["symbols"] = list(refused.symbols)
         return row
-    for typed in (PathRefusedError, ApplicationBusyError, EntityNotFoundError, InvalidArgsError):
+    for typed in (
+        PathRefusedError,
+        ApplicationBusyError,
+        EntityNotFoundError,
+        InvalidArgsError,
+        DimensionRenderError,
+    ):
         found = _first_of(exc, typed)
         if found is not None:
             row = {"kind": typed.kind, "message": message}
