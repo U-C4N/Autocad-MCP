@@ -29,6 +29,7 @@ from typing import Any
 
 import config
 from engineering import measure
+from engineering.errors import EntityNotFoundError
 
 from . import ocs
 from .base import (
@@ -6181,7 +6182,8 @@ class EzdxfBackend(AutoCADBackend):
         # handle from a deleted layout used to pass this guard and then die on
         # the first attribute access with an AttributeError.
         if ent is None or not ent.is_alive:
-            raise RuntimeError(f"Entity with handle '{handle}' not found.")
+            # 1.8-02: typed (kind not_found), still a RuntimeError with this text.
+            raise EntityNotFoundError(handle)
         return ent
 
     async def entity_move(self, handle, dx, dy, dz=0.0) -> dict:
@@ -7733,10 +7735,11 @@ class EzdxfBackend(AutoCADBackend):
                     log.debug("resolving %s for block %s: %s", handle, name, exc)
                     skipped.append(str(handle))
             if not entities:
-                raise RuntimeError(
+                raise EntityNotFoundError(
+                    ", ".join(skipped),
                     f"block_create_from_entities: none of the handles resolved "
                     f"({', '.join(skipped) or 'no handles given'}), so there is nothing "
-                    f"to put in block {name!r}. No definition was created."
+                    f"to put in block {name!r}. No definition was created.",
                 )
 
             blk = doc.blocks.new(name=name)
@@ -8262,7 +8265,12 @@ class EzdxfBackend(AutoCADBackend):
                 key = str(raw or "").strip().upper()
                 entity = doc.entitydb.get(key)
                 if entity is None or not entity.is_alive:
-                    return {"ok": False, "error": f"Entity handle not found: {raw}"}
+                    return {
+                        "ok": False,
+                        "error": f"Entity handle not found: {raw}",
+                        "kind": "not_found",  # 1.8-02: typed for the callers that raise
+                        "handle": str(raw),
+                    }
                 if not edgesmith.is_pure_2d_entity(entity):
                     return {
                         "ok": False,

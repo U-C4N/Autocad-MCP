@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import config
+from engineering.errors import ApplicationBusyError, EntityNotFoundError
 from engineering.measure import is_self_intersecting, polygon_area_perimeter
 from security import sanitize_macro_argument, sanitize_symbol_name, validate_path
 
@@ -147,11 +148,14 @@ class _JobGuard:
     COM thread when the job ends (a COM proxy must not be released elsewhere).
     """
 
-    __slots__ = ("backend", "doc")
+    __slots__ = ("backend", "doc", "touched")
 
     def __init__(self, backend):
         self.backend = backend
         self.doc = None
+        #: Set by ``_acad_app()``: the job has held the Application proxy, so
+        #: it may have written something (1.8-02, ``application_busy``).
+        self.touched = False
 
     def __call__(self, app):
         if self.doc is None:
@@ -257,6 +261,9 @@ def _acad_app():
     the setting on ``GetActiveObject`` and then falling back to AutoCAD would
     start the very application the operator said they were not using.
     """
+    guard = getattr(_JOB_STATE, "guard", None)
+    if guard is not None:
+        guard.touched = True
     if "app" not in _COM_STATE:
         progid = config.settings.cad_progid
         try:
@@ -519,14 +526,68 @@ def _acad_doc():
     any work when the operator switched; later calls in the same job reuse the
     checked document. Outside a job (a test calling a ``_sync`` directly) it is
     the plain active document, as before.
+
+    1.8-02: when AutoCAD answers ``RPC_E_CALL_REJECTED`` (a command prompt or a
+    modal dialog is open) to the job's *first* touch of the application - the
+    ``Documents.Count`` / guard reads here, before the job held the
+    Application proxy for anything else - nothing can have been written, and
+    the refusal is ``ApplicationBusyError`` (kind ``application_busy``,
+    retryable). A rejection later in a job stays the COM error it was: the job
+    may have written before it.
     """
-    app = _acad_app()
-    if app.Documents.Count == 0:
-        raise RuntimeError("No drawing is open in AutoCAD. Open or create a .dwg file first.")
     guard = getattr(_JOB_STATE, "guard", None)
-    if guard is not None:
-        return guard(app)
-    return app.ActiveDocument
+    pristine = guard is not None and guard.doc is None and not guard.touched
+    try:
+        app = _acad_app()
+        if app.Documents.Count == 0:
+            raise RuntimeError("No drawing is open in AutoCAD. Open or create a .dwg file first.")
+        if guard is not None:
+            return guard(app)
+        return app.ActiveDocument
+    except _COM_ERROR as exc:
+        hr = exc.args[0] if exc.args else 0
+        if pristine and hr == _RPC_E_CALL_REJECTED:
+            raise ApplicationBusyError(
+                "AutoCAD refused the call (RPC_E_CALL_REJECTED): it is waiting at a command "
+                "prompt or showing a dialog. Nothing was written. Press ESC in AutoCAD (or "
+                "close the dialog) and send the same call again."
+            ) from exc
+        raise
+
+
+#: HRESULTs ``HandleToObject`` may answer that are about the connection, not
+#: the handle: the call was refused or the server went away, so the handle is
+#: not known to be missing. The three ``ComBackend._run`` drops the
+#: Application proxy on, plus RPC_E_CALL_REJECTED, RPC_E_DISCONNECTED
+#: (0x80010108) and RPC_S_SERVER_UNAVAILABLE (0x800706BA).
+_NOT_A_HANDLE_ANSWER = frozenset(
+    {
+        _RPC_E_CALL_REJECTED,
+        -2147221246,
+        -2147221005,
+        -2147417842,
+        -2147417848,
+        -2147023174,
+    }
+)
+
+
+def _handle_to_object(doc, handle):
+    """``doc.HandleToObject(handle)``, or ``EntityNotFoundError`` (1.8-02).
+
+    The live twin of the headless ``_get_entity``: a handle AutoCAD does not
+    know is kind ``not_found``, not a generic "AutoCAD COM error". Which
+    HRESULT AutoCAD 2026 answers for an unknown handle is not measured yet, so
+    every COM error is read as "not found" except the connection-level ones in
+    ``_NOT_A_HANDLE_ANSWER``, which are re-raised untouched.
+    """
+    try:
+        return doc.HandleToObject(handle)
+    except _COM_ERROR as exc:
+        hr = exc.args[0] if exc.args else 0
+        if hr in _NOT_A_HANDLE_ANSWER:
+            raise
+        raise EntityNotFoundError(handle) from exc
 
 
 def _msp():
@@ -2032,7 +2093,9 @@ def _mutating(method):
         refused = False
         try:
             return await method(self, *args, **kwargs)
-        except ActiveDocumentChangedError:
+        except (ActiveDocumentChangedError, ApplicationBusyError):
+            # Both are raised inside the job before it wrote anything (1.8-02
+            # adds the busy seat): the revision stays.
             refused = True
             raise
         finally:
@@ -2654,6 +2717,7 @@ class ComBackend(AutoCADBackend):
             # inside the job, before any document work.
             token = CURRENT_OPERATION.set(operation_id)
             _JOB_STATE.guard = guard
+            guard.touched = False
             try:
                 return func(*args, **kwargs)
             finally:
@@ -4490,7 +4554,7 @@ class ComBackend(AutoCADBackend):
         try:
             entity = doc.HandleToObject(str(handle).strip().upper())
         except Exception:
-            raise RuntimeError(f"Entity with handle '{handle}' not found.") from None
+            raise EntityNotFoundError(handle) from None
         if entity.ObjectName != "AcDbHatch":
             return None, {
                 "ok": False,
@@ -4685,7 +4749,7 @@ class ComBackend(AutoCADBackend):
             try:
                 entity = doc.HandleToObject(str(handle).strip().upper())
             except Exception:
-                raise RuntimeError(f"Entity with handle '{handle}' not found.") from None
+                raise EntityNotFoundError(handle) from None
 
             dump: dict = {}
             for member in (
@@ -5441,7 +5505,7 @@ class ComBackend(AutoCADBackend):
 
     def _region_from_profile(self, doc, profile_handle: str):
         """Build an ACIS region from a closed profile entity handle."""
-        profile = doc.HandleToObject(profile_handle)
+        profile = _handle_to_object(doc, profile_handle)
         profiles = win32com.client.VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_DISPATCH, [profile])
         regions = doc.ModelSpace.AddRegion(profiles)
         if not regions:
@@ -5499,8 +5563,8 @@ class ComBackend(AutoCADBackend):
                     "Use union | subtract | intersect.",
                 }
             doc = _acad_doc()
-            target = doc.HandleToObject(target_handle)
-            tool = doc.HandleToObject(tool_handle)
+            target = _handle_to_object(doc, target_handle)
+            tool = _handle_to_object(doc, tool_handle)
             target.Boolean(codes[op], tool)
             return {"ok": True, "handle": target.Handle, "operation": op, "type": "3DSOLID"}
 
@@ -6123,7 +6187,7 @@ class ComBackend(AutoCADBackend):
     async def entity_move(self, handle, dx, dy, dz=0.0) -> dict:
         def _sync():
             doc = _acad_doc()
-            ent = doc.HandleToObject(handle)
+            ent = _handle_to_object(doc, handle)
             ent.Move(_apoint(0, 0, 0), _apoint(dx, dy, dz))
             return {"ok": True, "handle": handle}
 
@@ -6132,7 +6196,7 @@ class ComBackend(AutoCADBackend):
     async def entity_copy(self, handle, dx, dy, dz=0.0) -> EntityInfo:
         def _sync():
             doc = _acad_doc()
-            ent = doc.HandleToObject(handle)
+            ent = _handle_to_object(doc, handle)
             copy = ent.Copy()
             copy.Move(_apoint(0, 0, 0), _apoint(dx, dy, dz))
             return _entity_info(copy)
@@ -6142,7 +6206,7 @@ class ComBackend(AutoCADBackend):
     async def entity_rotate(self, handle, base_x, base_y, angle_deg) -> dict:
         def _sync():
             doc = _acad_doc()
-            ent = doc.HandleToObject(handle)
+            ent = _handle_to_object(doc, handle)
             ent.Rotate(_apoint(base_x, base_y), deg2rad(angle_deg))
             return {"ok": True, "handle": handle}
 
@@ -6151,7 +6215,7 @@ class ComBackend(AutoCADBackend):
     async def entity_scale(self, handle, base_x, base_y, factor) -> dict:
         def _sync():
             doc = _acad_doc()
-            ent = doc.HandleToObject(handle)
+            ent = _handle_to_object(doc, handle)
             ent.ScaleEntity(_apoint(base_x, base_y), float(factor))
             return {"ok": True, "handle": handle}
 
@@ -6168,7 +6232,7 @@ class ComBackend(AutoCADBackend):
     ) -> EntityInfo:
         def _sync():
             doc = _acad_doc()
-            ent = doc.HandleToObject(handle)
+            ent = _handle_to_object(doc, handle)
             mirrored = ent.Mirror(_apoint(x1, y1), _apoint(x2, y2))
             if delete_original:
                 ent.Delete()
@@ -6185,7 +6249,7 @@ class ComBackend(AutoCADBackend):
     ) -> EntityInfo:
         def _sync():
             doc = _acad_doc()
-            ent = doc.HandleToObject(handle)
+            ent = _handle_to_object(doc, handle)
 
             def _as_list(res):
                 # Offset returns a variant array of entities (1 for line/arc/circle).
@@ -6235,7 +6299,7 @@ class ComBackend(AutoCADBackend):
     async def entity_delete(self, handle) -> dict:
         def _sync():
             doc = _acad_doc()
-            ent = doc.HandleToObject(handle)
+            ent = _handle_to_object(doc, handle)
             ent.Delete()
             return {"ok": True, "deleted_handle": handle}
 
@@ -6253,7 +6317,7 @@ class ComBackend(AutoCADBackend):
             _COM_STATE["batch_mode"] = True
             try:
                 doc = _acad_doc()
-                ent = doc.HandleToObject(handle)
+                ent = _handle_to_object(doc, handle)
                 result = ent.ArrayRectangular(
                     int(rows),
                     int(cols),
@@ -6288,7 +6352,7 @@ class ComBackend(AutoCADBackend):
             _COM_STATE["batch_mode"] = True
             try:
                 doc = _acad_doc()
-                ent = doc.HandleToObject(handle)
+                ent = _handle_to_object(doc, handle)
                 result = ent.ArrayPolar(
                     int(count), deg2rad(fill_angle), _apoint(center_x, center_y)
                 )
@@ -6311,7 +6375,7 @@ class ComBackend(AutoCADBackend):
     async def entity_get(self, handle) -> EntityInfo:
         def _sync():
             doc = _acad_doc()
-            ent = doc.HandleToObject(handle)
+            ent = _handle_to_object(doc, handle)
             return _entity_info(ent)
 
         info = await self._run(_sync)
@@ -6368,7 +6432,7 @@ class ComBackend(AutoCADBackend):
     ) -> dict:
         def _sync():
             doc = _acad_doc()
-            ent = doc.HandleToObject(handle)
+            ent = _handle_to_object(doc, handle)
             if layer is not None:
                 ent.Layer = layer
             if color is not None:
@@ -6393,7 +6457,7 @@ class ComBackend(AutoCADBackend):
     ) -> EntityInfo:
         def _sync():
             doc = _acad_doc()
-            ent = doc.HandleToObject(handle)
+            ent = _handle_to_object(doc, handle)
             name = ent.ObjectName.replace("AcDb", "").upper()
             if name not in ("TEXT", "MTEXT"):
                 raise RuntimeError(
@@ -6426,7 +6490,7 @@ class ComBackend(AutoCADBackend):
     ) -> EntityInfo:
         def _sync():
             doc = _acad_doc()
-            ent = doc.HandleToObject(handle)
+            ent = _handle_to_object(doc, handle)
             name = ent.ObjectName.replace("AcDb", "").upper()
             if name == "CIRCLE":
                 c = ent.Center
@@ -7094,7 +7158,7 @@ class ComBackend(AutoCADBackend):
 
         def _sync():
             doc = _acad_doc()
-            ent = doc.HandleToObject(handle)
+            ent = _handle_to_object(doc, handle)
             if ent.ObjectName == "AcDbMInsertBlock":
                 rows = _int_member(ent, "Rows")
                 cols = _int_member(ent, "Columns")
@@ -7167,7 +7231,7 @@ class ComBackend(AutoCADBackend):
     async def block_get_attributes(self, handle) -> dict:
         def _sync():
             doc = _acad_doc()
-            ref = doc.HandleToObject(handle)
+            ref = _handle_to_object(doc, handle)
             attrs = ref.GetAttributes()
             result = {}
             for attr in attrs:
@@ -7183,7 +7247,7 @@ class ComBackend(AutoCADBackend):
 
         def _sync():
             doc = _acad_doc()
-            ref = doc.HandleToObject(handle)
+            ref = _handle_to_object(doc, handle)
             attrs = ref.GetAttributes()
             updated = []
             for attr in attrs:
@@ -7205,7 +7269,7 @@ class ComBackend(AutoCADBackend):
 
         def _sync():
             doc = _acad_doc()
-            ent = doc.HandleToObject(str(handle).strip().upper())
+            ent = _handle_to_object(doc, str(handle).strip().upper())
             # GetXData("") returns every app's stream with the 1001 markers
             # inline; a named app returns just that app's slice.
             codes, values = ent.GetXData(wanted)
@@ -7232,7 +7296,7 @@ class ComBackend(AutoCADBackend):
 
         def _sync():
             doc = _acad_doc()
-            ent = doc.HandleToObject(str(handle).strip().upper())
+            ent = _handle_to_object(doc, str(handle).strip().upper())
             if tags:
                 # The 16 KB limit is per entity across every application, the
                 # same gate the headless engine runs: read what is already
@@ -7294,10 +7358,11 @@ class ComBackend(AutoCADBackend):
             # Resolve before creating, so a call where every handle was a typo
             # does not leave an empty definition behind.
             if not objects:
-                raise RuntimeError(
+                raise EntityNotFoundError(
+                    ", ".join(skipped),
                     f"block_create_from_entities: none of the handles resolved "
                     f"({', '.join(skipped) or 'no handles given'}), so there is nothing "
-                    f"to put in block {name!r}. No definition was created."
+                    f"to put in block {name!r}. No definition was created.",
                 )
 
             block = doc.Blocks.Add(_apoint(float(base_x), float(base_y), 0.0), str(name))
@@ -7540,7 +7605,7 @@ class ComBackend(AutoCADBackend):
         """
 
         def _sync():
-            ent = _acad_doc().HandleToObject(str(handle))
+            ent = _handle_to_object(_acad_doc(), str(handle))
             obj_name = getattr(ent, "ObjectName", "")
             if obj_name in _COM_NO_AREA_TYPES:
                 raise RuntimeError(
@@ -8493,8 +8558,8 @@ class ComBackend(AutoCADBackend):
     ) -> EntityInfo:
         def _sync():
             doc = _acad_doc()
-            target = doc.HandleToObject(target_handle)
-            boundary = doc.HandleToObject(boundary_handle)
+            target = _handle_to_object(doc, target_handle)
+            boundary = _handle_to_object(doc, boundary_handle)
             if end_x is None or end_y is None:
                 # Auto: pick the target endpoint nearest the boundary midpoint.
                 try:

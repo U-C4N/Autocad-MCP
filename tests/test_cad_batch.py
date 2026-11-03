@@ -636,18 +636,45 @@ async def test_the_classifier_reads_the_cause_chain_not_the_message():
 
 async def test_a_backend_failure_is_typed_as_failed(client):
     result = await _batch(
+        client,
+        [
+            {
+                "tool": "entity_create_line",
+                "args": {"x1": 0, "y1": 0, "x2": 1, "y2": 0},
+                "bind": "l",
+            },
+            {"tool": "entity_edit_text", "args": {"handle": "$l", "text": "X"}},
+        ],
+        on_error="continue",
+    )
+    assert result["results"][1]["error"]["kind"] == "failed"
+
+
+async def test_a_missing_handle_is_typed_as_not_found(client):
+    """1.8-02: EntityNotFoundError; it was ``failed`` (an untyped RuntimeError) in 1.7."""
+    result = await _batch(
         client, [{"tool": "entity_get", "args": {"handle": "NOSUCH"}}], on_error="continue"
     )
-    assert result["results"][0]["error"]["kind"] == "failed"
+    assert result["results"][0]["error"]["kind"] == "not_found"
 
 
-async def test_a_deliberate_tool_refusal_is_typed_as_refused(client):
+async def test_a_deliberate_tool_refusal_is_typed_as_refused(client, tmp_path):
+    result = await _batch(
+        client,
+        [{"tool": "drawing_save_as", "args": {"path": str(tmp_path / "no" / "part.dxf")}}],
+        on_error="continue",
+    )
+    assert result["results"][0]["error"]["kind"] == "refused"
+
+
+async def test_a_refused_path_is_typed_as_path_refused(client):
+    """1.8-02: security.PathRefusedError; it was ``refused`` in 1.7."""
     result = await _batch(
         client,
         [{"tool": "drawing_open", "args": {"path": "../../etc/passwd"}}],
         on_error="continue",
     )
-    assert result["results"][0]["error"]["kind"] == "refused"
+    assert result["results"][0]["error"]["kind"] == "path_refused"
 
 
 async def test_a_bound_value_of_the_wrong_type_is_typed_at_run_time(client):

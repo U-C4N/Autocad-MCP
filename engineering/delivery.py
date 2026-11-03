@@ -94,6 +94,8 @@ class DeliveryResult:
     artifact_integrity: dict | None = None
     coverage: dict | None = None
     blocking: list[str] | None = None
+    #: 1.8-02: set on a failed_validation / failed_acceptance delivery only.
+    gate_failure: dict | None = None
 
     def to_dict(self) -> dict:
         data = {
@@ -110,6 +112,8 @@ class DeliveryResult:
             data["artifact_integrity"] = dict(self.artifact_integrity or {})
             data["coverage"] = dict(self.coverage or {})
             data["blocking"] = list(self.blocking or [])
+        if self.gate_failure is not None:
+            data["gate_failure"] = dict(self.gate_failure)
         return data
 
 
@@ -469,6 +473,7 @@ async def deliver_drawing(
     strict_critique: bool = True,
     expected: dict | None = None,
     requirements: RequirementSet | None = None,
+    detail: str = "summary",
 ) -> DeliveryResult:
     """Export, validate, hash, read back and (with requirements) verify a bundle.
 
@@ -478,6 +483,12 @@ async def deliver_drawing(
     evidence went stale, or a dimension disagrees with its geometry), else
     ``success``. ``blocking`` lists every reason, whichever status won. The
     open document is never re-pointed or saved.
+
+    1.8-02: a ``failed_validation`` or ``failed_acceptance`` result also
+    carries ``gate_failure`` - ``engineering.errors.gate_failure_payload``,
+    the finalize gate's shape: ``{kind, score, blocking, blocking_count,
+    qa_coverage}`` with each blocking row's handles - so the caller needs no
+    second QA read; ``detail="full"`` keeps every row and handle.
     """
     from engineering.verification.report import document_identity_of, summarize
 
@@ -746,4 +757,56 @@ async def deliver_drawing(
         }
         result.coverage = dict(report["coverage"])
         result.blocking = list(blocking)
+    if status in ("failed_validation", "failed_acceptance"):
+        result.gate_failure = _gate_failure(
+            status,
+            validation=validation,
+            blocking_issues=blocking_issues,
+            parity_ok=parity["ok"],
+            score=score,
+            min_score=float(min_score),
+            acceptance=acceptance,
+            qa_shared=qa_shared,
+            detail=detail,
+        )
     return result
+
+
+def _gate_failure(
+    status: str,
+    *,
+    validation,
+    blocking_issues,
+    parity_ok: bool,
+    score: dict,
+    min_score: float,
+    acceptance,
+    qa_shared: dict,
+    detail: str,
+) -> dict:
+    """The finalize-shaped gate payload of a failed delivery (1.8-02)."""
+    from engineering.errors import gate_failure_payload
+    from engineering.qa_scan import QA_SNAPSHOT_KEY
+
+    other: list[tuple[str, str]] = []
+    if not parity_ok:
+        other.append(("parity", "the delivered DXF differs from the source document"))
+    if score["score"] < min_score:
+        other.append(("score", f"score {score['score']} < min_score {min_score}"))
+    if status == "failed_acceptance":
+        kind = "failed_acceptance"
+    elif validation.ok and parity_ok and score["score"] >= min_score and blocking_issues:
+        kind = "critique_gate_failed"
+    else:
+        kind = "validation_failed"
+    coverage = (qa_shared.get(QA_SNAPSHOT_KEY) or (None, None))[1]
+    return gate_failure_payload(
+        kind,
+        score=score,
+        findings=[f for f in validation.findings if f.severity == "error"],
+        issues=blocking_issues,
+        other=other,
+        requirements=list(acceptance["report"]["blocking"]) if acceptance is not None else [],
+        qa_coverage=coverage.to_dict() if coverage is not None else None,
+        detail=detail,
+    )

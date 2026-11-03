@@ -44,6 +44,7 @@ __all__ = [
     "ToolAliases",
     "alias_text",
     "aliases_for",
+    "tools_for_command",
 ]
 
 
@@ -2782,6 +2783,32 @@ def aliases_for(tool_name: str) -> ToolAliases | None:
     if record is None:
         record = SYNTHETIC_TOOL_ALIASES.get(tool_name)
     return record
+
+
+#: The decorators AutoCAD accepts in front of a command name (``security.py``).
+_COMMAND_DECORATORS = "_.-*'"
+
+_COMMAND_INDEX: dict[str, tuple[str, ...]] | None = None
+
+
+def tools_for_command(verb: str) -> tuple[str, ...]:
+    """The registered tools whose ``acad`` lists ``verb``, in catalogue order.
+
+    The reverse of :data:`TOOL_ALIASES` (plan 1.8-02): a refused raw command or
+    LISP ``(command "...")`` names the typed tools that do the same job.
+    ``verb`` may carry AutoCAD's decorators (``_.ERASE``, ``-LAYER``); case is
+    ignored. Visibility (profile, packs) is the caller's to apply - this module
+    knows no registry. Empty when no tool claims the command.
+    """
+    global _COMMAND_INDEX
+    if _COMMAND_INDEX is None:
+        index: dict[str, list[str]] = {}
+        for name, record in TOOL_ALIASES.items():
+            for command in record.acad:
+                index.setdefault(command.upper(), []).append(name)
+        _COMMAND_INDEX = {command: tuple(names) for command, names in index.items()}
+    key = str(verb or "").strip().lstrip(_COMMAND_DECORATORS).upper()
+    return _COMMAND_INDEX.get(key, ())
 
 
 def alias_text(tool_name: str) -> str:
