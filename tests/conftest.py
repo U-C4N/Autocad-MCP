@@ -25,6 +25,21 @@ def pin_headless_backend(request, monkeypatch):
     monkeypatch.setenv("AUTOCAD_MCP_BACKEND", "ezdxf")
 
 
+@pytest.fixture(autouse=True)
+def private_state_dir(tmp_path_factory, monkeypatch):
+    """Every test gets its own durable journal folder (B13, 1.8.0).
+
+    The server's lifespan opens ``<ACADMCP_STATE_DIR>/journal.sqlite3``; left
+    at its default that is the developer's real ``%LOCALAPPDATA%`` store, and a
+    client id one test used ("op-1") would replay into the next test. The
+    folder is only named here - the journal creates it when a lifespan opens.
+    """
+    import uuid
+
+    folder = tmp_path_factory.getbasetemp() / "acadmcp-state" / uuid.uuid4().hex[:12]
+    monkeypatch.setenv("ACADMCP_STATE_DIR", str(folder))
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",

@@ -35,6 +35,7 @@ from pydantic import Field
 
 import config
 from backends.base import BlockInfo, EntityInfo, LayerInfo
+from backends.journal_store import open_journal, state_store_status
 from backends.operations import (
     CURRENT_OPERATION,
     OperationConflictError,
@@ -145,9 +146,11 @@ async def autocad_lifespan(server):
     except Exception as exc:  # profile trouble must never block startup
         log.warning("Tool profile could not be applied: %s", exc)
     backend = None
-    # B12: the operation journal lives as long as the server: in memory, so a
-    # restart forgets every operation id (B13 makes it durable in 1.8.0).
-    operations = OperationJournal()
+    # B12/B13: one operation journal per server, written through to
+    # <ACADMCP_STATE_DIR>/journal.sqlite3 so a client id replays after a restart
+    # (backends/journal_store.py). It never fails startup: a refused folder or
+    # an unusable file leaves it in memory, reported by system_status.state_store.
+    operations = open_journal(is_read_only=_read_only_tool)
     try:
         backend = await _make_backend()
         log.info("Backend ready: %s", backend.name)
@@ -163,6 +166,9 @@ async def autocad_lifespan(server):
         log.info("AutoCAD MCP Pro shutting down")
         if backend is not None:
             await _disconnect_backend(backend)
+        closer = getattr(operations, "close", None)
+        if callable(closer):
+            closer()
 
 
 async def _disconnect_backend(backend) -> None:
@@ -6149,7 +6155,16 @@ async def system_status(ctx: Context = None) -> dict:
     tool call (and per cad_batch step), with `operation_id`, `tool`,
     `request_hash`, `state` (committed / partial / failed / refused /
     quarantined / cancelled / unknown_commit / running), the document id and
-    the revision before and after. Held in memory; a restart forgets them.
+    the revision before and after - this run's first, preceded by earlier runs'
+    when there are fewer than 20.
+
+    `state_store` describes the durable journal (B13): `mode` (`durable`, or
+    `off` with JOURNAL_DURABLE=off), `path` (<ACADMCP_STATE_DIR>/journal.sqlite3),
+    `bytes`, `documents`, `operations`, `checkpoints`, `write_failures` and
+    `degraded` (false, or `{kind, reason}` when the file is unusable or
+    refused and records are kept in memory only - no call fails because of it).
+    A client id replays across restarts; a call still running when its server
+    died answers `requires_reconcile` with `error_kind: "process_exit"`.
     """
     b = ctx.lifespan_context.get("backend")
     journal = _operations_journal(ctx.lifespan_context)
@@ -6169,6 +6184,7 @@ async def system_status(ctx: Context = None) -> dict:
         if tool_count is not None:
             out["tool_count"] = tool_count
         out["operations"] = journal.recent()
+        out["state_store"] = state_store_status(journal)
         return out
     status = await b.system_status()
     status["server"] = "AutoCAD MCP Pro"
@@ -6180,6 +6196,7 @@ async def system_status(ctx: Context = None) -> dict:
             "DANGEROUS_COMMANDS_ENABLED=true — command/LISP sanitization disabled."
         )
     status["operations"] = journal.recent()
+    status["state_store"] = state_store_status(journal)
     return status
 
 
