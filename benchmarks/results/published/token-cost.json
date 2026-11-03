@@ -1,0 +1,3649 @@
+{
+  "backend": "ezdxf",
+  "counting": {
+    "method_note": "tokens = characters / a per-format divisor (see counting.ratios); estimates, not counts. Characters are the measured unit.",
+    "primary_unit": "characters",
+    "ratios": {
+      "compact_text": {
+        "chars_per_token": 3.29,
+        "confidence": "carried-over-measurement",
+        "provenance": "v1.5.0 design-pass measurement over the compact pipe cards emitted by discovery/serialize.py. Denser than schema text, hence the lower divisor - the whole reason a flat divisor is wrong."
+      },
+      "json_data": {
+        "chars_per_token": 4.19,
+        "confidence": "borrowed",
+        "provenance": "Borrowed from json_schema; no measurement exists for dense numeric JSON. Float-heavy JSON plausibly tokenizes worse (fewer chars per token), so the token figures on result-side payloads are best read as a floor."
+      },
+      "json_schema": {
+        "chars_per_token": 4.19,
+        "confidence": "carried-over-measurement",
+        "provenance": "v1.5.0 design-pass measurement over this server's own tools/list payload (JSON Schema text: short ASCII keys, punctuation and prose descriptions). Not re-derived here - re-derive with --tokenizer anthropic."
+      },
+      "text": {
+        "chars_per_token": 4.19,
+        "confidence": "borrowed",
+        "provenance": "Borrowed from json_schema, whose text is mostly prose descriptions; no measurement exists for the server's plain-English instructions alone."
+      }
+    },
+    "rejected_methods": {
+      "flat_chars_per_token": "One divisor for every format mis-states every cross-format comparison in this report - the schema-text and compact-text divisors differ by 27%. Within a format it would cancel; the comparisons here are between formats.",
+      "tiktoken": "A real tokenizer, but OpenAI's: it undercounts Claude tokens by ~15-20% on prose and more on code/JSON, so it would reintroduce the same class of error. Not wired in on purpose."
+    },
+    "token_method": "ratio/v1",
+    "tokens_are_estimates": true
+  },
+  "discovery": {
+    "arms": [
+      {
+        "arm": "cad_search",
+        "format": "compact_text",
+        "note": "Ours: alias-aware BM25 plus the risk filter, compact cards.",
+        "queries": [
+          {
+            "bytes_utf8": 612,
+            "chars": 612,
+            "cost": {
+              "cached_input_tokens_per_request": 18.6,
+              "session_cached": 771.9,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 5580,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 186,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 5,
+            "query": "round the corner",
+            "tokens": {
+              "chars_per_token": 3.29,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "compact_text",
+              "method": "ratio/v1",
+              "value": 186
+            },
+            "top": [
+              "entity_fillet",
+              "entity_create_circle",
+              "view_zoom_window"
+            ]
+          },
+          {
+            "bytes_utf8": 143,
+            "chars": 143,
+            "cost": {
+              "cached_input_tokens_per_request": 4.3,
+              "session_cached": 178.4,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 1290,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 43,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 1,
+            "query": "WBLOCK",
+            "tokens": {
+              "chars_per_token": 3.29,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "compact_text",
+              "method": "ratio/v1",
+              "value": 43
+            },
+            "top": [
+              "block_create_from_entities"
+            ]
+          },
+          {
+            "bytes_utf8": 117,
+            "chars": 117,
+            "cost": {
+              "cached_input_tokens_per_request": 3.6,
+              "session_cached": 149.4,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 1080,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 36,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 1,
+            "query": "BPOLY",
+            "tokens": {
+              "chars_per_token": 3.29,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "compact_text",
+              "method": "ratio/v1",
+              "value": 36
+            },
+            "top": [
+              "boundary_trace"
+            ]
+          },
+          {
+            "bytes_utf8": 566,
+            "chars": 566,
+            "cost": {
+              "cached_input_tokens_per_request": 17.2,
+              "session_cached": 713.8,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 5160,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 172,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 5,
+            "query": "how many entities are on the GEOMETRY layer",
+            "tokens": {
+              "chars_per_token": 3.29,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "compact_text",
+              "method": "ratio/v1",
+              "value": 172
+            },
+            "top": [
+              "analysis_entity_stats",
+              "point_intersection",
+              "layer_state_restore"
+            ]
+          },
+          {
+            "bytes_utf8": 649,
+            "chars": 649,
+            "cost": {
+              "cached_input_tokens_per_request": 19.7,
+              "session_cached": 817.6,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 5910,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 197,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 5,
+            "query": "draw a hole in the plate",
+            "tokens": {
+              "chars_per_token": 3.29,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "compact_text",
+              "method": "ratio/v1",
+              "value": 197
+            },
+            "top": [
+              "mech_part_draw",
+              "entity_create_circle",
+              "mech_hole_pattern"
+            ]
+          },
+          {
+            "bytes_utf8": 671,
+            "chars": 671,
+            "cost": {
+              "cached_input_tokens_per_request": 20.4,
+              "session_cached": 846.6,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 6120,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 204,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 5,
+            "query": "dimension everything with a chain",
+            "tokens": {
+              "chars_per_token": 3.29,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "compact_text",
+              "method": "ratio/v1",
+              "value": 204
+            },
+            "top": [
+              "dimension_auto",
+              "dimension_linear",
+              "mech_dimension_part"
+            ]
+          },
+          {
+            "bytes_utf8": 647,
+            "chars": 647,
+            "cost": {
+              "cached_input_tokens_per_request": 19.7,
+              "session_cached": 817.6,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 5910,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 197,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 5,
+            "query": "save the drawing as a pdf",
+            "tokens": {
+              "chars_per_token": 3.29,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "compact_text",
+              "method": "ratio/v1",
+              "value": 197
+            },
+            "top": [
+              "drawing_export_pdf",
+              "drawing_save",
+              "batch_plot"
+            ]
+          },
+          {
+            "bytes_utf8": 646,
+            "chars": 646,
+            "cost": {
+              "cached_input_tokens_per_request": 19.6,
+              "session_cached": 813.4,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 5880,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 196,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 5,
+            "query": "put a leader note on the chamfer",
+            "tokens": {
+              "chars_per_token": 3.29,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "compact_text",
+              "method": "ratio/v1",
+              "value": 196
+            },
+            "top": [
+              "leader_create_mleader",
+              "entity_chamfer",
+              "mleaderstyle_list"
+            ]
+          },
+          {
+            "bytes_utf8": 658,
+            "chars": 658,
+            "cost": {
+              "cached_input_tokens_per_request": 20.0,
+              "session_cached": 830.0,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 6000,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 200,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 5,
+            "query": "select every circle on the GEOMETRY layer",
+            "tokens": {
+              "chars_per_token": 3.29,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "compact_text",
+              "method": "ratio/v1",
+              "value": 200
+            },
+            "top": [
+              "analysis_select_by_type",
+              "entity_create_circle",
+              "entity_edit_geometry"
+            ]
+          }
+        ],
+        "serializer": "discovery.serialize.serialize_search_results",
+        "strawman": false,
+        "transform": "discovery.transform.CadSearchTransform"
+      },
+      {
+        "arm": "stock_bm25_compact",
+        "format": "compact_text",
+        "note": "Stock BM25 wired to the same compact serializer - the fair A/B. Any size difference against ours is ranking, not rendering.",
+        "queries": [
+          {
+            "bytes_utf8": 603,
+            "chars": 603,
+            "cost": {
+              "cached_input_tokens_per_request": 18.3,
+              "session_cached": 759.5,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 5490,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 183,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 5,
+            "query": "round the corner",
+            "tokens": {
+              "chars_per_token": 3.29,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "compact_text",
+              "method": "ratio/v1",
+              "value": 183
+            },
+            "top": [
+              "entity_fillet",
+              "view_zoom_window",
+              "entity_create_rectangle"
+            ]
+          },
+          {
+            "bytes_utf8": 27,
+            "chars": 27,
+            "cost": {
+              "cached_input_tokens_per_request": 0.8,
+              "session_cached": 33.2,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 240,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 8,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 0,
+            "query": "WBLOCK",
+            "tokens": {
+              "chars_per_token": 3.29,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "compact_text",
+              "method": "ratio/v1",
+              "value": 8
+            },
+            "top": []
+          },
+          {
+            "bytes_utf8": 117,
+            "chars": 117,
+            "cost": {
+              "cached_input_tokens_per_request": 3.6,
+              "session_cached": 149.4,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 1080,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 36,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 1,
+            "query": "BPOLY",
+            "tokens": {
+              "chars_per_token": 3.29,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "compact_text",
+              "method": "ratio/v1",
+              "value": 36
+            },
+            "top": [
+              "boundary_trace"
+            ]
+          },
+          {
+            "bytes_utf8": 599,
+            "chars": 599,
+            "cost": {
+              "cached_input_tokens_per_request": 18.2,
+              "session_cached": 755.3,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 5460,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 182,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 5,
+            "query": "how many entities are on the GEOMETRY layer",
+            "tokens": {
+              "chars_per_token": 3.29,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "compact_text",
+              "method": "ratio/v1",
+              "value": 182
+            },
+            "top": [
+              "point_intersection",
+              "layer_state_restore",
+              "entity_delete_many"
+            ]
+          },
+          {
+            "bytes_utf8": 686,
+            "chars": 686,
+            "cost": {
+              "cached_input_tokens_per_request": 20.9,
+              "session_cached": 867.4,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 6270,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 209,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 5,
+            "query": "draw a hole in the plate",
+            "tokens": {
+              "chars_per_token": 3.29,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "compact_text",
+              "method": "ratio/v1",
+              "value": 209
+            },
+            "top": [
+              "mech_hole_pattern",
+              "mech_part_draw",
+              "gear_draw_helical_front_view"
+            ]
+          },
+          {
+            "bytes_utf8": 614,
+            "chars": 614,
+            "cost": {
+              "cached_input_tokens_per_request": 18.7,
+              "session_cached": 776.0,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 5610,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 187,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 5,
+            "query": "dimension everything with a chain",
+            "tokens": {
+              "chars_per_token": 3.29,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "compact_text",
+              "method": "ratio/v1",
+              "value": 187
+            },
+            "top": [
+              "dimension_auto",
+              "mech_dimension_part",
+              "boundary_from_entities"
+            ]
+          },
+          {
+            "bytes_utf8": 625,
+            "chars": 625,
+            "cost": {
+              "cached_input_tokens_per_request": 19.0,
+              "session_cached": 788.5,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 5700,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 190,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 5,
+            "query": "save the drawing as a pdf",
+            "tokens": {
+              "chars_per_token": 3.29,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "compact_text",
+              "method": "ratio/v1",
+              "value": 190
+            },
+            "top": [
+              "drawing_export_pdf",
+              "batch_plot",
+              "drawing_save_as"
+            ]
+          },
+          {
+            "bytes_utf8": 651,
+            "chars": 651,
+            "cost": {
+              "cached_input_tokens_per_request": 19.8,
+              "session_cached": 821.7,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 5940,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 198,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 5,
+            "query": "put a leader note on the chamfer",
+            "tokens": {
+              "chars_per_token": 3.29,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "compact_text",
+              "method": "ratio/v1",
+              "value": 198
+            },
+            "top": [
+              "entity_chamfer",
+              "balloon_add",
+              "mleaderstyle_list"
+            ]
+          },
+          {
+            "bytes_utf8": 647,
+            "chars": 647,
+            "cost": {
+              "cached_input_tokens_per_request": 19.7,
+              "session_cached": 817.6,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 5910,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 197,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 5,
+            "query": "select every circle on the GEOMETRY layer",
+            "tokens": {
+              "chars_per_token": 3.29,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "compact_text",
+              "method": "ratio/v1",
+              "value": 197
+            },
+            "top": [
+              "analysis_select_by_type",
+              "analysis_measure_entity",
+              "entity_edit_geometry"
+            ]
+          }
+        ],
+        "serializer": "discovery.serialize.serialize_search_results",
+        "strawman": false,
+        "transform": "fastmcp.server.transforms.search.BM25SearchTransform"
+      },
+      {
+        "arm": "stock_bm25_default",
+        "format": "json_schema",
+        "note": "Stock BM25 on its default serializer, which re-emits each hit's full list_tools entry. Recorded to size the renderer's contribution, NOT as a baseline any claim should be made against.",
+        "queries": [
+          {
+            "bytes_utf8": 5642,
+            "chars": 5640,
+            "cost": {
+              "cached_input_tokens_per_request": 134.6,
+              "session_cached": 5585.9,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 40380,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 1346,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 5,
+            "query": "round the corner",
+            "tokens": {
+              "chars_per_token": 4.19,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "json_schema",
+              "method": "ratio/v1",
+              "value": 1346
+            },
+            "top": [
+              "entity_fillet",
+              "view_zoom_window",
+              "entity_create_rectangle"
+            ]
+          },
+          {
+            "bytes_utf8": 2,
+            "chars": 2,
+            "cost": {
+              "cached_input_tokens_per_request": 0.1,
+              "session_cached": 4.2,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 30,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 1,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 0,
+            "query": "WBLOCK",
+            "tokens": {
+              "chars_per_token": 4.19,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "json_schema",
+              "method": "ratio/v1",
+              "value": 1
+            },
+            "top": []
+          },
+          {
+            "bytes_utf8": 1199,
+            "chars": 1199,
+            "cost": {
+              "cached_input_tokens_per_request": 28.6,
+              "session_cached": 1186.9,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 8580,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 286,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 1,
+            "query": "BPOLY",
+            "tokens": {
+              "chars_per_token": 4.19,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "json_schema",
+              "method": "ratio/v1",
+              "value": 286
+            },
+            "top": [
+              "boundary_trace"
+            ]
+          },
+          {
+            "bytes_utf8": 8173,
+            "chars": 8167,
+            "cost": {
+              "cached_input_tokens_per_request": 194.9,
+              "session_cached": 8088.4,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 58470,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 1949,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 5,
+            "query": "how many entities are on the GEOMETRY layer",
+            "tokens": {
+              "chars_per_token": 4.19,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "json_schema",
+              "method": "ratio/v1",
+              "value": 1949
+            },
+            "top": [
+              "point_intersection",
+              "layer_state_restore",
+              "entity_delete_many"
+            ]
+          },
+          {
+            "bytes_utf8": 11418,
+            "chars": 11416,
+            "cost": {
+              "cached_input_tokens_per_request": 272.5,
+              "session_cached": 11308.8,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 81750,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 2725,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 5,
+            "query": "draw a hole in the plate",
+            "tokens": {
+              "chars_per_token": 4.19,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "json_schema",
+              "method": "ratio/v1",
+              "value": 2725
+            },
+            "top": [
+              "mech_hole_pattern",
+              "mech_part_draw",
+              "gear_draw_helical_front_view"
+            ]
+          },
+          {
+            "bytes_utf8": 9014,
+            "chars": 9012,
+            "cost": {
+              "cached_input_tokens_per_request": 215.1,
+              "session_cached": 8926.7,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 64530,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 2151,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 5,
+            "query": "dimension everything with a chain",
+            "tokens": {
+              "chars_per_token": 4.19,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "json_schema",
+              "method": "ratio/v1",
+              "value": 2151
+            },
+            "top": [
+              "dimension_auto",
+              "mech_dimension_part",
+              "boundary_from_entities"
+            ]
+          },
+          {
+            "bytes_utf8": 5327,
+            "chars": 5319,
+            "cost": {
+              "cached_input_tokens_per_request": 126.9,
+              "session_cached": 5266.4,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 38070,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 1269,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 5,
+            "query": "save the drawing as a pdf",
+            "tokens": {
+              "chars_per_token": 4.19,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "json_schema",
+              "method": "ratio/v1",
+              "value": 1269
+            },
+            "top": [
+              "drawing_export_pdf",
+              "batch_plot",
+              "drawing_save_as"
+            ]
+          },
+          {
+            "bytes_utf8": 6451,
+            "chars": 6447,
+            "cost": {
+              "cached_input_tokens_per_request": 153.9,
+              "session_cached": 6386.9,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 46170,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 1539,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 5,
+            "query": "put a leader note on the chamfer",
+            "tokens": {
+              "chars_per_token": 4.19,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "json_schema",
+              "method": "ratio/v1",
+              "value": 1539
+            },
+            "top": [
+              "entity_chamfer",
+              "balloon_add",
+              "mleaderstyle_list"
+            ]
+          },
+          {
+            "bytes_utf8": 9926,
+            "chars": 9914,
+            "cost": {
+              "cached_input_tokens_per_request": 236.6,
+              "session_cached": 9818.9,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 70980,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 2366,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "hits": 5,
+            "query": "select every circle on the GEOMETRY layer",
+            "tokens": {
+              "chars_per_token": 4.19,
+              "confidence": "carried-over-measurement",
+              "estimated": true,
+              "format": "json_schema",
+              "method": "ratio/v1",
+              "value": 2366
+            },
+            "top": [
+              "analysis_select_by_type",
+              "analysis_measure_entity",
+              "entity_edit_geometry"
+            ]
+          }
+        ],
+        "serializer": "fastmcp...serialize_tools_for_output_json",
+        "strawman": true,
+        "transform": "fastmcp.server.transforms.search.BM25SearchTransform"
+      }
+    ],
+    "catalog_tools": 243,
+    "limit": 5,
+    "summary": {
+      "comparable_queries": 8,
+      "excluded_queries": [
+        "WBLOCK"
+      ],
+      "hit_rate": {
+        "cad_search": 1.0,
+        "stock_bm25_compact": 0.889,
+        "stock_bm25_default": 0.889
+      },
+      "mean_chars": {
+        "cad_search": 570.8,
+        "stock_bm25_compact": 567.8,
+        "stock_bm25_default": 7139.2
+      },
+      "mean_tokens": {
+        "cad_search": 173.5,
+        "stock_bm25_compact": 172.8,
+        "stock_bm25_default": 1703.9
+      },
+      "note": "Means cover only queries every arm answered; zero-hit answers are excluded from size means and reported in hit_rate instead. The compact serializer, not the ranker, is what makes a search answer small - stock BM25 with the same serializer lands within a few percent. Ours differs in finding the tool at all.",
+      "queries": 9
+    }
+  },
+  "environment": {
+    "ezdxf": "1.4.4",
+    "fastmcp": "3.4.5",
+    "implementation": "CPython",
+    "machine": "AMD64",
+    "package_version": "1.7.0",
+    "platform": "Windows-11-10.0.26300-SP0",
+    "python": "3.12.16"
+  },
+  "idle": [
+    {
+      "advertised_tools": 243,
+      "basis": "prompt_payload",
+      "bytes_utf8": 272334,
+      "chars": 271966,
+      "cost": {
+        "cached_input_tokens_per_request": 6490.8,
+        "session_cached": 269368.2,
+        "session_saving_ratio": 0.862,
+        "session_uncached": 1947240,
+        "turns": 30,
+        "uncached_input_tokens_per_request": 64908,
+        "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+      },
+      "kind": "tools_list",
+      "note": "TOOL_PROFILE=full, DISCOVERY_MODE=off - the shipped default.",
+      "prompt_cache": {
+        "cacheable": {
+          "1024": true,
+          "2048": true,
+          "4096": true,
+          "512": true
+        },
+        "models_by_minimum": {
+          "1024": [
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "claude-sonnet-4-6",
+            "claude-sonnet-4-5"
+          ],
+          "2048": [
+            "claude-opus-4-7",
+            "claude-haiku-3-5"
+          ],
+          "4096": [
+            "claude-opus-4-6",
+            "claude-opus-4-5",
+            "claude-haiku-4-5"
+          ],
+          "512": [
+            "claude-opus-5",
+            "claude-fable-5",
+            "claude-mythos-5"
+          ]
+        },
+        "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
+      },
+      "prompt_chars": 271966,
+      "tokens": {
+        "chars_per_token": 4.19,
+        "confidence": "carried-over-measurement",
+        "estimated": true,
+        "format": "json_schema",
+        "method": "ratio/v1",
+        "value": 64908
+      },
+      "variant": "default",
+      "wire": {
+        "bytes_utf8": 350176,
+        "chars": 349807,
+        "cost": {
+          "cached_input_tokens_per_request": 8348.6,
+          "session_cached": 346466.9,
+          "session_saving_ratio": 0.862,
+          "session_uncached": 2504580,
+          "turns": 30,
+          "uncached_input_tokens_per_request": 83486,
+          "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+        },
+        "tokens": {
+          "chars_per_token": 4.19,
+          "confidence": "carried-over-measurement",
+          "estimated": true,
+          "format": "json_schema",
+          "method": "ratio/v1",
+          "value": 83486
+        }
+      },
+      "wire_chars": 349807
+    },
+    {
+      "advertised_tools": 66,
+      "basis": "prompt_payload",
+      "bytes_utf8": 79943,
+      "chars": 79883,
+      "cost": {
+        "cached_input_tokens_per_request": 1906.5,
+        "session_cached": 79119.8,
+        "session_saving_ratio": 0.862,
+        "session_uncached": 571950,
+        "turns": 30,
+        "uncached_input_tokens_per_request": 19065,
+        "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+      },
+      "kind": "tools_list",
+      "note": "TOOL_PROFILE=lean - the curated drafting core.",
+      "prompt_cache": {
+        "cacheable": {
+          "1024": true,
+          "2048": true,
+          "4096": true,
+          "512": true
+        },
+        "models_by_minimum": {
+          "1024": [
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "claude-sonnet-4-6",
+            "claude-sonnet-4-5"
+          ],
+          "2048": [
+            "claude-opus-4-7",
+            "claude-haiku-3-5"
+          ],
+          "4096": [
+            "claude-opus-4-6",
+            "claude-opus-4-5",
+            "claude-haiku-4-5"
+          ],
+          "512": [
+            "claude-opus-5",
+            "claude-fable-5",
+            "claude-mythos-5"
+          ]
+        },
+        "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
+      },
+      "prompt_chars": 79883,
+      "tokens": {
+        "chars_per_token": 4.19,
+        "confidence": "carried-over-measurement",
+        "estimated": true,
+        "format": "json_schema",
+        "method": "ratio/v1",
+        "value": 19065
+      },
+      "variant": "lean",
+      "wire": {
+        "bytes_utf8": 100524,
+        "chars": 100463,
+        "cost": {
+          "cached_input_tokens_per_request": 2397.7,
+          "session_cached": 99504.6,
+          "session_saving_ratio": 0.862,
+          "session_uncached": 719310,
+          "turns": 30,
+          "uncached_input_tokens_per_request": 23977,
+          "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+        },
+        "tokens": {
+          "chars_per_token": 4.19,
+          "confidence": "carried-over-measurement",
+          "estimated": true,
+          "format": "json_schema",
+          "method": "ratio/v1",
+          "value": 23977
+        }
+      },
+      "wire_chars": 100463
+    },
+    {
+      "advertised_tools": 184,
+      "basis": "prompt_payload",
+      "bytes_utf8": 186015,
+      "chars": 185782,
+      "cost": {
+        "cached_input_tokens_per_request": 4433.9,
+        "session_cached": 184006.9,
+        "session_saving_ratio": 0.862,
+        "session_uncached": 1330170,
+        "turns": 30,
+        "uncached_input_tokens_per_request": 44339,
+        "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+      },
+      "kind": "tools_list",
+      "note": "TOOL_PACKS=core - no vertical pack at all (the README's core row).",
+      "prompt_cache": {
+        "cacheable": {
+          "1024": true,
+          "2048": true,
+          "4096": true,
+          "512": true
+        },
+        "models_by_minimum": {
+          "1024": [
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "claude-sonnet-4-6",
+            "claude-sonnet-4-5"
+          ],
+          "2048": [
+            "claude-opus-4-7",
+            "claude-haiku-3-5"
+          ],
+          "4096": [
+            "claude-opus-4-6",
+            "claude-opus-4-5",
+            "claude-haiku-4-5"
+          ],
+          "512": [
+            "claude-opus-5",
+            "claude-fable-5",
+            "claude-mythos-5"
+          ]
+        },
+        "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
+      },
+      "prompt_chars": 185782,
+      "tokens": {
+        "chars_per_token": 4.19,
+        "confidence": "carried-over-measurement",
+        "estimated": true,
+        "format": "json_schema",
+        "method": "ratio/v1",
+        "value": 44339
+      },
+      "variant": "packs_core",
+      "wire": {
+        "bytes_utf8": 244389,
+        "chars": 244156,
+        "cost": {
+          "cached_input_tokens_per_request": 5827.1,
+          "session_cached": 241824.7,
+          "session_saving_ratio": 0.862,
+          "session_uncached": 1748130,
+          "turns": 30,
+          "uncached_input_tokens_per_request": 58271,
+          "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+        },
+        "tokens": {
+          "chars_per_token": 4.19,
+          "confidence": "carried-over-measurement",
+          "estimated": true,
+          "format": "json_schema",
+          "method": "ratio/v1",
+          "value": 58271
+        }
+      },
+      "wire_chars": 244156
+    },
+    {
+      "advertised_tools": 198,
+      "basis": "prompt_payload",
+      "bytes_utf8": 211399,
+      "chars": 211143,
+      "cost": {
+        "cached_input_tokens_per_request": 5039.2,
+        "session_cached": 209126.8,
+        "session_saving_ratio": 0.862,
+        "session_uncached": 1511760,
+        "turns": 30,
+        "uncached_input_tokens_per_request": 50392,
+        "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+      },
+      "kind": "tools_list",
+      "note": "TOOL_PACKS=core,mech - a mechanical client that never opens a P&ID or a live seat.",
+      "prompt_cache": {
+        "cacheable": {
+          "1024": true,
+          "2048": true,
+          "4096": true,
+          "512": true
+        },
+        "models_by_minimum": {
+          "1024": [
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "claude-sonnet-4-6",
+            "claude-sonnet-4-5"
+          ],
+          "2048": [
+            "claude-opus-4-7",
+            "claude-haiku-3-5"
+          ],
+          "4096": [
+            "claude-opus-4-6",
+            "claude-opus-4-5",
+            "claude-haiku-4-5"
+          ],
+          "512": [
+            "claude-opus-5",
+            "claude-fable-5",
+            "claude-mythos-5"
+          ]
+        },
+        "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
+      },
+      "prompt_chars": 211143,
+      "tokens": {
+        "chars_per_token": 4.19,
+        "confidence": "carried-over-measurement",
+        "estimated": true,
+        "format": "json_schema",
+        "method": "ratio/v1",
+        "value": 50392
+      },
+      "variant": "packs_core_mech",
+      "wire": {
+        "bytes_utf8": 274509,
+        "chars": 274253,
+        "cost": {
+          "cached_input_tokens_per_request": 6545.4,
+          "session_cached": 271634.1,
+          "session_saving_ratio": 0.862,
+          "session_uncached": 1963620,
+          "turns": 30,
+          "uncached_input_tokens_per_request": 65454,
+          "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+        },
+        "tokens": {
+          "chars_per_token": 4.19,
+          "confidence": "carried-over-measurement",
+          "estimated": true,
+          "format": "json_schema",
+          "method": "ratio/v1",
+          "value": 65454
+        }
+      },
+      "wire_chars": 274253
+    },
+    {
+      "advertised_tools": 196,
+      "basis": "prompt_payload",
+      "bytes_utf8": 206041,
+      "chars": 205797,
+      "cost": {
+        "cached_input_tokens_per_request": 4911.6,
+        "session_cached": 203831.4,
+        "session_saving_ratio": 0.862,
+        "session_uncached": 1473480,
+        "turns": 30,
+        "uncached_input_tokens_per_request": 49116,
+        "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+      },
+      "kind": "tools_list",
+      "note": "TOOL_PACKS=core,arch - an architectural client that never opens a P&ID, a machine part or a live seat.",
+      "prompt_cache": {
+        "cacheable": {
+          "1024": true,
+          "2048": true,
+          "4096": true,
+          "512": true
+        },
+        "models_by_minimum": {
+          "1024": [
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "claude-sonnet-4-6",
+            "claude-sonnet-4-5"
+          ],
+          "2048": [
+            "claude-opus-4-7",
+            "claude-haiku-3-5"
+          ],
+          "4096": [
+            "claude-opus-4-6",
+            "claude-opus-4-5",
+            "claude-haiku-4-5"
+          ],
+          "512": [
+            "claude-opus-5",
+            "claude-fable-5",
+            "claude-mythos-5"
+          ]
+        },
+        "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
+      },
+      "prompt_chars": 205797,
+      "tokens": {
+        "chars_per_token": 4.19,
+        "confidence": "carried-over-measurement",
+        "estimated": true,
+        "format": "json_schema",
+        "method": "ratio/v1",
+        "value": 49116
+      },
+      "variant": "packs_core_arch",
+      "wire": {
+        "bytes_utf8": 268357,
+        "chars": 268112,
+        "cost": {
+          "cached_input_tokens_per_request": 6398.9,
+          "session_cached": 265554.3,
+          "session_saving_ratio": 0.862,
+          "session_uncached": 1919670,
+          "turns": 30,
+          "uncached_input_tokens_per_request": 63989,
+          "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+        },
+        "tokens": {
+          "chars_per_token": 4.19,
+          "confidence": "carried-over-measurement",
+          "estimated": true,
+          "format": "json_schema",
+          "method": "ratio/v1",
+          "value": 63989
+        }
+      },
+      "wire_chars": 268112
+    },
+    {
+      "advertised_tools": 3,
+      "basis": "prompt_payload",
+      "bytes_utf8": 1910,
+      "chars": 1908,
+      "cost": {
+        "cached_input_tokens_per_request": 45.5,
+        "session_cached": 1888.2,
+        "session_saving_ratio": 0.862,
+        "session_uncached": 13650,
+        "turns": 30,
+        "uncached_input_tokens_per_request": 455,
+        "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+      },
+      "kind": "tools_list",
+      "note": "DISCOVERY_MODE=search - search_tools, the call_tool proxy and describe_tool; the catalog is reached through the search tool instead of advertised.",
+      "prompt_cache": {
+        "cacheable": {
+          "1024": false,
+          "2048": false,
+          "4096": false,
+          "512": false
+        },
+        "models_by_minimum": {
+          "1024": [
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "claude-sonnet-4-6",
+            "claude-sonnet-4-5"
+          ],
+          "2048": [
+            "claude-opus-4-7",
+            "claude-haiku-3-5"
+          ],
+          "4096": [
+            "claude-opus-4-6",
+            "claude-opus-4-5",
+            "claude-haiku-4-5"
+          ],
+          "512": [
+            "claude-opus-5",
+            "claude-fable-5",
+            "claude-mythos-5"
+          ]
+        },
+        "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
+      },
+      "prompt_chars": 1908,
+      "tokens": {
+        "chars_per_token": 4.19,
+        "confidence": "carried-over-measurement",
+        "estimated": true,
+        "format": "json_schema",
+        "method": "ratio/v1",
+        "value": 455
+      },
+      "variant": "search",
+      "wire": {
+        "bytes_utf8": 2110,
+        "chars": 2108,
+        "cost": {
+          "cached_input_tokens_per_request": 50.3,
+          "session_cached": 2087.4,
+          "session_saving_ratio": 0.862,
+          "session_uncached": 15090,
+          "turns": 30,
+          "uncached_input_tokens_per_request": 503,
+          "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+        },
+        "tokens": {
+          "chars_per_token": 4.19,
+          "confidence": "carried-over-measurement",
+          "estimated": true,
+          "format": "json_schema",
+          "method": "ratio/v1",
+          "value": 503
+        }
+      },
+      "wire_chars": 2108
+    },
+    {
+      "advertised_tools": 0,
+      "basis": "text",
+      "bytes_utf8": 1961,
+      "chars": 1933,
+      "cost": {
+        "cached_input_tokens_per_request": 46.1,
+        "session_cached": 1913.2,
+        "session_saving_ratio": 0.862,
+        "session_uncached": 13830,
+        "turns": 30,
+        "uncached_input_tokens_per_request": 461,
+        "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+      },
+      "kind": "instructions",
+      "note": "The server instructions from the initialize result (system prompt).",
+      "prompt_cache": {
+        "cacheable": {
+          "1024": false,
+          "2048": false,
+          "4096": false,
+          "512": false
+        },
+        "models_by_minimum": {
+          "1024": [
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "claude-sonnet-4-6",
+            "claude-sonnet-4-5"
+          ],
+          "2048": [
+            "claude-opus-4-7",
+            "claude-haiku-3-5"
+          ],
+          "4096": [
+            "claude-opus-4-6",
+            "claude-opus-4-5",
+            "claude-haiku-4-5"
+          ],
+          "512": [
+            "claude-opus-5",
+            "claude-fable-5",
+            "claude-mythos-5"
+          ]
+        },
+        "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
+      },
+      "prompt_chars": 1933,
+      "tokens": {
+        "chars_per_token": 4.19,
+        "confidence": "borrowed",
+        "estimated": true,
+        "format": "text",
+        "method": "ratio/v1",
+        "value": 461
+      },
+      "variant": "instructions",
+      "wire": {
+        "bytes_utf8": 1961,
+        "chars": 1933,
+        "cost": {
+          "cached_input_tokens_per_request": 46.1,
+          "session_cached": 1913.2,
+          "session_saving_ratio": 0.862,
+          "session_uncached": 13830,
+          "turns": 30,
+          "uncached_input_tokens_per_request": 461,
+          "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+        },
+        "tokens": {
+          "chars_per_token": 4.19,
+          "confidence": "borrowed",
+          "estimated": true,
+          "format": "text",
+          "method": "ratio/v1",
+          "value": 461
+        }
+      },
+      "wire_chars": 1933
+    }
+  ],
+  "idle_basis": "prompt_payload",
+  "lanes": [
+    "idle",
+    "discovery",
+    "result",
+    "task"
+  ],
+  "result": {
+    "backend": "ezdxf",
+    "entities_in_drawing": 300,
+    "entity_types": {
+      "ARC": 60,
+      "CIRCLE": 60,
+      "LINE": 60,
+      "LWPOLYLINE": 60,
+      "TEXT": 60
+    },
+    "projection": {
+      "chars_per_entity": 283.8,
+      "config_max_list_limit": 5000,
+      "extrapolated": true,
+      "extrapolated_chars_at_config_cap": 1419000,
+      "extrapolated_chars_at_schema_max": 283800,
+      "note": "entity_list declares limit as Field(ge=1, le=1000), so the MAX_LIST_LIMIT cap (default 5000) is unreachable through the tool's schema - the config-cap row is an extrapolation from measured chars/entity, not a payload anyone can actually elicit.",
+      "schema_max_limit": 1000
+    },
+    "scenarios": [
+      {
+        "bytes_utf8": 6995,
+        "chars": 6995,
+        "chars_per_entity": 279.8,
+        "cost": {
+          "cached_input_tokens_per_request": 166.9,
+          "session_cached": 6926.4,
+          "session_saving_ratio": 0.862,
+          "session_uncached": 50070,
+          "turns": 30,
+          "uncached_input_tokens_per_request": 1669,
+          "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+        },
+        "counterfactuals": {
+          "floats_rounded_6dp": {
+            "bytes_utf8": 6685,
+            "chars": 6685,
+            "cost": {
+              "cached_input_tokens_per_request": 159.5,
+              "session_cached": 6619.2,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 47850,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 1595,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "counterfactual": true,
+            "label": "floats_rounded_6dp",
+            "note": "Full-precision repr (14.142135623730951) versus 6 decimals - drawing units are mm, so the extra digits are noise.",
+            "saved_chars": 310,
+            "saved_pct": 4.4,
+            "tokens": {
+              "chars_per_token": 4.19,
+              "confidence": "borrowed",
+              "estimated": true,
+              "format": "json_data",
+              "method": "ratio/v1",
+              "value": 1595
+            }
+          },
+          "without_bounding_box": {
+            "bytes_utf8": 5286,
+            "chars": 5286,
+            "cost": {
+              "cached_input_tokens_per_request": 126.2,
+              "session_cached": 5237.3,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 37860,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 1262,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "counterfactual": true,
+            "label": "without_bounding_box",
+            "note": "Every EntityInfo carries a nested properties.bounding_box; this is what dropping it would save.",
+            "saved_chars": 1709,
+            "saved_pct": 24.4,
+            "tokens": {
+              "chars_per_token": 4.19,
+              "confidence": "borrowed",
+              "estimated": true,
+              "format": "json_data",
+              "method": "ratio/v1",
+              "value": 1262
+            }
+          }
+        },
+        "limit": 25,
+        "note": "chars/tokens price the text block - what a model client feeds the model. FastMCP also returns the same rows as structuredContent, so the transport carries the payload twice; wire_chars is that total.",
+        "rows_returned": 25,
+        "scenario": "entity_list(limit=25)",
+        "structured_chars": 7006,
+        "text_chars": 6995,
+        "tokens": {
+          "chars_per_token": 4.19,
+          "confidence": "borrowed",
+          "estimated": true,
+          "format": "json_data",
+          "method": "ratio/v1",
+          "value": 1669
+        },
+        "wire_chars": 14001
+      },
+      {
+        "bytes_utf8": 28206,
+        "chars": 28206,
+        "chars_per_entity": 282.1,
+        "cost": {
+          "cached_input_tokens_per_request": 673.2,
+          "session_cached": 27937.8,
+          "session_saving_ratio": 0.862,
+          "session_uncached": 201960,
+          "turns": 30,
+          "uncached_input_tokens_per_request": 6732,
+          "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+        },
+        "counterfactuals": {
+          "floats_rounded_6dp": {
+            "bytes_utf8": 26989,
+            "chars": 26989,
+            "cost": {
+              "cached_input_tokens_per_request": 644.1,
+              "session_cached": 26730.2,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 193230,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 6441,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "counterfactual": true,
+            "label": "floats_rounded_6dp",
+            "note": "Full-precision repr (14.142135623730951) versus 6 decimals - drawing units are mm, so the extra digits are noise.",
+            "saved_chars": 1217,
+            "saved_pct": 4.3,
+            "tokens": {
+              "chars_per_token": 4.19,
+              "confidence": "borrowed",
+              "estimated": true,
+              "format": "json_data",
+              "method": "ratio/v1",
+              "value": 6441
+            }
+          },
+          "without_bounding_box": {
+            "bytes_utf8": 21259,
+            "chars": 21259,
+            "cost": {
+              "cached_input_tokens_per_request": 507.4,
+              "session_cached": 21057.1,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 152220,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 5074,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "counterfactual": true,
+            "label": "without_bounding_box",
+            "note": "Every EntityInfo carries a nested properties.bounding_box; this is what dropping it would save.",
+            "saved_chars": 6947,
+            "saved_pct": 24.6,
+            "tokens": {
+              "chars_per_token": 4.19,
+              "confidence": "borrowed",
+              "estimated": true,
+              "format": "json_data",
+              "method": "ratio/v1",
+              "value": 5074
+            }
+          }
+        },
+        "limit": 100,
+        "note": "chars/tokens price the text block - what a model client feeds the model. FastMCP also returns the same rows as structuredContent, so the transport carries the payload twice; wire_chars is that total.",
+        "rows_returned": 100,
+        "scenario": "entity_list(limit=100)",
+        "structured_chars": 28217,
+        "text_chars": 28206,
+        "tokens": {
+          "chars_per_token": 4.19,
+          "confidence": "borrowed",
+          "estimated": true,
+          "format": "json_data",
+          "method": "ratio/v1",
+          "value": 6732
+        },
+        "wire_chars": 56423
+      },
+      {
+        "bytes_utf8": 85153,
+        "chars": 85153,
+        "chars_per_entity": 283.8,
+        "cost": {
+          "cached_input_tokens_per_request": 2032.3,
+          "session_cached": 84340.5,
+          "session_saving_ratio": 0.862,
+          "session_uncached": 609690,
+          "turns": 30,
+          "uncached_input_tokens_per_request": 20323,
+          "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+        },
+        "counterfactuals": {
+          "floats_rounded_6dp": {
+            "bytes_utf8": 81570,
+            "chars": 81570,
+            "cost": {
+              "cached_input_tokens_per_request": 1946.8,
+              "session_cached": 80792.2,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 584040,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 19468,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "counterfactual": true,
+            "label": "floats_rounded_6dp",
+            "note": "Full-precision repr (14.142135623730951) versus 6 decimals - drawing units are mm, so the extra digits are noise.",
+            "saved_chars": 3583,
+            "saved_pct": 4.2,
+            "tokens": {
+              "chars_per_token": 4.19,
+              "confidence": "borrowed",
+              "estimated": true,
+              "format": "json_data",
+              "method": "ratio/v1",
+              "value": 19468
+            }
+          },
+          "without_bounding_box": {
+            "bytes_utf8": 64104,
+            "chars": 64104,
+            "cost": {
+              "cached_input_tokens_per_request": 1529.9,
+              "session_cached": 63490.9,
+              "session_saving_ratio": 0.862,
+              "session_uncached": 458970,
+              "turns": 30,
+              "uncached_input_tokens_per_request": 15299,
+              "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+            },
+            "counterfactual": true,
+            "label": "without_bounding_box",
+            "note": "Every EntityInfo carries a nested properties.bounding_box; this is what dropping it would save.",
+            "saved_chars": 21049,
+            "saved_pct": 24.7,
+            "tokens": {
+              "chars_per_token": 4.19,
+              "confidence": "borrowed",
+              "estimated": true,
+              "format": "json_data",
+              "method": "ratio/v1",
+              "value": 15299
+            }
+          }
+        },
+        "limit": 1000,
+        "note": "chars/tokens price the text block - what a model client feeds the model. FastMCP also returns the same rows as structuredContent, so the transport carries the payload twice; wire_chars is that total.",
+        "rows_returned": 300,
+        "scenario": "entity_list(limit=1000)",
+        "structured_chars": 85164,
+        "text_chars": 85153,
+        "tokens": {
+          "chars_per_token": 4.19,
+          "confidence": "borrowed",
+          "estimated": true,
+          "format": "json_data",
+          "method": "ratio/v1",
+          "value": 20323
+        },
+        "wire_chars": 170317
+      }
+    ]
+  },
+  "schema_version": "token/2.0",
+  "session_model": {
+    "cache_read_multiplier": 0.1,
+    "cache_write_multiplier": 1.25,
+    "note": "Uncached: the span is re-sent at full price every turn. Cached: one write at 1.25x, then reads at 0.1x. A tool prefix never mutates, so the cached column is the one a real client experiences.",
+    "turns": 30
+  },
+  "task": {
+    "naive_label": "naive: one tool per entity - the shape the rival observed an agent take with this server; not the least this server needs",
+    "prefix": {
+      "instructions_tokens": 461,
+      "surface": "default (TOOL_PROFILE=full, DISCOVERY_MODE=off) + instructions",
+      "tokens": 65369,
+      "tools_tokens": 64908
+    },
+    "scenarios": [
+      {
+        "arms": {
+          "batched": {
+            "arm": "batched",
+            "by_tool": {
+              "cad_batch": 1
+            },
+            "calls": 1,
+            "detail": "types {'LINE': 8, 'CIRCLE': 6, 'ARC': 4, 'LWPOLYLINE': 2}, all on GEOMETRY: True",
+            "label": "cad_batch: the 20 creates as one round trip",
+            "request_chars": 2090,
+            "request_tokens": 499,
+            "result_chars": 1876,
+            "result_tokens": 448,
+            "session": {
+              "history_tokens": 947,
+              "note": "per turn: the prefix plus every previous request and result. Cached: each span written once at 1.25x, read at 0.1x after.",
+              "prefix_cache": {
+                "cacheable": {
+                  "1024": true,
+                  "2048": true,
+                  "4096": true,
+                  "512": true
+                },
+                "models_by_minimum": {
+                  "1024": [
+                    "claude-opus-4-8",
+                    "claude-sonnet-5",
+                    "claude-sonnet-4-6",
+                    "claude-sonnet-4-5"
+                  ],
+                  "2048": [
+                    "claude-opus-4-7",
+                    "claude-haiku-3-5"
+                  ],
+                  "4096": [
+                    "claude-opus-4-6",
+                    "claude-opus-4-5",
+                    "claude-haiku-4-5"
+                  ],
+                  "512": [
+                    "claude-opus-5",
+                    "claude-fable-5",
+                    "claude-mythos-5"
+                  ]
+                },
+                "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
+              },
+              "prefix_tokens": 65369,
+              "session_input_cached": 89431.9,
+              "session_input_uncached": 131685,
+              "turns": 2
+            },
+            "sizes": [
+              [
+                2090,
+                1876
+              ]
+            ],
+            "status": "measured",
+            "verified": true
+          },
+          "naive": {
+            "arm": "naive",
+            "by_tool": {
+              "entity_create_arc": 4,
+              "entity_create_circle": 6,
+              "entity_create_line": 8,
+              "entity_create_polyline": 2
+            },
+            "calls": 20,
+            "detail": "types {'LINE': 8, 'CIRCLE': 6, 'ARC': 4, 'LWPOLYLINE': 2}, all on GEOMETRY: True",
+            "label": "naive: one tool per entity - the shape the rival observed an agent take with this server; not the least this server needs",
+            "request_chars": 2126,
+            "request_tokens": 508,
+            "result_chars": 5131,
+            "result_tokens": 1220,
+            "session": {
+              "history_tokens": 1728,
+              "note": "per turn: the prefix plus every previous request and result. Cached: each span written once at 1.25x, read at 0.1x after.",
+              "prefix_cache": {
+                "cacheable": {
+                  "1024": true,
+                  "2048": true,
+                  "4096": true,
+                  "512": true
+                },
+                "models_by_minimum": {
+                  "1024": [
+                    "claude-opus-4-8",
+                    "claude-sonnet-5",
+                    "claude-sonnet-4-6",
+                    "claude-sonnet-4-5"
+                  ],
+                  "2048": [
+                    "claude-opus-4-7",
+                    "claude-haiku-3-5"
+                  ],
+                  "4096": [
+                    "claude-opus-4-6",
+                    "claude-opus-4-5",
+                    "claude-haiku-4-5"
+                  ],
+                  "512": [
+                    "claude-opus-5",
+                    "claude-fable-5",
+                    "claude-mythos-5"
+                  ]
+                },
+                "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
+              },
+              "prefix_tokens": 65369,
+              "session_input_cached": 216159.8,
+              "session_input_uncached": 1389986,
+              "turns": 21
+            },
+            "sizes": [
+              [
+                98,
+                236
+              ],
+              [
+                100,
+                240
+              ],
+              [
+                100,
+                240
+              ],
+              [
+                100,
+                240
+              ],
+              [
+                100,
+                240
+              ],
+              [
+                100,
+                240
+              ],
+              [
+                100,
+                240
+              ],
+              [
+                100,
+                240
+              ],
+              [
+                96,
+                225
+              ],
+              [
+                97,
+                228
+              ],
+              [
+                97,
+                228
+              ],
+              [
+                97,
+                228
+              ],
+              [
+                97,
+                228
+              ],
+              [
+                97,
+                228
+              ],
+              [
+                129,
+                312
+              ],
+              [
+                130,
+                313
+              ],
+              [
+                130,
+                314
+              ],
+              [
+                130,
+                314
+              ],
+              [
+                112,
+                295
+              ],
+              [
+                116,
+                302
+              ]
+            ],
+            "status": "measured",
+            "verified": true
+          }
+        },
+        "owner": "1.8-14",
+        "question": "Draw a 20-entity sketch: 8 lines, 6 circles, 4 arcs, 2 polylines on GEOMETRY.",
+        "scenario": "sketch_20_entities"
+      },
+      {
+        "arms": {
+          "batched": {
+            "arm": "batched",
+            "by_tool": {},
+            "calls": 0,
+            "detail": "the least-call oracle needs a verb this tree does not have yet (owner 1.8-12 / 1.8-13); never counted as a pass",
+            "label": "layer_merge per misnamed layer + one entity_modify_where (1.8-12)",
+            "missing_tools": [
+              "entity_modify_where",
+              "layer_merge"
+            ],
+            "owner": "1.8-12 / 1.8-13",
+            "request_chars": 0,
+            "result_chars": 0,
+            "session": null,
+            "sizes": [],
+            "status": "pending_tool",
+            "verified": null
+          },
+          "naive": {
+            "arm": "naive",
+            "by_tool": {
+              "entity_list": 4,
+              "entity_set_properties": 300,
+              "layer_delete": 6,
+              "layer_list": 1
+            },
+            "calls": 311,
+            "detail": "300 entities, 0 off the ISO layers, 0 with an override, misnamed layers left: []",
+            "label": "naive: one tool per entity - the shape the rival observed an agent take with this server; not the least this server needs",
+            "request_chars": 32000,
+            "request_tokens": 7661,
+            "result_chars": 80512,
+            "result_tokens": 19202,
+            "session": {
+              "history_tokens": 26863,
+              "note": "per turn: the prefix plus every previous request and result. Cached: each span written once at 1.25x, read at 0.1x after.",
+              "prefix_cache": {
+                "cacheable": {
+                  "1024": true,
+                  "2048": true,
+                  "4096": true,
+                  "512": true
+                },
+                "models_by_minimum": {
+                  "1024": [
+                    "claude-opus-4-8",
+                    "claude-sonnet-5",
+                    "claude-sonnet-4-6",
+                    "claude-sonnet-4-5"
+                  ],
+                  "2048": [
+                    "claude-opus-4-7",
+                    "claude-haiku-3-5"
+                  ],
+                  "4096": [
+                    "claude-opus-4-6",
+                    "claude-opus-4-5",
+                    "claude-haiku-4-5"
+                  ],
+                  "512": [
+                    "claude-opus-5",
+                    "claude-fable-5",
+                    "claude-mythos-5"
+                  ]
+                },
+                "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
+              },
+              "prefix_tokens": 65369,
+              "session_input_cached": 2829817.3,
+              "session_input_uncached": 27237457,
+              "turns": 312
+            },
+            "sizes": [
+              [
+                36,
+                1927
+              ],
+              [
+                59,
+                23401
+              ],
+              [
+                61,
+                23473
+              ],
+              [
+                61,
+                23927
+              ],
+              [
+                61,
+                0
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                104,
+                25
+              ],
+              [
+                107,
+                25
+              ],
+              [
+                102,
+                25
+              ],
+              [
+                103,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                25
+              ],
+              [
+                105,
+                26
+              ],
+              [
+                108,
+                26
+              ],
+              [
+                103,
+                26
+              ],
+              [
+                104,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                105,
+                26
+              ],
+              [
+                108,
+                26
+              ],
+              [
+                103,
+                26
+              ],
+              [
+                104,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                105,
+                26
+              ],
+              [
+                108,
+                26
+              ],
+              [
+                103,
+                26
+              ],
+              [
+                104,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                105,
+                26
+              ],
+              [
+                108,
+                26
+              ],
+              [
+                103,
+                26
+              ],
+              [
+                104,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                105,
+                26
+              ],
+              [
+                108,
+                26
+              ],
+              [
+                103,
+                26
+              ],
+              [
+                104,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                105,
+                26
+              ],
+              [
+                108,
+                26
+              ],
+              [
+                103,
+                26
+              ],
+              [
+                104,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                105,
+                26
+              ],
+              [
+                108,
+                26
+              ],
+              [
+                103,
+                26
+              ],
+              [
+                104,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                105,
+                26
+              ],
+              [
+                108,
+                26
+              ],
+              [
+                103,
+                26
+              ],
+              [
+                104,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                105,
+                26
+              ],
+              [
+                108,
+                26
+              ],
+              [
+                103,
+                26
+              ],
+              [
+                104,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                105,
+                26
+              ],
+              [
+                108,
+                26
+              ],
+              [
+                103,
+                26
+              ],
+              [
+                104,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                105,
+                26
+              ],
+              [
+                108,
+                26
+              ],
+              [
+                103,
+                26
+              ],
+              [
+                104,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                105,
+                26
+              ],
+              [
+                108,
+                26
+              ],
+              [
+                103,
+                26
+              ],
+              [
+                104,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                105,
+                26
+              ],
+              [
+                108,
+                26
+              ],
+              [
+                103,
+                26
+              ],
+              [
+                104,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                105,
+                26
+              ],
+              [
+                108,
+                26
+              ],
+              [
+                103,
+                26
+              ],
+              [
+                104,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                105,
+                26
+              ],
+              [
+                108,
+                26
+              ],
+              [
+                103,
+                26
+              ],
+              [
+                104,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                105,
+                26
+              ],
+              [
+                108,
+                26
+              ],
+              [
+                103,
+                26
+              ],
+              [
+                104,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                105,
+                26
+              ],
+              [
+                108,
+                26
+              ],
+              [
+                103,
+                26
+              ],
+              [
+                104,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                106,
+                26
+              ],
+              [
+                105,
+                26
+              ],
+              [
+                51,
+                28
+              ],
+              [
+                51,
+                28
+              ],
+              [
+                50,
+                27
+              ],
+              [
+                59,
+                36
+              ],
+              [
+                53,
+                30
+              ],
+              [
+                55,
+                32
+              ]
+            ],
+            "status": "measured",
+            "verified": true
+          }
+        },
+        "owner": "1.8-12 / 1.8-13",
+        "question": "Clean the messy-layers drawing: every entity onto its ISO layer with colour and lineweight ByLayer, the six misnamed layers removed (the rival's H4).",
+        "scenario": "layer_cleanup_300"
+      },
+      {
+        "arms": {
+          "batched": {
+            "arm": "batched",
+            "by_tool": {},
+            "calls": 0,
+            "detail": "the least-call oracle needs a verb this tree does not have yet (owner 1.8-13); never counted as a pass",
+            "label": "dimension_auto(selector={'layer': 'GEOMETRY'}) + drawing_critique (1.8-13)",
+            "missing_tools": [
+              "dimension_auto_v2"
+            ],
+            "owner": "1.8-13",
+            "request_chars": 0,
+            "result_chars": 0,
+            "session": null,
+            "sizes": [],
+            "status": "pending_tool",
+            "verified": null
+          },
+          "naive": {
+            "arm": "naive",
+            "by_tool": {
+              "dimension_diameter": 6,
+              "dimension_linear": 4,
+              "dimension_radius": 2,
+              "drawing_critique": 1,
+              "entity_get": 9,
+              "entity_list": 1
+            },
+            "calls": 23,
+            "detail": "12 of 12 dimensions",
+            "label": "naive: one tool per entity - the shape the rival observed an agent take with this server; not the least this server needs; reads every entity with entity_get, then one dimension per feature",
+            "request_chars": 2049,
+            "request_tokens": 492,
+            "result_chars": 8022,
+            "result_tokens": 1914,
+            "session": {
+              "history_tokens": 2406,
+              "note": "per turn: the prefix plus every previous request and result. Cached: each span written once at 1.25x, read at 0.1x after.",
+              "prefix_cache": {
+                "cacheable": {
+                  "1024": true,
+                  "2048": true,
+                  "4096": true,
+                  "512": true
+                },
+                "models_by_minimum": {
+                  "1024": [
+                    "claude-opus-4-8",
+                    "claude-sonnet-5",
+                    "claude-sonnet-4-6",
+                    "claude-sonnet-4-5"
+                  ],
+                  "2048": [
+                    "claude-opus-4-7",
+                    "claude-haiku-3-5"
+                  ],
+                  "4096": [
+                    "claude-opus-4-6",
+                    "claude-opus-4-5",
+                    "claude-haiku-4-5"
+                  ],
+                  "512": [
+                    "claude-opus-5",
+                    "claude-fable-5",
+                    "claude-mythos-5"
+                  ]
+                },
+                "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
+              },
+              "prefix_tokens": 65369,
+              "session_input_cached": 238166.0,
+              "session_input_uncached": 1602247,
+              "turns": 24
+            },
+            "sizes": [
+              [
+                62,
+                2281
+              ],
+              [
+                49,
+                324
+              ],
+              [
+                49,
+                226
+              ],
+              [
+                49,
+                227
+              ],
+              [
+                49,
+                229
+              ],
+              [
+                49,
+                227
+              ],
+              [
+                49,
+                228
+              ],
+              [
+                49,
+                230
+              ],
+              [
+                49,
+                289
+              ],
+              [
+                49,
+                291
+              ],
+              [
+                135,
+                269
+              ],
+              [
+                139,
+                271
+              ],
+              [
+                136,
+                271
+              ],
+              [
+                135,
+                270
+              ],
+              [
+                116,
+                307
+              ],
+              [
+                117,
+                308
+              ],
+              [
+                118,
+                310
+              ],
+              [
+                116,
+                292
+              ],
+              [
+                117,
+                293
+              ],
+              [
+                118,
+                295
+              ],
+              [
+                117,
+                292
+              ],
+              [
+                117,
+                292
+              ],
+              [
+                65,
+                0
+              ]
+            ],
+            "status": "measured",
+            "verified": true
+          }
+        },
+        "owner": "1.8-13",
+        "question": "Dimension the plate: four edges, six hole diameters, two arc radii, then a dim_overlap critique (the rival's H5).",
+        "scenario": "dimension_plate"
+      },
+      {
+        "arms": {
+          "batched": {
+            "arm": "batched",
+            "by_tool": {
+              "drawing_understand": 1
+            },
+            "calls": 1,
+            "detail": "300 entities read; fixture layers found: True",
+            "label": "drawing_understand: one read-only report",
+            "request_chars": 44,
+            "request_tokens": 11,
+            "result_chars": 15159,
+            "result_tokens": 3618,
+            "session": {
+              "history_tokens": 3629,
+              "note": "per turn: the prefix plus every previous request and result. Cached: each span written once at 1.25x, read at 0.1x after.",
+              "prefix_cache": {
+                "cacheable": {
+                  "1024": true,
+                  "2048": true,
+                  "4096": true,
+                  "512": true
+                },
+                "models_by_minimum": {
+                  "1024": [
+                    "claude-opus-4-8",
+                    "claude-sonnet-5",
+                    "claude-sonnet-4-6",
+                    "claude-sonnet-4-5"
+                  ],
+                  "2048": [
+                    "claude-opus-4-7",
+                    "claude-haiku-3-5"
+                  ],
+                  "4096": [
+                    "claude-opus-4-6",
+                    "claude-opus-4-5",
+                    "claude-haiku-4-5"
+                  ],
+                  "512": [
+                    "claude-opus-5",
+                    "claude-fable-5",
+                    "claude-mythos-5"
+                  ]
+                },
+                "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
+              },
+              "prefix_tokens": 65369,
+              "session_input_cached": 92784.3,
+              "session_input_uncached": 134367,
+              "turns": 2
+            },
+            "sizes": [
+              [
+                44,
+                15159
+              ]
+            ],
+            "status": "measured",
+            "verified": true
+          },
+          "naive": {
+            "arm": "naive",
+            "by_tool": {
+              "entity_list": 4,
+              "layer_list": 1
+            },
+            "calls": 5,
+            "detail": "300 entities read; fixture layers found: True",
+            "label": "naive: one tool per entity - the shape the rival observed an agent take with this server; not the least this server needs; layer_list, then entity_list paged 100 at a time",
+            "request_chars": 278,
+            "request_tokens": 68,
+            "result_chars": 86904,
+            "result_tokens": 20740,
+            "session": {
+              "history_tokens": 20808,
+              "note": "per turn: the prefix plus every previous request and result. Cached: each span written once at 1.25x, read at 0.1x after.",
+              "prefix_cache": {
+                "cacheable": {
+                  "1024": true,
+                  "2048": true,
+                  "4096": true,
+                  "512": true
+                },
+                "models_by_minimum": {
+                  "1024": [
+                    "claude-opus-4-8",
+                    "claude-sonnet-5",
+                    "claude-sonnet-4-6",
+                    "claude-sonnet-4-5"
+                  ],
+                  "2048": [
+                    "claude-opus-4-7",
+                    "claude-haiku-3-5"
+                  ],
+                  "4096": [
+                    "claude-opus-4-6",
+                    "claude-opus-4-5",
+                    "claude-haiku-4-5"
+                  ],
+                  "512": [
+                    "claude-opus-5",
+                    "claude-fable-5",
+                    "claude-mythos-5"
+                  ]
+                },
+                "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
+              },
+              "prefix_tokens": 65369,
+              "session_input_cached": 144602.4,
+              "session_input_uncached": 454987,
+              "turns": 6
+            },
+            "sizes": [
+              [
+                36,
+                977
+              ],
+              [
+                59,
+                28389
+              ],
+              [
+                61,
+                28716
+              ],
+              [
+                61,
+                28822
+              ],
+              [
+                61,
+                0
+              ]
+            ],
+            "status": "measured",
+            "verified": true
+          }
+        },
+        "owner": "1.8-14",
+        "question": "Describe a 300-entity drawing somebody else made: its layers and how much is on them.",
+        "scenario": "inspect_foreign"
+      },
+      {
+        "arms": {
+          "batched": {
+            "arm": "batched",
+            "by_tool": {},
+            "calls": 0,
+            "detail": "the least-call oracle needs a verb this tree does not have yet (owner 1.8-10); never counted as a pass",
+            "label": "drawing_history(limit=...) and its value (1.8-10)",
+            "missing_tools": [
+              "drawing_history"
+            ],
+            "owner": "1.8-10",
+            "request_chars": 0,
+            "result_chars": 0,
+            "session": null,
+            "sizes": [],
+            "status": "pending_tool",
+            "verified": null
+          },
+          "naive": {
+            "arm": "naive",
+            "by_tool": {
+              "drawing_open": 2,
+              "entity_list": 1
+            },
+            "calls": 3,
+            "detail": "round 2 diameter 12.0 (want 12.0); latest round reopened: True",
+            "label": "naive: one tool per entity - the shape the rival observed an agent take with this server; not the least this server needs; assumes the agent saved one file per round and reopens round 2's; without those files 1.7.0 cannot answer at all (the rival measured 0/3)",
+            "request_chars": 369,
+            "request_tokens": 88,
+            "result_chars": 1358,
+            "result_tokens": 324,
+            "session": {
+              "history_tokens": 412,
+              "note": "per turn: the prefix plus every previous request and result. Cached: each span written once at 1.25x, read at 0.1x after.",
+              "prefix_cache": {
+                "cacheable": {
+                  "1024": true,
+                  "2048": true,
+                  "4096": true,
+                  "512": true
+                },
+                "models_by_minimum": {
+                  "1024": [
+                    "claude-opus-4-8",
+                    "claude-sonnet-5",
+                    "claude-sonnet-4-6",
+                    "claude-sonnet-4-5"
+                  ],
+                  "2048": [
+                    "claude-opus-4-7",
+                    "claude-haiku-3-5"
+                  ],
+                  "4096": [
+                    "claude-opus-4-6",
+                    "claude-opus-4-5",
+                    "claude-haiku-4-5"
+                  ],
+                  "512": [
+                    "claude-opus-5",
+                    "claude-fable-5",
+                    "claude-mythos-5"
+                  ]
+                },
+                "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
+              },
+              "prefix_tokens": 65369,
+              "session_input_cached": 101879.1,
+              "session_input_uncached": 262309,
+              "turns": 4
+            },
+            "sizes": [
+              [
+                155,
+                582
+              ],
+              [
+                59,
+                230
+              ],
+              [
+                155,
+                546
+              ]
+            ],
+            "status": "measured",
+            "verified": true
+          }
+        },
+        "owner": "1.8-10",
+        "question": "What was the hole's diameter in round 2? (the rival's H1)",
+        "scenario": "history_value_lookup"
+      }
+    ]
+  }
+}

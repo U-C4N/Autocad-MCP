@@ -62,6 +62,7 @@ from .region_render import (
     png_size,
     render_dxf_file,
 )
+from .session_metrics import RunBreakdown
 from .vertices import (
     edit_geometry_route,
     prepare_bulges,
@@ -184,8 +185,28 @@ class _JobGuard:
 
     def __call__(self, app):
         if self.doc is None:
-            self.doc = self.backend._guard(app)
+            began = time.perf_counter()
+            counted = _job_clock_get("counter")
+            try:
+                self.doc = self.backend._guard(app)
+            finally:
+                # the operator-edit counter runs inside the guard; it is booked
+                # as ``counter`` (``_timed_counter_start``), never twice
+                spent = (time.perf_counter() - began) * 1000.0
+                _job_clock_add("guard", spent - (_job_clock_get("counter") - counted))
         return self.doc
+
+
+def _job_clock_add(bucket: str, ms: float) -> None:
+    """Add ``ms`` to the running job's ``bucket`` (1.8-14); a no-op outside a job."""
+    clock = getattr(_JOB_STATE, "clock", None)
+    if clock is not None:
+        clock[bucket] = clock.get(bucket, 0.0) + ms
+
+
+def _job_clock_get(bucket: str) -> float:
+    clock = getattr(_JOB_STATE, "clock", None)
+    return clock.get(bucket, 0.0) if clock is not None else 0.0
 
 
 def _com_init():
@@ -1159,7 +1180,12 @@ def _regen():
     if _COM_STATE.get("batch_mode"):
         return
     try:
-        _acad_doc().Regen(0)  # 0 = acActiveViewport
+        doc = _acad_doc()
+        began = time.perf_counter()
+        try:
+            doc.Regen(0)  # 0 = acActiveViewport
+        finally:
+            _job_clock_add("refresh", (time.perf_counter() - began) * 1000.0)
     except Exception as exc:
         log.debug("Regen failed: %s", exc)
 
@@ -2562,6 +2588,8 @@ class ComBackend(AutoCADBackend):
         self._executor: concurrent.futures.Executor | None = None
         # B01: cancellations recorded by `_run`, newest last; Task 10 reads it.
         self.call_outcomes: collections.deque = collections.deque(maxlen=self._MAX_CALL_OUTCOMES)
+        # 1.8-14: every job's queue/guard/work/refresh/counter ms (run_metrics).
+        self._run_breakdown = RunBreakdown()
         self._connected = False
         self._transaction_active = False
         self._document_scope_key: tuple[str, str] | None = None
@@ -2846,7 +2874,7 @@ class ComBackend(AutoCADBackend):
                     "No drawing is open in AutoCAD. Open or create a .dwg file first."
                 )
             self._bind_key(key, application)
-            self._edit_counter_start(app)
+            self._timed_counter_start(app)
             return doc
         restarted = self._bound["app"] != application
         if restarted or key != (self._bound["name"], self._bound["full_name"]):
@@ -2855,8 +2883,16 @@ class ComBackend(AutoCADBackend):
                 self._view_of(key, application),
                 application_changed=restarted,
             )
-        self._edit_counter_start(app)
+        self._timed_counter_start(app)
         return doc
+
+    def _timed_counter_start(self, app) -> None:
+        """``_edit_counter_start``, its time booked as ``counter``, not ``guard`` (1.8-14)."""
+        began = time.perf_counter()
+        try:
+            self._edit_counter_start(app)
+        finally:
+            _job_clock_add("counter", (time.perf_counter() - began) * 1000.0)
 
     # -- operator edits (B11) ---------------------------------------------------
 
@@ -3153,24 +3189,31 @@ class ComBackend(AutoCADBackend):
         # the STA job explicitly - code on the COM thread and the call_outcomes
         # rows below see the id the caller runs under.
         operation_id = CURRENT_OPERATION.get()
+        submitted = time.perf_counter()
 
         def _job():
             # B11: the first _acad_doc() of this job checks the bound document,
             # inside the job, before any document work.
+            began = time.perf_counter()
+            clock = _JOB_STATE.clock = {}
             token = CURRENT_OPERATION.set(operation_id)
             _JOB_STATE.guard = guard
             guard.touched = False
             try:
                 return func(*args, **kwargs)
             finally:
+                ran = (time.perf_counter() - began) * 1000.0
+                ended = time.perf_counter()
                 if guard.doc is not None:
                     try:
                         self._edit_counter_end(_acad_app())
                     except Exception as exc:  # noqa: BLE001 - never mask the job's outcome
                         log.debug("operator-edit counter: %s", exc)
                 _JOB_STATE.guard = None
+                _JOB_STATE.clock = None
                 guard.doc = None
                 CURRENT_OPERATION.reset(token)
+                self._record_breakdown(submitted, began, ended, ran, clock)
 
         work = self._executor.submit(_job)
         _note_reached()  # B11: from here a `_mutating` call may have written
@@ -3241,6 +3284,35 @@ class ComBackend(AutoCADBackend):
             raise RuntimeError(
                 f"AutoCAD COM error ({hr:#010x}): {e.args[1] if len(e.args) > 1 else e}"
             ) from e
+
+    def _record_breakdown(
+        self, submitted: float, began: float, ended: float, ran_ms: float, clock: dict
+    ) -> None:
+        """Book one job's milliseconds (1.8-14; COM thread, never raises).
+
+        queue: submitted -> started on the STA thread. guard: the bound-document
+        check without the operator-edit counter inside it. refresh: ``_regen``.
+        counter: the edit counter at the guard and at the end of the job. work:
+        the rest of the job's own code.
+        """
+        try:
+            closing = (time.perf_counter() - ended) * 1000.0
+            guard = clock.get("guard", 0.0)
+            refresh = clock.get("refresh", 0.0)
+            counter = clock.get("counter", 0.0)
+            self._run_breakdown.record(
+                queue=(began - submitted) * 1000.0,
+                guard=guard,
+                work=ran_ms - guard - refresh - counter,
+                refresh=refresh,
+                counter=counter + closing,
+            )
+        except Exception as exc:  # noqa: BLE001 - a timing is evidence, never a failure
+            log.debug("run breakdown: %s", exc)
+
+    def run_metrics(self) -> dict:
+        """Per-job queue/guard/work/refresh/counter ms (``system_status(metrics=True)``)."""
+        return self._run_breakdown.snapshot()
 
     def _document_label(self) -> str | None:
         """The bound document's FullName (or Name), captured when a call starts."""

@@ -51,6 +51,7 @@ from backends.operations import (
     OperationJournal,
     RequiresReconcileError,
 )
+from backends.session_metrics import SESSION_METRICS, result_text_bytes
 from discovery.aliases import aliases_for, tools_for_command
 from engineering.errors import (
     ERROR_KINDS,
@@ -254,9 +255,30 @@ class AuditMiddleware(Middleware):
     ``operation_conflict`` for another request. A call re-entering the
     middleware (the search proxy's ``call_tool``) reuses the id already set:
     one request, one record.
+
+    1.8-14: every top-level call is also counted for its connection
+    (``backends/session_metrics.py``) - the call, its tool, the bytes of text
+    it returned, its error kind, its latency - read by
+    ``system_status(metrics=True)``. A re-entering call is not counted again.
     """
 
     async def on_call_tool(self, context: MiddlewareContext, call_next):
+        if CURRENT_OPERATION.get() is not None:
+            return await self._journalled(context, call_next)
+        # by_tool counts what really ran: the search proxy's call_tool names it
+        tool_name = _effective_tool(
+            context.message.name, dict(getattr(context.message, "arguments", None) or {})
+        )
+        start = time.monotonic()
+        try:
+            result = await self._journalled(context, call_next)
+        except BaseException as exc:
+            _count_call(context, tool_name, start, None, exc)
+            raise
+        _count_call(context, tool_name, start, result, None)
+        return result
+
+    async def _journalled(self, context: MiddlewareContext, call_next):
         tool_name = context.message.name
         start = time.monotonic()
         if CURRENT_OPERATION.get() is not None:
@@ -387,6 +409,56 @@ _STATE_OF_KIND = {
     "save_failed": "failed",
     "process_exit": "unknown_commit",
 }
+
+
+#: The metrics key of a call with no MCP session (a direct call in a test).
+_NO_SESSION = "_no_session"
+
+
+def _session_key(fastmcp_context) -> str:
+    """The connection a call belongs to: fastmcp's session id, stable per session."""
+    try:
+        return str(fastmcp_context.session_id)
+    except Exception:  # no request context: a direct call
+        return _NO_SESSION
+
+
+def _count_call(context, tool: str, start: float, result, exc: BaseException | None) -> None:
+    """Count one top-level call for its connection (1.8-14); never fails the call."""
+    try:
+        elapsed = (time.monotonic() - start) * 1000.0
+        if exc is not None:
+            kind = "cancelled" if isinstance(exc, asyncio.CancelledError) else None
+            kind = kind or classify(exc)["kind"]
+            size = 0
+        else:
+            kind = None
+            if getattr(result, "is_error", False):
+                structured = getattr(result, "structured_content", None)
+                found = structured.get("kind") if isinstance(structured, dict) else None
+                kind = str(found or "refused")
+            size = result_text_bytes(result)
+        session = _session_key(getattr(context, "fastmcp_context", None))
+        SESSION_METRICS.record(session, tool, elapsed, size, kind)
+    except Exception as error:  # metrics are evidence, never a reason to fail a call
+        log.debug("session metrics: %s", error)
+
+
+def _metrics_payload(ctx, backend) -> dict:
+    """``system_status(metrics=True)``: the connection's counters and the COM breakdown."""
+    payload = {"session": SESSION_METRICS.snapshot(_session_key(ctx))}
+    reader = getattr(backend, "run_metrics", None)
+    if callable(reader):
+        payload["com_run"] = reader()
+        payload["com_run_reason"] = None
+    else:
+        payload["com_run"] = None
+        payload["com_run_reason"] = (
+            "headless engine: no STA job queue to break down"
+            if backend is not None
+            else "no backend"
+        )
+    return payload
 
 
 def _lifespan_context_or_none(context) -> dict | None:
@@ -1301,11 +1373,14 @@ def cad_tool(*, summary: str, cost: str):
 
       ``summary``   one compact line, for a search hit's preview
       ``cost``      one of :data:`CAD_TOOL_COSTS`
-      ``acad``      AutoCAD command names, from ``discovery.aliases``
-      ``synonyms``  natural-language phrasings, from ``discovery.aliases``
 
-    The alias corpus is imported, never restated here: one edit site, and the
-    coverage gate over all registered tools already lives with the corpus.
+    1.8-14: the alias lists (``acad`` AutoCAD command names, ``synonyms``)
+    no longer ride on every tools/list entry. They stay in
+    ``discovery.aliases`` - the search ranker, ``describe_tool`` and the
+    inventory generator read them there through ``aliases_for`` - so a full
+    catalog stops paying for vocabulary only a search uses. The coverage gate
+    over all registered tools still lives with the corpus; this decorator only
+    warns about a tool the corpus does not know.
     """
     if cost not in CAD_TOOL_COSTS:
         raise ValueError(f"cad_tool cost must be one of {CAD_TOOL_COSTS}, got {cost!r}")
@@ -1324,16 +1399,10 @@ def cad_tool(*, summary: str, cost: str):
                 f"@cad_tool({name!r}): tool is not registered. cad_tool must be written "
                 "directly above the mcp.tool decorator, never below it or on a bare function."
             )
-        record = aliases_for(name)
-        if record is None:
+        if aliases_for(name) is None:
             log.warning("No discovery aliases for tool %r; searches will miss it", name)
         meta = dict(component.meta or {})
-        meta["cad"] = {
-            "summary": summary,
-            "cost": cost,
-            "acad": list(record.acad) if record else [],
-            "synonyms": list(record.synonyms) if record else [],
-        }
+        meta["cad"] = {"summary": summary, "cost": cost}
         component.meta = meta
         return target
 
@@ -6410,7 +6479,14 @@ async def transaction_rollback(ctx: Context = None) -> dict:
     annotations={"title": "Server Status", "readOnlyHint": True},
     tags={"system"},
 )
-async def system_status(ctx: Context = None) -> dict:
+async def system_status(
+    metrics: Annotated[
+        bool,
+        "Add `metrics`: this connection's calls, by_tool, result_bytes, errors_by_kind, "
+        "p50/p95 ms (live: the per-job queue/guard/work/refresh/counter ms too).",
+    ] = False,
+    ctx: Context = None,
+) -> dict:
     """Get full status of the AutoCAD MCP Pro server and backend connection.
 
     Returns backend name, connection status, capabilities, document info, and
@@ -6438,6 +6514,10 @@ async def system_status(ctx: Context = None) -> dict:
     left half done that this server resolved at startup: `completed`,
     `finished` (the verified file put in place), `rolled_back` (the previous
     file kept) per target.
+
+    `metrics` (only with metrics=True) counts this connection's earlier calls
+    (`session`: calls, by_tool, result_bytes, errors_by_kind, p50_ms, p95_ms)
+    and, live, `com_run`: each COM job's queue/guard/work/refresh/counter ms.
     """
     b = ctx.lifespan_context.get("backend")
     journal = _operations_journal(ctx.lifespan_context)
@@ -6460,6 +6540,8 @@ async def system_status(ctx: Context = None) -> dict:
         out["state_store"] = state_store_status(journal)
         if ctx.lifespan_context.get("save_recovery"):
             out["save_recovery"] = ctx.lifespan_context["save_recovery"]
+        if metrics:
+            out["metrics"] = _metrics_payload(ctx, None)
         return out
     status = await b.system_status()
     status["server"] = "AutoCAD MCP Pro"
@@ -6474,6 +6556,8 @@ async def system_status(ctx: Context = None) -> dict:
     status["state_store"] = state_store_status(journal)
     if ctx.lifespan_context.get("save_recovery"):
         status["save_recovery"] = ctx.lifespan_context["save_recovery"]
+    if metrics:
+        status["metrics"] = _metrics_payload(ctx, b)
     return status
 
 

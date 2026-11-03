@@ -5,9 +5,13 @@ estimate typed into a README. Three costs are measured against the **real
 in-memory server** (a `fastmcp.Client` speaking to `server.mcp`, same code path
 a stdio client drives):
 
-1. **Idle cost** - the serialized ``tools/list`` payload a client pays on
-   connect, for the default surface, ``TOOL_PROFILE=lean`` and
-   ``DISCOVERY_MODE=search``.
+1. **Idle cost** - what a client pays on connect, for the default surface,
+   ``TOOL_PROFILE=lean``, ``TOOL_PACKS=core`` (and two single-vertical pack
+   sets) and ``DISCOVERY_MODE=search``, plus the server instructions. Since
+   1.8-14 the headline columns price the *prompt payload* - the ``tools``
+   array a client forwards to the model (name, description, input schema) -
+   and the ``tools/list`` wire payload, the basis of every figure up to 1.7.0,
+   is the ``wire`` column beside it.
 2. **Per-discovery cost** - one ``search_tools`` round trip, ours against stock
    :class:`~fastmcp.server.transforms.search.BM25SearchTransform` *configured
    with the same compact serializer ours uses*. Stock-on-its-defaults is also
@@ -15,6 +19,16 @@ a stdio client drives):
    how you accidentally credit the renderer for the ranker's work.
 3. **Result-side cost** - what a realistic ``entity_list`` actually returns from
    a drawing of a few hundred entities. This is the half nobody had measured.
+4. **Task cost** (1.8-14) - the scripted jobs of ``benchmarks/call_budget.py``,
+   each two ways (``naive``, one tool per entity and labelled so; ``batched``,
+   the least-call oracle, or ``pending_tool`` when its verb lands later):
+   calls, request/result characters, and the modelled session input - per
+   turn the prefix plus every previous request and result - cached and
+   uncached.
+
+``--budget benchmarks/token_budget.json`` checks the run against the 1.8.0
+ceilings and against the published report (``--published``): a ``ci`` cell
+over its ceiling or a row grown more than 5 % exits 1 (every PR, in CI).
 
 Counting rules
 --------------
@@ -67,6 +81,7 @@ Run::
     python -m benchmarks.token_suite                  # human summary + JSON report
     python -m benchmarks.token_suite --json           # machine-readable on stdout
     python -m benchmarks.token_suite --entities 500   # bigger result-lane drawing
+    python -m benchmarks.token_suite --lanes idle,task --budget benchmarks/token_budget.json
 """
 
 from __future__ import annotations
@@ -87,7 +102,9 @@ import config
 
 ROOT = Path(__file__).resolve().parents[1]
 
-SCHEMA_VERSION = "token/1.0"
+#: 2.0 (1.8-14): the idle headline is the prompt payload (wire beside it), the
+#: idle lane gains ``packs_core`` and ``instructions``, and a fourth lane, ``task``.
+SCHEMA_VERSION = "token/2.0"
 DEFAULT_OUTPUT = ROOT / "benchmarks" / "results" / "token-cost.json"
 
 #: The env var ``server._make_backend`` actually reads. Note it reads the *env*,
@@ -119,6 +136,7 @@ SESSION_TURNS = 30
 FORMAT_JSON_SCHEMA = "json_schema"
 FORMAT_COMPACT_TEXT = "compact_text"
 FORMAT_JSON_DATA = "json_data"
+FORMAT_TEXT = "text"
 
 #: How a ratio came to be. ``borrowed`` means no measurement exists for that
 #: format yet and a neighbouring format's divisor is standing in - a weaker
@@ -155,6 +173,12 @@ CHARS_PER_TOKEN: dict[str, FormatRatio] = {
         "Borrowed from json_schema; no measurement exists for dense numeric JSON. "
         "Float-heavy JSON plausibly tokenizes worse (fewer chars per token), so the "
         "token figures on result-side payloads are best read as a floor.",
+        "borrowed",
+    ),
+    FORMAT_TEXT: FormatRatio(
+        4.19,
+        "Borrowed from json_schema, whose text is mostly prose descriptions; no "
+        "measurement exists for the server's plain-English instructions alone.",
         "borrowed",
     ),
 }
@@ -463,21 +487,59 @@ def _prompt_payload(tools: Sequence[Any]) -> str:
     return _dumps(rows)
 
 
+#: What the idle lane's headline columns (``chars`` / ``tokens`` / ``cost``)
+#: measure since 1.8-14: the ``tools`` array a client forwards to the model. The
+#: ``tools/list`` wire payload - the basis of every figure up to 1.7.0 (89,226
+#: and 503) - stays beside it as the ``wire`` column.
+IDLE_HEADLINE_BASIS = "prompt_payload"
+
+
 async def _idle_row(variant: str, note: str, counter: Any, turns: int) -> dict[str, Any]:
     client = _client()
     async with client:
         tools = await client.list_tools()
     wire = _wire_payload(tools)
     prompt = _prompt_payload(tools)
-    row = measure(wire, FORMAT_JSON_SCHEMA, counter, turns=turns)
+    row = measure(prompt, FORMAT_JSON_SCHEMA, counter, turns=turns)
     row.update(
         {
             "variant": variant,
+            "kind": "tools_list",
+            "basis": IDLE_HEADLINE_BASIS,
             "note": note,
             "advertised_tools": len(tools),
             "wire_chars": len(wire),
             "prompt_chars": len(prompt),
-            "prompt_payload": measure(prompt, FORMAT_JSON_SCHEMA, counter, turns=turns),
+            "wire": measure(wire, FORMAT_JSON_SCHEMA, counter, turns=turns),
+            "prompt_cache": cacheability(row["tokens"]["value"]),
+        }
+    )
+    return row
+
+
+async def _instructions_row(counter: Any, turns: int) -> dict[str, Any]:
+    """The server's ``instructions``, as the initialize result carries them to a client.
+
+    A client puts them in the system prompt beside the tools array, so they are
+    an idle cost of their own (plan section 4, a new row in 1.8-14).
+    """
+    client = _client()
+    async with client:
+        initialized = getattr(client, "initialize_result", None)
+    text = getattr(initialized, "instructions", None)
+    if text is None:
+        text = _load_server().mcp.instructions or ""
+    row = measure(text, FORMAT_TEXT, counter, turns=turns)
+    row.update(
+        {
+            "variant": "instructions",
+            "kind": "instructions",
+            "basis": "text",
+            "note": "The server instructions from the initialize result (system prompt).",
+            "advertised_tools": 0,
+            "wire_chars": len(text),
+            "prompt_chars": len(text),
+            "wire": measure(text, FORMAT_TEXT, counter, turns=turns),
             "prompt_cache": cacheability(row["tokens"]["value"]),
         }
     )
@@ -511,6 +573,15 @@ async def idle_lane(counter: Any, turns: int = SESSION_TURNS) -> list[dict[str, 
             )
         )
         config.settings.tool_profile = "full"
+        config.settings.tool_packs = "core"
+        rows.append(
+            await _idle_row(
+                "packs_core",
+                "TOOL_PACKS=core - no vertical pack at all (the README's core row).",
+                counter,
+                turns,
+            )
+        )
         config.settings.tool_packs = "core,mech"
         rows.append(
             await _idle_row(
@@ -543,6 +614,8 @@ async def idle_lane(counter: Any, turns: int = SESSION_TURNS) -> list[dict[str, 
                 turns,
             )
         )
+        srv._apply_discovery_mode("off")
+        rows.append(await _instructions_row(counter, turns))
     finally:
         srv._apply_discovery_mode("off")
         config.settings.tool_profile = previous_profile
@@ -917,8 +990,217 @@ async def result_lane(
 
 
 # ---------------------------------------------------------------------------
+# Lane 4: task cost (scripted jobs, two arms - benchmarks/call_budget.py)
+# ---------------------------------------------------------------------------
+
+
+def session_input(spans: Sequence[int], prefix_tokens: float) -> dict[str, Any]:
+    """Modelled session input of a job of ``len(spans)`` calls, both ways.
+
+    Turn ``k`` (1..n) asks for call ``k``; turn ``n + 1`` reads the last
+    result. Every turn re-sends the prefix (tools array + instructions) and
+    every earlier request and result, so span ``i`` (call ``i``'s request plus
+    its result, 0-based) is re-sent ``n - i`` times. Uncached, each re-send is
+    paid in full; cached, each span is written once at 1.25x and read at 0.1x
+    after - :func:`cost_model` per span, summed.
+    """
+    calls = len(spans)
+    prefix = cost_model(prefix_tokens, calls + 1)
+    uncached = prefix["session_uncached"]
+    cached = prefix["session_cached"]
+    for index, tokens in enumerate(spans):
+        priced = cost_model(tokens, calls - index)
+        uncached += priced["session_uncached"]
+        cached += priced["session_cached"]
+    return {
+        "turns": calls + 1,
+        "prefix_tokens": round(prefix_tokens, 1),
+        "history_tokens": int(sum(spans)),
+        "session_input_uncached": round(uncached, 1),
+        "session_input_cached": round(cached, 1),
+        "prefix_cache": cacheability(prefix_tokens),
+        "note": (
+            "per turn: the prefix plus every previous request and result. Cached: each "
+            "span written once at 1.25x, read at 0.1x after."
+        ),
+    }
+
+
+async def task_lane(counter: Any, turns: int = SESSION_TURNS) -> dict[str, Any]:
+    """Each call_budget scenario, both arms, priced: calls, characters, session input.
+
+    The prefix is the default surface's prompt payload plus the server
+    instructions, measured here, so the lane stands on its own.
+    """
+    from benchmarks import call_budget
+
+    srv = _load_server()
+    srv._apply_discovery_mode("off")
+    default = await _idle_row("default", "the task lane's prefix", counter, turns)
+    instructions = await _instructions_row(counter, turns)
+    prefix_tokens = default["tokens"]["value"] + instructions["tokens"]["value"]
+    client = _client()
+    async with client:
+        status = (await client.call_tool("system_status", {})).structured_content or {}
+        require_ezdxf(status)
+        rows, traces = await call_budget.run_scenarios(client)
+    for row in rows:
+        recorders = traces.get(row["scenario"], {})
+        for name, arm in row["arms"].items():
+            recorder = recorders.get(name)
+            if recorder is None:
+                arm["session"] = None
+                continue
+            # counted once per text: --tokenizer anthropic pays a request per count
+            requests = [counter.count(c.request_text, FORMAT_JSON_DATA) for c in recorder.calls]
+            results = [counter.count(c.result_text, FORMAT_JSON_DATA) for c in recorder.calls]
+            arm["request_tokens"] = sum(requests)
+            arm["result_tokens"] = sum(results)
+            arm["session"] = session_input(
+                [ask + answer for ask, answer in zip(requests, results, strict=True)],
+                prefix_tokens,
+            )
+    return {
+        "prefix": {
+            "tokens": prefix_tokens,
+            "tools_tokens": default["tokens"]["value"],
+            "instructions_tokens": instructions["tokens"]["value"],
+            "surface": "default (TOOL_PROFILE=full, DISCOVERY_MODE=off) + instructions",
+        },
+        "naive_label": call_budget.NAIVE_LABEL,
+        "scenarios": rows,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Budget (token_budget.json): ceilings per lane, growth against the published run
+# ---------------------------------------------------------------------------
+
+DEFAULT_BUDGET = ROOT / "benchmarks" / "token_budget.json"
+DEFAULT_PUBLISHED = ROOT / "benchmarks" / "results" / "published" / "token-cost.json"
+
+
+def _basis_tokens(row: dict[str, Any], basis: str) -> int | None:
+    """A row's tokens on ``basis``; tolerant of reports written before 1.8-14."""
+    if basis == "wire":
+        wire = row.get("wire")
+        if isinstance(wire, dict):
+            return wire["tokens"]["value"]
+        return row["tokens"]["value"] if row.get("basis") is None else None
+    if basis in ("prompt_payload", "text"):
+        if row.get("basis") in ("prompt_payload", "text"):
+            return row["tokens"]["value"]
+        nested = row.get("prompt_payload")
+        return nested["tokens"]["value"] if isinstance(nested, dict) else None
+    raise KeyError(f"unknown budget basis {basis!r}")
+
+
+def _headline_tokens(row: dict[str, Any]) -> int | None:
+    return _basis_tokens(row, "text" if row.get("kind") == "instructions" else "prompt_payload")
+
+
+def check_budget(
+    report: dict[str, Any],
+    budget: dict[str, Any],
+    published: dict[str, Any] | None = None,
+    *,
+    release: bool = False,
+) -> dict[str, Any]:
+    """The report against the budget: ``{violations, over_ceiling, pending, checked, ok}``.
+
+    A ``ci`` cell over its ceiling, or not measured, is a violation; a
+    ``release`` cell over its ceiling is reported under ``over_ceiling`` with
+    its owner (never a pass) and is a violation only with ``release=True``,
+    as is a release cell nothing measured yet. Every idle row may not grow more
+    than ``growth_limit_pct`` over the same row of ``published``.
+    """
+    violations: list[dict[str, Any]] = []
+    over: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
+    checked: list[dict[str, Any]] = []
+
+    def _breach(item: dict[str, Any], gate: str) -> None:
+        if gate == "ci" or release:
+            violations.append(item)
+        else:
+            over.append(item)
+
+    def _unmeasured(item: dict[str, Any], gate: str) -> None:
+        if gate == "ci" or release:
+            violations.append({**item, "reason": "not measured"})
+        else:
+            pending.append({**item, "reason": "not measured on this tree"})
+
+    idle = {row["variant"]: row for row in report.get("idle") or []}
+    for name, cell in (budget.get("idle") or {}).items():
+        base = {"cell": f"idle.{name}", "ceiling": cell["ceiling"], "gate": cell["gate"]}
+        base["owner"] = cell.get("owner")
+        row = idle.get(name)
+        if row is None:
+            _unmeasured(base, cell["gate"])
+            continue
+        for basis in cell["basis"]:
+            measured = _basis_tokens(row, basis)
+            item = {**base, "basis": basis, "measured": measured}
+            checked.append(item)
+            if measured is None:
+                _unmeasured(item, cell["gate"])
+            elif measured > cell["ceiling"]:
+                _breach({**item, "reason": "over the ceiling"}, cell["gate"])
+
+    for name, cell in (budget.get("result") or {}).items():
+        item = {
+            "cell": f"result.{name}",
+            "ceiling": cell["ceiling"],
+            "gate": cell["gate"],
+            "owner": cell.get("owner"),
+        }
+        _unmeasured(item, cell["gate"])
+
+    task = report.get("task")
+    if task is not None:
+        from benchmarks.call_budget import check_calls
+
+        calls = check_calls(task["scenarios"], budget, release=release)
+        violations.extend(calls["violations"])
+        pending.extend(calls["pending"])
+    elif budget.get("task"):
+        for name, cell in budget["task"].items():
+            item = {"cell": f"task.{name}", "ceiling": cell["ceiling"], "gate": cell["gate"]}
+            _unmeasured({**item, "owner": cell.get("owner")}, cell["gate"])
+
+    limit = float(budget.get("growth_limit_pct", 5.0))
+    growth: list[dict[str, Any]] = []
+    if published is not None:
+        before = {row["variant"]: row for row in published.get("idle") or []}
+        for variant, row in idle.items():
+            old = before.get(variant)
+            now, then = _headline_tokens(row), _headline_tokens(old) if old else None
+            if now is None or not then:
+                continue
+            pct = round(100.0 * (now - then) / then, 2)
+            entry = {"cell": f"growth.{variant}", "published": then, "measured": now, "pct": pct}
+            growth.append(entry)
+            if pct > limit:
+                violations.append({**entry, "reason": f"grew more than {limit:g} %"})
+    return {
+        "violations": violations,
+        "over_ceiling": over,
+        "pending": pending,
+        "checked": checked,
+        "growth": growth,
+        "growth_limit_pct": limit,
+        "release": release,
+        "ok": not violations,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Suite
 # ---------------------------------------------------------------------------
+
+#: Lanes in run order; ``--lanes`` picks a subset (the budget needs idle + task).
+LANES = ("idle", "discovery", "result", "task")
 
 
 def _package_version() -> str | None:
@@ -951,22 +1233,37 @@ async def run_suite(
     entities: int = DEFAULT_ENTITIES,
     turns: int = SESSION_TURNS,
     counter: Any | None = None,
+    lanes: Sequence[str] = LANES,
 ) -> dict[str, Any]:
-    """Run all three lanes and hand back the report document.
+    """Run the lanes (all four by default) and hand back the report document.
 
-    Restores every global it touches: the forced backend env var, the tool
-    profile and the discovery transform all go back the way they were, whatever
-    happens in between.
+    A lane left out of ``lanes`` is ``None`` in the report. Restores every
+    global it touches: the forced backend env var, the tool profile and the
+    discovery transform all go back the way they were, whatever happens in
+    between.
     """
+    unknown = sorted(set(lanes) - set(LANES))
+    if unknown:
+        raise ValueError(f"unknown lane(s) {unknown}; known: {list(LANES)}")
     srv = _load_server()
     counter = counter or RatioTokenCounter()
     previous_env = os.environ.get(BACKEND_ENV)
     previous_profile = config.settings.tool_profile
     os.environ[BACKEND_ENV] = "ezdxf"
+    idle = discovery = result = task = None
     try:
-        idle = await idle_lane(counter, turns)
-        discovery = await discovery_lane(counter, turns)
-        result = await result_lane(counter, turns, entities)
+        async with _client() as client:
+            status = (await client.call_tool("system_status", {})).structured_content or {}
+        require_ezdxf(status)
+        backend = str(status["backend"])
+        if "idle" in lanes:
+            idle = await idle_lane(counter, turns)
+        if "discovery" in lanes:
+            discovery = await discovery_lane(counter, turns)
+        if "result" in lanes:
+            result = await result_lane(counter, turns, entities)
+        if "task" in lanes:
+            task = await task_lane(counter, turns)
     finally:
         srv._apply_discovery_mode("off")
         config.settings.tool_profile = previous_profile
@@ -978,7 +1275,9 @@ async def run_suite(
 
     return {
         "schema_version": SCHEMA_VERSION,
-        "backend": result["backend"],
+        "backend": backend,
+        "lanes": [lane for lane in LANES if lane in lanes],
+        "idle_basis": IDLE_HEADLINE_BASIS,
         "environment": _environment(),
         "counting": counting_block(counter),
         "session_model": {
@@ -994,6 +1293,7 @@ async def run_suite(
         "idle": idle,
         "discovery": discovery,
         "result": result,
+        "task": task,
     }
 
 
@@ -1017,9 +1317,21 @@ def summarize(report: dict[str, Any]) -> str:
     lines.append("")
 
     turns = report["session_model"]["turns"]
-    lines.append("1. Idle cost - tools/list on connect")
+    if report.get("idle"):
+        _summarize_idle(report, lines, turns)
+    if report.get("discovery"):
+        _summarize_discovery(report, lines)
+    if report.get("result"):
+        _summarize_result(report, lines)
+    if report.get("task"):
+        _summarize_task(report, lines)
+    return "\n".join(lines).rstrip("\n")
+
+
+def _summarize_idle(report: dict[str, Any], lines: list[str], turns: int) -> None:
+    lines.append("1. Idle cost - what a client sends the model on connect (prompt payload)")
     lines.append(
-        f"  {'variant':8} {'tools':>5} {'chars':>9} {'tokens':>8} "
+        f"  {'variant':15} {'tools':>5} {'chars':>9} {'tokens':>8} {'wire tok':>9} "
         f"{'uncached/' + str(turns) + 'turns':>16} {'cached/' + str(turns) + 'turns':>15}  caches?"
     )
     for row in report["idle"]:
@@ -1029,17 +1341,20 @@ def summarize(report: dict[str, Any]) -> str:
             "yes" if row["prompt_cache"]["cacheable"][str(smallest)] else "NO (below min prefix)"
         )
         lines.append(
-            f"  {row['variant']:8} {row['advertised_tools']:5d} {row['chars']:9,d} "
-            f"{row['tokens']['value']:8,d} {cost['session_uncached']:16,.0f} "
-            f"{cost['session_cached']:15,.0f}  {caches}"
+            f"  {row['variant']:15} {row['advertised_tools']:5d} {row['chars']:9,d} "
+            f"{row['tokens']['value']:8,d} {row['wire']['tokens']['value']:9,d} "
+            f"{cost['session_uncached']:16,.0f} {cost['session_cached']:15,.0f}  {caches}"
         )
     lines.append(
-        f"  tokens are the uncached per-request cost; over {turns} turns prompt caching "
-        f"cuts it ~{1 / (1 - report['idle'][0]['cost']['session_saving_ratio']):.1f}x - "
+        f"  tokens are the uncached per-request cost of the tools array (wire tok: the whole "
+        f"tools/list payload); over {turns} turns prompt caching cuts it "
+        f"~{1 / (1 - report['idle'][0]['cost']['session_saving_ratio']):.1f}x - "
         "unless the prefix is too small to cache at all."
     )
     lines.append("")
 
+
+def _summarize_discovery(report: dict[str, Any], lines: list[str]) -> None:
     summary = report["discovery"]["summary"]
     lines.append(
         f"2. Per-discovery cost - one search_tools answer, limit={report['discovery']['limit']}"
@@ -1058,6 +1373,8 @@ def summarize(report: dict[str, Any]) -> str:
     )
     lines.append("")
 
+
+def _summarize_result(report: dict[str, Any], lines: list[str]) -> None:
     result = report["result"]
     lines.append(f"3. Result-side cost - entity_list over {result['entities_in_drawing']} entities")
     for row in result["scenarios"]:
@@ -1081,6 +1398,57 @@ def summarize(report: dict[str, Any]) -> str:
         f"{projection['extrapolated_chars_at_config_cap']:,} chars, but the tool's "
         f"schema caps limit at {projection['schema_max_limit']}"
     )
+    lines.append("")
+
+
+def _summarize_task(report: dict[str, Any], lines: list[str]) -> None:
+    task = report["task"]
+    lines.append(
+        f"4. Task cost - scripted jobs, prefix {task['prefix']['tokens']:,} tokens; "
+        "naive = one tool per entity (labelled)"
+    )
+    for row in task["scenarios"]:
+        for arm in row["arms"].values():
+            if arm["status"] == "pending_tool":
+                lines.append(
+                    f"  {row['scenario']:22} {arm['arm']:7} pending_tool "
+                    f"{arm['missing_tools'] or 'oracle not written'} (owner {arm['owner']})"
+                )
+                continue
+            session = arm["session"]
+            lines.append(
+                f"  {row['scenario']:22} {arm['arm']:7} {arm['calls']:4d} calls "
+                f"{arm['request_chars'] + arm['result_chars']:9,d} chars  session "
+                f"{session['session_input_uncached']:12,.0f} uncached "
+                f"{session['session_input_cached']:11,.0f} cached  {arm['status']}"
+            )
+    lines.append("")
+
+
+def summarize_budget(checked: dict[str, Any]) -> str:
+    lines = [f"Budget ({'release' if checked['release'] else 'ci'} gate)"]
+    for item in checked["checked"]:
+        measured = item.get("measured")
+        if measured is not None and measured <= item["ceiling"]:
+            lines.append(
+                f"  ok      {item['cell']} [{item['basis']}] {measured:,} <= {item['ceiling']:,} "
+                f"(gate {item['gate']})"
+            )
+    for item in checked["growth"]:
+        lines.append(
+            f"  {item['cell']:28} {item['published']:>8,} -> {item['measured']:>8,} "
+            f"({item['pct']:+.2f} %, limit {checked['growth_limit_pct']:g} %)"
+        )
+    for item in checked["over_ceiling"]:
+        lines.append(
+            f"  OVER    {item['cell']} [{item.get('basis', '')}] {item.get('measured')} > "
+            f"{item['ceiling']} (gate release, owner {item.get('owner')})"
+        )
+    for item in checked["pending"]:
+        lines.append(f"  PENDING {item['cell']}: {item['reason']} (owner {item.get('owner')})")
+    for item in checked["violations"]:
+        lines.append(f"  FAIL    {item['cell']}: {item['reason']} {item.get('measured', '')}")
+    lines.append("  ok" if checked["ok"] else "  FAILED")
     return "\n".join(lines)
 
 
@@ -1113,11 +1481,43 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model", default=DEFAULT_TOKENIZER_MODEL, help="model for --tokenizer anthropic"
     )
+    parser.add_argument(
+        "--lanes",
+        default=",".join(LANES),
+        help=f"comma-separated subset of {','.join(LANES)} (default: all)",
+    )
+    parser.add_argument(
+        "--budget",
+        type=Path,
+        default=None,
+        help="check the run against a budget file (benchmarks/token_budget.json): exit 1 "
+        "on a ci ceiling breach, an unmeasured ci cell or growth over the limit",
+    )
+    parser.add_argument(
+        "--published",
+        type=Path,
+        default=DEFAULT_PUBLISHED,
+        help="the published report growth is measured against "
+        f"(default: {DEFAULT_PUBLISHED.relative_to(ROOT)})",
+    )
+    parser.add_argument(
+        "--release",
+        action="store_true",
+        help="with --budget: release-gated cells over their ceiling or unmeasured fail too",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    lanes = [lane for lane in args.lanes.split(",") if lane]
+    if args.budget is not None and args.tokenizer != "ratio":
+        # The ceilings were written in ratio/v1 tokens; a real count is another unit.
+        print(
+            "token_suite: --budget compares ratio/v1 estimates; use --tokenizer ratio",
+            file=sys.stderr,
+        )
+        return 2
     try:
         counter = build_counter(args.tokenizer, model=args.model)
     except (RuntimeError, ValueError) as exc:
@@ -1125,7 +1525,22 @@ def main(argv: list[str] | None = None) -> int:
         # rather than printing a traceback over an unavailable dependency.
         print(f"token_suite: {exc}", file=sys.stderr)
         return 2
-    report = asyncio.run(run_suite(entities=args.entities, turns=args.turns, counter=counter))
+    report = asyncio.run(
+        run_suite(entities=args.entities, turns=args.turns, counter=counter, lanes=lanes)
+    )
+    checked = None
+    if args.budget is not None:
+        budget = json.loads(args.budget.read_text(encoding="utf-8"))
+        published = None
+        if args.published is not None and args.published.is_file():
+            published = json.loads(args.published.read_text(encoding="utf-8"))
+        checked = check_budget(report, budget, published, release=args.release)
+        if published is None:
+            checked["violations"].append(
+                {"cell": "growth", "reason": f"no published report at {args.published}"}
+            )
+            checked["ok"] = False
+        report["budget"] = {"file": str(args.budget), **checked}
     rendered = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -1134,9 +1549,11 @@ def main(argv: list[str] | None = None) -> int:
         print(rendered)
     else:
         print(summarize(report))
+        if checked is not None:
+            print("\n" + summarize_budget(checked))
         if args.out is not None:
             print(f"\nJSON report: {args.out}")
-    return 0
+    return 0 if checked is None or checked["ok"] else 1
 
 
 if __name__ == "__main__":
