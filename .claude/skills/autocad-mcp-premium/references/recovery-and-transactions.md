@@ -14,7 +14,9 @@ report a write you cannot prove happened.
   that fails rolls back the steps before it (headless: a snapshot; live: an
   UNDO judged by before/after fingerprints). Read the returned `atomicity`
   block (`default_applied`, `rolled_back`, `verified`); pass
-  `on_error="stop"` only when you want the steps before a failure kept.
+  `on_error="stop"` only when you want the steps before a failure kept. A
+  batch with its own `transaction_*` step, or one that switches documents,
+  runs as `stop` under auto (`default_applied: false`).
 - **`entity_delete_many`** deletes all of its handles or none: a missing handle
   refuses the call, and a delete that fails rolls the others back
   (`ok: false`, `rolled_back`).

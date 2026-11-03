@@ -258,6 +258,103 @@ async def test_a_live_delete_failing_mid_loop_is_undone_back_to_the_mark(monkeyp
     assert "start" in doc.undo_marks and backend.transaction_depth() == 0
 
 
+async def test_a_live_delete_whose_cmdactive_cannot_be_read_is_not_claimed_verified(
+    monkeypatch,
+):
+    """The rollback landed but CMDACTIVE was unreadable: idleness was never
+    established, so `verified` is None with a note - even though the handle
+    export itself would have read back clean."""
+    pytest.importorskip("win32com.client", reason="pywin32 builds the point VARIANTs")
+    from backends import com_backend as cb
+    from backends.quarantine import DaemonExecutor
+    from engineering.changes import precheck
+    from tests.test_com_space import _Seat
+
+    seat = _Seat()
+    monkeypatch.setattr(cb, "_acad_app", lambda: seat)
+    doc = seat.doc
+    space = doc.ModelSpace
+    entities = [space.add("AcDbLine") for _ in range(2)]
+    handles = [entity.Handle for entity in entities]
+
+    def _locked():
+        raise RuntimeError("Object is on a locked layer")
+
+    entities[1].Delete = _locked
+    marks: list[list] = []
+
+    def on_command(doc_, text):
+        if text.startswith("_.UNDO _M"):
+            marks.append(list(space._items))
+        elif text.startswith("_.UNDO _B") and marks:
+            space._items[:] = marks.pop()
+
+    doc.on_command = on_command
+
+    async def fingerprints(backend, wanted):
+        return {handle: "present-" + handle for handle in wanted}
+
+    monkeypatch.setattr(precheck, "entity_fingerprints", fingerprints)
+
+    backend = cb.ComBackend()
+    backend._executor = DaemonExecutor(max_workers=1, name="test-sta")
+    backend._connected = True
+    real_get = backend.system_get_variable
+
+    async def rejected(name):
+        if name == "CMDACTIVE":
+            raise RuntimeError("Call was rejected by callee")
+        return await real_get(name)
+
+    backend.system_get_variable = rejected
+    try:
+        payload = await server.entity_delete_many(handles, ctx=_Ctx(backend))
+    finally:
+        backend._executor.shutdown(wait=False)
+        backend._executor = None
+
+    assert payload["ok"] is False
+    assert payload["rolled_back"] is True
+    assert payload["verified"] is None, "an unknown seat state is never a verified rollback"
+    assert payload["cmdactive"] is None
+    assert "handles_checked" not in payload
+    assert "could not be read" in payload["note"]
+
+
+async def test_a_live_batch_with_its_own_transaction_runs_under_the_default(monkeypatch):
+    """1.7 ran [transaction_begin, transaction_commit] on live AutoCAD. The live
+    engine declines a second begin, so auto must not open a checkpoint of its
+    own around it (it ran as refused + rolled back before the fix)."""
+    pytest.importorskip("win32com.client", reason="pywin32 builds the point VARIANTs")
+    from backends import com_backend as cb
+    from backends.quarantine import DaemonExecutor
+    from tests.test_com_space import _Seat
+
+    seat = _Seat()
+    monkeypatch.setattr(cb, "_acad_app", lambda: seat)
+    backend = cb.ComBackend()
+    backend._executor = DaemonExecutor(max_workers=1, name="test-sta")
+    backend._connected = True
+
+    async def make():
+        return backend
+
+    monkeypatch.setattr(server, "_make_backend", make)
+    steps = [{"tool": "transaction_begin", "args": {}}, {"tool": "transaction_commit", "args": {}}]
+    try:
+        async with Client(server.mcp) as connected:
+            result = await connected.call_tool("cad_batch", {"steps": steps}, raise_on_error=False)
+    finally:
+        if backend._executor is not None:
+            backend._executor.shutdown(wait=False)
+            backend._executor = None
+    payload = result.structured_content
+    assert payload["ok"] is True, payload["results"]
+    assert payload["atomicity"]["mode"] == "stop"
+    assert payload["atomicity"]["default_applied"] is False
+    assert not any(text.startswith("_.UNDO _B") for text in seat.doc.sent), "nothing undone"
+
+
 async def test_a_live_delete_refuses_a_missing_handle_before_any_mark(monkeypatch):
     pytest.importorskip("win32com.client", reason="pywin32 builds the point VARIANTs")
     from backends import com_backend as cb

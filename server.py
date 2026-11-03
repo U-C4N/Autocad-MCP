@@ -3694,6 +3694,8 @@ async def entity_delete_many(
                     verified = None
                 result["verified"] = verified
                 result.update(evidence)
+                if "cmdactive" in evidence and evidence["cmdactive"] != 0:
+                    result["note"] = _batch_not_idle_note(evidence["cmdactive"])
         else:
             await b.transaction_commit()
     await anyio.lowlevel.checkpoint_if_cancelled()
@@ -4654,6 +4656,16 @@ _BATCH_DOCUMENT_SWITCHES = frozenset(
     }
 )
 
+#: Steps that drive a transaction themselves. on_error="auto" runs a batch with
+#: one of them as stop, the 1.7 default: the live engine does not nest - a
+#: second ``transaction_begin`` inside auto's checkpoint is declined ("A
+#: transaction is already active"), which would refuse and roll back a batch
+#: 1.7 ran - and a step that commits or rolls back would close auto's own
+#: checkpoint under it. An explicit "rollback" is still honoured as before.
+_BATCH_TRANSACTION_STEPS = frozenset(
+    {"transaction_begin", "transaction_commit", "transaction_rollback"}
+)
+
 #: Every ``error.kind`` a step row (and, since 1.8-02, every error envelope)
 #: can carry. Closed on purpose: a client that branches on the taxonomy needs
 #: it to be enumerable. The table - each kind's category, retryable default
@@ -5239,6 +5251,19 @@ async def _batch_undo_idle(backend) -> int | None:
         return None
 
 
+def _batch_not_idle_note(cmdactive: int | None) -> str:
+    """Why a live rollback carries ``verified: None`` (busy or unreadable seat)."""
+    if cmdactive is None:
+        return (
+            "ROLLBACK NOT VERIFIED - CMDACTIVE could not be read after the UNDO, so "
+            "AutoCAD was not known to be idle and the evidence was not read."
+        )
+    return (
+        f"ROLLBACK NOT VERIFIED - AutoCAD was not idle after the UNDO "
+        f"(CMDACTIVE={cmdactive}), so the evidence was not read."
+    )
+
+
 async def _batch_rollback_evidence(
     backend, guarantee: str, verified: bool | None, handles_before: dict
 ) -> tuple[bool | None, dict]:
@@ -5248,7 +5273,8 @@ async def _batch_rollback_evidence(
     (``best_effort_undo``) the comparison is exact and runs only while
     CMDACTIVE is 0; headless (``snapshot``) it is presence only (see
     engineering/changes/precheck.py). Returns the new ``verified`` and the
-    extra atomicity keys.
+    extra atomicity keys. A CMDACTIVE that cannot be read (``cmdactive:
+    None``) is not idleness: like a busy seat it answers ``verified: None``.
     """
     from engineering.changes.precheck import changed_since
 
@@ -5256,7 +5282,7 @@ async def _batch_rollback_evidence(
     if guarantee == "best_effort_undo":
         idle = await _batch_undo_idle(backend)
         extra["cmdactive"] = idle
-        if idle:
+        if idle != 0:  # busy, or unreadable (None): never judged, never claimed
             return None, extra
     if not handles_before:
         return verified, extra
@@ -5461,11 +5487,14 @@ async def cad_batch(
     step all or nothing: on the headless backend a run-time failure restores a
     full document snapshot; on live AutoCAD it sends an UNDO, judged by the
     before/after fingerprints once AutoCAD is idle (CMDACTIVE 0). A read-only
-    batch opens no checkpoint. Read the `atomicity` block: `mode` is what ran,
+    batch opens no checkpoint, and neither does one with a transaction_begin /
+    transaction_commit / transaction_rollback step: it runs as "stop" (live
+    AutoCAD does not nest a transaction). Read the `atomicity` block: `mode` is what ran,
     `default_applied` (auto only) whether auto's checkpoint was opened,
     `verified` whether the rollback was evidenced. Pass on_error="stop" to
-    keep the steps that ran before a failure. A checkpoint a step opens with
-    transaction_begin is closed with the batch's (`unwound`).
+    keep the steps that ran before a failure. Under an explicit
+    on_error="rollback", a checkpoint a step opens with transaction_begin is
+    closed with the batch's (`unwound`).
 
     NOT CALLABLE from a batch: the raw command/LISP escape hatches, and
     cad_batch itself. Call those directly.
@@ -5602,12 +5631,19 @@ async def cad_batch(
         tools = [row["tool"] for row in plans if row["status"] == "valid"]
         mutating = any(tool not in read_only for tool in tools)
         switches = sorted({tool for tool in tools if tool in _BATCH_DOCUMENT_SWITCHES})
-        mode = "rollback" if mutating and not switches else "stop"
+        own = sorted({tool for tool in tools if tool in _BATCH_TRANSACTION_STEPS})
+        mode = "rollback" if mutating and not switches and not own else "stop"
         if switches:
             auto_note = (
                 f"on_error='auto' with {switches}: a checkpoint is one document's and "
                 "cannot undo a switch to another, so no checkpoint was opened; it halts "
                 "at the first failure. "
+            )
+        elif own:
+            auto_note = (
+                f"on_error='auto' with {own}: the batch drives its own transaction, so "
+                "auto opened none around it (live AutoCAD does not nest one) and it "
+                "halts at the first failure, as in 1.7. "
             )
         elif not mutating:
             auto_note = (
@@ -6051,11 +6087,8 @@ async def cad_batch(
             "ROLLBACK NOT VERIFIED - the document fingerprint differs from the one "
             f"taken before step 1{what}. {note}"
         )
-    elif rolled_back and evidence.get("cmdactive"):
-        payload["atomicity"]["note"] = (
-            f"ROLLBACK NOT VERIFIED - AutoCAD was not idle after the UNDO "
-            f"(CMDACTIVE={evidence['cmdactive']}), so the evidence was not read. {note}"
-        )
+    elif rolled_back and "cmdactive" in evidence and evidence["cmdactive"] != 0:
+        payload["atomicity"]["note"] = _batch_not_idle_note(evidence["cmdactive"]) + f" {note}"
     elif base_depth is not None and depth_left is not None and depth_left > base_depth:
         payload["atomicity"]["note"] = (
             f"CHECKPOINT LEFT OPEN - transaction_depth is {depth_left} after closing "

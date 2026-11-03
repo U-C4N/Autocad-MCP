@@ -1049,6 +1049,79 @@ async def test_a_live_rollback_is_not_judged_while_autocad_is_busy():
     assert extra == {"cmdactive": 1}
 
 
+async def test_a_live_rollback_with_an_unreadable_cmdactive_is_not_claimed_verified(
+    monkeypatch,
+):
+    """An unreadable CMDACTIVE is not idleness: verified None, nothing compared."""
+    from engineering.changes import precheck
+
+    class _Rejected:
+        async def system_get_variable(self, name):
+            raise RuntimeError("Call was rejected by callee")
+
+    async def unchanged(backend, before, *, exact):  # pragma: no cover - must not run
+        raise AssertionError("the evidence must not be read on an unknown seat state")
+
+    monkeypatch.setattr(precheck, "changed_since", unchanged)
+    verified, extra = await server._batch_rollback_evidence(
+        _Rejected(), "best_effort_undo", True, {"3D": "x"}
+    )
+    assert verified is None
+    assert extra == {"cmdactive": None}
+    assert "could not be read" in server._batch_not_idle_note(None)
+
+
+async def _declining_begin(monkeypatch):
+    """Give the headless engine the live engine's rule for a second begin
+    (backends/com_backend.py: {"ok": False, "error": "A transaction is
+    already active"}) instead of nesting."""
+    from backends.ezdxf_backend import EzdxfBackend
+
+    real = EzdxfBackend.transaction_begin
+
+    async def begin_like_com(self):
+        if self.transaction_depth() > 0:
+            return {"ok": False, "error": "A transaction is already active"}
+        return await real(self)
+
+    monkeypatch.setattr(EzdxfBackend, "transaction_begin", begin_like_com)
+
+
+async def test_auto_runs_a_batch_with_its_own_transaction_as_stop(client, monkeypatch):
+    """1.7 ran this batch; under auto it must not be refused and rolled back
+    because auto's checkpoint made the step's own begin a second one."""
+    await _declining_begin(monkeypatch)
+    result = await _batch(
+        client,
+        [
+            _line(),
+            {"tool": "transaction_begin", "args": {}},
+            _line(0, 5, 10, 5),
+            {"tool": "transaction_commit", "args": {}},
+        ],
+    )
+    assert result["ok"] is True, result["results"]
+    atomicity = result["atomicity"]
+    assert atomicity["mode"] == "stop"
+    assert atomicity["default_applied"] is False
+    assert "transaction_begin" in atomicity["note"]
+    assert await _entity_count(client) == 2
+
+
+@pytest.mark.parametrize(
+    "tool", ["transaction_begin", "transaction_commit", "transaction_rollback"]
+)
+async def test_auto_opens_no_checkpoint_around_a_transaction_step(client, tool):
+    result = (
+        await client.call_tool(
+            "cad_batch",
+            {"steps": [_line(), {"tool": tool, "args": {}}], "dry_run": True},
+        )
+    ).structured_content
+    assert result["atomicity"]["mode"] == "stop"
+    assert tool in result["atomicity"]["note"]
+
+
 async def test_a_live_rollback_compares_the_handles_exactly(monkeypatch):
     from engineering.changes import precheck
 
