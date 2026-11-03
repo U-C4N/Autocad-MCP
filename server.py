@@ -275,13 +275,11 @@ class AuditMiddleware(Middleware):
         except (OperationConflictError, RequiresReconcileError) as exc:
             elapsed = (time.monotonic() - start) * 1000
             log.warning("TOOL ERR %-40s %6.1fms  (%s)", tool_name, elapsed, exc.kind)
-            payload = {**exc.to_dict(), "tool": tool_name}
-            return ToolResult(content=str(exc), structured_content=payload, is_error=True)
+            return _journal_refusal(context, exc.kind, str(exc), exc.to_dict())
         except ValueError as exc:
             elapsed = (time.monotonic() - start) * 1000
             log.warning("TOOL ERR %-40s %6.1fms  (invalid operation id)", tool_name, elapsed)
-            payload = {"ok": False, "kind": "invalid_args", "error": str(exc), "tool": tool_name}
-            return ToolResult(content=str(exc), structured_content=payload, is_error=True)
+            return _journal_refusal(context, "invalid_args", str(exc), {"error": str(exc)})
         if replay is not None:
             log.info("TOOL REPLAY %-37s %s", tool_name, record.operation_id)
             return _replayed_result(replay, record.operation_id)
@@ -363,6 +361,13 @@ _RAN_PAST_THE_CALLER = frozenset(
 #: doing its work, so it is ``refused``. 1.8-02: ``internal`` (a bug mid-call),
 #: ``command_incomplete`` (a command left at a prompt) and the finalize gates
 #: (the gate ran - and may have saved - then found the drawing wanting) did work.
+#: 1.8-04's kinds are listed by name, the refusals too, so each decision is
+#: visible: a damaged or DWG source is refused before anything is opened, a
+#: save onto a recovered source before anything is written, and a locked
+#: target is left untouched by the atomic protocol (tmp and marker removed) -
+#: ``refused``. A save whose written copy failed its check, or that broke on
+#: the way, was attempted - ``failed``. ``process_exit`` is the journal's own
+#: kind for a row whose server died while it ran.
 _STATE_OF_KIND = {
     "failed": "failed",
     "timed_out": "failed",
@@ -374,6 +379,13 @@ _STATE_OF_KIND = {
     "quarantined": "quarantined",
     "unknown_commit": "unknown_commit",
     "cancelled": "cancelled",
+    "damaged_drawing": "refused",
+    "recover_unsupported": "refused",
+    "recovered_source_protected": "refused",
+    "save_locked": "refused",
+    "save_verify_failed": "failed",
+    "save_failed": "failed",
+    "process_exit": "unknown_commit",
 }
 
 
@@ -635,7 +647,12 @@ def _error_envelope(context, exc: BaseException) -> ToolResult:
         backend, operation_id, _effective_tool(tool, arguments), classified["kind"]
     )
     spec = describe(kind)
-    message = refusal_message(exc)
+    # 1.8-04's open / save errors: their own sentence, not the parser's or the
+    # OS's text they were raised from (local import: the module-level list is
+    # a merge hotspot).
+    from engineering.errors import typed_message
+
+    message = typed_message(exc) or refusal_message(exc)
     payload = {
         "ok": False,
         "kind": kind,
@@ -658,6 +675,31 @@ def _error_envelope(context, exc: BaseException) -> ToolResult:
     else:
         content = _wire_text(context, exc)
     return ToolResult(content=content, structured_content=payload, is_error=True)
+
+
+def _journal_refusal(context, kind: str, text: str, fields: dict) -> ToolResult:
+    """An ``AuditMiddleware`` refusal (B12) in the 1.8-02 envelope.
+
+    ``operation_conflict``, ``requires_reconcile`` and a malformed client id
+    (``invalid_args``) are refused before any record is opened, so nothing ran
+    and nothing was written: the record state ``retryable`` is computed for is
+    ``refused``. The text content is the 1.7 sentence, byte for byte; ``error``
+    stays beside ``message`` for a 1.7 client, and the exception's own fields
+    (``operation_id``, ``reason``, ``record``) are kept.
+    """
+    spec = describe(kind)
+    payload = {
+        "ok": False,
+        "kind": kind,
+        "category": spec.category,
+        "retryable": retryable_for(kind, "refused"),
+        "hint": spec.hint,
+        "tool": context.message.name,
+        "backend": _backend_name_or_none(context),
+        "message": text,
+    }
+    payload.update({k: v for k, v in fields.items() if k not in ("ok", "kind")})
+    return ToolResult(content=text, structured_content=payload, is_error=True)
 
 
 # ---------------------------------------------------------------------------
@@ -6936,9 +6978,12 @@ async def drawing_finalize(
     not parse are refused before anything is saved (invalid_args).
     """
     from engineering import DrawingValidator
+    from engineering.errors import InvalidArgsError
 
     if detail not in GATE_DETAILS:
-        raise ToolError(f"invalid_args: detail must be one of {GATE_DETAILS}, got {detail!r}")
+        raise InvalidArgsError(
+            f"invalid_args: detail must be one of {GATE_DETAILS}, got {detail!r}"
+        )
     rs = None
     if requirements is not None:
         from engineering.verification.requirements import parse_requirements
@@ -7175,9 +7220,12 @@ async def drawing_deliver(
     blocking_count, qa_coverage).
     """
     from engineering import deliver_drawing
+    from engineering.errors import InvalidArgsError
 
     if detail not in GATE_DETAILS:
-        raise ToolError(f"invalid_args: detail must be one of {GATE_DETAILS}, got {detail!r}")
+        raise InvalidArgsError(
+            f"invalid_args: detail must be one of {GATE_DETAILS}, got {detail!r}"
+        )
     rs = None
     if requirements is not None:
         from engineering.verification.requirements import parse_requirements

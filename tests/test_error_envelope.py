@@ -16,6 +16,8 @@ is ``application_busy`` - retryable, revision unmoved.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import ezdxf
 import pytest
 import pytest_asyncio
@@ -90,9 +92,90 @@ def test_the_table_declares_every_kind_once_with_a_known_category():
         "validation_failed",
         "critique_gate_failed",
         "failed_acceptance",
+        "damaged_drawing",
+        "recover_unsupported",
+        "recovered_source_protected",
+        "save_locked",
+        "save_verify_failed",
+        "save_failed",
+        "process_exit",
     ):
         assert kind in errors.ERROR_KINDS, kind
     assert server.BATCH_ERROR_KINDS == errors.ERROR_KINDS
+
+
+def test_every_kind_attribute_the_code_raises_is_declared():
+    """A ``.kind`` an exception class carries reaches the wire through
+    ``classify``; an undeclared one would read as ``internal``'s row."""
+    from backends import atomic_write, dxf_recover, operations
+
+    raised = [
+        dxf_recover.DrawingParseError,
+        dxf_recover.RecoveredSourceError,
+        dxf_recover.RecoverUnsupportedError,
+        atomic_write.AtomicWriteError,
+        atomic_write.SaveVerifyError,
+        atomic_write.SaveLockedError,
+        operations.OperationConflictError,
+        operations.RequiresReconcileError,
+        errors.EntityNotFoundError,
+        errors.ApplicationBusyError,
+        errors.CommandIncompleteError,
+        errors.InvalidArgsError,
+        errors.PathRefusedError,
+    ]
+    for cls in raised:
+        assert cls.kind in errors.ERROR_KINDS, cls
+
+
+#: 1.8-04's kinds: (record state, retryable once refused, category). Verified
+#: against the code: a damaged / DWG source is refused before anything is
+#: opened, a recovered source before anything is written, a locked target is
+#: left as it was by the atomic protocol; a save that failed its check or broke
+#: was attempted.
+FILE_KIND_OUTCOMES = {
+    "damaged_drawing": ("refused", False, "file"),
+    "recover_unsupported": ("refused", False, "file"),
+    "recovered_source_protected": ("refused", False, "policy"),
+    "save_locked": ("refused", True, "file"),
+    "save_verify_failed": ("failed", False, "file"),
+    "save_failed": ("failed", False, "file"),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(FILE_KIND_OUTCOMES))
+def test_a_file_kind_has_its_record_state_and_retryable(kind):
+    state, retryable, category = FILE_KIND_OUTCOMES[kind]
+    assert server._STATE_OF_KIND[kind] == state
+    assert errors.retryable_for(kind, state) is retryable
+    assert errors.describe(kind).category == category
+    # The journal's own kind for a dead owner's row.
+    assert server._STATE_OF_KIND["process_exit"] == "unknown_commit"
+    assert errors.retryable_for("process_exit", "unknown_commit") is False
+
+
+def test_the_file_exceptions_classify_by_type_through_the_wrap():
+    from fastmcp.exceptions import ToolError
+
+    from backends import atomic_write, dxf_recover
+
+    cases = {
+        dxf_recover.DrawingParseError("x.dxf could not be read"): "damaged_drawing",
+        dxf_recover.RecoverUnsupportedError("x.dwg is a DWG"): "recover_unsupported",
+        dxf_recover.recovered_source_refusal("drawing_save", "x", "x.dxf"): (
+            "recovered_source_protected"
+        ),
+        atomic_write.SaveLockedError("locked"): "save_locked",
+        atomic_write.SaveVerifyError("mismatch"): "save_verify_failed",
+        atomic_write.AtomicWriteError("broke"): "save_failed",
+    }
+    for exc, kind in cases.items():
+        wrapped = ToolError(f"Error calling tool 'drawing_save': {exc}")
+        wrapped.__cause__ = exc
+        assert errors.classify(wrapped)["kind"] == kind, exc
+        assert errors.classify(exc)["kind"] == kind, exc
+    # A ValueError that merely says the words stays what it was.
+    assert errors.classify(ValueError("could not be read as a DXF file"))["kind"] == "failed"
 
 
 def test_retryable_is_only_ever_true_when_nothing_was_written():
@@ -232,6 +315,188 @@ async def test_a_deliberate_type_error_refusal_is_never_called_a_server_bug(clie
     assert record["error_kind"] == "failed"
     step = await _step_error(client, tool, args)
     assert step["kind"] == "failed", "the direct route and the batch step must agree"
+
+
+def _damaged_dxf(folder) -> str:
+    """A 20-line DXF cut before its last ENDSEC and EOF: ezdxf refuses it,
+    its recover reader reads it back."""
+    doc = ezdxf.new("R2010")
+    for index in range(20):
+        doc.modelspace().add_line((0, index), (10, index))
+    intact = folder / "intact.dxf"
+    doc.saveas(intact)
+    text = intact.read_text(encoding="utf-8")
+    damaged = folder / "damaged.dxf"
+    damaged.write_text(text[: text.rindex("ENDSEC")], encoding="utf-8")
+    return str(damaged)
+
+
+async def _routes_agree(client, tool: str, args: dict, kind: str) -> dict:
+    """The direct envelope and the batch step row: one kind, category, retryable."""
+    _, payload = await _error(client, tool, args)
+    spec = errors.describe(kind)
+    assert payload["kind"] == kind, payload
+    assert payload["category"] == spec.category and payload["hint"] == spec.hint
+    record = await _record(client, payload["operation_id"])
+    assert record["error_kind"] == kind
+    assert record["state"] == server._STATE_OF_KIND[kind]
+    step = await _step_error(client, tool, args)
+    assert step["kind"] == kind, "the direct route and the batch step must agree"
+    assert step["category"] == payload["category"] and step["hint"] == payload["hint"]
+    assert step["retryable"] is payload["retryable"]
+    (step_record,) = [
+        r
+        for r in (await client.call_tool("system_status", {})).structured_content["operations"]
+        if r["operation_id"] == step["operation_id"]
+    ]
+    assert (step_record["state"], step_record["error_kind"]) == (record["state"], kind)
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_a_damaged_drawing_is_one_kind_direct_and_as_a_batch_step(client, tmp_path):
+    damaged = _damaged_dxf(tmp_path)
+    payload = await _routes_agree(client, "drawing_open", {"path": damaged}, "damaged_drawing")
+    assert payload["retryable"] is False and payload["category"] == "file"
+    assert "recover=True" in payload["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_protected_recovered_source_is_one_kind_direct_and_as_a_batch_step(
+    client, tmp_path
+):
+    damaged = _damaged_dxf(tmp_path)
+    source = Path(damaged).read_bytes()
+    await client.call_tool("drawing_open", {"path": damaged, "recover": True})
+    payload = await _routes_agree(client, "drawing_save", {}, "recovered_source_protected")
+    assert payload["retryable"] is False and payload["category"] == "policy"
+    assert "overwrite_source=True" in payload["message"]
+    assert Path(damaged).read_bytes() == source, "refused: the source was not written"
+
+
+@pytest.mark.asyncio
+async def test_a_locked_target_is_save_locked_refused_and_retryable(client, tmp_path, monkeypatch):
+    """The atomic protocol leaves a locked target as it was and removes its tmp:
+    nothing was written, so the envelope invites the retry - and it runs."""
+    import os
+
+    from backends import atomic_write
+
+    target = tmp_path / "part.dxf"
+    target.write_bytes(b"previous bytes\n")
+    real_replace = os.replace
+    locked = {"on": True}
+
+    def replace(src, dst, *a, **kw):
+        if locked["on"] and os.path.exists(dst) and os.path.samefile(dst, target):
+            raise PermissionError(13, "The process cannot access the file", str(dst))
+        return real_replace(src, dst, *a, **kw)
+
+    monkeypatch.setattr(atomic_write, "REPLACE_PAUSE_S", 0.0)
+    monkeypatch.setattr(os, "replace", replace)
+    await client.call_tool("entity_create_line", {"x1": 0, "y1": 0, "x2": 5, "y2": 0})
+    args = {"path": str(target)}
+    payload = await _routes_agree(client, "drawing_save_as", args, "save_locked")
+    assert payload["retryable"] is True and payload["category"] == "file"
+    assert target.read_bytes() == b"previous bytes\n", "the target is untouched"
+    assert not list(tmp_path.glob("part.dxf.acadmcp-*.tmp")), "the tmp was removed"
+
+    meta = {"operation_id": "locked-save-1"}
+    first = await client.call_tool("drawing_save_as", args, raise_on_error=False, meta=meta)
+    assert first.structured_content["kind"] == "save_locked"
+    locked["on"] = False  # the other program let go
+    retry = await client.call_tool("drawing_save_as", args, raise_on_error=False, meta=meta)
+    assert retry.is_error is False, retry.structured_content
+    assert not (retry.structured_content or {}).get("replayed")
+    assert ezdxf.readfile(target).modelspace().query("LINE")
+
+
+@pytest.mark.asyncio
+async def test_a_save_that_fails_its_check_is_failed_not_retryable(client, tmp_path, monkeypatch):
+    from backends import atomic_write
+
+    def mismatch(doc, tmp, data, mode):
+        raise atomic_write.SaveVerifyError("save: the written file failed its check (test)")
+
+    monkeypatch.setattr(atomic_write, "_verify", mismatch)
+    target = tmp_path / "part.dxf"
+    payload = await _routes_agree(
+        client, "drawing_save_as", {"path": str(target)}, "save_verify_failed"
+    )
+    assert payload["retryable"] is False
+    assert not target.exists(), "nothing was put in place"
+
+
+# ── the journal's own refusals (AuditMiddleware) ────────────────────────────
+
+
+def _assert_journal_envelope(result, kind: str, text: str, tool: str) -> dict:
+    assert result.is_error is True
+    assert result.content[0].text == text, "the 1.7 sentence, byte for byte"
+    payload = result.structured_content
+    spec = errors.describe(kind)
+    assert payload["ok"] is False and payload["kind"] == kind
+    assert payload["category"] == spec.category and payload["hint"] == spec.hint
+    assert payload["retryable"] is False
+    assert payload["tool"] == tool and payload["backend"] == "ezdxf"
+    assert payload["message"] == payload["error"] == text
+    return payload
+
+
+_LINE = {"x1": 0, "y1": 0, "x2": 10, "y2": 0}
+
+
+@pytest.mark.asyncio
+async def test_operation_conflict_carries_the_envelope(client):
+    from backends.operations import OperationConflictError
+
+    meta = {"operation_id": "conflict-1"}
+    await client.call_tool("entity_create_line", _LINE, meta=meta)
+    other = await client.call_tool(
+        "entity_create_line", {**_LINE, "x2": 20}, raise_on_error=False, meta=meta
+    )
+    text = str(
+        OperationConflictError(
+            "conflict-1", reason="different_request", recorded_tool="entity_create_line"
+        )
+    )
+    payload = _assert_journal_envelope(other, "operation_conflict", text, "entity_create_line")
+    assert payload["operation_id"] == "conflict-1" and payload["reason"] == "different_request"
+
+
+@pytest.mark.asyncio
+async def test_requires_reconcile_carries_the_envelope_and_a_declared_process_exit(
+    client, monkeypatch
+):
+    from backends.operations import OperationJournal, RequiresReconcileError
+
+    journal = OperationJournal()
+    record, _ = journal.begin("entity_create_line", dict(_LINE), operation_id="lost-1")
+    journal.finish(record, "unknown_commit", error_kind="process_exit")
+    monkeypatch.setattr(server, "_operations_journal", lambda lifespan: journal)
+    result = await client.call_tool(
+        "entity_create_line", _LINE, raise_on_error=False, meta={"operation_id": "lost-1"}
+    )
+    text = str(RequiresReconcileError(record))
+    payload = _assert_journal_envelope(result, "requires_reconcile", text, "entity_create_line")
+    assert payload["operation_id"] == "lost-1"
+    assert payload["record"]["error_kind"] == "process_exit"
+    assert payload["record"]["error_kind"] in errors.ERROR_KINDS, "every kind on the wire"
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_operation_id_carries_the_envelope(client):
+    from backends.operations import validate_operation_id
+
+    with pytest.raises(ValueError) as expected:
+        validate_operation_id("op\n1")
+    result = await client.call_tool(
+        "entity_create_line", _LINE, raise_on_error=False, meta={"operation_id": "op\n1"}
+    )
+    payload = _assert_journal_envelope(
+        result, "invalid_args", str(expected.value), "entity_create_line"
+    )
+    assert "operation_id" not in payload, "the id was refused; nothing names it"
 
 
 @pytest.mark.asyncio

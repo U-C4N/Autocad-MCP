@@ -97,13 +97,38 @@ async def test_a_failed_validator_is_validation_failed_direct_and_in_a_batch(cli
     assert step["blocking"][0]["code"] == "not_saved" and step["category"] == "validation"
 
 
+@pytest.mark.parametrize(
+    "tool, args",
+    [
+        ("drawing_finalize", {"detail": "everything"}),
+        ("drawing_deliver", {"output_dir": "OUT", "detail": "everything"}),
+    ],
+)
 @pytest.mark.asyncio
-async def test_detail_is_validated(client):
-    result = await client.call_tool(
-        "drawing_finalize", {"detail": "everything"}, raise_on_error=False
-    )
+async def test_detail_is_validated_and_typed_invalid_args(client, tmp_path, tool, args):
+    """A bad ``detail`` is the caller's argument (invalid_args), never the tool
+    declining (refused); the sentence on the wire is the one it was."""
+    args = {k: str(tmp_path / v) if k == "output_dir" else v for k, v in args.items()}
+    result = await client.call_tool(tool, args, raise_on_error=False)
     assert result.is_error is True
-    assert "detail must be one of" in result.structured_content["message"]
+    payload = result.structured_content
+    assert "detail must be one of" in payload["message"]
+    assert payload["kind"] == "invalid_args" and payload["category"] == "input"
+    assert payload["retryable"] is False
+    assert payload["hint"] == errors.describe("invalid_args").hint
+    assert result.content[0].text == (
+        "Internal error: invalid_args: detail must be one of ('summary', 'full'), got 'everything'"
+    )
+    status = (await client.call_tool("system_status", {})).structured_content
+    (record,) = [r for r in status["operations"] if r["operation_id"] == payload["operation_id"]]
+    assert (record["state"], record["error_kind"]) == ("refused", "invalid_args")
+
+    batch = (
+        await client.call_tool("cad_batch", {"steps": [{"tool": tool, "args": args}]})
+    ).structured_content
+    step = batch["results"][0]["error"]
+    assert step["kind"] == "invalid_args", "both routes give one kind"
+    assert step["category"] == "input" and step["retryable"] is False
 
 
 @pytest.mark.asyncio

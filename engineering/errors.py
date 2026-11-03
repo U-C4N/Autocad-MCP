@@ -48,12 +48,14 @@ __all__ = [
     "CATEGORIES",
     "ERROR_KINDS",
     "ERROR_TABLE",
+    "FILE_KINDS",
     "GATE_KINDS",
     "ApplicationBusyError",
     "CommandIncompleteError",
     "CommandRefusedError",
     "EntityNotFoundError",
     "GateFailure",
+    "InvalidArgsError",
     "KindSpec",
     "PathRefusedError",
     "annotate",
@@ -70,6 +72,7 @@ __all__ = [
     "retryable_for",
     "short_message",
     "stale_of",
+    "typed_message",
 ]
 
 #: The rival's eight categories (plan 1.8-02), in its order.
@@ -108,9 +111,24 @@ BATCH_KINDS_1_7 = (
 #: The finalize / deliver gate kinds (:class:`GateFailure`).
 GATE_KINDS = ("validation_failed", "critique_gate_failed", "failed_acceptance")
 
+#: The save / open kinds of 1.8-04 (``backends/dxf_recover.py``,
+#: ``backends/atomic_write.py``): each is the ``kind`` attribute of the
+#: exception class that raises it.
+FILE_KINDS = (
+    "damaged_drawing",
+    "recover_unsupported",
+    "recovered_source_protected",
+    "save_locked",
+    "save_verify_failed",
+    "save_failed",
+)
+
 #: Every kind an error envelope or a step row can carry. Closed: a client that
 #: branches on the taxonomy needs it enumerable. ``requires_reconcile`` is the
-#: operation journal's refusal (B12), already on the wire in 1.7.0.
+#: operation journal's refusal (B12), already on the wire in 1.7.0;
+#: ``process_exit`` is the ``error_kind`` the durable journal (1.8-03) writes on
+#: the row of a call whose server died, which a ``requires_reconcile`` answer
+#: carries in its ``record``.
 ERROR_KINDS = BATCH_KINDS_1_7 + (
     "not_found",
     "unknown_handle",
@@ -122,6 +140,8 @@ ERROR_KINDS = BATCH_KINDS_1_7 + (
     "internal",
     "requires_reconcile",
     *GATE_KINDS,
+    *FILE_KINDS,
+    "process_exit",
 )
 
 
@@ -167,7 +187,9 @@ ERROR_TABLE: dict[str, KindSpec] = {
     "timed_out": KindSpec("dependency", False, "AutoCAD did not answer in time."),
     "cancelled": KindSpec("input", True, "The request was cancelled."),
     "operation_conflict": KindSpec(
-        "input", False, "That operation_id belongs to another request; send a new one."
+        "input",
+        False,
+        "The id names another request (send a new id) or one still running (wait).",
     ),
     "requires_reconcile": KindSpec(
         "input", False, "Inspect the drawing, then send a new operation_id."
@@ -192,6 +214,27 @@ ERROR_TABLE: dict[str, KindSpec] = {
     ),
     "failed_acceptance": KindSpec(
         "validation", False, "A requirement does not pass on the geometry; fix the drawing."
+    ),
+    "damaged_drawing": KindSpec(
+        "file", False, "Not a readable DXF; drawing_open(path, recover=True) repairs what it can."
+    ),
+    "recover_unsupported": KindSpec(
+        "file", False, "recover=True reads DXF only; use AutoCAD's own RECOVER on a DWG."
+    ),
+    "recovered_source_protected": KindSpec(
+        "policy", False, "Save to another path, or pass overwrite_source=True to replace it."
+    ),
+    "save_locked": KindSpec(
+        "file", True, "Another program holds the file; close it, then save again."
+    ),
+    "save_verify_failed": KindSpec(
+        "file", False, "The written copy failed its check; the target file is unchanged."
+    ),
+    "save_failed": KindSpec(
+        "file", False, "The save did not complete; the target is the file it was before."
+    ),
+    "process_exit": KindSpec(
+        "dependency", False, "The server ended mid-call; inspect the drawing before a retry."
     ),
 }
 
@@ -281,6 +324,19 @@ class GateFailure(ToolError):
         super().__init__(message)
         self.payload = dict(payload)
         self.kind = str(self.payload.get("kind") or "validation_failed")
+
+
+class InvalidArgsError(ToolError):
+    """A tool refusing an argument value its schema cannot express (a closed
+    set checked in the body, such as ``detail``).
+
+    A ``ToolError`` with the sentence the call site raised before
+    (``"invalid_args: ..."``), so the prose and ``except ToolError`` are
+    unchanged; typed so that the kind is ``invalid_args`` - an unwrapped
+    ``ToolError`` alone reads as the tool declining (``refused``).
+    """
+
+    kind = "invalid_args"
 
 
 #: How many blocking rows a gate failure carries unless ``detail="full"``.
@@ -434,6 +490,58 @@ def capability_of(exc: BaseException) -> str | None:
     return None
 
 
+_file_error_types: tuple[type, ...] | None = None
+
+
+def _file_refusal_types() -> tuple[type, ...]:
+    """The 1.8-04 open / save exception classes, each carrying its ``kind``.
+
+    ``AtomicWriteError`` is the base of ``SaveVerifyError`` and
+    ``SaveLockedError``; the matched instance's own ``kind`` is the one reported.
+    """
+    global _file_error_types
+    if _file_error_types is None:
+        found: list[type] = []
+        try:
+            from backends.dxf_recover import (
+                DrawingParseError,
+                RecoveredSourceError,
+                RecoverUnsupportedError,
+            )
+
+            found += [DrawingParseError, RecoveredSourceError, RecoverUnsupportedError]
+        except Exception as exc:  # pragma: no cover - a core module
+            log.debug("recover refusal types unavailable: %s", exc)
+        try:
+            from backends.atomic_write import AtomicWriteError
+
+            found.append(AtomicWriteError)
+        except Exception as exc:  # pragma: no cover - a core module
+            log.debug("atomic write error type unavailable: %s", exc)
+        _file_error_types = tuple(found)
+    return _file_error_types
+
+
+def _file_error_of(exc: BaseException) -> BaseException | None:
+    types = _file_refusal_types()
+    return _first_of(exc, types) if types else None
+
+
+def typed_message(exc: BaseException) -> str | None:
+    """The full sentence of a 1.8-04 open / save error on the chain, on one line.
+
+    Those exceptions are raised ``from`` the parser's or the OS's own error,
+    whose text (``missing ENDSEC tag``) is the most specific on the chain but
+    not the refusal: the typed sentence is the one that says nothing was
+    opened or written and names the way out (``recover=True``,
+    ``overwrite_source=True``). None for every other exception.
+    """
+    found = _file_error_of(exc)
+    if found is None:
+        return None
+    return " ".join(str(found).split()) or None
+
+
 def _quarantine_refusal_type() -> type:
     global _quarantine_error_type
     if _quarantine_error_type is None:
@@ -585,13 +693,19 @@ def classify(exc: BaseException) -> dict:
         if refused.symbols:
             row["symbols"] = list(refused.symbols)
         return row
-    for typed in (PathRefusedError, ApplicationBusyError, EntityNotFoundError):
+    for typed in (PathRefusedError, ApplicationBusyError, EntityNotFoundError, InvalidArgsError):
         found = _first_of(exc, typed)
         if found is not None:
             row = {"kind": typed.kind, "message": message}
             if typed is EntityNotFoundError:
                 row["handle"] = found.handle
             return row
+    found = _file_error_of(exc)
+    if found is not None:
+        # 1.8-04: a damaged or protected drawing, a save that did not land. By
+        # type; the instance's own ``kind`` (a SaveLockedError is an
+        # AtomicWriteError whose kind is save_locked), and its own sentence.
+        return {"kind": str(found.kind), "message": compact_message(str(found))}
     incomplete = _first_of(exc, CommandIncompleteError)
     if incomplete is not None:
         return {
