@@ -347,7 +347,8 @@ async def test_the_timeout_message_names_the_real_call(backend, monkeypatch, run
         finally:
             r.finished.set()
 
-    monkeypatch.setattr(backend._doc, "saveas", _slow_saveas)
+    # 1.8-04: a save writes through doc.write into the atomic protocol's tmp.
+    monkeypatch.setattr(backend._doc, "write", _slow_saveas)
     monkeypatch.setattr(config.settings, "ezdxf_call_timeout", 0.3)
     with pytest.raises(RuntimeError) as excinfo:
         await backend.drawing_save(str(tmp_path / "part.dxf"))

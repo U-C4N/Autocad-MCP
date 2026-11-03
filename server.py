@@ -44,6 +44,7 @@ from backends.base import (
     lineweight_name,
     parse_lineweight,
 )
+from backends.journal_store import open_journal, state_store_status
 from backends.operations import (
     CURRENT_OPERATION,
     OperationConflictError,
@@ -173,16 +174,25 @@ async def autocad_lifespan(server):
     except Exception as exc:  # profile trouble must never block startup
         log.warning("Tool profile could not be applied: %s", exc)
     backend = None
-    # B12: the operation journal lives as long as the server: in memory, so a
-    # restart forgets every operation id (B13 makes it durable in 1.8.0).
-    operations = OperationJournal()
+    # B12/B13: one operation journal per server, written through to
+    # <ACADMCP_STATE_DIR>/journal.sqlite3 so a client id replays after a restart
+    # (backends/journal_store.py). It never fails startup: a refused folder or
+    # an unusable file leaves it in memory, reported by system_status.state_store.
+    operations = open_journal(is_read_only=_read_only_tool)
+    # 1.8-04: saves a dead process left half done are resolved before any
+    # call (backends/atomic_write.py); system_status reports them.
+    save_recovery = _resolve_interrupted_saves()
     try:
         backend = await _make_backend()
         log.info("Backend ready: %s", backend.name)
+        # A reopened file never re-issues a revision the journal saw (lineage).
+        if hasattr(backend, "revision_high_lookup"):
+            backend.revision_high_lookup = getattr(operations, "max_revision", None)
         context: dict = {"backend": backend, "operations": operations}
     except Exception as exc:
         log.error("Backend initialization failed: %s", exc)
         context = {"backend": None, "init_error": str(exc), "operations": operations}
+    context["save_recovery"] = save_recovery
     # One yield, outside the try that builds the backend: an exception thrown
     # into the generator at shutdown must reach `finally`, not a second yield.
     try:
@@ -191,6 +201,20 @@ async def autocad_lifespan(server):
         log.info("AutoCAD MCP Pro shutting down")
         if backend is not None:
             await _disconnect_backend(backend)
+        closer = getattr(operations, "close", None)
+        if callable(closer):
+            closer()
+
+
+def _resolve_interrupted_saves() -> list[dict]:
+    """Every pending save marker of a dead process, resolved (never fails startup)."""
+    try:
+        from backends.atomic_write import resolve_pending
+
+        return resolve_pending()
+    except Exception as exc:  # recovery is reported, never a reason not to start
+        log.error("Interrupted saves could not be resolved: %s", exc)
+        return [{"outcome": "unresolved", "error": f"{type(exc).__name__}: {exc}"}]
 
 
 async def _disconnect_backend(backend) -> None:
@@ -1769,6 +1793,12 @@ async def drawing_open(
         "Full path to the .dxf file. .dwg needs a backend that can read it "
         "(the live COM backend); the headless ezdxf backend refuses it.",
     ],
+    recover: Annotated[
+        bool,
+        "Read a damaged DXF with ezdxf's recover reader: reports recovered "
+        "{fixes, errors, messages, entities_read}; the result will not save over "
+        "the damaged file without drawing_save(overwrite_source=True).",
+    ] = False,
     ctx: Context = None,
 ) -> dict:
     """Open an existing DXF drawing file (DWG too, on the live COM backend).
@@ -1777,6 +1807,14 @@ async def drawing_open(
     capability. ezdxf sniffs content rather than extensions, so it would parse a
     mislabelled DXF-in-a-.dwg and this tool would answer with a document that
     does not exist in that format.
+
+    A file that does not parse is refused (`damaged_drawing`) and the open
+    document is kept; the refusal names `recover=True`. The result carries the
+    file's `lineage`: an unchanged file last saved by this server continues its
+    `document_id` and `revision` across restarts; a file changed outside it
+    reports `external_change: true` (one revision more, journalled as
+    `external_edit`). `save_recovery` lists a save of this path a dead process
+    left half done, resolved before the read.
     """
     validated = validate_path(path, allow_write=False)
     backend = _backend(ctx)
@@ -1784,9 +1822,33 @@ async def drawing_open(
         raise ToolError(_DWG_READ_REFUSAL.format(backend=backend.name, path=validated))
     await ctx.info(f"Opening drawing: {validated}")
     await ctx.report_progress(0, 100)
-    result = await backend.drawing_open(str(validated))
+    if recover:
+        result = await backend.drawing_open(str(validated), recover=True)
+    else:
+        result = await backend.drawing_open(str(validated))
     await ctx.report_progress(100, 100)
+    if isinstance(result, dict) and result.get("external_change"):
+        _journal_external_edit(ctx, backend, result)
     return result
+
+
+def _journal_external_edit(ctx: Context, backend, result: dict) -> None:
+    """One ``external_edit`` row: the file changed outside this server (1.8-04)."""
+    try:
+        journal = _operations_journal(ctx.lifespan_context)
+        identity = _identity_of(backend)
+        record, _replay = journal.begin(
+            "external_edit",
+            {
+                "path": result.get("path"),
+                "previous_sha256": result.get("previous_sha256"),
+                "sha256": result.get("sha256"),
+            },
+            document=identity,
+        )
+        journal.finish(record, "committed", document=identity)
+    except Exception as exc:  # the journal is evidence, never a reason to fail an open
+        log.warning("external_edit not journalled: %s", exc)
 
 
 @cad_tool(summary="Write the drawing back to its file, or to a path you give.", cost="mutate")
@@ -1796,13 +1858,25 @@ async def drawing_open(
 )
 async def drawing_save(
     path: Annotated[str | None, "Optional save path; uses current path if omitted"] = None,
+    overwrite_source: Annotated[
+        bool,
+        "Allow saving a drawing opened with recover=True over its damaged source file.",
+    ] = False,
     ctx: Context = None,
 ) -> dict:
-    """Save the current drawing. Optionally specify a new path."""
+    """Save the current drawing. Optionally specify a new path.
+
+    Headless, the write is atomic: a temporary file beside the target, checked,
+    then renamed over it - a killed save never leaves a half-written drawing.
+    A document opened with recover=True is refused onto its damaged source
+    (`recovered_source_protected`) unless overwrite_source=True.
+    """
     if path is not None:
         validated = validate_path(path, allow_write=True)
         path = str(validated)
     await ctx.info("Saving drawing")
+    if overwrite_source:
+        return await _backend(ctx).drawing_save(path, overwrite_source=True)
     return await _backend(ctx).drawing_save(path)
 
 
@@ -6132,7 +6206,21 @@ async def system_status(ctx: Context = None) -> dict:
     tool call (and per cad_batch step), with `operation_id`, `tool`,
     `request_hash`, `state` (committed / partial / failed / refused /
     quarantined / cancelled / unknown_commit / running), the document id and
-    the revision before and after. Held in memory; a restart forgets them.
+    the revision before and after - this run's first, preceded by earlier runs'
+    when there are fewer than 20.
+
+    `state_store` describes the durable journal (B13): `mode` (`durable`, or
+    `off` with JOURNAL_DURABLE=off), `path` (<ACADMCP_STATE_DIR>/journal.sqlite3),
+    `bytes`, `documents`, `operations`, `checkpoints`, `write_failures` and
+    `degraded` (false, or `{kind, reason}` when the file is unusable or
+    refused and records are kept in memory only - no call fails because of it).
+    A client id replays across restarts; a call still running when its server
+    died answers `requires_reconcile` with `error_kind: "process_exit"`.
+
+    `save_recovery` (only when there was one) lists the saves a dead process
+    left half done that this server resolved at startup: `completed`,
+    `finished` (the verified file put in place), `rolled_back` (the previous
+    file kept) per target.
     """
     b = ctx.lifespan_context.get("backend")
     journal = _operations_journal(ctx.lifespan_context)
@@ -6152,6 +6240,9 @@ async def system_status(ctx: Context = None) -> dict:
         if tool_count is not None:
             out["tool_count"] = tool_count
         out["operations"] = journal.recent()
+        out["state_store"] = state_store_status(journal)
+        if ctx.lifespan_context.get("save_recovery"):
+            out["save_recovery"] = ctx.lifespan_context["save_recovery"]
         return out
     status = await b.system_status()
     status["server"] = "AutoCAD MCP Pro"
@@ -6163,6 +6254,9 @@ async def system_status(ctx: Context = None) -> dict:
             "DANGEROUS_COMMANDS_ENABLED=true — command/LISP sanitization disabled."
         )
     status["operations"] = journal.recent()
+    status["state_store"] = state_store_status(journal)
+    if ctx.lifespan_context.get("save_recovery"):
+        status["save_recovery"] = ctx.lifespan_context["save_recovery"]
     return status
 
 

@@ -106,7 +106,9 @@ async def test_revision_moves_with_content_and_only_with_content(backend, tmp_pa
     assert backend.document_identity()["document_id"] == document_id
 
 
-async def test_reopening_a_file_is_a_new_registration(backend, tmp_path):
+async def test_reopening_an_unchanged_file_continues_its_document(backend, tmp_path):
+    """1.8-04 changed this: the file's lineage record continues the id and revision
+    (tests/test_identity_lineage.py); until 1.7.0 a reopen was a new id at revision 0."""
     await backend.entity_create_line(0, 0, 1, 0)
     path = tmp_path / "part.dxf"
     await backend.drawing_save_as(str(path))
@@ -115,8 +117,8 @@ async def test_reopening_a_file_is_a_new_registration(backend, tmp_path):
     opened = await backend.drawing_open(str(path))
     assert opened["reloaded"] is True
     after = backend.document_identity()
-    assert _is_uuid4_hex(after["document_id"]) and after["document_id"] != before["document_id"]
-    assert after["revision"] == 0 and after["path"] == str(path)
+    assert after["document_id"] == before["document_id"]
+    assert after["revision"] == 1 and after["path"] == str(path)
 
 
 async def test_list_info_and_status_carry_id_and_revision(backend):

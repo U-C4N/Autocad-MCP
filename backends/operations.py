@@ -20,9 +20,11 @@ A client may bring its own id (``_meta.operation_id`` on any request, or
 ``cad_batch(operation_id=...)``). The same id with the same request hash gets
 the recorded result back without running again (``replayed: true``); after an
 ``unknown_commit`` it is refused with ``requires_reconcile``; with a different
-request it is refused with ``operation_conflict``. The journal is in memory and
-bounded: a server restart forgets every id (B13 makes it durable in 1.8.0),
-and an id pushed out of the bound runs again.
+request it is refused with ``operation_conflict``. This journal is in memory and
+bounded: a restart forgets every id, and an id pushed out of the bound runs
+again. Since 1.8.0 (B13) the server runs ``backends/journal_store.py``'s
+``DurableJournal`` instead, which keeps the same records in sqlite so a client
+id replays across restarts (``JOURNAL_DURABLE=off`` restores this one).
 
 Pure: no backend, no server import.
 """
@@ -159,11 +161,16 @@ class RequiresReconcileError(RuntimeError):
 
     def __init__(self, record: OperationRecord):
         self.record = record
+        if record.error_kind == "process_exit":
+            # B13: the durable journal found the row still running after the
+            # server that owned it had died.
+            cause = "the server process ended while it was running"
+        else:
+            cause = "it was cancelled or timed out while its worker was writing"
         super().__init__(
-            f"operation {record.operation_id!r} ({record.tool}) ended unknown_commit: it was "
-            "cancelled or timed out while its worker was writing, so whether it landed is "
-            "unknown. Check the drawing (system_status revision, entity_list) before doing it "
-            "again, and retry under a new operation_id."
+            f"operation {record.operation_id!r} ({record.tool}) ended unknown_commit: "
+            f"{cause}, so whether it landed is unknown. Check the drawing (system_status "
+            "revision, entity_list) before doing it again, and retry under a new operation_id."
         )
 
     def to_dict(self) -> dict:
@@ -211,8 +218,9 @@ class OperationJournal:
         client_supplied = operation_id is not None
         if client_supplied:
             operation_id = validate_operation_id(operation_id)
-            prior = self._records.get(operation_id)
-            if prior is not None:
+            found = self._lookup(operation_id)
+            if found is not None:
+                prior, has_result, stored = found
                 if prior.request_hash != digest:
                     raise OperationConflictError(
                         operation_id, reason="different_request", recorded_tool=prior.tool
@@ -223,8 +231,8 @@ class OperationJournal:
                     )
                 if prior.state == "unknown_commit":
                     raise RequiresReconcileError(prior)
-                if prior.state in REPLAYABLE_STATES and operation_id in self._results:
-                    return prior, self._results[operation_id]
+                if prior.state in REPLAYABLE_STATES and has_result:
+                    return prior, stored
         else:
             operation_id = uuid.uuid4().hex
         record = OperationRecord(
@@ -272,6 +280,18 @@ class OperationJournal:
         if n <= 0:
             return []
         return [record.to_dict() for record in list(self._records.values())[-int(n) :]]
+
+    def _lookup(self, operation_id: str) -> tuple[OperationRecord, bool, Any] | None:
+        """``(record, has_result, result)`` for a known id, else None.
+
+        The hook a durable journal (``backends/journal_store.py``) extends to
+        find an id this process never saw.
+        """
+        prior = self._records.get(operation_id)
+        if prior is None:
+            return None
+        has_result = operation_id in self._results
+        return prior, has_result, self._results.get(operation_id)
 
     def _store(self, record: OperationRecord) -> None:
         self._records.pop(record.operation_id, None)

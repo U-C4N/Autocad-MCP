@@ -31,7 +31,8 @@ from engineering.errors import ApplicationBusyError, CommandIncompleteError, Ent
 from engineering.measure import is_self_intersecting, polygon_area_perimeter
 from security import sanitize_macro_argument, sanitize_symbol_name, validate_path
 
-from . import ocs
+from . import lineage, ocs
+from .atomic_write import atomic_write_dxf, file_sha256, resolve_pending
 from .base import (
     AutoCADBackend,
     BlockInfo,
@@ -50,6 +51,7 @@ from .base import (
 from .contracts.entity_modification import TEXT_SEARCH_SCOPE
 from .contracts.settings import SUMMARY_FIELDS, validate_drawing_properties
 from .document_guard import ActiveDocumentChangedError
+from .dxf_recover import recover_dxf, recovered_source_refusal
 from .operations import CURRENT_OPERATION
 from .quarantine import DaemonExecutor, real_call_name
 from .region_render import (
@@ -2291,6 +2293,18 @@ def _note_reached() -> None:
         probe["reached"] = True
 
 
+def _dbmod_of(doc) -> int | None:
+    """``DBMOD`` of ``doc`` (COM thread); None when it cannot be read.
+
+    0 means the document holds what its file holds - the only state in which
+    a lineage record may name the file's sha256 (1.8-04).
+    """
+    try:
+        return int(doc.GetVariable("DBMOD"))
+    except Exception:  # noqa: BLE001 - evidence only; no record is written without it
+        return None
+
+
 def _mutating(method):
     """Bump the bound document's content revision after ``method`` (B11).
 
@@ -3144,18 +3158,116 @@ class ComBackend(AutoCADBackend):
         await self._rebind()
         return result
 
-    async def drawing_open(self, path: str) -> dict:
+    # ── lineage and recovery on the live engine (1.8-04) ─────────────────────
+    #
+    # The bind keeps its own uuid (B11): a reopened DWG is a new document here.
+    # The lineage record (backends/lineage.py) is keyed by FullName and the
+    # file's sha256, written only while DBMOD is 0 - the file then holds what
+    # the document holds - so a drawing_open of a file someone changed since
+    # reports external_change. SaveAs stays AutoCAD's own save protocol.
+
+    def _bound_entry(self) -> dict | None:
+        key = self._bound_entry_key()
+        return None if key is None else self._known_documents.get(key)
+
+    @staticmethod
+    def _same_path(a: str, b: str) -> bool:
+        try:
+            return os.path.samefile(a, b)
+        except OSError:
+            return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+    def _refuse_recovered_source(self, op: str, path: str | None, overwrite_source: bool) -> None:
+        entry = self._bound_entry() or {}
+        source = entry.get("recovered_from")
+        if source and path and not overwrite_source and self._same_path(path, source):
+            name = (self._bound or {}).get("name") or Path(source).name
+            raise recovered_source_refusal(op, name, source)
+
+    async def _record_lineage(self, full_name: str | None, dbmod: int | None) -> dict | None:
+        """Write the bound document's lineage record for ``full_name`` while DBMOD is 0."""
+        entry = self._bound_entry()
+        if entry is None or not full_name or not os.path.isfile(full_name):
+            return None
+        sha = await asyncio.to_thread(file_sha256, full_name)
+        lineage_id = entry.setdefault("lineage_id", lineage.new_lineage_id())
+        if dbmod == 0 and sha:
+            lineage.write_record(
+                full_name,
+                {
+                    "lineage_id": lineage_id,
+                    "document_id": self.document_identity()["document_id"],
+                    "last_saved_sha256": sha,
+                    "revision": int(entry.get("revision", 0)),
+                    "engine": "com",
+                },
+            )
+        return {"lineage_id": lineage_id, "sha256": sha}
+
+    async def drawing_open(self, path: str, recover: bool = False) -> dict:
+        """``Documents.Open``; ``recover=True`` repairs a damaged DXF first (B09).
+
+        The repair is ezdxf's recover reader, written into a private temp DXF
+        that AutoCAD then opens: the document's FullName is that copy, and a
+        save onto the damaged source needs ``overwrite_source=True``.
+        """
+        recovered = None
+        open_path = path
+        save_recovery: list[dict] = []
+        if recover:
+            import tempfile
+
+            repaired, recovered = await asyncio.to_thread(recover_dxf, path)
+            folder = tempfile.mkdtemp(prefix="acadmcp-recover-")
+            open_path = os.path.join(folder, f"{Path(path).stem}.recovered.dxf")
+            await asyncio.to_thread(atomic_write_dxf, repaired, open_path, state=None)
+        else:
+            save_recovery = await asyncio.to_thread(resolve_pending, path)
+
         def _sync():
             app = _acad_app()
-            doc = app.Documents.Open(path)
+            doc = app.Documents.Open(open_path)
             name, full_name = self._wait_out_rejected_call(lambda: (doc.Name, doc.FullName))
-            return {"ok": True, "name": name, "path": full_name}
+            return {"ok": True, "name": name, "path": full_name}, _dbmod_of(doc)
 
-        result = await self._run(_sync)
+        result, dbmod = await self._run(_sync)
         await self._rebind()
+        entry = self._bound_entry()
+        if recover:
+            line = {"lineage_id": lineage.new_lineage_id(), "recovered_from": path}
+            if entry is not None:
+                entry["lineage_id"] = line["lineage_id"]
+                entry["recovered_from"] = path
+            result.update(recovered=recovered, recovered_from=path, lineage=line)
+            result["external_change"] = False
+        else:
+            full_name = result["path"]
+            record = lineage.read_record(full_name) if full_name else None
+            if entry is not None and record is not None:
+                entry["lineage_id"] = record["lineage_id"]
+            written = await self._record_lineage(full_name, dbmod)
+            sha = (written or {}).get("sha256")
+            recorded = (record or {}).get("last_saved_sha256")
+            changed = bool(sha and recorded and sha != recorded)
+            result["external_change"] = changed
+            if written is not None:
+                result["lineage"] = {
+                    "lineage_id": written["lineage_id"],
+                    "continued": record is not None,
+                }
+                result["sha256"] = sha
+            if changed:
+                result["previous_sha256"] = recorded
+        identity = self.document_identity()
+        result["document_id"], result["revision"] = identity["document_id"], identity["revision"]
+        if save_recovery:
+            result["save_recovery"] = save_recovery
         return result
 
-    async def drawing_save(self, path: str | None = None) -> dict:
+    async def drawing_save(self, path: str | None = None, overwrite_source: bool = False) -> dict:
+        self._refuse_recovered_source("drawing_save", path, overwrite_source)
+        source = (self._bound_entry() or {}).get("recovered_from")
+
         def _sync():
             doc = _acad_doc()
             if path:
@@ -3163,11 +3275,18 @@ class ComBackend(AutoCADBackend):
             else:
                 doc.Save()
             self._rekey_bound_sync(doc)
-            return {"ok": True, "path": doc.FullName}
+            return {"ok": True, "path": doc.FullName}, _dbmod_of(doc)
 
-        return await self._run(_sync)
+        result, dbmod = await self._run(_sync)
+        entry = self._bound_entry()
+        if source and path and entry is not None and self._same_path(path, source):
+            entry.pop("recovered_from", None)  # the caller chose to replace the damaged source
+        await self._record_lineage(result["path"], dbmod)
+        return result
 
     async def drawing_save_as(self, path: str, fmt: str = "dwg") -> dict:
+        self._refuse_recovered_source("drawing_save_as", path, False)
+
         def _sync():
             doc = _acad_doc()
             # AutoCAD AcSaveAsType: 12 = ac2000_dwg, 61 = ac2013_dxf, 66 = ac2018_Template.
@@ -3177,9 +3296,11 @@ class ComBackend(AutoCADBackend):
             acad_fmt = fmt_map.get(fmt.lower(), 12)
             doc.SaveAs(path, acad_fmt)
             self._rekey_bound_sync(doc)
-            return {"ok": True, "path": path, "format": fmt}
+            return {"ok": True, "path": path, "format": fmt}, _dbmod_of(doc)
 
-        return await self._run(_sync)
+        result, dbmod = await self._run(_sync)
+        await self._record_lineage(path, dbmod)
+        return result
 
     async def drawing_export_dxf(self, path: str) -> dict:
         """A DXF copy through ``Document.Export``; the open document is not re-pointed.
