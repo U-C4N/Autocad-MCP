@@ -1088,6 +1088,14 @@
       "group": "transactions",
       "cost": "safe",
       "summary": "Keep a named restore point of the drawing that survives a restart.",
+      "acad": [],
+      "synonyms": [
+        "create a checkpoint",
+        "restore point",
+        "snapshot the drawing",
+        "label this state",
+        "remember this version"
+      ],
       "tags": [
         "transaction"
       ],
@@ -1102,6 +1110,13 @@
       "group": "transactions",
       "cost": "read",
       "summary": "List the drawing's durable checkpoints, newest first.",
+      "acad": [],
+      "synonyms": [
+        "list checkpoints",
+        "saved states",
+        "version history",
+        "what can i roll back to"
+      ],
       "tags": [
         "transaction"
       ],
@@ -1115,6 +1130,14 @@
       "group": "transactions",
       "cost": "destructive",
       "summary": "Bring a checkpoint back: in place (undoable) or as a new document.",
+      "acad": [],
+      "synonyms": [
+        "restore a checkpoint",
+        "roll back to a checkpoint",
+        "go back to an earlier version",
+        "undo after a restart",
+        "recover an earlier state"
+      ],
       "tags": [
         "transaction"
       ],
