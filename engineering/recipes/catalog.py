@@ -70,15 +70,19 @@ __all__ = [
 #: The record layout this module reads. A change to a field's meaning bumps it.
 SCHEMA_VERSION = 1
 #: The catalog as a whole: bumped when a recipe is added, removed or re-versioned.
-CATALOG_VERSION = "1.7.0"
+CATALOG_VERSION = "1.8.0"
 
 #: The order the index lists them in; one file per id under ``data/``.
+#: ``layer_cleanup`` and ``dimension_part`` (1.8-11) are the call-budget recipes:
+#: the H4 and H5 jobs in one ``cad_batch`` each.
 RECIPE_IDS: tuple[str, ...] = (
     "dimensioned_part_delivery",
     "foreign_pid_lists",
     "revision_takeoff_delta",
     "a3_sheet_delivery",
     "foreign_drawing_audit",
+    "layer_cleanup",
+    "dimension_part",
 )
 
 BACKENDS = ("ezdxf", "com")

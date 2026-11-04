@@ -554,7 +554,7 @@ def _fill(schema: dict, key: str):
 
 
 @pytest.mark.asyncio
-async def test_every_mutating_handle_tool_answers_not_found_never_internal(client):
+async def test_every_mutating_handle_tool_answers_not_found_never_internal(full_catalog, client):
     tools = await client.list_tools()
     scanned = []
     for tool in tools:

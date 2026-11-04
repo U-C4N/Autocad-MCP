@@ -421,7 +421,7 @@ async def _tools():
 
 
 @pytest.mark.asyncio
-async def test_the_list_tools_expose_the_graph_reading_knobs():
+async def test_the_list_tools_expose_the_graph_reading_knobs(full_catalog):
     """W3-T15-09: label_search and include_foreign reach the graph the lists read."""
     tools = await _tools()
     for name in LIST_TOOLS:
@@ -456,7 +456,7 @@ async def test_the_knobs_are_passed_through_to_the_graph(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_the_list_tools_are_not_read_only_because_they_write_a_csv():
+async def test_the_list_tools_are_not_read_only_because_they_write_a_csv(full_catalog):
     """Spec §7: given `csv_path` they write a file, so `readOnlyHint` is false and
     the cost is `safe`; `cad_batch` and the search risk filter follow the annotation."""
     import server

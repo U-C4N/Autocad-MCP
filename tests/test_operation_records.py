@@ -249,7 +249,7 @@ async def test_the_search_proxy_reuses_the_operation_it_runs_under(monkeypatch):
                 await client.call_tool("call_tool", {"name": "system_status", "arguments": {}})
             ).structured_content
     finally:
-        server._apply_discovery_mode("off")
+        server._apply_discovery_mode()
     (operation_id,) = seen
     rows = [r for r in status["operations"] if r["operation_id"] == operation_id]
     assert len(rows) == 1 and (rows[0]["tool"], rows[0]["state"]) == ("call_tool", "committed")

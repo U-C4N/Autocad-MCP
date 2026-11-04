@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "id": "layer_cleanup",
+  "version": "1.0.0",
+  "title": "Layer clean-up: merge misnamed layers, clear overrides to ByLayer, prove it",
+  "summary": "Move every entity of the misnamed layers onto one standard layer and delete them, set every entity's colour and lineweight back to ByLayer, and prove it with an empty iso128 / layer_color / property_override critique - one cad_batch, never one call per entity.",
+  "preconditions": {
+    "backends": ["ezdxf", "com"],
+    "capabilities": [],
+    "packs": ["core"],
+    "profiles": ["full"],
+    "notes": [
+      "The target layer must exist before the merge (layer_create it first); a missing source or target, layer 0, DEFPOINTS or the target among the sources is refused by name before anything changes.",
+      "layer_merge reassigns model space, every paper layout and every block definition: an edited definition changes every INSERT of that block, and blocks_touched names them.",
+      "The ByLayer step touches every entity of every space; run the batch with dry_run=true first to read the counts, and pin them with expect_count when a stale count must refuse.",
+      "One target per run: merge onto several standard layers by putting one layer_merge step per target in the same cad_batch."
+    ]
+  },
+  "inputs": {
+    "drawing": {"type": "string", "description": "The drawing to clean (DXF/DWG path)."},
+    "sources": {"type": "array", "description": "The misnamed layers to merge away."},
+    "target": {"type": "string", "description": "The existing standard layer that receives their entities (e.g. GEOMETRY)."}
+  },
+  "steps": [
+    {
+      "id": "open",
+      "tool": "drawing_open",
+      "args": {"path": "$inputs.drawing"},
+      "bind": "open",
+      "purpose": "Open the drawing to clean.",
+      "evidence": "The document key and path."
+    },
+    {
+      "id": "merge",
+      "tool": "layer_merge",
+      "args": {"sources": "$inputs.sources", "target": "$inputs.target"},
+      "bind": "merge",
+      "purpose": "LAYMRG: every entity of the sources moves to the target, then the sources are deleted.",
+      "evidence": "How many entities moved, per space; the blocks whose definition was edited; the layers deleted."
+    },
+    {
+      "id": "bylayer",
+      "tool": "entity_modify_where",
+      "args": {"where": {"type": "*"}, "set": {"color": 256, "lineweight": "ByLayer"}, "space": "all"},
+      "bind": "bylayer",
+      "purpose": "Colour and lineweight back to ByLayer on every entity of every space, in one call.",
+      "evidence": "The matched and modified counts and the changes summary."
+    },
+    {
+      "id": "critique",
+      "tool": "drawing_critique",
+      "args": {"focus": ["iso128", "layer_color", "property_override"]},
+      "bind": "critique",
+      "purpose": "Every entity follows its layer and every layer is ISO 128.",
+      "evidence": "The issue list; empty is the gate."
+    },
+    {
+      "id": "layers",
+      "tool": "layer_list",
+      "args": {},
+      "bind": "layers",
+      "purpose": "The layer table after the clean-up, for the report.",
+      "evidence": "One row per layer: name, colour, linetype, lineweight."
+    }
+  ],
+  "postconditions": [
+    {"id": "critique_clean", "ref": "$critique.result", "op": "len_eq", "value": 0, "says": "No entity overrides its layer and every layer is ISO 128."}
+  ]
+}

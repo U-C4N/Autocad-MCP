@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "id": "dimension_part",
+  "version": "1.0.0",
+  "title": "Dimension a part in one call and prove it is complete",
+  "summary": "Dimension every edge, hole and arc of a part with one dimension_auto call on its layer, check the dimensions do not overlap, and prove a second run would draw nothing - never one dimension_* call per feature.",
+  "preconditions": {
+    "backends": ["ezdxf", "com"],
+    "capabilities": [],
+    "packs": ["core"],
+    "profiles": ["full"],
+    "notes": [
+      "dimension_auto reads LINE runs, LWPOLYLINE edges, CIRCLE diameters and ARC radii; an ELLIPSE, a SPLINE or anything else it cannot dimension comes back in omitted with its reason, never dropped.",
+      "The second dimension_auto call is the completeness check: with skip_existing (the default) it binds every candidate to the DIMENSION already measuring it, so it must create nothing.",
+      "A machine part drawn by mech_part_draw is dimensioned by mech_dimension_part instead; this recipe is for geometry somebody drew as plain entities."
+    ]
+  },
+  "inputs": {
+    "drawing": {"type": "string", "description": "The drawing that holds the part (millimetres)."},
+    "layer": {"type": "string", "description": "The layer the part's geometry is on.", "required": false, "default": "GEOMETRY"}
+  },
+  "steps": [
+    {
+      "id": "open",
+      "tool": "drawing_open",
+      "args": {"path": "$inputs.drawing"},
+      "bind": "open",
+      "purpose": "Open the drawing with the part.",
+      "evidence": "The document key and path."
+    },
+    {
+      "id": "dimension",
+      "tool": "dimension_auto",
+      "args": {"selector": {"layer": "$inputs.layer"}},
+      "bind": "dims",
+      "purpose": "Every edge, hole diameter, arc radius and the overall size of the part, in one call.",
+      "evidence": "created (handles), skipped_existing, omitted [{handle, type, reason}] and the dim_overlap self-check."
+    },
+    {
+      "id": "critique",
+      "tool": "drawing_critique",
+      "args": {"focus": ["dim_overlap"]},
+      "bind": "critique",
+      "purpose": "No two dimensions overlap.",
+      "evidence": "The issue list; empty is the gate."
+    },
+    {
+      "id": "again",
+      "tool": "dimension_auto",
+      "args": {"selector": {"layer": "$inputs.layer"}},
+      "bind": "again",
+      "purpose": "The completeness check: a rerun finds every feature already dimensioned.",
+      "evidence": "created is empty; skipped_existing counts what the first run drew."
+    }
+  ],
+  "postconditions": [
+    {"id": "dimensioned", "ref": "$dims.created", "op": "len_ge", "value": 1, "says": "The part was dimensioned."},
+    {"id": "nothing_omitted", "ref": "$dims.omitted", "op": "len_eq", "value": 0, "says": "Every selected entity could be dimensioned; nothing was left out."},
+    {"id": "critique_clean", "ref": "$critique.result", "op": "len_eq", "value": 0, "says": "No two dimensions overlap."},
+    {"id": "rerun_draws_nothing", "ref": "$again.created", "op": "len_eq", "value": 0, "says": "A second run draws nothing: the part is completely dimensioned."}
+  ]
+}

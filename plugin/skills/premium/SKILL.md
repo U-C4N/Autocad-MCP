@@ -73,7 +73,20 @@ Advance only on the state's evidence; report the state reached, never a later on
 9. **Read the error `kind` and `hint`, not the sentence.** Only
    `retryable: true` (nothing was written) means "send the same call again".
 
-## 4. Reporting
+## 4. Call budget
+
+More than 3 consecutive calls to the same tool = a missed batch tool.
+
+| Task | One call |
+|---|---|
+| Many entities | `entity_batch_create`, or `cad_batch` with `$refs` |
+| Layer clean-up | `cad_batch`: `layer_merge` + `entity_modify_where` |
+| Dimension a part | `dimension_auto(selector=...)` |
+| Part, P&ID, plan | `mech_part_from_spec`, `pid_from_spec`, `arch_plan_from_spec` |
+| Read a foreign drawing | `drawing_understand` |
+| Check the result | its own `created`/`omitted`, one `drawing_critique`; never `entity_get` per handle |
+
+## 5. Reporting
 
 End with a table of requirement / target / measured / delta / status, the
 handles, which file it was measured on, and every open, unknown or assumed

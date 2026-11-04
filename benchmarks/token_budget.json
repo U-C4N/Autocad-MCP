@@ -75,28 +75,31 @@
       "metric": "tokens",
       "basis": ["prompt_payload", "wire"],
       "ceiling": 250,
-      "gate": "release",
+      "gate": "ci",
       "owner": "1.8-11",
       "source": "plan section 4: idle catalog of a plugin user and the search row, 503 (wire) -> <= 250",
-      "note": "Held on both bases: the 503 the rival compared was the wire payload."
+      "note": "Held on both bases: the 503 the rival compared was the wire payload.",
+      "measured": "1.8-11, 2026-11-03: 220 tokens prompt payload (922 chars), 230 wire - the three synthetic tools with one-line texts, no output schema, no _meta and no anyOf/additionalProperties noise (DISCOVERY_PINNED empty); flipped to ci"
     },
     "search_pinned": {
       "metric": "tokens",
       "basis": ["prompt_payload", "wire"],
       "ceiling": 1500,
-      "gate": "release",
+      "gate": "ci",
       "owner": "1.8-11",
       "source": "plan section 4: search + the default pins <= 1,500",
-      "note": "Not measurable on this branch: no pins are wired (always_visible is not passed). Spike S1 measured search + the three proposed pins (cad_batch, drawing_info, entity_list) at 11,437 wire characters, ~2,730 tokens. 1.8-11 trims the pins or cad_batch's schema and re-sets this one cell with its own measurement."
+      "note": "Spike S1 measured search + the three proposed pins (cad_batch, drawing_info, entity_list) at 11,437 wire characters, ~2,730 tokens, cad_batch's docstring alone ~1,360. 1.8-11 lists a pin as a shortened card (discovery/serialize.py pinned_card): the same input schema - every property, type, enum, default, bound and the required list - with the description cut to its first paragraph plus 'Full description: describe_tool.' and each parameter description to whole sentences within 250 characters. The registered tool, its full-catalog listing and describe_tool keep the untouched text; nothing a call is validated against changed.",
+      "measured": "1.8-11, 2026-11-03: 1,003 tokens prompt payload (4,202 chars), 1,277 wire, 6 tools; the plan's 1,500 holds as measured, flipped to ci"
     },
     "instructions": {
       "metric": "tokens",
       "basis": ["text"],
       "ceiling": 250,
-      "gate": "release",
+      "gate": "ci",
       "owner": "1.8-11",
       "source": "plan section 4: server instructions <= 250 (new idle row)",
-      "note": "461 tokens (1,933 characters) on 1.7.0 and at W2 start; 1.8-11 writes the instruction builder."
+      "note": "461 tokens (1,933 characters) on 1.7.0 and at W2 start; 1.8-11 writes the instruction builder.",
+      "measured": "1.8-11, 2026-11-03: 199 tokens (832 chars) on the full-catalog surface, the longest text discovery/instructions.py writes; flipped to ci"
     }
   },
   "result": {
@@ -186,7 +189,8 @@
       "gate": "release",
       "owner": "1.8-11",
       "cases": ["layer-cleanup-budget", "dimension-budget", "history-round2"],
-      "measured_by": "claude plugin eval --no-publish --max-cost-usd (maintainer's machine, never CI); cached/uncached input and time beside the rival's H4 (11 calls, 315k) and H5 (10 calls, 350k)"
+      "measured_by": "claude plugin eval --no-publish --max-cost-usd (maintainer's machine, never CI); cached/uncached input and time beside the rival's H4 (11 calls, 315k) and H5 (10 calls, 350k)",
+      "measured": "1.8-11, 2026-11-03, one run per case (CLI 2.1.317, --model sonnet, --ablation none, search mode, --max-cost-usd 3, $0.33 + $0.36): layer-cleanup-budget 3 then 6 server calls after the setup (call-budget PASS both runs; one cad_batch of layer_merge + entity_modify_where, then reads); dimension-budget 9 then 12 calls (call-budget FAIL both runs: one dimension_auto(selector) did the job, the excess is the model re-reading the result handle by handle). history-round2 does not exist yet (1.8-10). Stays release: the dimension case is over 6."
     }
   }
 }

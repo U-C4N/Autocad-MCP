@@ -359,7 +359,7 @@ async def _call(client, tool, args):
     return (await client.call_tool(tool, args)).structured_content
 
 
-async def test_the_three_tools_are_registered_with_their_cost_pack_and_aliases():
+async def test_the_three_tools_are_registered_with_their_cost_pack_and_aliases(full_catalog):
     tools = {t.name: t for t in await server.mcp.list_tools()}
     costs = {
         "entity_modify_where": "destructive",

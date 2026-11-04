@@ -1,6 +1,6 @@
 # Skill eval cases
 
-Twenty-one cases for `claude plugin eval` (Claude Code CLI 2.1.310), one folder each:
+Twenty-three cases for `claude plugin eval` (Claude Code CLI 2.1.310), one folder each:
 `prompt.md` (front matter: `description`, `tags`, `expected_outcome`,
 `max_turns`, `timeout_seconds`, `allowed_tools`; the body is the prompt) and
 `graders/*.md` (front matter `type:` `tool_used`, `tool_order`, `regex`,
@@ -8,6 +8,13 @@ Twenty-one cases for `claude plugin eval` (Claude Code CLI 2.1.310), one folder 
 negative scenario: a request whose easy answer is confidently wrong.
 `graders/skill-fired.md` (`tool_used: Skill`, `arm: with-only`) is the
 plugin-fired indicator, not part of the score.
+
+`layer-cleanup-budget` and `dimension-budget` (1.8.0) are the call-budget cases:
+the rival's H4 and H5 jobs, each failing above 6 server calls after its setup
+(an `llm` grader with `focus: trace` counts them, `search_tools`,
+`describe_tool` and `call_tool` included) and on a per-entity loop (a
+`tool_used` grader on `call_tool` with the per-entity tool as `input_match`).
+The plugin runs in search mode, so a grader may name the three synthetic tools.
 
 A path a case names (`./bracket.dxf`, `./delivery`) is relative to the run's
 folder and sits directly in it: the server's save tools refuse a missing parent
@@ -39,5 +46,5 @@ the cases were parsed, and a case that does not load is reported as
 `tests/test_plugin_package.py` checks every case against the CLI's case schema,
 that each MCP tool a grader names exists (`tool_used` and both sides of
 `tool_order`), that a `file_exists` path is one the prompt names, that the named
-scenarios of the 1.7.0 spec are covered, that there are 21 cases and that every
+scenarios of the 1.7.0 spec are covered, that there are 23 cases and that every
 grader type the spec names is used.

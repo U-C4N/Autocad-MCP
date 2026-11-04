@@ -80,7 +80,7 @@ async def test_a_call_through_the_search_proxy_counts_once_under_the_tool_it_ran
                 "call_tool", {"name": "system_status", "arguments": {"metrics": True}}
             )
     finally:
-        server._apply_discovery_mode("off")
+        server._apply_discovery_mode()
     metrics = status.structured_content["metrics"]["session"]
     assert metrics["calls"] == 1
     assert metrics["by_tool"] == {"drawing_new": 1}

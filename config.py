@@ -215,16 +215,33 @@ class Settings:
         # list ("core,pid,settings") advertises only those. core cannot be disabled.
         self.tool_packs: str = os.environ.get("TOOL_PACKS", "all").lower().strip()
 
-        # Tool discovery: "off" (default) advertises the full catalog; "search"
-        # replaces it with a search tool plus a call_tool proxy (see
-        # discovery/transform.py and server._apply_discovery_mode).
+        # Tool discovery: "search" (default since 1.8.0) advertises search_tools
+        # + call_tool + describe_tool and the DISCOVERY_PINNED tools; "off"
+        # advertises the full catalog (see discovery/transform.py and
+        # server._apply_discovery_mode).
         #
-        # Default "off" deliberately. "search" is the intended v1.x default,
-        # but flipping it changes what every connected client sees on
-        # list_tools — a breaking wire-level change that needs its own
-        # migration note and README pass, neither of which ships in v1.5.0.
-        # Invalid values fall back to "off" with a warning at startup.
-        self.discovery_mode: str = os.environ.get("DISCOVERY_MODE", "off").lower().strip()
+        # Flipped in 1.8-11 on the plan's condition (section 7-2): spike S1
+        # measured that a hidden tool stays directly callable (no per-write
+        # call_tool wrapper is forced), and the v8 matrix passed 31/31 with its
+        # MCP-client tasks going through call_tool. A breaking wire-level
+        # change: DISCOVERY_MODE=off restores the 1.7.0 catalog. Invalid values
+        # fall back to "off" with a warning at startup.
+        self.discovery_mode: str = os.environ.get("DISCOVERY_MODE", "search").lower().strip()
+
+        # 1.8-11: tools search mode keeps listed beside search_tools / call_tool
+        # / describe_tool (comma list; empty pins nothing). A pin the active
+        # profile or packs hide is simply not listed; an unregistered name is
+        # warned about at startup. Static on purpose: a pin set that moved
+        # between sessions would break every client's prompt-cache prefix.
+        self.discovery_pinned: tuple[str, ...] = tuple(
+            dict.fromkeys(
+                name.strip()
+                for name in os.environ.get(
+                    "DISCOVERY_PINNED", "cad_batch,drawing_info,entity_list"
+                ).split(",")
+                if name.strip()
+            )
+        )
 
         # Opt-in 3D solids (COM backend only). Disabled by default because the
         # headless backend cannot produce ACIS solids and live 3D modifies real

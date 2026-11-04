@@ -23,8 +23,18 @@ from fastmcp.server.transforms.search.base import serialize_tools_for_output_jso
 import config
 import server
 from discovery.aliases import aliases_for
-from discovery.serialize import docstring_examples, serialize_search_results
-from discovery.transform import CadSearchTransform, tool_risk
+from discovery.serialize import (
+    PIN_PARAM_CHARS,
+    PIN_POINTER,
+    docstring_examples,
+    serialize_search_results,
+)
+from discovery.transform import (
+    DEFAULT_PINNED,
+    MAX_DESCRIBE_NAMES,
+    CadSearchTransform,
+    tool_risk,
+)
 from tests.data.discovery_golden import ALL_CASES, HOLDOUT_CASES, TUNING_CASES
 
 pytestmark = pytest.mark.asyncio
@@ -579,15 +589,20 @@ async def test_the_risk_ceiling_is_what_removes_the_delete_tool(transform, catal
 
 @pytest.fixture(autouse=True)
 def _restore_discovery_mode():
-    """Attaching a transform mutates the shared server; always put it back."""
+    """Attaching a transform mutates the shared server; always put back the
+    configured mode (search since 1.8.0), never a hard-coded one."""
     yield
-    server._apply_discovery_mode("off")
+    server._apply_discovery_mode()
 
 
-async def test_discovery_is_off_by_default(monkeypatch):
-    """v1.5.0 ships the flag, not the switch: turning it on is a wire-level
-    breaking change for every connected client and needs its own migration."""
+async def test_discovery_is_search_by_default(monkeypatch):
+    """v1.5.0 shipped the flag, 1.8.0 the switch (plan 1.8-11 (d), section 7-2):
+    a hidden tool stays directly callable (spike S1) and the v8 matrix passed
+    31/31 through call_tool, so the default flipped. DISCOVERY_MODE=off is the
+    full 1.7.0 catalog."""
     monkeypatch.delenv("DISCOVERY_MODE", raising=False)
+    assert config.Settings().discovery_mode == "search"
+    monkeypatch.setenv("DISCOVERY_MODE", "off")
     assert config.Settings().discovery_mode == "off"
 
 
@@ -604,11 +619,154 @@ async def test_off_leaves_the_whole_catalog_on_the_wire():
     assert "search_tools" not in names
 
 
-async def test_search_replaces_the_catalog_with_the_three_synthetic_tools():
+async def test_search_replaces_the_catalog_with_the_three_synthetic_tools(monkeypatch):
+    monkeypatch.setattr(config.settings, "discovery_pinned", ())
     server._apply_discovery_mode("search")
     async with Client(server.mcp) as client:
         names = {tool.name for tool in await client.list_tools()}
     assert names == {"search_tools", "call_tool", "describe_tool"}
+
+
+async def test_search_lists_the_default_pins_beside_the_synthetic_tools():
+    """1.8-11: DISCOVERY_PINNED (default cad_batch, drawing_info, entity_list)."""
+    assert config.Settings().discovery_pinned == DEFAULT_PINNED
+    server._apply_discovery_mode("search")
+    async with Client(server.mcp) as client:
+        names = [tool.name for tool in await client.list_tools()]
+    assert set(names) == {*DEFAULT_PINNED, "search_tools", "call_tool", "describe_tool"}
+
+
+async def test_the_default_pins_cannot_lower_the_golden_hit_rate():
+    """A pinned tool is left out of search results (it is listed already), so a
+    golden case expecting one would read as a miss in search mode: none does."""
+    expected = {case.expect for case in ALL_CASES}
+    assert not (expected & set(DEFAULT_PINNED)), expected & set(DEFAULT_PINNED)
+
+
+async def test_a_misspelt_pin_is_warned_about_once_tools_exist(monkeypatch, caplog):
+    monkeypatch.setattr(config.settings, "discovery_pinned", ("cad_batch", "cad_bacth"))
+    server._apply_discovery_mode("search")
+    with caplog.at_level("WARNING"):
+        assert server._warn_unknown_pins() == ["cad_bacth"]
+    assert "DISCOVERY_PINNED names no registered tool: cad_bacth" in caplog.text
+    server._apply_discovery_mode("off")
+    assert server._warn_unknown_pins() == [], "nothing is pinned in off mode"
+
+
+async def test_the_pinned_env_var_is_a_comma_list_and_may_be_empty(monkeypatch):
+    monkeypatch.setenv("DISCOVERY_PINNED", " cad_batch , layer_list,cad_batch ")
+    assert config.Settings().discovery_pinned == ("cad_batch", "layer_list")
+    monkeypatch.setenv("DISCOVERY_PINNED", "")
+    assert config.Settings().discovery_pinned == ()
+
+
+async def test_a_pinned_card_keeps_the_schema_a_call_is_validated_against():
+    """Shorter prose, never a different contract: every property, type, enum,
+    default and bound survives; only over-long descriptions are cut."""
+    server._apply_discovery_mode("off")
+    async with Client(server.mcp) as client:
+        full = {tool.name: tool for tool in await client.list_tools()}
+    server._apply_discovery_mode("search")
+    async with Client(server.mcp) as client:
+        listed = {tool.name: tool for tool in await client.list_tools()}
+
+    def without_descriptions(schema):
+        if isinstance(schema, dict):
+            return {k: without_descriptions(v) for k, v in schema.items() if k != "description"}
+        if isinstance(schema, list):
+            return [without_descriptions(v) for v in schema]
+        return schema
+
+    for name in DEFAULT_PINNED:
+        card, tool = listed[name], full[name]
+        assert without_descriptions(card.inputSchema) == without_descriptions(tool.inputSchema)
+        assert card.outputSchema == tool.outputSchema and card.annotations == tool.annotations
+        assert len(card.description) < len(tool.description)
+        assert card.description.endswith(PIN_POINTER)
+        for prop, spec in card.inputSchema["properties"].items():
+            text = spec.get("description")
+            if text:
+                assert len(text) <= PIN_PARAM_CHARS or "." not in text[:-1], (name, prop)
+                assert " ".join(
+                    tool.inputSchema["properties"][prop]["description"].split()
+                ).startswith(text), (name, prop)
+    # the batch syntax a caller needs survives the cut
+    steps = listed["cad_batch"].inputSchema["properties"]["steps"]["description"]
+    assert "'bind'" in steps and "$name" in steps
+
+
+async def test_describe_tool_gives_a_pinned_tool_its_untouched_card():
+    server._apply_discovery_mode("off")
+    async with Client(server.mcp) as client:
+        full = {tool.name: tool for tool in await client.list_tools()}
+    server._apply_discovery_mode("search")
+    async with Client(server.mcp) as client:
+        card = await _describe(client, "cad_batch")
+        pinned = await client.call_tool(
+            "cad_batch", {"steps": [{"tool": "drawing_new"}, {"tool": "drawing_info"}]}
+        )
+    assert card["description"] == full["cad_batch"].description
+    assert card["input_schema"] == full["cad_batch"].inputSchema
+    assert pinned.structured_content["ok"] is True, "a pin calls the registered tool"
+
+
+async def test_describe_tool_takes_several_names_in_one_turn():
+    server._apply_discovery_mode("search")
+    async with Client(server.mcp) as client:
+        both = (
+            await client.call_tool("describe_tool", {"names": ["entity_fillet", "layer_list"]})
+        ).structured_content
+        one = await _describe(client, "entity_fillet")
+    assert [card["name"] for card in both["tools"]] == ["entity_fillet", "layer_list"]
+    assert both["tools"][0] == one
+
+
+@pytest.mark.parametrize(
+    ("arguments", "pattern"),
+    [
+        ({}, "exactly one of `name`"),
+        ({"name": "layer_list", "names": ["layer_list"]}, "exactly one of `name`"),
+        ({"names": []}, "`names` is empty"),
+        ({"names": ["layer_list", "no_such_tool", "solid_box"]}, "'no_such_tool', 'solid_box'"),
+        ({"names": ["layer_list", "call_tool"]}, "synthetic search tool"),
+        ({"names": [f"t{i}" for i in range(MAX_DESCRIBE_NAMES + 1)]}, "25"),
+    ],
+)
+async def test_describe_tool_names_refusals_name_the_problem(arguments, pattern):
+    server._apply_discovery_mode("search")
+    async with Client(server.mcp) as client:
+        with pytest.raises(ToolError, match=pattern):
+            await client.call_tool("describe_tool", arguments)
+
+
+async def test_the_synthetic_texts_stay_under_a_thousand_characters(transform):
+    """1.8-11 (a): one line each; together they are the idle cost of search mode."""
+    total = 0
+    for tool in (
+        transform._make_search_tool(),
+        transform._make_call_tool(),
+        transform._make_describe_tool(),
+    ):
+        assert "\n" not in (tool.description or "").strip(), tool.name
+        total += len(tool.description or "")
+        for prop in tool.parameters["properties"].values():
+            total += len(prop.get("description", ""))
+    assert total <= 1_000
+    search = transform._make_search_tool().parameters["properties"]
+    assert search["risk"]["description"] == "any|write|read; filtered hits are reported"
+    assert search["limit"]["description"] == "default 5, max 25"
+
+
+async def test_the_synthetic_tools_carry_no_wire_noise(transform):
+    for tool in (
+        transform._make_search_tool(),
+        transform._make_call_tool(),
+        transform._make_describe_tool(),
+    ):
+        wire = tool.to_mcp_tool().model_dump(by_alias=True, mode="json", exclude_none=True)
+        assert "_meta" not in wire and "outputSchema" not in wire, tool.name
+        assert "additionalProperties" not in wire["inputSchema"], tool.name
+        assert "anyOf" not in json.dumps(wire["inputSchema"]), tool.name
 
 
 async def test_search_mode_is_reversible_and_attaches_only_once():
@@ -837,11 +995,12 @@ async def test_call_tool_refuses_describe_tool_like_the_other_synthetic_tools():
     assert "'describe_tool' is a synthetic search tool" in str(excinfo.value)
 
 
-async def test_describe_tool_takes_one_name_and_reads_only(transform):
+async def test_describe_tool_takes_one_name_or_several_and_reads_only(transform):
     tool = transform._make_describe_tool()
     assert tool.name == "describe_tool"
-    assert set(tool.parameters["properties"]) == {"name"}
-    assert tool.parameters["required"] == ["name"]
+    assert set(tool.parameters["properties"]) == {"name", "names"}
+    assert not tool.parameters.get("required")
+    assert tool.parameters["properties"]["names"]["maxItems"] == MAX_DESCRIBE_NAMES
     assert tool.annotations is not None and tool.annotations.readOnlyHint is True
 
 

@@ -116,7 +116,7 @@ async def test_the_drawings_are_never_modified(client, plant, tmp_path):
     assert {key: Path(plant[key]).read_bytes() for key in ("pid", "layout")} == before
 
 
-async def test_the_tool_says_it_writes_a_file_and_destroys_nothing(client):
+async def test_the_tool_says_it_writes_a_file_and_destroys_nothing(full_catalog, client):
     tools = {tool.name: tool for tool in await client.list_tools()}
     annotations = tools["pipe_takeoff"].annotations
     assert annotations.readOnlyHint is False
@@ -154,7 +154,7 @@ async def test_a_malformed_section_rule_is_refused_by_path(client, plant):
     assert "section_rules[0].section: expected a non-empty text" in result.content[0].text
 
 
-async def test_the_cable_tool_says_it_writes_a_file_and_destroys_nothing(client):
+async def test_the_cable_tool_says_it_writes_a_file_and_destroys_nothing(full_catalog, client):
     tools = {tool.name: tool for tool in await client.list_tools()}
     annotations = tools["cable_takeoff"].annotations
     assert annotations.readOnlyHint is False

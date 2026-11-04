@@ -44,6 +44,7 @@ import tempfile
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -745,6 +746,28 @@ def _dimension_auto_v2(tools: dict[str, Any]) -> bool:
 _VERB_PROBES: dict[str, Callable[[dict[str, Any]], bool]] = {
     "dimension_auto_v2": _dimension_auto_v2,
 }
+#: The tool each probed verb reads.
+_PROBE_TOOLS: dict[str, str] = {"dimension_auto_v2": "dimension_auto"}
+
+
+async def _catalog(client: Any, scenarios: tuple[Scenario, ...]) -> dict[str, Any]:
+    """The tools the scenarios need, as the client can read them.
+
+    On the full catalog that is ``list_tools``. On the search surface (1.8-11,
+    the default since 1.8.0) a verb is not listed but stays callable; its card
+    comes from ``describe_tool``, one name at a time so an absent verb is
+    absent rather than failing the others.
+    """
+    listed = {tool.name: tool for tool in await client.list_tools()}
+    if "describe_tool" not in listed:
+        return listed
+    wanted = {_PROBE_TOOLS.get(verb, verb) for scenario in scenarios for verb in scenario.requires}
+    for name in sorted(wanted - set(listed)):
+        result = await client.call_tool("describe_tool", {"name": name}, raise_on_error=False)
+        card = result.structured_content or {}
+        if not result.is_error and card.get("name") == name:
+            listed[name] = SimpleNamespace(name=name, inputSchema=card.get("input_schema") or {})
+    return listed
 
 
 def scenario_by_id(scenario_id: str) -> Scenario:
@@ -845,7 +868,7 @@ async def run_scenario(
 async def run_scenarios(
     client: Any, scenarios: tuple[Scenario, ...] = SCENARIOS
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Recorder]]]:
-    registered = {tool.name: tool for tool in await client.list_tools()}
+    registered = await _catalog(client, scenarios)
     rows: list[dict[str, Any]] = []
     traces: dict[str, dict[str, Recorder]] = {}
     with tempfile.TemporaryDirectory(prefix="acadmcp_call_budget_") as folder:

@@ -25,7 +25,8 @@ parameters only (``discovery/serialize.py`` says why), so a search-mode client
 had no way to read a tool's optional arguments short of a failed call.
 ``describe_tool(name)`` returns one tool's full input schema, description,
 annotations, risk, cost, pack, AutoCAD commands, synonyms and its docstring's
-own examples. It resolves names against the same filtered catalog
+own examples; ``describe_tool(names=[...])`` returns several in one turn
+(1.8-11). It resolves names against the same filtered catalog
 ``call_tool`` reaches, refuses a hidden or unknown name with the same
 ``Unknown tool`` refusal, and is itself refused by ``call_tool`` (and, being
 card-less, by ``cad_batch``) like the other synthetic tools.
@@ -48,15 +49,23 @@ from fastmcp.server.transforms.search.base import (
     _extract_searchable_text as _stock_searchable_text,
 )
 from fastmcp.tools.base import Tool, ToolResult
+from fastmcp.tools.function_tool import FunctionTool
 from fastmcp.utilities.versions import VersionSpec
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from discovery.aliases import alias_text, aliases_for
-from discovery.serialize import describe_payload, serialize_search_results
+from discovery.serialize import (
+    describe_payload,
+    lean_schema,
+    pinned_card,
+    serialize_search_results,
+)
 
 __all__ = [
     "ACAD_MATCH_BOOST",
+    "DEFAULT_PINNED",
+    "MAX_DESCRIBE_NAMES",
     "MAX_SEARCH_LIMIT",
     "RISK_CEILINGS",
     "SYNONYM_MATCH_BOOST",
@@ -164,6 +173,15 @@ RISK_CEILINGS = ("any", "write", "read")
 
 MAX_SEARCH_LIMIT = 25
 
+#: The most tools one ``describe_tool(names=[...])`` call answers: the same
+#: ceiling as one search, so "describe every hit" is always one call.
+MAX_DESCRIBE_NAMES = MAX_SEARCH_LIMIT
+
+#: DISCOVERY_PINNED's default (1.8-11): the batch executor and the two reads
+#: nearly every session starts with stay listed beside the synthetic tools, so
+#: they never cost a search turn. Pinned tools are left out of search results.
+DEFAULT_PINNED: tuple[str, ...] = ("cad_batch", "drawing_info", "entity_list")
+
 
 def tool_risk(tool: Tool) -> str:
     """``"read"`` | ``"write"`` | ``"destructive"`` for one tool.
@@ -270,9 +288,22 @@ class CadSearchTransform(BM25SearchTransform):
         """Every name this transform answers itself rather than the catalog."""
         return frozenset({self._search_tool_name, self._call_tool_name, self._describe_tool_name})
 
+    @property
+    def pinned(self) -> frozenset[str]:
+        """The ``always_visible`` names (listed only when the catalog has them)."""
+        return frozenset(self._always_visible)
+
     async def transform_tools(self, tools: Sequence[Tool]) -> Sequence[Tool]:
-        """The stock pinned + search + call surface, plus ``describe_tool``."""
-        return [*await super().transform_tools(tools), self._make_describe_tool()]
+        """Pinned tools (as :func:`pinned_card`), search, call, then ``describe_tool``.
+
+        The order is fixed - pins in catalog order, then the three synthetic
+        tools - so a client's prompt-cache prefix never moves between sessions.
+        """
+        listed = [
+            pinned_card(tool) if tool.name in self._always_visible else tool
+            for tool in await super().transform_tools(tools)
+        ]
+        return [*listed, self._make_describe_tool()]
 
     async def get_tool(
         self, name: str, call_next: GetToolNext, *, version: VersionSpec | None = None
@@ -405,45 +436,29 @@ class CadSearchTransform(BM25SearchTransform):
         transform = self
         default_limit = self._max_results
 
+        # 1.8-11: the synthetic texts are the whole idle cost of search mode, so
+        # each is one line (all of them together under 1,000 characters,
+        # tests/test_discovery_transform.py) and the schema carries no wire noise.
         async def search_tools(
-            query: Annotated[
-                str,
-                Field(
-                    description=(
-                        "What you want to do, in plain English or as an AutoCAD "
-                        "command name (FILLET, BPOLY, QSELECT, DLI)."
-                    )
-                ),
-            ],
-            limit: Annotated[
-                int,
-                Field(description=(f"How many tools to return. Clamped to 1..{MAX_SEARCH_LIMIT}.")),
-            ] = default_limit,
+            query: str,
+            limit: int = default_limit,
             risk: Annotated[
                 Literal["any", "write", "read"],
-                Field(
-                    description=(
-                        "Highest risk level to return. 'any' (default) is everything; "
-                        "'write' hides tools that delete or overwrite; 'read' returns "
-                        "only read-only query tools — use it for questions like 'how "
-                        "many ...?'. Anything filtered out is reported in the result."
-                    )
-                ),
+                Field(description="any|write|read; filtered hits are reported"),
             ] = "any",
             ctx: Context = None,  # type: ignore[assignment]
         ) -> Any:
-            """Find the AutoCAD tools that do a job.
-
-            Accepts AutoCAD command names as well as English. Returns one
-            compact line per tool: name, risk level, what it does, its required
-            arguments and the AutoCAD command it corresponds to. Call a result
-            with call_tool.
-            """
+            """Find tools for a job, in English or as an AutoCAD command (FILLET, QSELECT)."""
             visible = await transform._get_visible_tools(ctx)
             outcome = transform.rank(visible, query, limit=limit, risk=risk)
             return await transform.render(outcome)
 
-        return Tool.from_function(fn=search_tools, name=self._search_tool_name)
+        tool = _lean(Tool.from_function(fn=search_tools, name=self._search_tool_name))
+        # Written here, not in the annotation: the default is this instance's.
+        tool.parameters["properties"]["limit"]["description"] = (
+            f"default {default_limit}, max {MAX_SEARCH_LIMIT}"
+        )
+        return tool
 
     # ------------------------------------------------------------------
     # The call proxy, guarded against every synthetic name
@@ -459,14 +474,11 @@ class CadSearchTransform(BM25SearchTransform):
         transform = self
 
         async def call_tool(
-            name: Annotated[str, "The name of the tool to call"],
-            arguments: Annotated[dict[str, Any] | None, "Arguments to pass to the tool"] = None,
+            name: str,
+            arguments: dict[str, Any] | None = None,
             ctx: Context = None,  # type: ignore[assignment]
         ) -> ToolResult:
-            """Call a tool by name with the given arguments.
-
-            Use this to execute tools discovered via search_tools.
-            """
+            """Call a tool found by search_tools with its arguments."""
             if name in transform.synthetic_names:
                 raise ValueError(
                     f"'{name}' is a synthetic search tool and cannot be called via the "
@@ -474,7 +486,7 @@ class CadSearchTransform(BM25SearchTransform):
                 )
             return await ctx.fastmcp.call_tool(name, arguments)
 
-        return Tool.from_function(fn=call_tool, name=self._call_tool_name)
+        return _lean(Tool.from_function(fn=call_tool, name=self._call_tool_name))
 
     # ------------------------------------------------------------------
     # The synthetic describe tool
@@ -484,36 +496,70 @@ class CadSearchTransform(BM25SearchTransform):
         transform = self
 
         async def describe_tool(
-            name: Annotated[
-                str,
-                Field(description="Exact tool name, as search_tools returned it."),
-            ],
+            name: str | None = None,
+            names: Annotated[list[str] | None, Field(max_length=MAX_DESCRIBE_NAMES)] = None,
             ctx: Context = None,  # type: ignore[assignment]
         ) -> dict[str, Any]:
-            """Return one tool's full input schema, optional parameters included.
-
-            Also its description, annotations, risk, cost, pack, AutoCAD
-            commands, synonyms and its docstring's examples. Use it before
-            call_tool when a search card's required arguments are not enough.
-            """
-            if name in transform.synthetic_names:
+            """Full schema, risk and examples of a tool (name) or several (names)."""
+            if (name is None) == (names is None):
                 raise ValueError(
-                    f"'{name}' is a synthetic search tool and cannot be described via "
-                    "describe_tool; list_tools already carries its full schema"
+                    "describe_tool: pass exactly one of `name` (one tool) or `names` "
+                    "(several, one card each)"
+                )
+            wanted = [name] if names is None else list(dict.fromkeys(names))
+            if not wanted:
+                raise ValueError("describe_tool: `names` is empty")
+            synthetic = [n for n in wanted if n in transform.synthetic_names]
+            if synthetic:
+                raise ValueError(
+                    f"'{synthetic[0]}' is a synthetic search tool and cannot be described "
+                    "via describe_tool; list_tools already carries its full schema"
                 )
             # The catalog call_tool reaches: every visibility gate (TOOL_PROFILE,
             # TOOL_PACKS, ENABLE_3D) and auth filter already applied. Pinned
-            # tools are included, because call_tool accepts them too.
-            catalog = await transform.get_tool_catalog(ctx)
-            tool = next((t for t in catalog if t.name == name), None)
-            if tool is None:
-                # The exact refusal FastMCP raises when call_tool resolves the name.
-                raise NotFoundError(f"Unknown tool: {name!r}")
-            pack = transform._pack_of(name) if transform._pack_of is not None else None
-            return describe_payload(tool, pack=pack)
+            # tools are included - with their full description and schema, not
+            # the shortened card search mode lists - because call_tool accepts
+            # them too.
+            catalog = {t.name: t for t in await transform.get_tool_catalog(ctx)}
+            unknown = [n for n in wanted if n not in catalog]
+            if unknown:
+                # The exact refusal FastMCP raises when call_tool resolves the name;
+                # several unknown names are all named, nothing is described.
+                raise NotFoundError(f"Unknown tool: {', '.join(repr(n) for n in unknown)}")
+            cards = [
+                describe_payload(
+                    catalog[n],
+                    pack=transform._pack_of(n) if transform._pack_of is not None else None,
+                )
+                for n in wanted
+            ]
+            return cards[0] if names is None else {"tools": cards}
 
-        return Tool.from_function(
-            fn=describe_tool,
-            name=self._describe_tool_name,
-            annotations=ToolAnnotations(readOnlyHint=True),
+        return _lean(
+            Tool.from_function(
+                fn=describe_tool,
+                name=self._describe_tool_name,
+                annotations=ToolAnnotations(readOnlyHint=True),
+            )
         )
+
+
+class _SyntheticTool(FunctionTool):
+    """A synthetic tool listed without fastmcp's ``_meta`` block.
+
+    ``{"fastmcp": {"tags": []}}`` says nothing about a synthetic tool (it has
+    no tags, no version) and costs ~30 wire characters each - about a tenth of
+    search mode's whole idle budget (plan section 4: 250 tokens).
+    """
+
+    def get_meta(self) -> dict[str, Any] | None:  # type: ignore[override]
+        return None
+
+
+def _lean(tool: Tool) -> Tool:
+    """A synthetic tool as listed: :func:`lean_schema` as its input schema, no
+    output schema (structured content is still returned) and no ``_meta``."""
+    fields = {name: getattr(tool, name) for name in type(tool).model_fields}
+    fields["parameters"] = lean_schema(tool.parameters or {})
+    fields["output_schema"] = None
+    return _SyntheticTool(**fields)

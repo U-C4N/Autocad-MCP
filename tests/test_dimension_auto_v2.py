@@ -290,7 +290,7 @@ async def test_dimension_auto_is_a_cad_batch_step(client, tmp_path):
     assert len(batch["results"][0]["result"]["created"]) == 12
 
 
-async def test_the_schema_offers_the_v2_parameters():
+async def test_the_schema_offers_the_v2_parameters(full_catalog):
     tools = {t.name: t for t in await server.mcp.list_tools()}
     props = tools["dimension_auto"].parameters["properties"]
     assert {"handles", "selector", "include", "group_equal", "skip_existing", "dry_run"} <= set(
