@@ -52,7 +52,7 @@ def test_the_suite_carries_the_four_architectural_checks():
         "arch_rooms_detect_foreign",
     ):
         assert CHECKS[name][1] == "Architecture"
-    assert len(CHECKS) == 71
+    assert len(CHECKS) == 70
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 # Skill eval cases
 
-Twenty-two cases for `claude plugin eval` (Claude Code CLI 2.1.310), one folder each:
+Twenty-one cases for `claude plugin eval` (Claude Code CLI 2.1.310), one folder each:
 `prompt.md` (front matter: `description`, `tags`, `expected_outcome`,
 `max_turns`, `timeout_seconds`, `allowed_tools`; the body is the prompt) and
 `graders/*.md` (front matter `type:` `tool_used`, `tool_order`, `regex`,
@@ -39,5 +39,5 @@ the cases were parsed, and a case that does not load is reported as
 `tests/test_plugin_package.py` checks every case against the CLI's case schema,
 that each MCP tool a grader names exists (`tool_used` and both sides of
 `tool_order`), that a `file_exists` path is one the prompt names, that the named
-scenarios of the 1.7.0 spec are covered, that there are 22 cases and that every
+scenarios of the 1.7.0 spec are covered, that there are 21 cases and that every
 grader type the spec names is used.

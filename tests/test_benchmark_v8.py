@@ -143,7 +143,7 @@ def test_the_suite_carries_the_nine_verification_checks():
 
     for name in VERIFICATION_CHECKS:
         assert CHECKS[name][1] == "Verification"
-    assert len(CHECKS) == 71
+    assert len(CHECKS) == 70
 
 
 # -- the new tasks, headlessly --------------------------------------------------------
