@@ -2436,3 +2436,89 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
             {"summary": summary, "twins": twins, "sheets": len(result.get("sheets") or [])},
             [],
         )
+
+    async def _task_std_tables_b40(self):
+        """B40 (1.8-22): one size drawn from every filled feature table, a size
+        between rows refused by name.
+
+        The expected dimensions are the double entry's own rows (``_rows.TABLES``,
+        generated from ``data/<std>.{a,b}.json`` by ``scripts/build_standards.py``),
+        not the drawing code's output. Every filled table draws its smallest size
+        through ``draw_std_feature`` (the axial O-ring housing, which no drawing
+        path takes, is looked up instead); the twin draws a size between its two
+        smallest rows - or past the only one - and must be refused naming the
+        table, with the entity count unchanged. With no table filled the task is
+        ``not_run`` naming every table deferred to 1.8.1 - never a vacuous pass -
+        and its metrics still record that each deferred table refuses by name.
+        """
+        from engineering.mech.standards import lookup
+        from engineering.mech.standards._rows import TABLES
+        from engineering.mech.standards.feature_tables import (
+            deferred_message,
+            deferred_tables,
+            filled_tables,
+            probe,
+        )
+        from engineering.mech.stdparts import draw_std_feature
+
+        refused_by_name = {}
+        for name in deferred_tables():
+            try:
+                lookup(name, 10.0)
+                refused_by_name[name] = False
+            except ValueError as exc:
+                refused_by_name[name] = name in str(exc) and "no rows transcribed" in str(exc)
+        filled = filled_tables()
+        metrics = {
+            "filled": list(filled),
+            "deferred": list(deferred_tables()),
+            "deferred_refused_by_name": refused_by_name,
+        }
+        if not filled:
+            return TaskResult(
+                "std_tables_b40",
+                "not_run",
+                0.0,
+                f"B40: {deferred_message()}",
+                metrics=metrics,
+            )
+        rows_ok, twins_ok, drawn = {}, {}, {}
+        for index, name in enumerate(filled):
+            p = probe(name)
+            expected = TABLES[name]["rows"][p["size"]]
+            if p["draw"] is None:
+                row = lookup(name, p["size"])
+                rows_ok[name] = all(row.get(k) == v for k, v in expected.items())
+                try:
+                    lookup(name, p["refused_size"])
+                    twins_ok[name] = False
+                except ValueError as exc:
+                    twins_ok[name] = name in str(exc)
+                continue
+            kind, params = p["draw"]
+            result = await draw_std_feature(self.backend, kind, (60.0 * index, 0.0), params)
+            dims = result["dims"]
+            if kind == "undercut":
+                same = dims["profile"] == [
+                    list(pair) for pair in lookup(name, p["size"])["profile"]
+                ]
+            else:
+                shared = [k for k in expected if k in dims]
+                same = bool(shared) and all(dims[k] == expected[k] for k in shared)
+            drawn[name] = len(result["handles"])
+            rows_ok[name] = same and bool(result["handles"])
+            before = len(await self.backend.entity_list())
+            try:
+                await draw_std_feature(
+                    self.backend, kind, (60.0 * index, 80.0), p["refused_draw"][1]
+                )
+                twins_ok[name] = False
+            except ValueError as exc:
+                twins_ok[name] = name in str(exc)
+            twins_ok[name] = twins_ok[name] and len(await self.backend.entity_list()) == before
+        passed = all(rows_ok.values()) and all(twins_ok.values()) and all(refused_by_name.values())
+        return (
+            passed,
+            {**metrics, "drawn": drawn, "rows_ok": rows_ok, "twins_ok": twins_ok},
+            [],
+        )

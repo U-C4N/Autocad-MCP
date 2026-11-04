@@ -55,7 +55,7 @@ def test_the_suite_carries_the_six_w1_checks():
     start = names.index(next(iter(W1_CHECKS)))
     assert names[start : start + len(W1_CHECKS)] == list(W1_CHECKS), "appended, nothing reordered"
     assert start == 61, "the W1 block follows the 61 checks of 1.7.0"
-    assert len(CHECKS) == 76
+    assert len(CHECKS) == 77
 
 
 def test_the_published_ab_report_shows_the_six_w1_checks_fixed():

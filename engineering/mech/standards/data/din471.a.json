@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "standard": "DIN 471",
+  "entry": "a",
+  "entered_by": null,
+  "tables": {
+    "shaft": {
+      "row_source": {
+        "edition": null,
+        "table": null,
+        "page": null
+      },
+      "rows": {}
+    }
+  }
+}

@@ -2723,6 +2723,108 @@ async def pid_project_links():
     )
 
 
+async def b40_between_rows_refused():
+    """A size between two transcribed rows is refused by name, never interpolated (1.8-22).
+
+    1.8.0 ships the B40 tables (DIN 471/472, DIN 509, DIN 332-1, ISO 3601-2)
+    with no row - the licensed copies were not at hand - so every table that
+    has none must refuse a lookup naming itself and "no rows transcribed". The
+    pipeline is then proved on a SYNTHETIC double entry written to a temporary
+    folder (round numbers, not DIN values): built through
+    ``transcription.build_tables``, registered under the real name DIN 471, a
+    listed size resolves to exactly its row and draws six lines, a size between
+    the two rows is refused with both neighbours named and nothing drawn, and an
+    entry B that differs from entry A by one value is refused naming its path.
+    v1.7.0 has no double entry (no transcription module), so nothing resolves.
+    """
+    import json
+    import tempfile
+    from pathlib import Path
+
+    import engineering.mech.standards as standards_mod
+    from backends.ezdxf_backend import EzdxfBackend
+    from engineering.mech.standards import coverage_from_rows, lookup, register
+    from engineering.mech.standards import transcription as tr
+    from engineering.mech.standards.feature_tables import deferred_tables
+    from engineering.mech.standards.rings import ring_groove_dims
+    from engineering.mech.stdparts import draw_std_feature
+
+    for name in deferred_tables():
+        try:
+            lookup(name, 30.0)
+            return False
+        except ValueError as exc:
+            if name not in str(exc) or "no rows transcribed" not in str(exc):
+                return False
+
+    rows = {"10": {"m": 1.0, "d2": 9.0}, "20": {"m": 1.5, "d2": 18.5}}
+    saved = dict(standards_mod._REGISTRY)
+    with tempfile.TemporaryDirectory() as folder:
+        data = Path(folder)
+        for spec in tr.DATA_FILES:
+            for entry, who in (("a", "fixture-a"), ("b", "fixture-b")):
+                body = tr.skeleton(spec.stem, entry)
+                if spec.stem == "din471":
+                    body["entered_by"] = who
+                    body["tables"]["shaft"] = {
+                        "row_source": {"edition": "2011-04", "table": "SYNTHETIC", "page": "0"},
+                        "rows": rows,
+                    }
+                tr.entry_path(spec.stem, entry, data).write_text(json.dumps(body), "utf-8")
+        tables = tr.build_tables(data)
+        built = tables["DIN 471"]["rows"]
+        b_path = tr.entry_path("din471", "b", data)
+        broken = json.loads(b_path.read_text("utf-8"))
+        broken["tables"]["shaft"]["rows"]["10"]["m"] = 1.1
+        b_path.write_text(json.dumps(broken), "utf-8")
+        try:
+            tr.build_tables(data)
+            disagreement_named = False
+        except tr.TranscriptionError as exc:
+            disagreement_named = "din471: tables.shaft.rows.10.m: entry a 1.0 != entry b 1.1" in (
+                exc.problems
+            )
+    backend = EzdxfBackend()
+    await backend.connect()
+    try:
+        await backend.drawing_new()
+        standards_mod._REGISTRY.pop("DIN 471")
+        register("DIN 471", built, coverage_from_rows(built), "SYNTHETIC fixture, Table 0")
+        resolved = ring_groove_dims("DIN 471", 10.0) == {"m": 1.0, "d2": 9.0}
+        try:
+            ring_groove_dims("DIN 471", 15.0)
+            between = ""
+        except ValueError as exc:
+            between = str(exc)
+        before = len(await backend.entity_list())
+        drawn = await draw_std_feature(
+            backend, "ring_groove", (0.0, 0.0), {"d": 10.0, "kind": "shaft"}
+        )
+        try:
+            await draw_std_feature(
+                backend, "ring_groove", (0.0, 50.0), {"d": 15.0, "kind": "shaft"}
+            )
+            draw_refused = False
+        except ValueError as exc:
+            draw_refused = "DIN 471 has no row for 15" in str(exc)
+        after = len(await backend.entity_list())
+    finally:
+        standards_mod._REGISTRY.clear()
+        standards_mod._REGISTRY.update(saved)
+        await backend.disconnect()
+    return (
+        built == {10.0: {"m": 1.0, "d2": 9.0}, 20.0: {"m": 1.5, "d2": 18.5}}
+        and resolved
+        and between.startswith("DIN 471 has no row for 15")
+        and "nearest transcribed sizes: 10, 20" in between
+        and "Nothing is interpolated" in between
+        and len(drawn["handles"]) == 6
+        and draw_refused
+        and after == before + 6
+        and disagreement_named
+    )
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -2818,6 +2920,7 @@ CHECKS = {
         "Discovery",
     ),
     "pid_project_links": (pid_project_links, "P&ID"),
+    "b40_between_rows_refused": (b40_between_rows_refused, "Mechanical"),
 }
 
 
