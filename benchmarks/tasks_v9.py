@@ -122,6 +122,40 @@ generalises those kills (and can kill at a named in-process barrier).
   in at most two calls. Twins: a label nobody gave is refused ``invalid_args``
   naming the labels there are, never guessed; an unlabelled round (one circle
   edited 5 -> 6 -> 8) is read from ``detail="changes"``'s checkpoint diff.
+* ``replay_across_restart`` (1.8-03, B13): through ``benchmarks/fault_inject.py``
+  a real server runs ``cad_batch(operation_id=...)`` (one line), saves and is
+  killed; the next process answers the same id and steps ``replayed: true``
+  and draws nothing, the same id with other steps ``operation_conflict``. Its
+  in-call twin: a server parked at the ``journal.after_begin`` barrier inside
+  a ``cad_batch`` is killed there, and the next process answers that id
+  ``requires_reconcile`` (record ``unknown_commit``, ``process_exit``).
+* ``interrupted_save_recover`` (1.8-04): a writer that dies half way through
+  ``atomic_write_dxf`` (``os._exit`` in a child interpreter on the same state
+  folder - no ``finally`` runs) leaves the client's file byte for byte as it
+  was and the next server reports ``rolled_back``. Its in-call twin: a server
+  parked at ``save.before_replace`` inside ``drawing_save`` - tmp written,
+  fsynced and verified - is killed there; the next server's startup reports
+  ``finished`` and the file's sha is the one the marker named.
+* ``damaged_dxf_recover`` (1.8-04, B09): a 50-line DXF cut before its last
+  ENDSEC, with three entity handles that repeat an earlier entity's and four
+  that are not hex, opens with ``drawing_open(recover=True)``: ``fixes`` is the
+  three conflicting handles, ``entities_read`` 47, every handle unique, and
+  the source's sha unchanged by the open and by the refused save onto it. The
+  twin: the plain open is refused ``damaged_drawing`` naming ``recover=True``,
+  the open document kept (v8's ``damaged_dxf_refusal``).
+* ``bylayer_truth`` (1.8-01, the rival's §4.5): 22 lines left at lineweight
+  ``"Default"`` and three at ``"ByLayer"`` through the real server; the oracle
+  is the saved DXF read with ezdxf (22 at -3, the rest -1), never the server's
+  word. ``property_override`` reports one grouped ``lineweight_not_bylayer``
+  issue with those 22 handles; after ``drawing_refine`` the saved DXF holds
+  -1 on every line and the focus is empty.
+* ``space_context`` (1.8-05, the rival's §4.6): a drawing saved with Layout1
+  the active tab (two entities on it) is opened and a circle created - it
+  lands in model space and the sheet still holds its two entities, read back
+  from the saved file. The twin: a trim under a UCS rotated 30° about a moved
+  origin keeps exactly the WCS endpoints a trim under the world UCS keeps
+  (worked out by hand). Headless here; the live half is
+  ``scripts/smoke_space_com.py`` (a DWG saved with Layout1 active on the seat).
 """
 
 from __future__ import annotations
@@ -151,7 +185,7 @@ __all__ = [
 #: ``scripts/check_doc_numbers.py`` read this module).
 DEFAULT_MATRIX = "v9"
 
-#: v8.1 -> v9.0 (1.8-25): the default matrix is v9 - thirteen new tasks, two new
+#: v8.1 -> v9.0 (1.8-25): the default matrix is v9 - eighteen new tasks, two new
 #: fixture generators (``FIXTURE_SOURCES``) and kill-based gates - and the v8
 #: tasks now run on the 1.8.0 engine: the binding ``dimension_binding`` reads
 #: formats a dimension's displayed text through ``engineering/dimtext.py``
@@ -170,7 +204,7 @@ FIXTURE_SOURCES: tuple[str, ...] = _FIXTURE_SOURCES_V8 + (
 
 _AGENTCAD = "lizaixi01-agentcad"
 
-#: The rival whose ground a task stands on (v8's three plus AgentCAD's six).
+#: The rival whose ground a task stands on (v8's three plus AgentCAD's nine).
 #: Recorded so a lane report can say whose claim was tested; it never changes
 #: how a task is scored.
 RIVAL_GROUND: dict[str, str] = {
@@ -181,6 +215,9 @@ RIVAL_GROUND: dict[str, str] = {
     "layer_cleanup_budget": _AGENTCAD,
     "call_count_dimension_part": _AGENTCAD,
     "parametric_revise_keeps_handles": _AGENTCAD,
+    "bylayer_truth": _AGENTCAD,
+    "space_context": _AGENTCAD,
+    "lisp_read_tier": _AGENTCAD,
 }
 
 #: The rival's own scenario each AgentCAD task answers, as plan section 2 /
@@ -194,12 +231,17 @@ RIVAL_SCENARIO: dict[str, str] = {
     "parametric_revise_keeps_handles": (
         "B24-B28: revise_drawing overwrites a hand-edited tagged entity (its own admission)"
     ),
+    "bylayer_truth": "§4.5: 22 entities left at lineweight -3 reported as by-layer",
+    "space_context": "§4.6: a circle created in paper space; a trim under a non-world UCS",
+    "lisp_read_tier": "§4.6: AutoLISP refused 16 times in one run, reads included",
 }
 
 #: Where each task kills a real ``python server.py`` with ``Popen.kill()``
 #: (TerminateProcess on Windows, no atexit or shutdown hook runs), in order.
-#: Every kill so far is between two answered calls; a kill *inside* a call is
-#: the named barriers of ``benchmarks/fault_inject.py`` (its own tests).
+#: A kill marked "inside" lands while the call runs: the child is parked at a
+#: named barrier of ``backends/fault_barrier.py`` (armed only by
+#: ``benchmarks/fault_inject.py``) and killed there; every other kill is
+#: between two answered calls.
 KILL_POINTS: dict[str, tuple[str, ...]] = {
     "undo_across_restart": (
         "after drawing_save of the moved line (process 1)",
@@ -209,6 +251,16 @@ KILL_POINTS: dict[str, tuple[str, ...]] = {
     "history_value_lookup": (
         "after the three saved rounds and the saved unlabelled twin (process 1)",
         "after the drawing_history answers and the checkpoint diff (process 2)",
+    ),
+    "replay_across_restart": (
+        "after the saved cad_batch with a client operation id (process 1)",
+        "after the replay and the operation_conflict refusal (process 2)",
+        "inside cad_batch, parked at journal.after_begin (process 3)",
+    ),
+    "interrupted_save_recover": (
+        "inside atomic_write_dxf, half the DXF written (os._exit, writer child)",
+        "after the rolled_back report and the reopened file (process 1)",
+        "inside drawing_save, parked at save.before_replace (process 2)",
     ),
 }
 
@@ -322,6 +374,47 @@ NEW_TASKS_V9: tuple[TaskSpec, ...] = (
         "round is read from the checkpoint diff",
         1.0,
     ),
+    # 1.8-25: the five section-8 rows its gate names that no earlier item wrote
+    TaskSpec(
+        "replay_across_restart",
+        "durability",
+        "A cad_batch with a client operation id, saved, server killed; a new process answers "
+        "the same id replayed with nothing drawn and other steps operation_conflict. "
+        "In-call twin: killed inside a cad_batch -> requires_reconcile",
+        1.0,
+    ),
+    TaskSpec(
+        "interrupted_save_recover",
+        "durability",
+        "A writer dying half way through a save leaves the file's sha unchanged and the next "
+        "server reports rolled_back. In-call twin: a server killed between fsync and replace "
+        "is finished by the next startup, the file the marker named",
+        1.0,
+    ),
+    TaskSpec(
+        "damaged_dxf_recover",
+        "reliability",
+        "A truncated DXF with conflicting and non-hex handles opens with recover=True: fixes "
+        "count the conflicts, 47 entities read, handles unique, the source sha unchanged; "
+        "the plain open is refused by name naming recover=True",
+        1.0,
+    ),
+    TaskSpec(
+        "bylayer_truth",
+        "qa",
+        "22 lines at lineweight Default and 3 ByLayer, read back from the saved DXF (-3 / -1); "
+        "one grouped lineweight_not_bylayer issue with the 22 handles; after drawing_refine "
+        "the saved DXF holds -1 everywhere",
+        1.0,
+    ),
+    TaskSpec(
+        "space_context",
+        "reliability",
+        "A circle created on a drawing saved with Layout1 active lands in model space, the "
+        "sheet's two entities unchanged in the saved file; a trim under a rotated, moved UCS "
+        "keeps the WCS endpoints a world-UCS trim keeps",
+        1.0,
+    ),
 )
 
 TASKS_V9: tuple[TaskSpec, ...] = TASKS_V8 + NEW_TASKS_V9
@@ -330,7 +423,11 @@ TASKS_V9: tuple[TaskSpec, ...] = TASKS_V8 + NEW_TASKS_V9
 #: real server in-process on it; on the live lane they are ``not_run`` (the
 #: live evidence is the COM smoke scripts), never a zero; the 1.8-08 / 09 / 10
 #: durability tasks drive the headless engine or a headless server process by
-#: construction. ``policy_read_only``
+#: construction, as do 1.8-25's ``replay_across_restart`` /
+#: ``interrupted_save_recover`` (the fault-injection harness), and
+#: ``damaged_dxf_recover`` / ``bylayer_truth`` / ``space_context`` read the
+#: saved DXF with ezdxf as their oracle (``space_context``'s live half is
+#: ``scripts/smoke_space_com.py``). ``policy_read_only``
 #: runs on both lanes and ``lisp_read_tier`` is the live lane's own task
 #: (headless: ``environment_blocked``), so neither is listed here.
 HEADLESS_ONLY_V9: frozenset[str] = frozenset(
@@ -345,6 +442,11 @@ HEADLESS_ONLY_V9: frozenset[str] = frozenset(
         "undo_across_restart",
         "atomic_batch_default",
         "history_value_lookup",
+        "replay_across_restart",
+        "interrupted_save_recover",
+        "damaged_dxf_recover",
+        "bylayer_truth",
+        "space_context",
     }
 )
 

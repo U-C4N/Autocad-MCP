@@ -3118,3 +3118,568 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
             seen,
             [str(folder / "rounds.dxf"), str(folder / "plain.dxf")],
         )
+
+    # ── v9, 1.8-25: the section-8 rows no earlier item wrote ────────────────────
+
+    async def _task_replay_across_restart(self):
+        """v9 (1.8-03, B13): a client operation id survives a kill, and so does a kill inside a call.
+
+        Through ``benchmarks/fault_inject.py`` (a real ``python server.py``, a
+        private temporary state folder): process 1 runs
+        ``cad_batch(operation_id="v9-replay-1")`` with one line, saves and is
+        killed. Process 2 opens the file; the same id and steps must answer
+        ``replayed: true`` with the entity count still 1, the same id with
+        other steps ``operation_conflict`` (``different_request``), count 1.
+        The in-call twin: process 3 is parked at the ``journal.after_begin``
+        barrier inside ``cad_batch(operation_id="v9-replay-kill")`` and killed
+        there; process 4 must answer that id ``requires_reconcile`` (record
+        ``unknown_commit``, ``error_kind: "process_exit"``) and run nothing.
+        Every expected count is the script's own: one line drawn on purpose.
+        """
+        from benchmarks.fault_inject import FaultHarness, describe
+
+        folder = self.artifact_dir / "replay_across_restart"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = str(folder / "replay.dxf")
+        line = {"x1": 0, "y1": 0, "x2": 10, "y2": 0}
+        batch = {
+            "steps": [{"tool": "entity_create_line", "args": line}],
+            "operation_id": "v9-replay-1",
+        }
+        other = {
+            "steps": [{"tool": "entity_create_line", "args": {**line, "x2": 20}}],
+            "operation_id": "v9-replay-1",
+        }
+        killed = {
+            "steps": [{"tool": "entity_create_circle", "args": {"cx": 0, "cy": 0, "radius": 5}}],
+            "operation_id": "v9-replay-kill",
+        }
+
+        def run() -> dict:
+            seen: dict = {}
+            with FaultHarness(prefix="acadmcp-v9-replay-") as fh:
+                first = fh.spawn()
+                first.call("drawing_new")
+                seen["ran"] = first.call("cad_batch", batch)
+                first.call("drawing_save_as", {"path": path})
+                seen["kill_1"] = first.kill()
+                second = fh.spawn()
+                second.call("drawing_open", {"path": path})
+                seen["replay"] = second.call("cad_batch", batch)
+                seen["count_after_replay"] = second.call("drawing_info").get("entity_count")
+                seen["conflict"] = second.call("cad_batch", other)
+                seen["count_after_conflict"] = second.call("drawing_info").get("entity_count")
+                seen["kill_2"] = second.kill()
+                third = fh.spawn(barrier="journal.after_begin:v9-replay-kill")
+                third.call("drawing_open", {"path": path})
+                third.send("tools/call", {"name": "cad_batch", "arguments": killed})
+                seen["parked"] = fh.wait_barrier("journal.after_begin")
+                seen["kill_3"] = third.kill()
+                seen["dead_3"] = describe(third)
+                fourth = fh.spawn()
+                fourth.call("drawing_open", {"path": path})
+                seen["reconcile"] = fourth.call("cad_batch", killed)
+                seen["count_after_reconcile"] = fourth.call("drawing_info").get("entity_count")
+                seen["servers"] = len(fh.servers)
+            seen["state_removed"] = fh.removed
+            return seen
+
+        seen = await asyncio.to_thread(run)
+        replay, conflict, reconcile = seen["replay"], seen["conflict"], seen["reconcile"]
+        record = reconcile.get("record") or {}
+        killed_in_call = (
+            seen["kill_3"] is True
+            and seen["parked"].get("key") == "v9-replay-kill"
+            and seen["dead_3"]["alive"] is False
+        )
+        passed = (
+            seen["ran"].get("ok") is True
+            and all(seen[k] is True for k in ("kill_1", "kill_2"))
+            and replay.get("replayed") is True
+            and replay.get("operation_id") == "v9-replay-1"
+            and seen["count_after_replay"] == 1
+            and conflict.get("is_error") is True
+            and (conflict.get("kind"), conflict.get("reason"))
+            == ("operation_conflict", "different_request")
+            and seen["count_after_conflict"] == 1
+            and killed_in_call
+            and reconcile.get("is_error") is True
+            and reconcile.get("kind") == "requires_reconcile"
+            and record.get("state") == "unknown_commit"
+            and record.get("error_kind") == "process_exit"
+            and seen["count_after_reconcile"] == 1
+            and seen["servers"] == 4
+        )
+        return (
+            passed,
+            {
+                "replayed": replay.get("replayed"),
+                "entity_count_after_replay": seen["count_after_replay"],
+                "conflict": [conflict.get("kind"), conflict.get("reason")],
+                "killed_inside_call": killed_in_call,
+                "barrier": seen["parked"].get("name"),
+                "reconcile": {
+                    "kind": reconcile.get("kind"),
+                    "state": record.get("state"),
+                    "error_kind": record.get("error_kind"),
+                },
+                "entity_count_after_reconcile": seen["count_after_reconcile"],
+                "processes": seen["servers"],
+                "state_dir_removed": seen["state_removed"],
+            },
+            [path],
+        )
+
+    async def _task_interrupted_save_recover(self):
+        """v9 (1.8-04): an interrupted save never costs the client's file.
+
+        Half-way death: a 1-line DXF is the client's file; a child interpreter
+        on the harness's state folder reads it, adds 40 circles and calls
+        ``atomic_write_dxf`` with a writer that writes half the DXF and dies
+        (``os._exit(9)``: no ``finally``, as under a kill). The file's sha
+        must be the one taken before; the next real server must report
+        ``rolled_back`` for it and open 1 entity, no marker and no tmp left.
+        The in-call twin: a server armed at ``save.before_replace`` opens the
+        file, adds one circle and is killed parked inside ``drawing_save``
+        (tmp written, fsynced, verified; target untouched); the next server's
+        startup must report ``finished`` and the file's sha must be the one
+        the marker named, opening 2 entities. The counts are the script's.
+        """
+        import hashlib
+        import subprocess
+        import sys
+        import textwrap
+
+        import ezdxf
+
+        from backends.atomic_write import TMP_SUFFIX
+        from benchmarks.fault_inject import ROOT, FaultHarness, describe
+
+        folder = self.artifact_dir / "interrupted_save_recover"
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / "client.dxf"
+        for leftover in folder.iterdir():
+            if leftover.is_file():
+                leftover.unlink()
+        seed = ezdxf.new("R2010", units=4)
+        seed.modelspace().add_line((0, 0), (10, 0))
+        seed.saveas(str(target))
+
+        def sha() -> str:
+            return hashlib.sha256(target.read_bytes()).hexdigest()
+
+        def leftovers() -> list[str]:
+            return sorted(p.name for p in folder.iterdir() if p.name.endswith(TMP_SUFFIX))
+
+        writer = textwrap.dedent(
+            """
+            import io, os, sys
+            sys.path.insert(0, os.getcwd())
+            import ezdxf
+            from backends import atomic_write as aw
+            target = sys.argv[1]
+            doc = ezdxf.readfile(target)
+            for i in range(40):
+                doc.modelspace().add_circle((i, 0), 1)
+            real = doc.write
+            def dies_half_way(stream, fmt="asc"):
+                buffer = io.StringIO()
+                real(buffer, fmt)
+                text = buffer.getvalue()
+                stream.write(text[: len(text) // 2])
+                stream.flush()
+                os._exit(9)
+            doc.write = dies_half_way
+            aw.atomic_write_dxf(doc, target)
+            """
+        )
+
+        def outcomes(rows) -> list[str]:
+            return [r.get("outcome") for r in rows or [] if r.get("target") == str(target)]
+
+        def run() -> dict:
+            seen: dict = {"before": sha()}
+            with FaultHarness(prefix="acadmcp-v9-save-") as fh:
+                child = subprocess.run(
+                    [sys.executable, "-c", writer, str(target)],
+                    cwd=str(ROOT),
+                    env=fh.env(),
+                    capture_output=True,
+                    timeout=120,
+                )
+                seen["writer_exit"] = child.returncode
+                seen["after_half_write"] = sha()
+                seen["marker_phase"] = [m.get("phase") for m in fh.pending_markers()]
+                first = fh.spawn()
+                status = first.call("system_status")
+                opened = first.call("drawing_open", {"path": str(target)})
+                seen["rolled"] = outcomes(status.get("save_recovery")) + outcomes(
+                    opened.get("save_recovery")
+                )
+                seen["count_rolled"] = first.call("drawing_info").get("entity_count")
+                seen["after_roll_back"] = sha()
+                seen["markers_after_roll_back"] = len(fh.pending_markers())
+                seen["tmp_after_roll_back"] = leftovers()
+                seen["kill_1"] = first.kill()
+
+                second = fh.spawn(barrier=f"save.before_replace:{target.name}")
+                second.call("drawing_open", {"path": str(target)})
+                second.call("entity_create_circle", {"cx": 50, "cy": 50, "radius": 5})
+                second.send("tools/call", {"name": "drawing_save", "arguments": {}})
+                seen["parked"] = fh.wait_barrier("save.before_replace")
+                seen["pending"] = fh.pending_markers()
+                seen["parked_sha"] = sha()
+                seen["kill_2"] = second.kill()
+                seen["dead_2"] = describe(second)
+
+                third = fh.spawn()
+                status = third.call("system_status")
+                seen["finished"] = outcomes(status.get("save_recovery"))
+                seen["after_finish"] = sha()
+                third.call("drawing_open", {"path": str(target)})
+                seen["count_finished"] = third.call("drawing_info").get("entity_count")
+                seen["markers_after_finish"] = len(fh.pending_markers())
+                seen["tmp_after_finish"] = leftovers()
+            seen["state_removed"] = fh.removed
+            return seen
+
+        seen = await asyncio.to_thread(run)
+        pending = seen["pending"]
+        expected = pending[0].get("expected_sha256") if len(pending) == 1 else None
+        half_way_ok = (
+            seen["writer_exit"] == 9
+            and seen["after_half_write"] == seen["before"]
+            and seen["marker_phase"] == ["writing"]
+            and seen["rolled"] == ["rolled_back"]
+            and seen["after_roll_back"] == seen["before"]
+            and seen["count_rolled"] == 1
+            and seen["markers_after_roll_back"] == 0
+            and seen["tmp_after_roll_back"] == []
+        )
+        in_call_ok = (
+            seen["kill_2"] is True
+            and seen["dead_2"]["alive"] is False
+            and seen["parked"].get("key") == target.name
+            and len(pending) == 1
+            and pending[0].get("phase") == "verified"
+            and seen["parked_sha"] == seen["before"]
+            and seen["finished"] == ["finished"]
+            and expected is not None
+            and seen["after_finish"] == expected
+            and seen["count_finished"] == 2
+            and seen["markers_after_finish"] == 0
+            and seen["tmp_after_finish"] == []
+        )
+        return (
+            half_way_ok and in_call_ok,
+            {
+                "half_way": {
+                    "writer_exit": seen["writer_exit"],
+                    "sha_unchanged": seen["after_half_write"] == seen["before"],
+                    "marker_phase": seen["marker_phase"],
+                    "outcome": seen["rolled"],
+                    "entities": seen["count_rolled"],
+                },
+                "killed_before_replace": {
+                    "killed_inside_call": seen["kill_2"] is True and not seen["dead_2"]["alive"],
+                    "sha_unchanged_while_parked": seen["parked_sha"] == seen["before"],
+                    "outcome": seen["finished"],
+                    "sha_is_the_markers": expected is not None and seen["after_finish"] == expected,
+                    "entities": seen["count_finished"],
+                },
+                "state_dir_removed": seen["state_removed"],
+            },
+            [str(target)],
+        )
+
+    async def _task_damaged_dxf_recover(self):
+        """v9 (1.8-04, B09): a damaged DXF is recovered on request, and only then.
+
+        A valid 50-line DXF is damaged three ways: cut before its last ENDSEC
+        (no OBJECTS end, no EOF), three entity handles set to an earlier
+        entity's, four set to text that is not hex. The expected outcome is
+        fixed here, by construction: the recover reader drops the three
+        conflicting entities (one fix each) and re-numbers the four non-hex
+        ones, so ``fixes == 3``, ``entities_read == 47`` and every model-space
+        handle unique. The source's sha must not move - not by the open, not
+        by a ``drawing_save`` onto it (refused ``recovered_source_protected``).
+        The twin: the plain open is refused ``damaged_drawing`` naming
+        ``recover=True``, the open document (one line) kept.
+        """
+        import hashlib
+
+        import ezdxf
+
+        folder = self.artifact_dir / "damaged_dxf_recover"
+        folder.mkdir(parents=True, exist_ok=True)
+        doc = ezdxf.new("R2010", units=4)
+        for index in range(50):
+            doc.modelspace().add_line((0, index), (10, index))
+        intact = folder / "intact.dxf"
+        doc.saveas(str(intact))
+        duplicate_at, non_hex_at = (10, 20, 30), (5, 15, 25, 35)
+        lines = intact.read_text(encoding="utf-8").split("\n")
+        out, in_entities, entity, first_handle = [], False, -1, None
+        for i in range(0, len(lines) - 1, 2):
+            code, value = lines[i], lines[i + 1]
+            if code.strip() == "2" and value.strip() == "ENTITIES":
+                in_entities = True
+            elif in_entities and code.strip() == "0" and value.strip() == "ENDSEC":
+                in_entities = False
+            elif in_entities and code.strip() == "0":
+                entity += 1
+            elif in_entities and code.strip() == "5":
+                if first_handle is None:
+                    first_handle = value
+                elif entity in duplicate_at:
+                    value = first_handle
+                elif entity in non_hex_at:
+                    value = "ZZZZ"
+            out.extend([code, value])
+        text = "\n".join(out)
+        damaged = folder / "damaged.dxf"
+        damaged.write_text(text[: text.rindex("ENDSEC")], encoding="utf-8")
+
+        def sha() -> str:
+            return hashlib.sha256(damaged.read_bytes()).hexdigest()
+
+        before = sha()
+        await self.backend.entity_create_line(0, 0, 10, 0)
+        identity = dict(self.backend.document_identity())
+        async with self._served() as client:
+            refused = await client.call_tool(
+                "drawing_open", {"path": str(damaged)}, raise_on_error=False
+            )
+            identity_after_refusal = dict(self.backend.document_identity())
+            count_after_refusal = (await client.call_tool("drawing_info", {})).structured_content[
+                "entity_count"
+            ]
+            opened = (
+                await client.call_tool("drawing_open", {"path": str(damaged), "recover": True})
+            ).structured_content or {}
+            sha_after_open = sha()
+            blocked = await client.call_tool("drawing_save", {}, raise_on_error=False)
+            sha_after_blocked_save = sha()
+            listed = await client.call_tool("entity_list", {"limit": 1000})
+            handles = [row["handle"] for row in listed.structured_content["result"]]
+        recovered = opened.get("recovered") or {}
+        refusal = refused.structured_content or {}
+        refusal_text = refused.content[0].text if refused.content else ""
+        twin_ok = (
+            refused.is_error
+            and refusal.get("kind") == "damaged_drawing"
+            and "recover=True" in refusal_text
+            and identity_after_refusal.get("document_id") == identity.get("document_id")
+            and identity_after_refusal.get("revision") == identity.get("revision")
+            and count_after_refusal == 1
+        )
+        blocked_payload = blocked.structured_content or {}
+        passed = (
+            twin_ok
+            and recovered.get("fixes") == len(duplicate_at)
+            and recovered.get("entities_read") == 50 - len(duplicate_at)
+            and len(handles) == 50 - len(duplicate_at) == len(set(handles))
+            and opened.get("recovered_from") == str(damaged)
+            and sha_after_open == before
+            and blocked.is_error
+            and blocked_payload.get("kind") == "recovered_source_protected"
+            and sha_after_blocked_save == before
+        )
+        return (
+            passed,
+            {
+                "plain_open": {
+                    "kind": refusal.get("kind"),
+                    "names_recover": "recover=True" in refusal_text,
+                    "document_kept": twin_ok,
+                },
+                "recovered": {k: recovered.get(k) for k in ("fixes", "errors", "entities_read")},
+                "handles_unique": len(handles) == len(set(handles)),
+                "planted": {"conflicting": len(duplicate_at), "non_hex": len(non_hex_at)},
+                "source_sha_unchanged": sha_after_open == before == sha_after_blocked_save,
+                "save_onto_source": blocked_payload.get("kind"),
+            },
+            [str(damaged)],
+        )
+
+    async def _task_bylayer_truth(self):
+        """v9 (1.8-01, the rival's §4.5): the lineweight in the file, not in the answer.
+
+        Through the real server: the ISO ``mech`` layers, 22 lines on GEOMETRY
+        created with ``lineweight: "Default"`` and three with ``"ByLayer"``
+        (``entity_batch_create``), saved. The oracle is the saved DXF read with
+        ezdxf - 22 lines at -3 and three at -1 - never the server's report.
+        ``drawing_critique(focus=["property_override"])`` must return exactly
+        one issue, ``lineweight_not_bylayer`` on GEOMETRY, count 22 and those
+        22 handles. After ``drawing_refine(focus=["property_override"])`` and a
+        save, the DXF must hold -1 on every line and the focus must be empty.
+        """
+        import ezdxf
+
+        folder = self.artifact_dir / "bylayer_truth"
+        folder.mkdir(parents=True, exist_ok=True)
+        first, repaired = folder / "before.dxf", folder / "after.dxf"
+
+        def spec(y: float, weight: str) -> dict:
+            row = {"type": "line", "x1": 0, "y1": y, "x2": 10, "y2": y, "layer": "GEOMETRY"}
+            return {**row, "lineweight": weight}
+
+        specs = [spec(y, "Default") for y in range(22)] + [
+            spec(30 + y, "ByLayer") for y in range(3)
+        ]
+
+        def weights(path) -> dict[str, int]:
+            msp = ezdxf.readfile(str(path)).modelspace()
+            return {e.dxf.handle: e.dxf.get("lineweight", -1) for e in msp if e.dxftype() == "LINE"}
+
+        async def critique(client) -> list[dict]:
+            # a union return type (list | dict) comes back wrapped in "result"
+            answer = await client.call_tool(
+                "drawing_critique", {"focus": ["property_override"], "report": True}
+            )
+            return answer.structured_content["result"]["issues"]
+
+        async with self._served() as client:
+            await client.call_tool("drawing_apply_iso_layers", {"standard": "mech"})
+            made = (
+                await client.call_tool("entity_batch_create", {"entities": specs})
+            ).structured_content or {}
+            rows = made.get("entities") or []
+            default = sorted(row["handle"] for row in rows[:22])
+            await client.call_tool("drawing_save_as", {"path": str(first)})
+            issues = await critique(client)
+            await client.call_tool(
+                "drawing_refine", {"focus": ["property_override"], "min_score": 100.0}
+            )
+            await client.call_tool("drawing_save_as", {"path": str(repaired)})
+            after = await critique(client)
+        on_disk = weights(first)
+        fixed = weights(repaired)
+        detail = (issues[0].get("detail") or {}) if len(issues) == 1 else {}
+        file_ok = (
+            sorted(h for h, w in on_disk.items() if w == -3) == default
+            and sum(1 for w in on_disk.values() if w == -1) == 3
+            and len(on_disk) == 25
+        )
+        grouped = (
+            len(issues) == 1
+            and detail.get("code") == "lineweight_not_bylayer"
+            and detail.get("layer") == "GEOMETRY"
+            and detail.get("count") == 22
+            and sorted(issues[0].get("handles") or []) == default
+        )
+        repaired_ok = len(fixed) == 25 and set(fixed.values()) == {-1} and after == []
+        return (
+            file_ok and grouped and repaired_ok,
+            {
+                "dxf_lineweights_before": dict(
+                    Counter(str(w) for w in on_disk.values()).most_common()
+                ),
+                "reported_names": sorted({str(row.get("lineweight_name")) for row in rows}),
+                "issue": {k: detail.get(k) for k in ("code", "layer", "count", "values")},
+                "dxf_lineweights_after": sorted(set(fixed.values())),
+                "focus_after_refine": len(after),
+            },
+            [str(first), str(repaired)],
+        )
+
+    async def _task_space_context(self):
+        """v9 (1.8-05, the rival's §4.6): new geometry goes to model space, whatever tab was open.
+
+        A DXF saved with Layout1 the active tab and two lines on that sheet is
+        opened through the real server and a circle created: it must report
+        no paper ``space``, and the saved file must hold the circle in model
+        space and Layout1 its two original lines (handles unchanged). The
+        twin: under a UCS rotated 30° about the moved origin (100, 50), a trim
+        of (0,0)-(20,0) by (10,-5)-(10,5) keeping (2, 0) must leave the WCS
+        segment (0,0)-(10,0) - worked out by hand - exactly what the same trim
+        at y = 30 under the world UCS leaves, shifted. Headless; the live half
+        is ``scripts/smoke_space_com.py`` (a DWG saved with Layout1 active).
+        """
+        import math
+
+        import ezdxf
+
+        folder = self.artifact_dir / "space_context"
+        folder.mkdir(parents=True, exist_ok=True)
+        source, saved = folder / "layout1_active.dxf", folder / "saved.dxf"
+        doc = ezdxf.new("R2010", setup=True, units=4)
+        sheet = doc.layout("Layout1")
+        paper = sorted(
+            [
+                sheet.add_line((10, 10), (100, 10)).dxf.handle,
+                sheet.add_line((10, 20), (100, 20)).dxf.handle,
+            ]
+        )
+        doc.layouts.set_active_layout("Layout1")
+        doc.saveas(str(source))
+        active_on_disk = ezdxf.readfile(str(source)).layouts.active_layout().name
+
+        angle = math.radians(30.0)
+        x_axis = [math.cos(angle), math.sin(angle), 0.0]
+        y_axis = [-math.sin(angle), math.cos(angle), 0.0]
+
+        async def ends(client, handle) -> list[list[float]]:
+            props = (
+                await client.call_tool("entity_get", {"handle": handle})
+            ).structured_content.get("properties") or {}
+            return sorted([[round(float(v), 9) for v in props[k][:2]] for k in ("start", "end")])
+
+        async def trimmed(client, y: float) -> list[list[float]]:
+            def line(x1, y1, x2, y2):
+                return {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
+
+            target = (
+                await client.call_tool("entity_create_line", line(0, y, 20, y))
+            ).structured_content["handle"]
+            cutter = (
+                await client.call_tool("entity_create_line", line(10, y - 5, 10, y + 5))
+            ).structured_content["handle"]
+            await client.call_tool(
+                "entity_trim",
+                {"target_handle": target, "cutter_handle": cutter, "keep_x": 2, "keep_y": y},
+            )
+            return await ends(client, target)
+
+        async with self._served() as client:
+            await client.call_tool("drawing_open", {"path": str(source)})
+            circle = (
+                await client.call_tool("entity_create_circle", {"cx": 5, "cy": 5, "radius": 2})
+            ).structured_content or {}
+            await client.call_tool("drawing_save_as", {"path": str(saved)})
+            await client.call_tool(
+                "ucs_set",
+                {
+                    "name": "TILT30",
+                    "origin": [100.0, 50.0, 0.0],
+                    "x_axis": x_axis,
+                    "y_axis": y_axis,
+                },
+            )
+            under_ucs = await trimmed(client, 0.0)
+            await client.call_tool("ucs_restore", {"name": "world"})
+            under_world = await trimmed(client, 30.0)
+        reread = ezdxf.readfile(str(saved))
+        model = {e.dxf.handle: e.dxftype() for e in reread.modelspace()}
+        on_sheet = sorted(e.dxf.handle for e in reread.layout("Layout1"))
+        space = (circle.get("properties") or {}).get("space")
+        in_model = (
+            active_on_disk == "Layout1"
+            and space in (None, "Model")
+            and model.get(circle.get("handle")) == "CIRCLE"
+            and on_sheet == paper
+        )
+        shifted = [[x, y - 30.0] for x, y in under_world]
+        trim_ok = under_ucs == [[0.0, 0.0], [10.0, 0.0]] and shifted == under_ucs
+        return (
+            in_model and trim_ok,
+            {
+                "active_layout_on_disk": active_on_disk,
+                "circle_space": space or "Model",
+                "circle_in_model_space": model.get(circle.get("handle")) == "CIRCLE",
+                "sheet_entities": [len(paper), len(on_sheet)],
+                "trim_under_ucs": under_ucs,
+                "trim_under_world": under_world,
+            },
+            [str(source), str(saved)],
+        )

@@ -99,7 +99,8 @@ def test_the_doc_number_gate_counts_the_v9_matrix():
     from scripts import check_doc_numbers
 
     # 1.8-25 moved the source to tasks_v9: "the current set" is the v9 matrix
-    assert check_doc_numbers.matrix_tasks() == len(TASKS_V9) == len(TASKS_V8) + 13
+    # the eighteen rows of plan section 8 (tests/test_benchmark_v9_section8.py)
+    assert check_doc_numbers.matrix_tasks() == len(TASKS_V9) == len(TASKS_V8) + 18
 
 
 def test_the_published_reference_report_covers_the_whole_current_matrix():
@@ -496,6 +497,9 @@ def test_agentcads_ground_is_mapped_in_v9_and_its_lane_is_not_run():
         "layer_cleanup_budget",
         "call_count_dimension_part",
         "parametric_revise_keeps_handles",
+        "bylayer_truth",
+        "space_context",
+        "lisp_read_tier",
     }
     assert agentcad <= v9_ids and set(RIVAL_SCENARIO) == agentcad
     assert {k: v for k, v in RIVAL_GROUND_V9.items() if k not in agentcad} == RIVAL_GROUND
