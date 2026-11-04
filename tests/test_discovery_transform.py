@@ -23,6 +23,7 @@ from fastmcp.server.transforms.search.base import serialize_tools_for_output_jso
 import config
 import server
 from discovery.aliases import aliases_for
+from discovery.descriptions import DETAILS_POINTER, full_description
 from discovery.serialize import (
     PIN_PARAM_CHARS,
     PIN_POINTER,
@@ -705,7 +706,14 @@ async def test_describe_tool_gives_a_pinned_tool_its_untouched_card():
         pinned = await client.call_tool(
             "cad_batch", {"steps": [{"tool": "drawing_new"}, {"tool": "drawing_info"}]}
         )
-    assert card["description"] == full["cad_batch"].description
+    # W3: the full catalog lists the wire text (leading paragraphs + "Details:
+    # describe_tool."); describe_tool answers the whole docstring behind it
+    registered = {t.name: t for t in server._local_tool_components()}["cad_batch"]
+    assert full["cad_batch"].description == registered.description
+    assert card["description"] == full_description(registered)
+    assert card["description"].startswith(
+        full["cad_batch"].description.removesuffix(f"\n\n{DETAILS_POINTER}")
+    )
     assert card["input_schema"] == full["cad_batch"].inputSchema
     assert pinned.structured_content["ok"] is True, "a pin calls the registered tool"
 
@@ -868,13 +876,16 @@ async def test_describe_tool_returns_the_full_mode_schema_of_every_visible_tool(
     server._apply_discovery_mode("off")
     async with Client(server.mcp) as client:
         full = {tool.name: tool for tool in await client.list_tools()}
+    registered = {t.name: t for t in server._local_tool_components()}
     server._apply_discovery_mode("search")
     async with Client(server.mcp) as client:
         for name, tool in full.items():
             card = await _describe(client, name)
             assert card["name"] == name
             assert card["input_schema"] == tool.inputSchema, name
-            assert card["description"] == tool.description, name
+            # W3: the listing carries the wire text, describe_tool the full text
+            assert tool.description == registered[name].description, name
+            assert card["description"] == full_description(registered[name]), name
             expected = (
                 tool.annotations.model_dump(mode="json", exclude_none=True)
                 if tool.annotations is not None

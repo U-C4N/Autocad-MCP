@@ -55,6 +55,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from discovery.aliases import alias_text, aliases_for
+from discovery.descriptions import full_description
 from discovery.serialize import (
     describe_payload,
     lean_schema,
@@ -325,8 +326,14 @@ class CadSearchTransform(BM25SearchTransform):
         place — it is called and extended instead. Tools with no alias record
         (anything registered outside this server) keep the stock text
         unchanged.
+
+        A tool listed with a split description (``discovery.descriptions``)
+        is indexed on its full text, so the W3 split moves no search result.
         """
         extra = alias_text(tool.name)
+        full = full_description(tool)
+        if full != (tool.description or ""):
+            tool = tool.model_copy(update={"description": full})
         stock = _stock_searchable_text(tool)
         return f"{stock} {extra}" if extra else stock
 

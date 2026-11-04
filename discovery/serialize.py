@@ -36,6 +36,7 @@ from typing import Any
 from fastmcp.tools.base import Tool
 
 from discovery.aliases import aliases_for
+from discovery.descriptions import full_description
 
 __all__ = [
     "MAX_SUMMARY_CHARS",
@@ -213,18 +214,22 @@ def docstring_examples(text: str | None) -> list[str]:
 def describe_payload(tool: Tool, *, pack: str | None = None) -> dict[str, Any]:
     """Everything a client needs to call ``tool``, from what it already carries.
 
-    ``input_schema``, ``description`` and ``annotations`` are the tool's own MCP
-    rendering — the same object a full-catalog ``list_tools`` sends — so the
-    schema cannot drift from what the call validates against. ``cost`` is the
-    ``@cad_tool`` card's, ``acad`` / ``synonyms`` the alias corpus's, and
-    ``examples`` only what the docstring itself writes (:func:`docstring_examples`).
+    ``input_schema`` and ``annotations`` are the tool's own MCP rendering — the
+    same object a full-catalog ``list_tools`` sends — so the schema cannot drift
+    from what the call validates against. ``description`` is the *full* text
+    (:func:`discovery.descriptions.full_description`): a listing carries only
+    the leading paragraphs of a long docstring and points here for the rest.
+    ``cost`` is the ``@cad_tool`` card's, ``acad`` / ``synonyms`` the alias
+    corpus's, and ``examples`` only what the docstring itself writes
+    (:func:`docstring_examples`).
     """
     wire = tool.to_mcp_tool()
     cad = (tool.meta or {}).get("cad")
     record = aliases_for(tool.name)
+    full = full_description(tool)
     return {
         "name": tool.name,
-        "description": wire.description,
+        "description": full or wire.description,
         "input_schema": wire.inputSchema,
         "annotations": (
             wire.annotations.model_dump(mode="json", exclude_none=True)
@@ -236,7 +241,7 @@ def describe_payload(tool: Tool, *, pack: str | None = None) -> dict[str, Any]:
         "pack": pack,
         "acad": list(record.acad) if record else [],
         "synonyms": list(record.synonyms) if record else [],
-        "examples": docstring_examples(tool.description),
+        "examples": docstring_examples(full),
     }
 
 
@@ -299,7 +304,7 @@ def pinned_card(tool: Tool) -> Tool:
     for prop in (schema.get("properties") or {}).values():
         if isinstance(prop, dict) and isinstance(prop.get("description"), str):
             prop["description"] = _sentences_within(prop["description"], PIN_PARAM_CHARS)
-    lead = _first_paragraph(tool.description) or _summary(tool)
+    lead = _first_paragraph(full_description(tool)) or _summary(tool)
     return tool.model_copy(update={"description": f"{lead} {PIN_POINTER}", "parameters": schema})
 
 
