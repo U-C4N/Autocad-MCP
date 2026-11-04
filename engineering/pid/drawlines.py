@@ -40,7 +40,8 @@ _PAGE = 1000
 #: obstacle-aware search (``engineering/pid/router.py``); ``auto`` stays the default.
 ROUTE_MODES = ("auto", "direct", "avoid")
 #: What ``avoid`` does when no route keeps the clearance: refuse ``no_route``,
-#: or route through the fewest boxes and report them in ``obstacle_hits``.
+#: or route along as few blocked grid edges as it can (not necessarily through
+#: the fewest boxes) and report the boxes it enters in ``obstacle_hits``.
 ON_BLOCKED = ("refuse", "cross")
 #: How far (mm) an ``avoid`` route keeps from every symbol box by default.
 DEFAULT_CLEARANCE = 2.0
@@ -314,6 +315,17 @@ def line_obstacles(
     return out
 
 
+def end_symbols(obstacles: list[Obstacle], ends: tuple[str | None, str | None]) -> list[Obstacle]:
+    """The line's own end symbols among ``obstacles`` (by handle or spec id):
+    the boxes ``line_obstacles`` leaves out, handed to the router as ``own`` so
+    a route goes round its own vessel when it can."""
+    return [
+        o
+        for o in obstacles
+        if any(end and end in (o.ref.get("handle"), o.ref.get("id")) for end in ends)
+    ]
+
+
 def plan_route(
     s_point,
     s_dir,
@@ -325,10 +337,12 @@ def plan_route(
     existing: list[dict],
     clearance: float,
     on_blocked: str,
+    own: list[Obstacle] | None = None,
 ) -> tuple[list[tuple[float, float]], dict | None]:
     """The route of one line and, for ``avoid``, its search summary. The one
     function ``draw_line`` and ``pid_from_spec``'s dry run both call, so the
-    preview's vertices are the applied ones."""
+    preview's vertices are the applied ones. ``own`` are the end symbols'
+    boxes (``end_symbols``)."""
     if route_mode == "avoid":
         found = route_avoiding(
             s_point,
@@ -340,6 +354,7 @@ def plan_route(
             clearance=clearance,
             stub=stub,
             on_blocked=on_blocked,
+            own=own or (),
         )
         summary = {
             "clearance": clearance,
@@ -473,9 +488,12 @@ async def draw_line(
             existing,
             clearance,
             on_blocked,
+            end_symbols(sheet, (start["handle"], end["handle"])),
         )
     except NoRouteError as exc:
-        raise exc.relabel(await obstacle_rows(backend, exc.obstacles)) from exc
+        # ``from None``: the served envelope reports the innermost message on
+        # the cause chain, which would be the one naming handles, not tags.
+        raise exc.relabel(await obstacle_rows(backend, exc.obstacles)) from None
     # Read before anything is written: a failed attribute read leaves no line.
     hits = await obstacle_rows(backend, obstacle_hits(path, around))
 

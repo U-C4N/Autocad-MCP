@@ -217,6 +217,100 @@ def test_a_line_already_on_the_way_is_not_run_along():
     assert found.cost == pytest.approx(route_cost(found.vertices, along))
 
 
+def _on_segment(p, a, b, eps=1e-9) -> bool:
+    if abs(a[0] - b[0]) < eps:
+        return abs(p[0] - a[0]) < eps and min(a[1], b[1]) - eps <= p[1] <= max(a[1], b[1]) + eps
+    return abs(p[1] - a[1]) < eps and min(a[0], b[0]) - eps <= p[0] <= max(a[0], b[0]) + eps
+
+
+def _runs_over_itself(pts) -> bool:
+    """Two non-adjacent segments of one route sharing length."""
+    segs = list(zip(pts, pts[1:], strict=False))
+    for i, (a, b) in enumerate(segs):
+        for c, d in segs[i + 2 :]:
+            for axis in (0, 1):
+                other = 1 - axis
+                if all(abs(p[other] - a[other]) < 1e-9 for p in (b, c, d)):
+                    lo = max(min(a[axis], b[axis]), min(c[axis], d[axis]))
+                    hi = min(max(a[axis], b[axis]), max(c[axis], d[axis]))
+                    if hi - lo > 1e-6:
+                        return True
+    return False
+
+
+def _sane(pts, s, e) -> None:
+    """Never through its own port mid-route, never back over itself."""
+    segs = list(zip(pts, pts[1:], strict=False))
+    assert not any(_on_segment(e, a, b) for a, b in segs[:-1]), pts
+    assert not any(_on_segment(s, a, b) for a, b in segs[1:]), pts
+    assert not _runs_over_itself(pts), pts
+
+
+@pytest.mark.parametrize("ds", AXES)
+@pytest.mark.parametrize("de", AXES)
+@pytest.mark.parametrize("e", [(100.0, 0.0), (0.0, -100.0)])
+def test_two_ports_on_one_row_or_column_route_on_an_empty_field(ds, de, e):
+    """Collinear ports left the Hanan grid a single line: an empty field was
+    refused no_route naming nothing, and one far box sized a detour that
+    doubled back through the end port (1.8-20 review)."""
+    s = (0.0, 0.0)
+    found = route_avoiding(s, ds, e, de, [])
+    _sane(found.vertices, s, e)
+    assert found.vertices[0] == s and found.vertices[-1] == e
+    # The detour is local: no wider than the stub points' escape lines.
+    for x, y in found.vertices:
+        assert -10.0 <= x <= 110.0 and -110.0 <= y <= 10.0, found.vertices
+    far = [{"box": (500.0, 500.0, 510.0, 510.0), "tag": "FAR"}]
+    assert route_avoiding(s, ds, e, de, far).vertices == found.vertices
+
+
+def test_aligned_ports_in_random_fields_are_sane_and_refusals_name_a_box():
+    """The random-field gate never picked aligned ports; this one only does."""
+    routed = 0
+    rng = random.Random(41)
+    for _ in range(150):
+        obstacles = _field(rng, rng.randint(0, 10))
+        clearance, stub = rng.choice((0.0, 1.0, 2.0)), rng.choice((0.0, 3.0, 5.0))
+        s, ds, e, de = _ports(rng, obstacles, clearance, stub)
+        e = (e[0], s[1]) if rng.random() < 0.5 else (s[0], e[1])
+        if math.dist(s, e) < 1:
+            continue
+        try:
+            found = route_avoiding(s, ds, e, de, obstacles, clearance=clearance, stub=stub)
+        except NoRouteError as exc:
+            assert exc.obstacles, (s, ds, e, de)
+            continue
+        routed += 1
+        _sane(found.vertices, s, e)
+    assert routed >= 100
+
+
+def test_a_route_goes_round_its_own_end_symbol_when_it_can():
+    """``own`` boxes are priced, never refused: round when open, through when not."""
+    own = [{"box": (87.0, -23.0, 113.0, 23.0)}]
+    found = route_avoiding((13.0, -8.0), 0.0, (113.0, -8.0), 0.0, [], own=own)
+    _sane(found.vertices, (13.0, -8.0), (113.0, -8.0))
+    for a, b in zip(found.vertices, found.vertices[1:], strict=False):
+        assert not box_entered(a, b, own[0]["box"]), found.vertices
+    # Round it at the clearance too, bar the end stub that leaves the port.
+    for a, b in zip(found.vertices, found.vertices[1:-1], strict=False):
+        assert not box_entered(a, b, _inflated(own[0]["box"], 2.0)), found.vertices
+    # Walled in on every side but through its own symbol: drawn, not refused.
+    walls = [
+        {"box": (60.0, -60.0, 140.0, -24.0), "tag": "S"},
+        {"box": (60.0, 24.0, 140.0, 60.0), "tag": "N"},
+        {"box": (125.0, -60.0, 140.0, 60.0), "tag": "E"},
+        {"box": (60.0, 0.0, 80.0, 60.0), "tag": "W"},
+        {"box": (60.0, -60.0, 80.0, -20.0), "tag": "W2"},
+    ]
+    inside = route_avoiding((13.0, -8.0), 0.0, (113.0, -8.0), 0.0, walls, own=own)
+    assert any(
+        box_entered(a, b, own[0]["box"])
+        for a, b in zip(inside.vertices, inside.vertices[1:], strict=False)
+    )
+    assert obstacle_hits(inside.vertices, walls) == []
+
+
 # ── refusals ────────────────────────────────────────────────────────────────
 
 
@@ -244,9 +338,12 @@ def test_an_enclosed_port_is_no_route_naming_the_ring():
     assert errors.describe("no_route").category == "geometry"
 
 
-def test_on_blocked_cross_goes_through_the_fewest_boxes_and_says_so():
+def test_on_blocked_cross_enters_the_ring_once_and_says_so():
+    """Priced per blocked grid edge, not per box: which wall it takes is the
+    one with the fewest blocked edges on its way, and it takes only one."""
     found = route_avoiding((0, 0), 0.0, (100, 0), 180.0, _RING, on_blocked="cross")
-    assert [r["tag"] for r in obstacle_hits(found.vertices, _RING)] == ["D-1"]
+    hits = [r["tag"] for r in obstacle_hits(found.vertices, _RING)]
+    assert len(hits) == 1 and hits[0] in {"A-1", "B-1", "C-1", "D-1"}
 
 
 def test_a_search_past_its_budget_is_refused_by_kind():
@@ -400,6 +497,43 @@ async def test_pid_line_draw_avoid_keeps_clear_of_symbols_and_keep_out(pid_backe
 
 
 @pytest.mark.asyncio
+async def test_vessels_in_a_row_are_joined_round_both_with_nothing_unrelated_on_the_sheet(
+    pid_backend,
+):
+    """N4 to N4 on two vessels at one y: refused no_route naming nothing on a
+    bare sheet, and with an unrelated pump drawn as a detour sized by the pump
+    that passed through its own end port (1.8-20 review)."""
+    v1 = await place_symbol(pid_backend, "vertical_vessel", 0, 0, tag="V-101")
+    v2 = await place_symbol(pid_backend, "vertical_vessel", 100, 0, tag="V-102")
+    ends = ({"handle": v1["handle"], "port": "N4"}, {"handle": v2["handle"], "port": "N4"})
+    bare = await draw_line(pid_backend, *ends, route_mode="avoid")
+    start, end = (13.0, -8.0), (113.0, -8.0)
+    pts = [tuple(p) for p in bare["vertices"]]
+    assert pts[0] == start and pts[-1] == end
+    _sane(pts, start, end)
+    for a, b in zip(pts, pts[1:], strict=False):
+        for box in ((-13, -23, 13, 23), (87, -23, 113, 23)):
+            assert not box_entered(a, b, box), pts
+    assert bare["obstacle_hits"] == []
+    assert [i for i in await run_critique(pid_backend) if i.focus.startswith("pid_")] == []
+    other = EzdxfBackend()
+    await other.connect()
+    await other.drawing_new()
+    await apply_layer_set(other, "pid")
+    w1 = await place_symbol(other, "vertical_vessel", 0, 0, tag="V-101")
+    w2 = await place_symbol(other, "vertical_vessel", 100, 0, tag="V-102")
+    await place_symbol(other, "centrifugal_pump", 400, 300, tag="P-900")
+    again = await draw_line(
+        other,
+        {"handle": w1["handle"], "port": "N4"},
+        {"handle": w2["handle"], "port": "N4"},
+        route_mode="avoid",
+    )
+    assert again["vertices"] == bare["vertices"]
+    await other.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_a_label_over_a_symbol_is_reported_never_moved(pid_backend):
     """Labels stand after routing (the plan's risk note): one that overlaps a
     symbol is named in ``label_hits``, the line itself stays clear."""
@@ -440,7 +574,7 @@ async def test_an_enclosed_port_refuses_no_route_with_tags_and_draws_nothing(pid
             route_mode="avoid",
         )
     tags = {o["tag"] for o in caught.value.obstacles}
-    assert tags and tags <= {"TK-1", "TK-2", "TK-3", "TK-4"}
+    assert tags == {"TK-1", "TK-2", "TK-3", "TK-4"}
     assert "V-900" not in str(caught.value)
     assert len(await pid_backend.entity_list()) == before
     crossed = await draw_line(
@@ -469,7 +603,7 @@ async def test_a_spec_that_cannot_avoid_is_refused_by_path_and_rolled_back(pid_b
     }
     with pytest.raises(NoRouteError, match=r"^lines\[0\]: no route") as dry:
         await run_spec(pid_backend, spec, dry_run=True)
-    assert {o["tag"] for o in dry.value.obstacles} <= {"TK-1", "TK-2", "TK-3", "TK-4"}
+    assert {o["tag"] for o in dry.value.obstacles} == {"TK-1", "TK-2", "TK-3", "TK-4"}
     with pytest.raises(NoRouteError, match=r"^lines\[0\]: no route"):
         await run_spec(pid_backend, spec)
     assert await pid_backend.entity_list() == []
@@ -597,7 +731,38 @@ async def test_the_tool_refuses_no_route_in_the_error_envelope(served):
     assert result.is_error
     payload = result.structured_content
     assert payload["kind"] == "no_route" and payload["category"] == "geometry"
-    assert {o["tag"] for o in payload["obstacles"]} <= {"TK-1", "TK-2", "TK-3", "TK-4"}
+    assert {o["tag"] for o in payload["obstacles"]} == {"TK-1", "TK-2", "TK-3", "TK-4"}
+    # The served message is the relabelled one: tags, not handles.
+    for row in payload["obstacles"]:
+        assert row["tag"] in payload["message"]
+        assert f" {row['handle']}," not in payload["message"]
+        assert f" {row['handle']}." not in payload["message"]
+    spec = {
+        "sheet": {"routing": "avoid"},
+        "equipment": [
+            {"id": "P-1", "symbol": "centrifugal_pump", "x": 0, "y": 0, "tag": "P-101"},
+            *(
+                {
+                    "id": f"TK-{k + 1}",
+                    "symbol": "horizontal_vessel",
+                    "x": x,
+                    "y": y + 300,
+                    "tag": f"TK-{k + 1}",
+                }
+                for k, (x, y) in enumerate(((0, 30), (-25, 10), (25, 10), (0, -20)))
+            ),
+            {"id": "V-9", "symbol": "vertical_vessel", "x": 200, "y": 300, "tag": "V-900"},
+        ],
+        "lines": [{"from": "P-1.discharge", "to": "V-9.N3"}],
+    }
+    spec["equipment"][0]["y"] = 300
+    for dry_run in (True, False):
+        served_spec = await client.call_tool(
+            "pid_from_spec", {"spec": spec, "dry_run": dry_run}, raise_on_error=False
+        )
+        refusal = served_spec.structured_content
+        assert refusal["kind"] == "no_route", refusal
+        assert refusal["message"].startswith("lines[0]: no route"), refusal["message"]
     other = await place_symbol(backend, "centrifugal_pump", 100, -60, tag="P-102")
     ok = await client.call_tool(
         "pid_line_draw",

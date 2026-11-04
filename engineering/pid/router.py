@@ -8,6 +8,13 @@ a line could run straight through a vessel and pass every ``pid_*`` focus.
 * a sparse Hanan grid - the x and y of both ports, both stub points, the
   midlines the fixed candidates use, and every obstacle edge inflated by
   ``clearance`` - so every clean fixed candidate is a path of the grid;
+  plus escape lines: each stub point offset by ``max(stub, clearance, 1)``
+  on both axes, a frame that far outside everything, and the inflated edges
+  of the line's own end symbols. Without them two ports on one row (or one
+  column) left the grid a single line there: an empty sheet was refused
+  ``no_route`` naming nothing, and one far box sized the detour;
+* the search never enters a node on either stub (bar the stub point), so a
+  route cannot run back over a stub or pass through its own port;
 * A* over ``(node, incoming axis)`` states: length, plus ``bend_cost`` per
   turn, plus ``cross_cost`` per existing P&ID line crossed (or run along); no
   U-turn on a node;
@@ -16,16 +23,19 @@ a line could run straight through a vessel and pass every ``pid_*`` focus.
 * ties are broken by coordinate, so the same input always gives the same
   route - the dry run of ``pid_from_spec`` and its apply agree vertex for
   vertex;
-* the end symbols are not obstacles (the caller leaves them out); the route
-  leaves each port along its direction for at least ``stub`` and arrives
-  against the other port's direction the same way.
+* the end symbols are not obstacles (the caller leaves them out, and may
+  pass their boxes as ``own``: priced at ``OWN_SYMBOL_EDGE_COST`` per edge,
+  never refused, never reported); the route leaves each port along its
+  direction for at least ``stub`` and arrives against the other port's
+  direction the same way.
 
 No route is :class:`NoRouteError` (kind ``no_route``) naming the obstacles
 that enclose the smaller side; more than ``max_nodes`` expanded states is
 :class:`RoutingBudgetError` (kind ``routing_budget_exceeded``). With
 ``on_blocked="cross"`` a blocked edge is priced (``BLOCKED_EDGE_COST``)
-instead of refused, so the route enters as few boxes as it can and the
-caller reports them in ``obstacle_hits``.
+instead of refused, so the route runs along as few blocked grid edges as it
+can (not necessarily through the fewest boxes) and the caller reports the
+boxes it enters in ``obstacle_hits``.
 
 The search prices a crossing per elementary grid edge; the crossings a
 :class:`Route` reports are counted once more on the final vertices with
@@ -71,8 +81,14 @@ Box = tuple[float, float, float, float]
 
 #: What one elementary grid edge inside an inflated box costs with
 #: ``on_blocked="cross"``: far above any length, bend or crossing on a sheet,
-#: so the route enters as few boxes (and as little of each) as it can.
+#: so the route runs along as few blocked grid edges as it can (priced per
+#: edge, not per box: two thin boxes can cost less than one deep one).
 BLOCKED_EDGE_COST = 1.0e6
+#: What one elementary grid edge inside the line's own (inflated) end symbol
+#: costs: more than any detour round it on a sheet, less than any obstacle, so
+#: a route goes round its own vessel when it can and through it only when
+#: nothing else is open - it is never refused for it and never reports it.
+OWN_SYMBOL_EDGE_COST = 1.0e4
 _EPS = 1e-9
 #: How deep a segment must reach into a box to have entered it (mm).
 _HIT_EPS = 1e-6
@@ -354,20 +370,52 @@ def _index(axis: list[float], value: float) -> int:
     raise AssertionError(f"{value} is not on the routing grid")  # pragma: no cover
 
 
+def _lines(axis: int, s: Point, s1: Point, e: Point, e1: Point, boxes, margin: float) -> list:
+    """The grid values on one axis (0 = x, 1 = y): the ports, the stub points,
+    their midline and every box edge, plus the escape lines - each stub point
+    ``margin`` either side and a frame ``margin`` outside all of them. Two
+    ports on one row gave that row alone, and no route could leave it."""
+    lo, hi = (0, 2) if axis == 0 else (1, 3)
+    values = [s[axis], s1[axis], e[axis], e1[axis], (s1[axis] + e1[axis]) / 2.0]
+    values += [v for b in boxes for v in (b[lo], b[hi])]
+    values += [p[axis] + k * margin for p in (s1, e1) for k in (-1.0, 1.0)]
+    values += [min(values) - margin, max(values) + margin]
+    return values
+
+
+def _stub_nodes(start: tuple[int, int], stop: tuple[int, int]) -> set[tuple[int, int]]:
+    """Every grid node on the straight run from ``start`` to ``stop`` (one of
+    the two indices is shared), both ends included."""
+    (i0, j0), (i1, j1) = start, stop
+    if i0 == i1:
+        return {(i0, j) for j in range(min(j0, j1), max(j0, j1) + 1)}
+    return {(i, j0) for i in range(min(i0, i1), max(i0, i1) + 1)}
+
+
+def _spanning(boxes, horizontal: bool, at: float) -> list[int]:
+    """The boxes a grid row (``horizontal``) or column at ``at`` runs inside."""
+    lo, hi = (1, 3) if horizontal else (0, 2)
+    return [k for k, b in enumerate(boxes) if b[lo] + _EPS < at < b[hi] - _EPS]
+
+
 class _Grid:
     """The Hanan grid, its blocked edges and its edge prices, built lazily."""
 
-    def __init__(self, xs, ys, boxes, refs, chains, bulges, cross_cost, crossing_allowed):
+    def __init__(self, xs, ys, boxes, refs, chains, bulges, cross_cost, crossing_allowed, own=()):
         self.xs, self.ys = xs, ys
         self.boxes, self.refs = boxes, refs
         self.cross_cost = cross_cost
         self.crossing_allowed = crossing_allowed
-        self.row_boxes = [
-            [k for k, b in enumerate(boxes) if b[1] + _EPS < y < b[3] - _EPS] for y in ys
-        ]
-        self.col_boxes = [
-            [k for k, b in enumerate(boxes) if b[0] + _EPS < x < b[2] - _EPS] for x in xs
-        ]
+        self.row_boxes = [_spanning(boxes, True, y) for y in ys]
+        self.col_boxes = [_spanning(boxes, False, x) for x in xs]
+        # The line's own end symbols: never refused, never reported, but an
+        # edge inside one is priced so the route goes round when it can.
+        self.own = list(own)
+        self.row_own = [_spanning(self.own, True, y) for y in ys]
+        self.col_own = [_spanning(self.own, False, x) for x in xs]
+        #: Nodes on the two fixed stubs (bar the stub points): the search never
+        #: enters one, so a route cannot run back over a stub or through a port.
+        self.forbidden: set[tuple[int, int]] = set()
         segs = []
         for chain, blg in zip(chains, bulges, strict=False):
             for j, (c, d) in enumerate(zip(chain, chain[1:], strict=False)):
@@ -403,27 +451,21 @@ class _Grid:
             return (i + di, j + dj, 0 if di else 1)
         return (i, j, 0 if di else 1)
 
-    def blocked_by(self, key) -> list[int]:
-        cached = self._blocked.get(key)
-        if cached is not None:
-            return cached
+    def _inside(self, key, boxes, rows, cols) -> list[int]:
+        """The ``boxes`` whose interior the elementary edge ``key`` runs in."""
         i, j, horizontal = key[0], key[1], key[2] == 0
         if horizontal:
             lo, hi = self.xs[i], self.xs[i + 1]
-            hits = [
-                k
-                for k in self.row_boxes[j]
-                if self.boxes[k][0] <= lo + _EPS and self.boxes[k][2] >= hi - _EPS
-            ]
-        else:
-            lo, hi = self.ys[j], self.ys[j + 1]
-            hits = [
-                k
-                for k in self.col_boxes[i]
-                if self.boxes[k][1] <= lo + _EPS and self.boxes[k][3] >= hi - _EPS
-            ]
-        self._blocked[key] = hits
-        return hits
+            return [k for k in rows[j] if boxes[k][0] <= lo + _EPS and boxes[k][2] >= hi - _EPS]
+        lo, hi = self.ys[j], self.ys[j + 1]
+        return [k for k in cols[i] if boxes[k][1] <= lo + _EPS and boxes[k][3] >= hi - _EPS]
+
+    def blocked_by(self, key) -> list[int]:
+        cached = self._blocked.get(key)
+        if cached is None:
+            cached = self._inside(key, self.boxes, self.row_boxes, self.col_boxes)
+            self._blocked[key] = cached
+        return cached
 
     def price(self, key) -> float:
         """Crossings and overlaps of one elementary edge, times ``cross_cost``."""
@@ -453,6 +495,8 @@ class _Grid:
         ni, nj = i + di, j + dj
         if not (0 <= ni < len(self.xs) and 0 <= nj < len(self.ys)):
             return None
+        if (ni, nj) in self.forbidden:
+            return None
         key = self._edge_key(i, j, d)
         blockers = self.blocked_by(key)
         extra = 0.0
@@ -461,6 +505,8 @@ class _Grid:
             if not self.crossing_allowed:
                 return None
             extra += BLOCKED_EDGE_COST
+        if self.own and self._inside(key, self.own, self.row_own, self.col_own):
+            extra += OWN_SYMBOL_EDGE_COST
         length = abs(self.xs[ni] - self.xs[i]) + abs(self.ys[nj] - self.ys[j])
         return ni, nj, length, extra + self.price(key)
 
@@ -528,13 +574,16 @@ def route_avoiding(
     max_nodes: int = 50000,
     *,
     on_blocked: str = "refuse",
+    own=(),
 ) -> Route:
     """The cheapest orthogonal route from ``start`` (leaving along
     ``start_dir``) to ``end`` (arriving against ``end_dir``) that keeps
     ``clearance`` from every obstacle box. A ``None`` direction is a free end:
     any first (last) direction, no stub. ``obstacles`` are ``Obstacle`` rows,
     ``{"box": [xmin, ymin, xmax, ymax], **ref}`` dicts or bare boxes;
-    ``existing`` are P&ID chains (vertex lists or ``{vertices, bulges}``)."""
+    ``existing`` are P&ID chains (vertex lists or ``{vertices, bulges}``);
+    ``own`` are the boxes of the line's own end symbols, in the same forms:
+    gone round when possible, never refused (``OWN_SYMBOL_EDGE_COST``)."""
     s = _finite_point("start", start)
     e = _finite_point("end", end)
     clearance = _finite("clearance", clearance)
@@ -557,17 +606,18 @@ def route_avoiding(
 
     boxes = [_inflate(o.box, clearance) for o in rows]
     refs = [o.ref for o in rows]
-    xs = _axis_values(
-        [s[0], s1[0], e[0], e1[0], (s1[0] + e1[0]) / 2.0] + [v for b in boxes for v in (b[0], b[2])]
-    )
-    ys = _axis_values(
-        [s[1], s1[1], e[1], e1[1], (s1[1] + e1[1]) / 2.0] + [v for b in boxes for v in (b[1], b[3])]
-    )
-    grid = _Grid(xs, ys, boxes, refs, chains, bulges, cross_cost, on_blocked == "cross")
+    own_boxes = [_inflate(o.box, clearance) for o in normalise_obstacles(own, "own")]
+    xs = _axis_values(_lines(0, s, s1, e, e1, boxes + own_boxes, max(run, clearance, 1.0)))
+    ys = _axis_values(_lines(1, s, s1, e, e1, boxes + own_boxes, max(run, clearance, 1.0)))
+    grid = _Grid(xs, ys, boxes, refs, chains, bulges, cross_cost, on_blocked == "cross", own_boxes)
     si, sj = _index(xs, s[0]), _index(ys, s[1])
     s1i, s1j = _index(xs, s1[0]), _index(ys, s1[1])
     ei, ej = _index(xs, e[0]), _index(ys, e[1])
     e1i, e1j = _index(xs, e1[0]), _index(ys, e1[1])
+    grid.forbidden = (_stub_nodes((si, sj), (s1i, s1j)) | _stub_nodes((ei, ej), (e1i, e1j))) - {
+        (s1i, s1j),
+        (e1i, e1j),
+    }
 
     # The two stubs are fixed: their cost is a constant, and a stub that
     # enters a box (another symbol hard against the port) has no way round.

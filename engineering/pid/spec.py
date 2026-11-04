@@ -23,6 +23,7 @@ from .critique import PID_FOCUSES, issues_for, strip_geometry
 from .drawlines import (
     DEFAULT_CLEARANCE,
     draw_line,
+    end_symbols,
     line_obstacles,
     obstacle_rows,
     plan_route,
@@ -489,9 +490,12 @@ def _plan_lines(
                 existing,
                 DEFAULT_CLEARANCE,
                 "refuse",
+                end_symbols(obstacles, ends),
             )
         except RoutingError as exc:
-            raise exc.prefixed(where) from exc
+            # ``from None`` keeps the path in the served message, which is
+            # the innermost one on the cause chain.
+            raise exc.prefixed(where) from None
         except ValueError as exc:
             raise ValueError(f"{where}: {exc}") from exc
         crossings = count_crossings(
@@ -531,7 +535,7 @@ async def _plan(backend: AutoCADBackend, norm: dict) -> list[dict]:
         planned = _plan_lines(norm, drawn, symbols)
     except NoRouteError as exc:
         named = exc.relabel(await obstacle_rows(backend, exc.obstacles))
-        raise (named.prefixed(exc.where) if exc.where else named) from exc
+        raise (named.prefixed(exc.where) if exc.where else named) from None
     for row in planned:
         for hit in row["obstacle_hits"]:
             if "id" not in hit and hit.get("handle"):
@@ -750,7 +754,7 @@ async def run_spec(
                     obstacles=obstacles,
                 )
             except RoutingError as exc:
-                raise exc.prefixed(where) from exc
+                raise exc.prefixed(where) from None
             except ValueError as exc:
                 raise ValueError(f"{where}: {exc}") from exc
             if watch is not None:
