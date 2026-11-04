@@ -1,12 +1,12 @@
 {
   "summary": {
     "baseline_ref": "v1.7.0",
-    "total": 67,
+    "total": 83,
     "old_pass": 61,
-    "new_pass": 67,
-    "old_pct": 91.0,
+    "new_pass": 83,
+    "old_pct": 73.5,
     "new_pct": 100.0,
-    "fixed": 6,
+    "fixed": 22,
     "regressed": 0
   },
   "rows": [
@@ -409,6 +409,102 @@
     {
       "check": "region_render_applied",
       "category": "Render",
+      "old": "fail",
+      "new": "pass"
+    },
+    {
+      "check": "qa_coverage_not_checked",
+      "category": "Quality gate",
+      "old": "fail",
+      "new": "pass"
+    },
+    {
+      "check": "dimension_display_truth",
+      "category": "Dimensions",
+      "old": "fail",
+      "new": "pass"
+    },
+    {
+      "check": "dimension_truth_focus",
+      "category": "Quality gate",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "policy_read_only_batch",
+      "category": "Security",
+      "old": "fail",
+      "new": "pass"
+    },
+    {
+      "check": "write_path_autoload_refused",
+      "category": "Security",
+      "old": "fail",
+      "new": "pass"
+    },
+    {
+      "check": "dimension_auto_one_call_part",
+      "category": "Dimensions",
+      "old": "fail",
+      "new": "pass"
+    },
+    {
+      "check": "property_override_focus",
+      "category": "Quality gate",
+      "old": "fail",
+      "new": "pass"
+    },
+    {
+      "check": "search_default_lists_pins_and_batch_first",
+      "category": "Discovery",
+      "old": "fail",
+      "new": "pass"
+    },
+    {
+      "check": "pid_project_links",
+      "category": "P&ID",
+      "old": "fail",
+      "new": "pass"
+    },
+    {
+      "check": "b40_between_rows_refused",
+      "category": "Mechanical",
+      "old": "miss",
+      "new": "pass"
+    },
+    {
+      "check": "mech_revise_keeps_handles",
+      "category": "Mechanical",
+      "old": "fail",
+      "new": "pass"
+    },
+    {
+      "check": "pid_avoid_no_symbol_crossing",
+      "category": "P&ID",
+      "old": "fail",
+      "new": "pass"
+    },
+    {
+      "check": "undo_after_restart",
+      "category": "Durability",
+      "old": "fail",
+      "new": "pass"
+    },
+    {
+      "check": "atomic_batch_default",
+      "category": "Durability",
+      "old": "fail",
+      "new": "pass"
+    },
+    {
+      "check": "delete_many_all_or_nothing",
+      "category": "Durability",
+      "old": "fail",
+      "new": "pass"
+    },
+    {
+      "check": "history_round2_value",
+      "category": "Durability",
       "old": "fail",
       "new": "pass"
     }

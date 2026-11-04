@@ -490,10 +490,8 @@ baseline inside its function, and a check the baseline cannot pass records
 function placed just before `CHECKS` (the file ends in `main()`) and an entry at
 the end of `CHECKS`.
 
-**On the 1.8.0 branch, with W2 and W3 merged,** the suite holds 83 checks: the
-67 below plus twelve W2 and four W3 checks, each passing on the branch. The
-published report is still the W1 run over 67 and is regenerated over all 83
-by the numbers pass (`benchmarks/results/published/ab-v1.7.0-vs-v1.8.0.json`).
+1.8.0 added 22 checks: six in W1 (described under the result below) and these
+sixteen, twelve W2 and four W3:
 
 | Check | Category | Item | Verified against |
 |---|---|---|---|
@@ -514,17 +512,23 @@ by the numbers pass (`benchmarks/results/published/ab-v1.7.0-vs-v1.8.0.json`).
 | `b40_between_rows_refused` | Mechanical | 1.8-22 | every empty B40 table refuses a lookup naming itself; on a synthetic double entry (round numbers, not DIN values) a listed size draws its row, a size between two rows is refused with both neighbours named and nothing drawn, and an entry B one value off entry A is refused by path |
 | `mech_revise_keeps_handles` | Mechanical | 1.8-19 | a Ø60 × 30 bushing revised to a Ø24 bore and length 40: every LINE / CIRCLE / ARC edited in place keeps its handle, the end view's bore circle is r = 12, the signatures equal a fresh draw of the revised part; a tagged line moved 1 mm by hand refuses the revision `hand_edited_tagged_entity` with nothing changed |
 
-### Result — v1.8.0 vs v1.7.0 (release gate, W1 state)
+### Result — v1.8.0 vs v1.7.0 (release gate)
 
-67 checks, ezdxf backend, one subprocess per check. Machine-readable report:
-[`results/published/ab-v1.7.0-vs-v1.8.0.json`](results/published/ab-v1.7.0-vs-v1.8.0.json).
+83 checks, ezdxf backend, one subprocess per check. Machine-readable report:
+[`results/published/ab-v1.7.0-vs-v1.8.0.json`](results/published/ab-v1.7.0-vs-v1.8.0.json)
+(`python benchmarks/compare_versions.py v1.7.0 --json ...`, taken at `ab07c47`,
+whose `correctness_suite.py` is the release tree's byte for byte; the current
+side alone, re-run one subprocess per check on `78b9b1e`, is again 83 / 83).
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---------|----------------|-----------|-------|-----------|
-| **v1.7.0** (baseline)     | 61 / 67 | 91.0 % | — | — |
-| **v1.8.0** (this release) | 67 / 67 | 100 % | 6 | **0** |
+| **v1.7.0** (baseline)     | 61 / 83 | 73.5 % | — | — |
+| **v1.8.0** (this release) | 83 / 83 | 100 % | 22 | **0** |
 
-Six are fixed, one per W1 item of 1.8.0. Four are `fail → pass`: v1.7.0 has every
+Twenty-two are fixed and nothing regressed. The sixteen W2 and W3 checks of the
+table above: fourteen answer `fail` on v1.7.0, and `dimension_truth_focus` and
+`b40_between_rows_refused` are `miss → pass` (the focus and the B40 lookup do
+not exist on 1.7.0). The six W1 checks, one per W1 item of 1.8.0: four are `fail → pass`: v1.7.0 has every
 method they call and gets the answer wrong. `journal_replay_after_kill` kills a
 server after a `cad_batch(operation_id=…)` and sends the same id to a fresh
 process: 1.7.0's in-memory journal had forgotten it and drew the batch again;

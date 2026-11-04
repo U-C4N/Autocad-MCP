@@ -283,14 +283,14 @@ A second lane runs tasks instead of reading source. Every task in the fixed-task
 
 ### Correctness — every release re-proves itself
 
-67 deterministic headless checks against the previous tag and the current tree. Each runs in its own subprocess, so a hard crash counts as a miss rather than killing the run.
+83 deterministic headless checks against the previous tag and the current tree. Each runs in its own subprocess, so a hard crash counts as a miss rather than killing the run.
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---|---:|---:|---:|---:|
-| v1.7.0 *(baseline)* | 61 / 67 | 91.0 % | — | — |
-| **v1.8.0** *(this release)* | **67 / 67** | **100 %** | 6 | **0** |
+| v1.7.0 *(baseline)* | 61 / 83 | 73.5 % | — | — |
+| **v1.8.0** *(this release)* | **83 / 83** | **100 %** | 22 | **0** |
 
-The 61 checks v1.7.0 was released on all still pass. Six rows are fixed, one per W1 item of 1.8.0: four reproduce a 1.7.0 defect on v1.7.0 (`fail → pass`), two call a method 1.7.0 does not have (`miss → pass`):
+The 61 checks v1.7.0 was released on all still pass. Twenty-two rows are fixed ([`ab-v1.7.0-vs-v1.8.0.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/ab-v1.7.0-vs-v1.8.0.json)). Six of them are the first phase's, one per W1 item of 1.8.0: four reproduce a 1.7.0 defect on v1.7.0 (`fail → pass`), two call a method 1.7.0 does not have (`miss → pass`):
 
 | Check | Verified against |
 |---|---|
@@ -301,7 +301,7 @@ The 61 checks v1.7.0 was released on all still pass. Six rows are fixed, one per
 | `lineage_revision_continues` | open, add three lines, save, close, reopen the unchanged file in a fresh backend: the same `document_id` and the same revision, never back to 0 |
 | `region_render_applied` | `view_screenshot(region=[0,0,100,50], max_px=400)` answers `applied: true`, a 400 × 200 PNG (read from its own IHDR) and one `px_per_unit` on x and y; `view_zoom_and_screenshot` with four corners applies its window headlessly |
 
-The table is the W1 report. 1.8.0's second and third phases have since added sixteen checks, so the suite on the branch holds 83; each passes on the branch, and the published report is retaken over all of them before the release:
+The other sixteen are the second and third phases' (twelve W2, four W3). Fourteen answer `fail` on v1.7.0; `dimension_truth_focus` and `b40_between_rows_refused` call what 1.7.0 does not have (`miss → pass`):
 
 | Check | Verified against |
 |---|---|
