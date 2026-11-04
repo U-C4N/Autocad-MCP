@@ -1,0 +1,1935 @@
+{
+  "adapter": "autocad-mcp-pro",
+  "adapter_metadata": {
+    "backend": "ezdxf",
+    "capabilities": {
+      "backend": "ezdxf",
+      "features": {
+        "audit_detail": {
+          "mode": "native",
+          "reason": null,
+          "supported": true
+        },
+        "boundary_trace": {
+          "mode": "computed",
+          "reason": "straight_edges_split_at_intersections;curved_edges_not_split",
+          "supported": true
+        },
+        "checkpoint_restore_in_place": {
+          "mode": "snapshot",
+          "reason": null,
+          "supported": true
+        },
+        "checkpoints": {
+          "mode": "state_dir",
+          "reason": "save_batch_and_label_anchored",
+          "supported": true
+        },
+        "chspace": {
+          "mode": "computed",
+          "reason": "top_view_untwisted_viewports_only;dimensions_refused_unless_frozen;acis_proxy_table_refused;viewport_clipping_reported_not_applied",
+          "supported": true
+        },
+        "delivery": {
+          "mode": "shared",
+          "reason": null,
+          "supported": true
+        },
+        "documents": {
+          "mode": "registry",
+          "reason": null,
+          "supported": true
+        },
+        "drawing_2d": {
+          "mode": "native",
+          "reason": null,
+          "supported": true
+        },
+        "dwg": {
+          "mode": null,
+          "reason": "no_dwg_writer_requires_live_autocad",
+          "supported": false
+        },
+        "dwg_read": {
+          "mode": "accoreconsole",
+          "reason": "autocad_core_console_dwg_to_dxf",
+          "supported": true
+        },
+        "dwg_write": {
+          "mode": null,
+          "reason": "requires_oda_file_converter:https://www.opendesign.com/guestfiles/oda_file_converter",
+          "supported": false
+        },
+        "dwgprops": {
+          "mode": null,
+          "reason": "summary_fields_need_live_autocad;custom_properties_need_r2004_or_newer",
+          "supported": false
+        },
+        "dwt_write": {
+          "mode": null,
+          "reason": "dwt_is_a_dwg_container_requires_live_autocad",
+          "supported": false
+        },
+        "dxf": {
+          "mode": "native",
+          "reason": null,
+          "supported": true
+        },
+        "explode_opaque_members": {
+          "mode": null,
+          "reason": "ezdxf_cannot_transform:OLE2FRAME,VIEWPORT,ACAD_PROXY_ENTITY_without_proxy_graphic;refused_before_writing",
+          "supported": false
+        },
+        "handle_overlay": {
+          "mode": "rendered",
+          "reason": null,
+          "supported": true
+        },
+        "hatch_edge_paths": {
+          "mode": "native",
+          "reason": null,
+          "supported": true
+        },
+        "hatch_loops": {
+          "mode": "native",
+          "reason": "entity_get_reports_wcs_loops;ellipse_and_spline_edges_sampled_not_exact",
+          "supported": true
+        },
+        "interactive_prompt": {
+          "mode": null,
+          "reason": "no_operator_to_prompt_headlessly",
+          "supported": false
+        },
+        "layer_states": {
+          "mode": "xrecord",
+          "reason": "portable_acadmcp_xrecord;not_listed_in_autocad_layer_states_manager",
+          "supported": true
+        },
+        "lisp": {
+          "mode": null,
+          "reason": "live_com_only",
+          "supported": false
+        },
+        "live_application": {
+          "mode": null,
+          "reason": "headless_engine_has_no_application_to_launch_or_attach",
+          "supported": false
+        },
+        "measure_area_acis": {
+          "mode": null,
+          "reason": "acis_evaluation_requires_live_autocad",
+          "supported": false
+        },
+        "mleader": {
+          "mode": "composite",
+          "reason": null,
+          "supported": true
+        },
+        "mtext_background_color": {
+          "mode": "native",
+          "reason": null,
+          "supported": true
+        },
+        "named_views": {
+          "mode": "vport_active",
+          "reason": "restore_sets_the_view_the_file_opens_on;no_live_display",
+          "supported": true
+        },
+        "ocs_normalized": {
+          "mode": "wcs",
+          "reason": "reported_xy_is_wcs;z_component_not_reported;text_rotation_stays_in_entity_frame;hatch_loops_reported_in_wcs",
+          "supported": true
+        },
+        "ocs_tilted_plane": {
+          "mode": null,
+          "reason": "2d_xy_cannot_address_a_tilted_plane",
+          "supported": false
+        },
+        "paper_space": {
+          "mode": "native",
+          "reason": null,
+          "supported": true
+        },
+        "pdf": {
+          "mode": "rendered",
+          "reason": null,
+          "supported": true
+        },
+        "png": {
+          "mode": "rendered",
+          "reason": null,
+          "supported": true
+        },
+        "preferences": {
+          "mode": null,
+          "reason": "preferences_live_in_the_running_application_not_in_a_file",
+          "supported": false
+        },
+        "preflight": {
+          "mode": "shared",
+          "reason": null,
+          "supported": true
+        },
+        "refiner": {
+          "mode": "shared",
+          "reason": null,
+          "supported": true
+        },
+        "registry_sysvar": {
+          "mode": null,
+          "reason": "registry_saved_variables_have_no_home_in_a_file",
+          "supported": false
+        },
+        "revcloud": {
+          "mode": "native",
+          "reason": "ezdxf_revcloud_helper",
+          "supported": true
+        },
+        "solid_3d": {
+          "mode": null,
+          "reason": "acis_generation_requires_live_autocad",
+          "supported": false
+        },
+        "table": {
+          "mode": "composite",
+          "reason": null,
+          "supported": true
+        },
+        "transactions": {
+          "mode": "snapshot",
+          "reason": null,
+          "supported": true
+        },
+        "ucs": {
+          "mode": "stored_not_interpreted",
+          "reason": "tool_coordinates_stay_wcs",
+          "supported": true
+        },
+        "undo_history": {
+          "mode": "checkpoint",
+          "reason": "save_batch_and_label_checkpoints;set_EZDXF_UNDO_DEPTH_for_per_operation_steps",
+          "supported": true
+        },
+        "viewport_render": {
+          "mode": "rendered",
+          "reason": "viewport_borders_not_drawn",
+          "supported": true
+        },
+        "wipeout": {
+          "mode": "native",
+          "reason": null,
+          "supported": true
+        },
+        "xlsx_write": {
+          "mode": "openpyxl",
+          "reason": null,
+          "supported": true
+        },
+        "xref_live": {
+          "mode": null,
+          "reason": "reload_and_bind_need_a_live_seat;list_detach_path_are_headless",
+          "supported": false
+        }
+      }
+    },
+    "discovery_mode": "off",
+    "proxied_calls": 10
+  },
+  "environment": {
+    "implementation": "CPython",
+    "machine": "AMD64",
+    "platform": "Windows-11-10.0.26300-SP0",
+    "python": "3.12.16"
+  },
+  "generated_at": "2026-11-04T18:09:49.454471+00:00",
+  "git_sha": "78b9b1e8b653aa25e7b484fa0eab9e13eaaa80ab",
+  "manifest": {
+    "dependencies": {
+      "ezdxf": "1.4.4",
+      "fastmcp": "3.4.5",
+      "matplotlib": "3.11.1",
+      "mcp": "1.29.0",
+      "numpy": "2.5.1",
+      "openpyxl": "3.1.5",
+      "pywin32": "312"
+    },
+    "dirty": false,
+    "evaluator_version": "v9.0",
+    "fault_injection": {
+      "kill_points": {
+        "history_value_lookup": [
+          "after the three saved rounds and the saved unlabelled twin (process 1)",
+          "after the drawing_history answers and the checkpoint diff (process 2)"
+        ],
+        "interrupted_save_recover": [
+          "inside atomic_write_dxf, half the DXF written (os._exit, writer child)",
+          "after the rolled_back report and the reopened file (process 1)",
+          "inside drawing_save, parked at save.before_replace (process 2)"
+        ],
+        "replay_across_restart": [
+          "after the saved cad_batch with a client operation id (process 1)",
+          "after the replay and the operation_conflict refusal (process 2)",
+          "inside cad_batch, parked at journal.after_begin (process 3)"
+        ],
+        "undo_across_restart": [
+          "after drawing_save of the moved line (process 1)",
+          "after an unsaved entity_move (process 2)",
+          "after drawing_open of the untouched file (process 3)"
+        ]
+      },
+      "state_dir": "private tempfile.mkdtemp per task, outside the repository, removed after it"
+    },
+    "fixtures": [
+      {
+        "path": "benchmarks/adapters/autocad_mcp_pro.py",
+        "sha256": "b6768045a4608b07e6c3b7abdf04e18b90fedf12f430081d2d027a5f0a54dcfb",
+        "size_bytes": 169563
+      },
+      {
+        "path": "engineering/arch/spec.py",
+        "sha256": "c273533e4df3a28ff0e08a0886a00aa2c69290d5a03cf0044438c37d23d78248",
+        "size_bytes": 14859
+      },
+      {
+        "path": "engineering/pid/spec.py",
+        "sha256": "3030cf94bfa070ec1b07645e03668a3143c8047a64afd194f22dd70d10c4a0dc",
+        "size_bytes": 34070
+      },
+      {
+        "path": "tests/fixtures/plant_pair.py",
+        "sha256": "c683b62b24332670e8323e54519d17cd48ae8ae921d36b744a2e302ebce04248",
+        "size_bytes": 25419
+      },
+      {
+        "path": "benchmarks/call_budget.py",
+        "sha256": "abb457e47435be4e49810c454de0bfc09f71b27fa40afc86ca85d623dfb5ae75",
+        "size_bytes": 42524
+      },
+      {
+        "path": "tests/fixtures/lying_dims.py",
+        "sha256": "1fa162613f5ed54022ff6a63c60db4087a6b2622d0d7528bc3891eb5c06c9a7e",
+        "size_bytes": 3431
+      }
+    ],
+    "server_sha": "78b9b1e8b653aa25e7b484fa0eab9e13eaaa80ab"
+  },
+  "matrix": "v9",
+  "results": [
+    {
+      "artifacts": [],
+      "duration_ms": 11.74,
+      "message": "",
+      "metrics": {
+        "line_length": 5.0
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "core_geometry"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 2.0,
+      "message": "",
+      "metrics": {},
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "modify_query"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 5.05,
+      "message": "",
+      "metrics": {},
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "layers_linetypes"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 83.37,
+      "message": "",
+      "metrics": {
+        "entity_type": "DIMENSION"
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "dimensions"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 6.58,
+      "message": "",
+      "metrics": {
+        "representations": [
+          "composite",
+          "composite"
+        ]
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "table_mleader"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 343.71,
+      "message": "",
+      "metrics": {
+        "entity_count": 0
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "transactions"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 1.37,
+      "message": "",
+      "metrics": {},
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "preflight"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 92.91,
+      "message": "",
+      "metrics": {
+        "final_score": 100.0,
+        "initial_score": 92.0,
+        "remaining_issues": [],
+        "rounds": [
+          {
+            "actions": [
+              {
+                "detail": {
+                  "deleted_handle": "3E",
+                  "kept_handle": "3D"
+                },
+                "fingerprint": "e0aa625bccfb9c3a3f88bd5f5020c66c4d34fee481e166ef51cdaadee76dab38",
+                "focus": "duplicate_entities",
+                "handles": [
+                  "3D",
+                  "3E"
+                ],
+                "status": "applied"
+              }
+            ],
+            "error_count_after": 0,
+            "error_count_before": 0,
+            "number": 1,
+            "score_after": 100.0,
+            "score_before": 92.0,
+            "transaction": "committed"
+          }
+        ],
+        "status": "threshold_met"
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "quality_refiner"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "roundtrip.dxf",
+          "sha256": "373713998ac4a3723176e550af03d0aa171cb03e2c1039db1223ac01901bf626",
+          "size_bytes": 18448
+        }
+      ],
+      "duration_ms": 54.86,
+      "message": "",
+      "metrics": {
+        "entity_count": 1
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "dxf_roundtrip"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "manifest.json",
+          "sha256": "37666820501f5e6a09858de7dc9163abf2f6257f05af9500a73a29867f47eece",
+          "size_bytes": 10225
+        }
+      ],
+      "duration_ms": 922.13,
+      "message": "",
+      "metrics": {
+        "score": {
+          "errors": 0,
+          "grade": "A",
+          "info": 0,
+          "invalidity_ratio": 0.0,
+          "score": 100.0,
+          "warnings": 0
+        }
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "auditable_delivery"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 1377.11,
+      "message": "",
+      "metrics": {
+        "ranks": {
+          "BPOLY": 1,
+          "CHSPACE": 1,
+          "FILLET": 1,
+          "OVERKILL": 1,
+          "QSELECT": 1,
+          "WBLOCK": 1
+        },
+        "top_n": 3
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "tool_discovery"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 119.29,
+      "message": "",
+      "metrics": {
+        "advertised_tools": 6,
+        "catalog_tokens": 78391,
+        "catalog_tools": 253,
+        "ceiling": 2000,
+        "discovery_tokens": 1300,
+        "reduction_x": 60.3,
+        "tokenizer": "ratio/v1 (estimate)"
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "token_budget"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 16.78,
+      "message": "",
+      "metrics": {
+        "area_ignoring_islands": 400.0,
+        "expected_filled": 300.0,
+        "filled_area": 300.0,
+        "hatch_style": "outer",
+        "path_count": 2
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "hatch_islands"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 11.9,
+      "message": "",
+      "metrics": {
+        "bounding_box": 3,
+        "by_layer": 1,
+        "crossing": 2,
+        "polygon": 1,
+        "window": 1
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "selection_filter"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 6.54,
+      "message": "",
+      "metrics": {
+        "boundary_agrees": true,
+        "fraction_lost_by_reading_points_back": 0.282,
+        "measured_area": 139.269908,
+        "true_area": 139.269908,
+        "vertex_shoelace_area": 100.0
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "measure_from_handle"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 200.87,
+      "message": "",
+      "metrics": {
+        "authored_line_numbers_kept": true,
+        "confidence_min": 1.0,
+        "critique_issues": 0,
+        "dangling": 0,
+        "edges": 4,
+        "instrument_index_rows": 1,
+        "line_list_rows": 4,
+        "nodes": 5,
+        "unnumbered_lines_sequenced": true
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "pid_roundtrip"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "untitled-Layout1-ansi_b.pdf",
+          "sha256": "5e71ffc9961747e3df9b472d2eacf9fb07891d94f423ef95ed570235566073ef",
+          "size_bytes": 1287
+        },
+        {
+          "filename": "untitled-Layout1-iso_a3.pdf",
+          "sha256": "17292236b32574e3a04319c5d6648426ff7e0a252f49ce2a0e3e2e5b0e4e69d4",
+          "size_bytes": 1287
+        }
+      ],
+      "duration_ms": 368.73,
+      "message": "",
+      "metrics": {
+        "mediabox_mm": [
+          420.0,
+          297.0
+        ],
+        "mediabox_mm_before": [
+          432.0,
+          279.0
+        ],
+        "orientation": "landscape",
+        "paper": "ISO_A3",
+        "pdf_bytes": 1287,
+        "plot_style_known": true,
+        "size_mm_changed": [
+          [
+            432.0,
+            279.0
+          ],
+          [
+            420.0,
+            297.0
+          ]
+        ],
+        "size_mm_listed": [
+          420.0,
+          297.0
+        ]
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "page_setup_truth"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "mech_assembly.dxf",
+          "sha256": "0587446269cebb4139ff42ee16ae72475f0f949037d3640d9ae254c71491d713",
+          "size_bytes": 111333
+        }
+      ],
+      "duration_ms": 1022.4,
+      "message": "",
+      "metrics": {
+        "critique_focuses": [],
+        "critique_issues": 0,
+        "fasteners": 4,
+        "grade": "A",
+        "invalidity_ratio": 0.0,
+        "parts_list_rows": 2,
+        "score": 100.0,
+        "validator_findings": []
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "mech_assembly"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "arch_roundtrip.dxf",
+          "sha256": "16c14b411cb4270a4012d221ca3630e90b0b158b0014f74c26e61638a2713b36",
+          "size_bytes": 82725
+        }
+      ],
+      "duration_ms": 1175.43,
+      "message": "",
+      "metrics": {
+        "confidence_min": 1.0,
+        "critique_focuses": [],
+        "critique_issues": 0,
+        "door_tags": [
+          "D1",
+          "D2"
+        ],
+        "faces_detected": 2,
+        "grade": "A",
+        "invalidity_ratio": 0.0,
+        "omitted": [],
+        "rooms": {
+          "01": {
+            "agrees": true,
+            "detected_mm2": 27743750.0,
+            "hand_mm2": 27743750.0,
+            "label_mm2": 27743750.0
+          },
+          "02": {
+            "agrees": true,
+            "detected_mm2": 21993750.0,
+            "hand_mm2": 21993750.0,
+            "label_mm2": 21993750.0
+          }
+        },
+        "score": 100.0,
+        "validator_findings": [],
+        "window_tags": [
+          "W1",
+          "W2"
+        ]
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "arch_roundtrip"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "pid.dxf",
+          "sha256": "86f19480a8c976e0674d831504ea4918bfc661256cd7c00483ebcaaa845b137b",
+          "size_bytes": 33795
+        },
+        {
+          "filename": "layout.dxf",
+          "sha256": "1d0095ea1465e8f1a327aab62876348e616505d347e6bf621f3b6d4e19d67e9d",
+          "size_bytes": 40503
+        }
+      ],
+      "duration_ms": 393.25,
+      "message": "",
+      "metrics": {
+        "cable_mismatch": [],
+        "length_source": "layout",
+        "loads_checked": 4,
+        "pipe_mismatch": [],
+        "runs_checked": 9,
+        "scale_verdict": "schematic",
+        "within_10pct": 0.21818181818181817
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "takeoff_roundtrip"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "layout.dxf",
+          "sha256": "d43e8ae06790d10e85c1b0b18e94031698ac082115e6bcba6885474f971d77d8",
+          "size_bytes": 40503
+        },
+        {
+          "filename": "pid.dxf",
+          "sha256": "90ab2bdc666513dbf3557f55ba773d4504f7476e30a918f2a06a0d1e152ad744",
+          "size_bytes": 33795
+        }
+      ],
+      "duration_ms": 103.75,
+      "message": "",
+      "metrics": {
+        "clusters": 2,
+        "copies_separated": true,
+        "misread_layers": {},
+        "outlier_found": true,
+        "units": {
+          "agree": false,
+          "confidence": 0.76,
+          "declared": {
+            "code": 1,
+            "label": "Inches",
+            "name": "in"
+          },
+          "evidence": [
+            {
+              "as": {
+                "cm": 2.5,
+                "ft": 76.2,
+                "in": 6.35,
+                "m": 250.0,
+                "mm": 0.25
+              },
+              "band": [
+                0.0018,
+                4.0
+              ],
+              "band_unit": "m",
+              "count": 26,
+              "informative": true,
+              "kind": "text_height",
+              "plausible": [
+                "mm",
+                "cm"
+              ],
+              "value": 250.0,
+              "weight": 0.5
+            },
+            {
+              "as": {
+                "cm": 2.0,
+                "ft": 60.96,
+                "in": 5.08,
+                "m": 200.0,
+                "mm": 0.2
+              },
+              "band": [
+                0.05,
+                1.0
+              ],
+              "band_unit": "m",
+              "count": 24,
+              "informative": true,
+              "kind": "wall_thickness",
+              "plausible": [
+                "mm"
+              ],
+              "value": 200.0,
+              "weight": 1.0
+            },
+            {
+              "as": {
+                "cm": 21480.0,
+                "ft": 19955572.992000002,
+                "in": 138580.368,
+                "m": 214800000.0,
+                "mm": 214.79999999999998
+              },
+              "band": [
+                1.0,
+                5000.0
+              ],
+              "band_unit": "m2",
+              "count": 4,
+              "informative": true,
+              "kind": "room_area",
+              "plausible": [
+                "mm"
+              ],
+              "value": 214800000.0,
+              "weight": 1.0
+            },
+            {
+              "as": {
+                "cm": 1364.0,
+                "ft": 41574.72,
+                "in": 3464.56,
+                "m": 136400.0,
+                "mm": 136.4
+              },
+              "band": [
+                0.01,
+                2000.0
+              ],
+              "band_unit": "m",
+              "count": 80,
+              "informative": true,
+              "kind": "overall_size",
+              "plausible": [
+                "mm",
+                "cm"
+              ],
+              "value": 136400.0,
+              "weight": 0.25
+            }
+          ],
+          "inferred": "mm",
+          "mm_per_unit": 1.0,
+          "scores": {
+            "cm": 0.75,
+            "ft": 0,
+            "in": 0.5,
+            "m": 0,
+            "mm": 2.75
+          },
+          "warning": "INSUNITS declares Inches (1) but the geometry reads as mm: text_height 250 = 0.25 m as mm, 6.35 m as in; wall_thickness 200 = 0.2 m as mm, 5.08 m as in; room_area 2.148e+08 = 214.8 m2 as mm, 1.386e+05 m2 as in; overall_size 136400 = 136.4 m as mm, 3465 m as in. Lengths are measured in mm; the header is not changed."
+        },
+        "units_flagged": true
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "understand_foreign"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "requirements_roundtrip.dxf",
+          "sha256": "0eb24bdd624dabdb324dc9d62da0ffa64f633841fbd055e5a4fb2bf14e43be31",
+          "size_bytes": 27084
+        }
+      ],
+      "duration_ms": 244.06,
+      "message": "",
+      "metrics": {
+        "artifact": {
+          "counts": {
+            "ambiguous": 0,
+            "fail": 1,
+            "pass": 3,
+            "required": 4,
+            "unknown": 0,
+            "unsupported": 0
+          },
+          "failed": [
+            "R3"
+          ],
+          "handles_stable": true,
+          "measured": {
+            "R1": 20.0,
+            "R2": 90.0,
+            "R3": 54.120236510939236,
+            "R4": 4.0
+          },
+          "status": "fail"
+        },
+        "bores_moved": 1,
+        "document": {
+          "counts": {
+            "ambiguous": 0,
+            "fail": 0,
+            "pass": 4,
+            "required": 4,
+            "unknown": 0,
+            "unsupported": 0
+          },
+          "status": "pass"
+        },
+        "moved_mm": 3.0,
+        "parity_blind": true,
+        "reopened": {
+          "failed": [
+            "R3"
+          ],
+          "status": "fail"
+        }
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "requirements_roundtrip"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 311.24,
+      "message": "",
+      "metrics": {
+        "entity_count_after": 1,
+        "line": "2F",
+        "overlapped": false,
+        "trace": [
+          "A:end",
+          "B:run"
+        ]
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "cancel_safety"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 633.55,
+      "message": "",
+      "metrics": {
+        "construction": {
+          "after_10000": "274D",
+          "at_5001": "13C5",
+          "paper": "274E"
+        },
+        "duplicate": [
+          "274F",
+          "2750"
+        ],
+        "elapsed_ms": 410.0,
+        "entities": 10004,
+        "incomplete": [],
+        "max_loop_stall_ms": 48.1,
+        "missing": []
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "qa_large_drawing"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "lines.csv",
+          "sha256": "e82c7cfc2d800fd9630afd3c0377905a2ebb3f16333b982ea1d585a7f79c10e0",
+          "size_bytes": 363
+        },
+        {
+          "filename": "bom.csv",
+          "sha256": "9fa6874359e3d12f20ea61e35b0eb56e08fe59b3c8209e92f0e99c9f499bea51",
+          "size_bytes": 167
+        },
+        {
+          "filename": "bom.xlsx",
+          "sha256": "df12cb512239713ae659fdadd35b68f9b6003de3502b78939a7b954e3eb6a7ab",
+          "size_bytes": 5086
+        }
+      ],
+      "duration_ms": 350.55,
+      "message": "",
+      "metrics": {
+        "bom_csv": {
+          "masses": [
+            "",
+            "",
+            "-12.5",
+            ""
+          ],
+          "ok": true,
+          "rows": 4
+        },
+        "bom_xlsx": {
+          "formula_cells": [],
+          "mass": -12.5,
+          "ok": true,
+          "texts_missing": []
+        },
+        "formula_cells": [],
+        "pid_csv": {
+          "line_numbers": [
+            "3",
+            "'=1+1",
+            "'=1+1",
+            ""
+          ],
+          "ok": true
+        }
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "export_safety"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 765.86,
+      "message": "",
+      "metrics": {
+        "changed_handles": [
+          "2F"
+        ],
+        "final_start": [
+          5.0,
+          0.0
+        ],
+        "fresh_apply_ok": true,
+        "moved_over_a_stale_preview": false,
+        "refused_kind": "stale_revision",
+        "start_after_the_refused_apply": [
+          0.0,
+          0.0
+        ]
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "stale_preview"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 588.53,
+      "message": "",
+      "metrics": {
+        "edits_applied": [
+          true,
+          true
+        ],
+        "refusal": {
+          "actual_revision": 3,
+          "expected_revision": 1,
+          "kind": "stale_revision"
+        },
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "stale_refused": true,
+        "start_after_edits": [
+          2.0,
+          0.0
+        ],
+        "unchanged_after_refusal": true
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "revision_guarded_edit"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "pid_file_roundtrip.dxf",
+          "sha256": "c0588ffb6577be5f6cf8e999868bc07e10eb7af29d800ba02a0820a204fee8b2",
+          "size_bytes": 39233
+        }
+      ],
+      "duration_ms": 244.4,
+      "message": "",
+      "metrics": {
+        "dangling": 0,
+        "edges": 4,
+        "edges_equal": true,
+        "equipment_equal": true,
+        "index_equal": true,
+        "line_numbers_equal": true,
+        "nodes": 5,
+        "tags_equal": true
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "pid_file_roundtrip"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "foreign_plate.dxf",
+          "sha256": "1d3e65d5021c5affaf3fc1f3685ea23559ef03e83d6d16b03f00a85f3db7e6ca",
+          "size_bytes": 19119
+        },
+        {
+          "filename": "foreign_plate_repaired.dxf",
+          "sha256": "426cb613173046b1f461a8c9fe869b875b1c08ec4eee05580f7a00e97b944f07",
+          "size_bytes": 19119
+        }
+      ],
+      "duration_ms": 237.78,
+      "message": "",
+      "metrics": {
+        "after": {
+          "failed": [],
+          "measured": {
+            "H1": 10.0,
+            "H2": 10.0,
+            "H3": 10.0,
+            "H4": 10.0,
+            "N": 4.0,
+            "P": 60.0
+          },
+          "status": "pass"
+        },
+        "before": {
+          "failed": [
+            "H3"
+          ],
+          "status": "fail"
+        },
+        "diff": {
+          "added": 0,
+          "changed": 1,
+          "removed": 0
+        },
+        "precondition_held": true,
+        "repaired_handle": "32"
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "foreign_edit_verified"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "truncated.dxf",
+          "sha256": "68f174e3584647713fafc71aae33caabdb459a82a182f17df39f0d9a1489f106",
+          "size_bytes": 12440
+        },
+        {
+          "filename": "not_a_drawing.dxf",
+          "sha256": "6d800db0cf8c6f288f522e9a9f424b91ad2e9eccebe628de8e15462950db0955",
+          "size_bytes": 176
+        }
+      ],
+      "duration_ms": 32.29,
+      "message": "",
+      "metrics": {
+        "cases": {
+          "not_dxf": {
+            "error": "DrawingParseError: drawing_open: not_a_drawing.dxf could not be read as a DXF file (OSError: File 'not_a_drawing.dxf' is not a DXF file.). Nothing was opened and the open document is unchanged. drawing_open(path, recover=True) reads it with ezdxf's recover reader, which repairs what it can and reports every fix and the entities it read back; the recovered drawing will not save over this file without overwrite_source=True.",
+            "named": true,
+            "refused": true
+          },
+          "truncated": {
+            "error": "DrawingParseError: drawing_open: truncated.dxf could not be read as a DXF file (DXFStructureError: DXFStructureError: missing ENDSEC tag.). Nothing was opened and the open document is unchanged. drawing_open(path, recover=True) reads it with ezdxf's recover reader, which repairs what it can and reports every fix and the entities it read back; the recovered drawing will not save over this file without overwrite_source=True.",
+            "named": true,
+            "refused": true
+          }
+        },
+        "document_kept": true,
+        "entity_count_after": 1,
+        "recover": "opt-in: drawing_open(recover=True), 1.8.0 (B09)"
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "damaged_dxf_refusal"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "dimension_binding.dxf",
+          "sha256": "ed65497257e16233eafdc718d65664dfefe14044a1c662f54666593a18be824c",
+          "size_bytes": 51213
+        }
+      ],
+      "duration_ms": 281.72,
+      "message": "",
+      "metrics": {
+        "accepted": false,
+        "findings": {
+          "D2": "dimension_mismatch",
+          "D3": "dimension_mismatch"
+        },
+        "rows": {
+          "D1": {
+            "dimension_findings": [],
+            "displayed": 42.0,
+            "measured": 42.0,
+            "status": "pass"
+          },
+          "D2": {
+            "dimension_findings": [
+              "text_override_disagrees_with_geometry"
+            ],
+            "displayed": 42.0,
+            "measured": 40.0,
+            "status": "pass"
+          },
+          "D3": {
+            "dimension_findings": [
+              "dimlfac_scales_the_displayed_value"
+            ],
+            "displayed": 42.0,
+            "measured": 21.0,
+            "status": "pass"
+          },
+          "D4": {
+            "dimension_findings": [],
+            "displayed": 40.0,
+            "measured": 40.0,
+            "status": "pass"
+          }
+        }
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "dimension_binding"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 129.28,
+      "message": "",
+      "metrics": {
+        "display_rounding": 0.4,
+        "displayed_text": "20",
+        "expected": {
+          "dim_dimlfac_scaled": "49",
+          "dim_double_prefix": "7E",
+          "dim_group42_stale": "6D",
+          "dim_override_disagrees": "33",
+          "dim_render_stale": "5B",
+          "dim_unbound": "9D",
+          "dim_value_hidden": "8D"
+        },
+        "found": [
+          [
+            "dim_dimlfac_scaled",
+            "49"
+          ],
+          [
+            "dim_double_prefix",
+            "7E"
+          ],
+          [
+            "dim_group42_stale",
+            "6D"
+          ],
+          [
+            "dim_override_disagrees",
+            "33"
+          ],
+          [
+            "dim_render_stale",
+            "5B"
+          ],
+          [
+            "dim_unbound",
+            "9D"
+          ],
+          [
+            "dim_value_hidden",
+            "8D"
+          ]
+        ],
+        "refine_status": "threshold_met",
+        "stale_named": true
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "dimension_lie_detect"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 30.62,
+      "message": "",
+      "metrics": {
+        "batch_kind": "policy_refused",
+        "batch_policy": "read_only",
+        "entities": [
+          1,
+          1
+        ],
+        "proxy_kind": "policy_refused",
+        "revision": [
+          1,
+          1
+        ]
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "policy_read_only"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 166.14,
+      "message": "AutoLISP runs only in AutoCAD (COM); the headless engine has no LISP",
+      "metrics": {
+        "policy_passed": {
+          "area": true,
+          "clayer": true,
+          "mapcar": true
+        },
+        "twin": {
+          "column": 2,
+          "kind": "policy_refused",
+          "line": 1,
+          "symbol": "command"
+        },
+        "twin_ok": true
+      },
+      "score": 0.0,
+      "status": "environment_blocked",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "lisp_read_tier"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 853.33,
+      "message": "",
+      "metrics": {
+        "calls": 2,
+        "ceiling": 3,
+        "detail": "300 entities, 0 off the ISO layers, 0 with an override, misnamed layers left: [], empty layers: [], critique ['iso128', 'layer_color', 'property_override']: 0 issue(s)",
+        "tools": [
+          "cad_batch",
+          "drawing_critique"
+        ],
+        "twin": {
+          "kind": "stale_revision",
+          "revision": [
+            0,
+            0
+          ],
+          "still_overridden": 300
+        }
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "layer_cleanup_budget"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 365.95,
+      "message": "",
+      "metrics": {
+        "calls": 2,
+        "ceiling": 2,
+        "created": 12,
+        "detail": "12 of 12 dimensions, 9 features bound",
+        "tools": [
+          "dimension_auto",
+          "drawing_critique"
+        ],
+        "twin_omitted": [
+          "ELLIPSE",
+          "SPLINE"
+        ]
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "call_count_dimension_part"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 1586.13,
+      "message": "",
+      "metrics": {
+        "sheets": 3,
+        "summary": {
+          "direction_mismatch": 1,
+          "duplicate": 0,
+          "duplicate_tags": 1,
+          "line_mismatch": 1,
+          "line_unknown": 0,
+          "links": 4,
+          "matched": 2,
+          "orphan": 1
+        },
+        "twins": {
+          "many": "invalid_args",
+          "missing": "file_not_found"
+        }
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "pid_project_offpage"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 6.96,
+      "message": "B40: no transcribed rows (deferred to 1.8.1, awaiting the licensed copies): DIN 471, DIN 472, DIN 509-E, DIN 509-F, DIN 332-A, DIN 332-B, ISO 3601-2, ISO 3601-2-axial",
+      "metrics": {
+        "deferred": [
+          "DIN 471",
+          "DIN 472",
+          "DIN 509-E",
+          "DIN 509-F",
+          "DIN 332-A",
+          "DIN 332-B",
+          "ISO 3601-2",
+          "ISO 3601-2-axial"
+        ],
+        "deferred_refused_by_name": {
+          "DIN 332-A": true,
+          "DIN 332-B": true,
+          "DIN 471": true,
+          "DIN 472": true,
+          "DIN 509-E": true,
+          "DIN 509-F": true,
+          "ISO 3601-2": true,
+          "ISO 3601-2-axial": true
+        },
+        "filled": []
+      },
+      "score": 0.0,
+      "status": "not_run",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "std_tables_b40"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "roundtrip.dxf",
+          "sha256": "ca1aed22caa99a4c1b7057288a256da6a5879b1f91394853a0967fbc6d22496d",
+          "size_bytes": 70513
+        }
+      ],
+      "duration_ms": 3371.03,
+      "message": "",
+      "metrics": {
+        "dwg_read": {
+          "dxf_version": "AC1032",
+          "exit_code": 0,
+          "route": "accoreconsole",
+          "seconds": 2.938
+        },
+        "entities": {
+          "A3": 34,
+          "Model": 0
+        },
+        "equal": {
+          "blocks": true,
+          "entities": true,
+          "layers": true
+        },
+        "route": "accoreconsole",
+        "twin": {
+          "capability": "dwg_read",
+          "kind": "unsupported"
+        },
+        "twin_ok": true
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "dwg_headless_roundtrip"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 453.17,
+      "message": "",
+      "metrics": {
+        "dimension_texts": [
+          "(70)",
+          "1.5x45°",
+          "20",
+          "4x ⌀11",
+          "50",
+          "Ø120",
+          "Ø60",
+          "Ø60",
+          "⌀24",
+          "⌀90"
+        ],
+        "handle_map": 11,
+        "in_place": 60,
+        "in_place_alive": 60,
+        "requirement": "pass",
+        "signatures_equal_fresh_draw": true,
+        "twin": {
+          "fingerprints_unchanged": true,
+          "handles": [
+            "36"
+          ],
+          "kind": "hand_edited_tagged_entity"
+        }
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "parametric_revise_keeps_handles"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 609.49,
+      "message": "",
+      "metrics": {
+        "auto_obstacle_hits": [
+          [
+            "lines[0]",
+            "V-101"
+          ],
+          [
+            "lines[1]",
+            "V-103"
+          ]
+        ],
+        "crossings": 1,
+        "crossings_declared": 1,
+        "dangling": 0,
+        "line_through_symbol": 0,
+        "obstacle_hits": 0,
+        "twin_entities_left": 0,
+        "twin_kind": "no_route",
+        "twin_tags": [
+          "TK-1",
+          "TK-2",
+          "TK-3",
+          "TK-4"
+        ],
+        "vertices_match_dry_run": true
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "pid_routing_obstacles"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "undo.dxf",
+          "sha256": "8882ee7fb7b53f801bcf0e347e4abefbc584ea6d3901cdef16bf820d0cc8e4de",
+          "size_bytes": 21129
+        }
+      ],
+      "duration_ms": 9985.76,
+      "message": "",
+      "metrics": {
+        "endpoints_after_undo": [
+          [
+            0.0,
+            0.0
+          ],
+          [
+            10.0,
+            0.0
+          ]
+        ],
+        "file_unchanged_after_unsaved_kill": true,
+        "lost_since_save": {
+          "count": 1,
+          "last_operation": {
+            "operation_id": "5a2a29aa04324d148a19830237ecf949",
+            "revision_after": null,
+            "state": "unknown_commit",
+            "tool": "entity_move"
+          }
+        },
+        "server_env_undo_depth": null,
+        "undo": {
+          "checkpoint": "cp-1",
+          "granularity": "save",
+          "ok": true,
+          "restored_revision": 15
+        }
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "undo_across_restart"
+    },
+    {
+      "artifacts": [],
+      "duration_ms": 677.44,
+      "message": "",
+      "metrics": {
+        "probe": {
+          "executed": 0,
+          "kind": "unknown_handle",
+          "missing": [
+            {
+              "handle": "DEAD",
+              "i": 1,
+              "tool": "entity_delete"
+            }
+          ],
+          "summary_unchanged": true
+        },
+        "runtime_twin": {
+          "atomicity": {
+            "default_applied": true,
+            "guarantee": "snapshot",
+            "mode": "rollback",
+            "rolled_back": true,
+            "verified": true
+          },
+          "ok": false,
+          "on_error": "auto",
+          "summary_unchanged": true
+        }
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "atomic_batch_default"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "rounds.dxf",
+          "sha256": "1b8c25e243f1406378755f1724886a8a15578e7ba7d828da35375944dba33f8e",
+          "size_bytes": 28672
+        },
+        {
+          "filename": "plain.dxf",
+          "sha256": "17bacf68c4939bf73eb30c88c92683e760e4e098e8e59966c7d2dbb7893a5cf0",
+          "size_bytes": 21123
+        }
+      ],
+      "duration_ms": 6999.82,
+      "message": "",
+      "metrics": {
+        "calls": 2,
+        "labelled": {
+          "is_error": false,
+          "label": "round 2",
+          "value": 12.0
+        },
+        "missing_label": {
+          "is_error": true,
+          "kind": "invalid_args",
+          "names_the_labels": true
+        },
+        "unlabelled": {
+          "rows": 2,
+          "value": 12.0
+        }
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "history_value_lookup"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "replay.dxf",
+          "sha256": "866b560a563af604c310ed0937d762b6d19dec14924ad7117b9632d007b80cf2",
+          "size_bytes": 21131
+        }
+      ],
+      "duration_ms": 11839.34,
+      "message": "",
+      "metrics": {
+        "barrier": "journal.after_begin",
+        "conflict": [
+          "operation_conflict",
+          "different_request"
+        ],
+        "entity_count_after_reconcile": 1,
+        "entity_count_after_replay": 1,
+        "killed_inside_call": true,
+        "processes": 4,
+        "reconcile": {
+          "error_kind": "process_exit",
+          "kind": "requires_reconcile",
+          "state": "unknown_commit"
+        },
+        "replayed": true,
+        "state_dir_removed": true
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "replay_across_restart"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "client.dxf",
+          "sha256": "fc614ee28f3d8b3d896e65fd5b7647902908a2278db360eb7defdb1646f925c3",
+          "size_bytes": 18556
+        }
+      ],
+      "duration_ms": 9543.99,
+      "message": "",
+      "metrics": {
+        "half_way": {
+          "entities": 1,
+          "marker_phase": [
+            "writing"
+          ],
+          "outcome": [
+            "rolled_back"
+          ],
+          "sha_unchanged": true,
+          "writer_exit": 9
+        },
+        "killed_before_replace": {
+          "entities": 2,
+          "killed_inside_call": true,
+          "outcome": [
+            "finished"
+          ],
+          "sha_is_the_markers": true,
+          "sha_unchanged_while_parked": true
+        },
+        "state_dir_removed": true
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "interrupted_save_recover"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "damaged.dxf",
+          "sha256": "1c4af144b9d2313c414c070fbdc574a571776658afc0a34063e2cb27bf2d52d9",
+          "size_bytes": 24881
+        }
+      ],
+      "duration_ms": 937.61,
+      "message": "",
+      "metrics": {
+        "handles_unique": true,
+        "plain_open": {
+          "document_kept": true,
+          "kind": "damaged_drawing",
+          "names_recover": true
+        },
+        "planted": {
+          "conflicting": 3,
+          "non_hex": 4
+        },
+        "recovered": {
+          "entities_read": 47,
+          "errors": 0,
+          "fixes": 3
+        },
+        "save_onto_source": "recovered_source_protected",
+        "source_sha_unchanged": true
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "damaged_dxf_recover"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "before.dxf",
+          "sha256": "07c05046e979378a715f0878add31b44544393719a3462e7c83e8333cf195805",
+          "size_bytes": 24654
+        },
+        {
+          "filename": "after.dxf",
+          "sha256": "11d459a2124120ef8a5c7206cee84587ee46af401f1419e0216c1f19bf66bfc7",
+          "size_bytes": 24456
+        }
+      ],
+      "duration_ms": 548.04,
+      "message": "",
+      "metrics": {
+        "dxf_lineweights_after": [
+          -1
+        ],
+        "dxf_lineweights_before": {
+          "-1": 3,
+          "-3": 22
+        },
+        "focus_after_refine": 0,
+        "issue": {
+          "code": "lineweight_not_bylayer",
+          "count": 22,
+          "layer": "GEOMETRY",
+          "values": {
+            "Default": 22
+          }
+        },
+        "reported_names": [
+          "ByLayer",
+          "Default"
+        ]
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "bylayer_truth"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "layout1_active.dxf",
+          "sha256": "1860898d0a7f47c44409148f3051e7e6291b3b7364a5bdb60559cdab5575e079",
+          "size_bytes": 42814
+        },
+        {
+          "filename": "saved.dxf",
+          "sha256": "199a7bf48ef61f5fe2e2330aee2a4efae812cd3d7869601a80e715afef01a1fa",
+          "size_bytes": 42927
+        }
+      ],
+      "duration_ms": 390.95,
+      "message": "",
+      "metrics": {
+        "active_layout_on_disk": "Layout1",
+        "circle_in_model_space": true,
+        "circle_space": "Model",
+        "sheet_entities": [
+          2,
+          2
+        ],
+        "trim_under_ucs": [
+          [
+            0.0,
+            0.0
+          ],
+          [
+            10.0,
+            0.0
+          ]
+        ],
+        "trim_under_world": [
+          [
+            0.0,
+            30.0
+          ],
+          [
+            10.0,
+            30.0
+          ]
+        ]
+      },
+      "score": 100.0,
+      "status": "pass",
+      "stderr_summary": "",
+      "stdout_summary": "",
+      "task_id": "space_context"
+    }
+  ],
+  "schema_version": "2.0",
+  "summary": {
+    "attempted": 47,
+    "coverage_percent": 100.0,
+    "environment_blocked": 1,
+    "not_run": 1,
+    "passed": 47,
+    "score": 100.0,
+    "supported": 47,
+    "unsupported": 0
+  },
+  "timeout_seconds": 180.0
+}

@@ -101,6 +101,33 @@ async def test_the_task_passes_on_the_headless_engine(task_id, tmp_path):
     assert result.status == "pass", (result.message, result.metrics)
 
 
+def test_the_published_v9_reports_cover_the_matrix_without_a_vacuous_pass():
+    """1.8-25's release run (``results/published/lanes-v9/``, beside the v8 report
+    it does not replace): every attempted v9 task passed; ``lisp_read_tier`` is
+    ``environment_blocked`` headlessly and ``std_tables_b40`` ``not_run`` while the
+    B40 tables are empty - neither a pass nor a zero; AgentCAD's lane is not_run."""
+    import json
+    from pathlib import Path
+
+    from benchmarks.tasks_v9 import EVALUATOR_VERSION, TASKS_V9
+
+    lanes = Path(__file__).resolve().parents[1] / "benchmarks" / "results" / "published"
+    lanes = lanes / "lanes-v9"
+    ours = json.loads((lanes / "autocad-mcp-pro.json").read_text(encoding="utf-8"))
+    status = {item["task_id"]: item["status"] for item in ours["results"]}
+    assert ours["matrix"] == "v9" and set(status) == {task.task_id for task in TASKS_V9}
+    assert status.pop("lisp_read_tier") == "environment_blocked"
+    assert status.pop("std_tables_b40") == "not_run"
+    assert set(status.values()) == {"pass"}
+    assert ours["summary"]["score"] == 100.0
+    assert ours["summary"]["attempted"] == len(TASKS_V9) - 2
+    assert ours["manifest"]["evaluator_version"] == EVALUATOR_VERSION
+    assert ours["manifest"]["dirty"] is False
+    rival = json.loads((lanes / "lizaixi01-agentcad.json").read_text(encoding="utf-8"))
+    assert {item["status"] for item in rival["results"]} == {"not_run"}
+    assert rival["summary"]["score"] is None
+
+
 @pytest.mark.asyncio
 async def test_the_kill_tasks_are_not_run_on_the_live_lane(tmp_path):
     from benchmarks.adapters.autocad_mcp_pro import AutoCADMCPProAdapter

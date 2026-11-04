@@ -44,14 +44,17 @@ and `environment_blocked` say the task was never attempted and stay out of
 every denominator (matrix v8 below).
 
 ```bash
-python -m benchmarks.run_competitors --list --matrix v8
-python -m benchmarks.run_competitors --server autocad-mcp-pro --backend ezdxf --matrix v8 --timeout 180 --json
+python -m benchmarks.run_competitors --list --matrix v9
+python -m benchmarks.run_competitors --server autocad-mcp-pro --backend ezdxf --matrix v9 --timeout 180 --json
 python -m benchmarks.run_competitors --task table_mleader --task hatch_islands --json
 ```
 
-The release-machine ezdxf self-check is **31/31 (100.0)** on the v8 matrix
-(`--matrix v7` … `--matrix v2` reproduce the earlier sets); the published
-report is [`results/published/autocad-mcp-pro.json`](results/published/autocad-mcp-pro.json).
+The 1.8.0 release-machine ezdxf self-check is **47/47 attempted (100.0)** on the
+v9 matrix of 49 tasks, `lisp_read_tier` `environment_blocked` and
+`std_tables_b40` `not_run` ([`results/published/lanes-v9/autocad-mcp-pro.json`](results/published/lanes-v9/autocad-mcp-pro.json));
+1.7.0's v8 run, 31/31 (100.0), stays published as
+[`results/published/autocad-mcp-pro.json`](results/published/autocad-mcp-pro.json)
+(`--matrix v8` … `--matrix v2` reproduce the earlier sets).
 Repository stars and raw tool counts do not contribute to the score. Adapter
 registration lives in `competitors.yaml`.
 
@@ -168,9 +171,10 @@ The v8 tasks stage their inputs inside the headless engine; on the live engine t
 ### Matrix v9 (v1.8.0) — call economy, dimension truth, security, durability, the named promises
 
 `tasks_v9.py` keeps the v8 thirty-one unchanged and appends the 1.8.0 tasks per
-plan item, into the same `MATRICES` registry `run_competitors` imports
-(`--matrix v9`). `DEFAULT_MATRIX` stays `v8` until the release item 1.8-25 moves
-it. v9 holds 44 tasks, v8's 31 plus these 13:
+plan item, into the same `MATRICES` registry `run_competitors` imports. Since
+1.8-25 v9 is the runner's `DEFAULT_MATRIX` (`--matrix v8` reproduces 1.7.0's
+set) and the manifest names `EVALUATOR_VERSION` `v9.0`. v9 holds 49 tasks, v8's
+31 plus these 18 - every row of the plan's section 8:
 
 | Task | Category | Verified against |
 |---|---|---|
@@ -187,12 +191,22 @@ it. v9 holds 44 tasks, v8's 31 plus these 13:
 | `pid_project_offpage` | pid | three P&ID sheet files checked by `pid_project`: one orphan link, one direction mismatch, one cross-sheet duplicate tag and one line-number mismatch, each once with sheet and handle; a missing sheet file and 51 sheets refused by name |
 | `std_tables_b40` | standards | one size from every filled DIN 471/472, DIN 509, DIN 332-1 and ISO 3601-2 table drawn with the double entry's own dimensions, a size between two rows refused by name with nothing drawn. With no table filled - the 1.8.0 state, every table deferred to 1.8.1 - it is `not_run` naming the deferred tables, never a pass |
 | `dwg_headless_roundtrip` | reliability | a DWG opened on the headless engine through a converter (ODA, then `accoreconsole`) and saved as DXF with the layers, blocks and entity counts of its DXF twin; with no converter on the machine the open is refused `dwg_read` and the task is `environment_blocked` |
+| `replay_across_restart` | durability | through `fault_inject.py`: a real server runs `cad_batch(operation_id=...)`, saves and is killed; the next process answers the same id and steps `replayed: true` with nothing drawn, other steps `operation_conflict`. In-call twin: a server parked at the `journal.after_begin` barrier inside a `cad_batch` is killed there, and the next process answers that id `requires_reconcile` |
+| `interrupted_save_recover` | durability | a writer that dies half way through `atomic_write_dxf` (`os._exit` in a child, no `finally`) leaves the file byte for byte as it was and the next server reports `rolled_back`. In-call twin: a server parked at `save.before_replace` (tmp written, fsynced, verified) is killed; the next start reports `finished` and the file's sha is the one the marker named |
+| `damaged_dxf_recover` | reliability | a 50-line DXF cut before its last ENDSEC, three handles repeating an earlier entity's and four not hex: `drawing_open(recover=True)` reports the three conflicts as `fixes`, 47 entities read, every handle unique, the source's sha unchanged by the open and by the refused save onto it; the plain open is refused `damaged_drawing` naming `recover=True` |
+| `bylayer_truth` | qa | 22 lines at lineweight `"Default"` and three at `"ByLayer"` through the real server; the oracle is the saved DXF read with ezdxf (22 at -3, the rest -1). `property_override` reports one grouped `lineweight_not_bylayer` issue with those 22 handles; after `drawing_refine` the saved DXF holds -1 on every line |
+| `space_context` | reliability | a drawing saved with Layout1 active (two entities on it) is opened and a circle created: it lands in model space and the sheet still holds its two entities in the saved file. Twin: a trim under a UCS rotated 30° about a moved origin keeps the WCS endpoints a world-UCS trim keeps. The live half is `scripts/smoke_space_com.py`, not yet run on a seat for 1.8.0 |
 
 `dimension_lie_detect`, `layer_cleanup_budget`, `call_count_dimension_part`,
 `undo_across_restart`, `atomic_batch_default`, `history_value_lookup`,
 `parametric_revise_keeps_handles`, `pid_routing_obstacles`,
-`pid_project_offpage` and `dwg_headless_roundtrip` stage their inputs in the
-headless engine and are `not_run` on the live lane (`HEADLESS_ONLY_V9`).
+`pid_project_offpage`, `dwg_headless_roundtrip`, `replay_across_restart`,
+`interrupted_save_recover`, `damaged_dxf_recover`, `bylayer_truth` and
+`space_context` stage their inputs in the headless engine and are `not_run` on
+the live lane (`HEADLESS_ONLY_V9`). `KILL_POINTS` names, for
+`undo_across_restart`, `history_value_lookup`, `replay_across_restart` and
+`interrupted_save_recover`, where a real `python server.py` is killed with
+`Popen.kill()`; the run manifest records them with the state-folder policy.
 `pid_roundtrip` (v4) is pinned to `sheet.routing: "auto"`, so v9 does not
 change what v4 measured.
 
@@ -201,6 +215,27 @@ the reference adapter's in-process MCP-client tasks reach every non-synthetic
 tool through `call_tool`, and the adapter reports `discovery_mode` and
 `proxied_calls` in its metadata. On the 1.8-11 branch, v8 passed 31 / 31
 (`proxied_calls` 9) and v9 33 / 33 (`proxied_calls` 41) under the new default.
+
+### Result — matrix v9 on the release tree
+
+```bash
+python -m benchmarks.run_competitors --server autocad-mcp-pro --backend ezdxf --matrix v9 --no-fetch --timeout 180 --artifact-dir <outside the repo> --publish <out>/autocad-mcp-pro.json
+python -m benchmarks.run_competitors --server lizaixi01-agentcad --matrix v9 --no-fetch --artifact-dir <outside the repo> --publish <out>/lizaixi01-agentcad.json
+```
+
+Run on `78b9b1e` with a clean tree (`manifest.dirty: false`, evaluator `v9.0`):
+**47 / 47 attempted tasks pass**, score 100.0, coverage 100 %. Two of the 49 are
+not attempted and enter no score: `lisp_read_tier` is `environment_blocked`
+(AutoLISP runs only in AutoCAD; the headless lane records the policy's verdicts
+in its metrics) and `std_tables_b40` is `not_run`, naming the eight B40 tables
+deferred to 1.8.1. `dwg_headless_roundtrip` passed through AutoCAD 2026's
+`accoreconsole` on the run machine (route `accoreconsole`, about 2.9 s); a machine
+with neither ODA nor `accoreconsole` makes it `environment_blocked`. AgentCAD's
+lane is `not_run` on all 49 (no adapter; `RIVAL_GROUND` names the nine tasks on
+its ground). The reports live in
+[`results/published/lanes-v9/`](results/published/lanes-v9/); the v8 reference
+report (`results/published/autocad-mcp-pro.json`, 31 / 31) and the v8 rival lanes
+are kept as they were, and the task-matrix chart still renders v8.
 
 ## Live competitor lane (v1.4)
 
