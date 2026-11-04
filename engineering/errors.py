@@ -47,6 +47,7 @@ log = logging.getLogger("autocad_mcp.errors")
 __all__ = [
     "BATCH_KINDS_1_7",
     "CATEGORIES",
+    "CHECKPOINT_KINDS",
     "ERROR_KINDS",
     "ERROR_TABLE",
     "FILE_KINDS",
@@ -66,6 +67,7 @@ __all__ = [
     "PolicyRefusedError",
     "REVISE_KINDS",
     "RevisionRefusedError",
+    "UnknownHandleError",
     "annotate",
     "capability_of",
     "cause_chain",
@@ -139,6 +141,12 @@ FILE_KINDS = (
 #: ``kind`` of a :class:`RevisionRefusedError` subclass.
 REVISE_KINDS = ("hand_edited_tagged_entity", "model_drift")
 
+#: The checkpoint refusals of 1.8-08 (``backends/checkpoints.py``): a reference
+#: that names no checkpoint of the document, and one the CHECKPOINT_* budget
+#: evicted - told apart, so an evicted state is never reported as one that
+#: never existed.
+CHECKPOINT_KINDS = ("checkpoint_not_found", "checkpoint_evicted")
+
 #: Every kind an error envelope or a step row can carry. Closed: a client that
 #: branches on the taxonomy needs it enumerable. ``requires_reconcile`` is the
 #: operation journal's refusal (B12), already on the wire in 1.7.0;
@@ -164,6 +172,7 @@ ERROR_KINDS = BATCH_KINDS_1_7 + (
     "process_exit",
     *REVISE_KINDS,
     *ROUTING_KINDS,
+    *CHECKPOINT_KINDS,
 )
 
 
@@ -272,6 +281,12 @@ ERROR_TABLE: dict[str, KindSpec] = {
     ),
     "routing_budget_exceeded": KindSpec(
         "geometry", False, "Pass waypoints or fewer keep_out boxes; the search ran out."
+    ),
+    "checkpoint_not_found": KindSpec(
+        "input", False, "Not a checkpoint of this document; checkpoint_list names them."
+    ),
+    "checkpoint_evicted": KindSpec(
+        "file", False, "Evicted by the CHECKPOINT_* budget; pick a kept one from checkpoint_list."
     ),
 }
 
@@ -413,6 +428,31 @@ class ModelDriftError(RevisionRefusedError):
     the view engine now draws the same model differently."""
 
     kind = "model_drift"
+
+
+class UnknownHandleError(ToolError):
+    """Literal handles a call names that the document does not hold (1.8-09).
+
+    Raised before anything runs, from one ``entity_fingerprints`` read, by
+    ``cad_batch`` (its validation), ``entity_delete_many`` and
+    ``entity_batch_modify``: nothing was written. ``missing`` is one row per
+    missing reference, ``{handle, i, tool}`` for a batch step and ``{handle,
+    index}`` for an item of a list; ``fields`` are the caller's own counters
+    (``executed: 0``, ``deleted: 0``) carried into the envelope. A
+    ``ToolError``, so ``except ToolError`` and ``raise_on_error`` see it as the
+    call refusing, which it is.
+    """
+
+    kind = "unknown_handle"
+
+    def __init__(self, message: str, *, missing, **fields):
+        super().__init__(message)
+        self.missing = [dict(row) for row in missing]
+        self.fields = dict(fields)
+
+    def to_fields(self) -> dict:
+        handles = list(dict.fromkeys(str(row.get("handle")) for row in self.missing))
+        return {"missing": [dict(row) for row in self.missing], "handles": handles, **self.fields}
 
 
 #: How many blocking rows a gate failure carries unless ``detail="full"``.
@@ -624,6 +664,16 @@ def _file_error_of(exc: BaseException) -> BaseException | None:
     return _first_of(exc, types) if types else None
 
 
+def _checkpoint_error_of(exc: BaseException) -> BaseException | None:
+    """The 1.8-08 checkpoint refusal on the chain (``backends/checkpoints.py``), or None."""
+    try:
+        from backends.checkpoints import CheckpointError
+    except Exception as exc_import:  # pragma: no cover - a core module
+        log.debug("checkpoint error type unavailable: %s", exc_import)
+        return None
+    return _first_of(exc, CheckpointError)
+
+
 def typed_message(exc: BaseException) -> str | None:
     """The full sentence of a 1.8-04 open / save error on the chain, on one line.
 
@@ -811,6 +861,10 @@ def classify(exc: BaseException) -> dict:
         # 1.8-19: mech_part_revise refused before writing - the handles and
         # the drift rows that decided it.
         return {"kind": revise.kind, **revise.fields(), "message": message}
+    unknown = _first_of(exc, UnknownHandleError)
+    if unknown is not None:
+        # 1.8-09: refused before anything ran; the rows name every missing handle.
+        return {"kind": "unknown_handle", **unknown.to_fields(), "message": message}
     for typed in (
         PathRefusedError,
         ApplicationBusyError,
@@ -836,6 +890,10 @@ def classify(exc: BaseException) -> dict:
         row = {"kind": str(found.kind), "message": compact_message(str(found))}
         row.update(getattr(found, "details", None) or {})
         return row
+    found = _checkpoint_error_of(exc)
+    if found is not None:
+        # 1.8-08: by type; the instance's own kind (not_found vs evicted).
+        return {"kind": str(found.kind), "message": compact_message(str(found))}
     incomplete = _first_of(exc, CommandIncompleteError)
     if incomplete is not None:
         return {

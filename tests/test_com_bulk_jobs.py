@@ -364,21 +364,54 @@ async def test_without_a_deadline_a_bulk_call_is_one_job(com, seat, monkeypatch)
 
 @pytest.mark.asyncio
 async def test_the_server_tools_call_the_one_job_methods(com, seat, monkeypatch):
+    from engineering.changes import precheck
+
     async def make():
         return com
 
+    async def fingerprints(backend, wanted):
+        # 1.8-09's pre-check reads the handles through Document.Export, which
+        # the fake seat does not have; read presence through the seat itself.
+        found = {}
+        for handle in wanted:
+            try:
+                seat.doc.HandleToObject(handle)
+                found[handle] = "present-" + handle
+            except pywintypes.com_error:
+                found[handle] = precheck.MISSING
+        return found
+
+    delete_jobs: list[int] = []
+    one_job = com.entity_delete_many
+
+    async def counted(*args, **kwargs):
+        # The tool also takes the pre-check read and the transaction's own
+        # jobs (1.8-08 / 1.8-09); the deletes themselves are what must be one.
+        before = _jobs(com)
+        try:
+            return await one_job(*args, **kwargs)
+        finally:
+            delete_jobs.append(_jobs(com) - before)
+
     monkeypatch.setattr(server, "_make_backend", make)
+    monkeypatch.setattr(precheck, "entity_fingerprints", fingerprints)
+    monkeypatch.setattr(com, "entity_delete_many", counted)
     async with Client(server.mcp) as client:
         created = await client.call_tool("entity_batch_create", {"entities": _circles(50)})
-        jobs = _jobs(com)
         handles = [row["handle"] for row in created.structured_content["entities"]]
-        deleted = await client.call_tool("entity_delete_many", {"handles": handles + ["FFFF"]})
+        refused = await client.call_tool(
+            "entity_delete_many", {"handles": handles + ["FFFF"]}, raise_on_error=False
+        )
+        left = _model(seat).Count
+        deleted = await client.call_tool("entity_delete_many", {"handles": handles})
     assert created.structured_content["created"] == 50
     assert seat.regens == 1
+    # 1.8-09: a handle the document does not hold refuses the call before a delete.
+    assert refused.is_error and refused.structured_content["kind"] == "unknown_handle"
+    assert refused.structured_content["deleted"] == 0 and left == 50
     payload = deleted.structured_content
-    assert payload["ok"] is True and payload["deleted"] == 50
-    assert payload["errors"][0]["kind"] == "unknown_handle"
-    assert _jobs(com) - jobs == 1, "entity_delete_many is one STA job, not 51"
+    assert payload["ok"] is True and payload["deleted"] == 50 and payload["errors"] == []
+    assert delete_jobs == [1], "the 50 deletes are one STA job, not 50"
 
 
 # ── (2) O(new): the owner block's tail ──────────────────────────────────────
@@ -610,11 +643,17 @@ async def test_headless_server_tools_answer_what_they_answered(monkeypatch):
         assert created.structured_content["created"] == expected["created"]
         assert created.structured_content["errors"] == expected["errors"]
         handles = [row["handle"] for row in created.structured_content["entities"]][:3]
-        deleted = await client.call_tool("entity_delete_many", {"handles": handles + ["FFFF"]})
+        # 1.8-09: a missing handle now refuses the whole call before anything
+        # runs (the loop deleted the others); the one-job method keeps the
+        # loop's per-item rows (test_headless_entity_delete_many_is_the_...).
+        refused = await client.call_tool(
+            "entity_delete_many", {"handles": handles + ["FFFF"]}, raise_on_error=False
+        )
+        deleted = await client.call_tool("entity_delete_many", {"handles": handles})
+    assert refused.is_error and refused.structured_content["kind"] == "unknown_handle"
+    assert refused.structured_content["deleted"] == 0
     oracle_handles = [row["handle"] for row in expected["entities"]][:3]
-    assert deleted.structured_content == await _loop_1_8_0_delete_many(
-        oracle, oracle_handles + ["FFFF"]
-    )
+    assert deleted.structured_content == await _loop_1_8_0_delete_many(oracle, oracle_handles)
 
 
 # ── the scripts the gate names ──────────────────────────────────────────────

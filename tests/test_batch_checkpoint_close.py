@@ -110,11 +110,13 @@ async def test_a_failed_batch_unwinds_a_checkpoint_a_step_opened(client):
         await client.call_tool(
             "cad_batch",
             {
+                # A run-time failure (a LINE has no text); since 1.8-09 a literal
+                # handle that names nothing is refused before anything runs.
                 "steps": [
-                    _line(),
+                    {**_line(), "bind": "a"},
                     _BEGIN,
                     _line(5),
-                    {"tool": "entity_delete", "args": {"handle": "FFFFFF"}},
+                    {"tool": "entity_edit_text", "args": {"handle": "$a", "text": "X"}},
                 ],
                 "on_error": "rollback",
             },

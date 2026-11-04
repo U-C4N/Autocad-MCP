@@ -65,7 +65,8 @@ async def _open(monkeypatch, **values):
 
 
 async def _status(client) -> dict:
-    return (await client.call_tool("system_status", {})).structured_content
+    # detail="operations": the record list (1.8-10 made a summary the default).
+    return (await client.call_tool("system_status", {"detail": "operations"})).structured_content
 
 
 def _cost(name: str) -> str | None:

@@ -425,16 +425,33 @@ def test_a_batched_oracle_that_exists_meets_its_ceiling(report):
 
 
 def test_a_missing_verb_is_pending_never_a_pass(report):
+    """On the 1.8.0 tree every scenario's verb exists - 1.8-10's ``drawing_history``,
+    1.8-12's ``entity_modify_where`` / ``layer_merge``, 1.8-13's ``dimension_auto``
+    v2 - so no batched arm is pending and none is a pending cell; a tree without
+    a verb names exactly the verbs it lacks (``tests/test_call_budget.py`` holds
+    that a pending arm is never a pass)."""
+    from benchmarks import call_budget as cb
+
     rows = _scenarios(report)
-    for name, verbs in (("history_value_lookup", {"drawing_history"}),):
+    for name, verbs in (
+        ("history_value_lookup", {"drawing_history"}),
+        ("layer_cleanup_300", {"entity_modify_where", "layer_merge"}),
+        ("dimension_plate", {"dimension_auto_v2"}),
+    ):
         batched = rows[name]["arms"]["batched"]
-        assert batched["status"] == "pending_tool"
-        assert batched["verified"] is None
-        assert set(batched["missing_tools"]) == verbs
-        assert batched["session"] is None
+        assert batched["status"] != "pending_tool", name
+        assert batched.get("missing_tools") in (None, []), name
+        assert set(cb._missing(cb.scenario_by_id(name), {"cad_batch": None})) == verbs
     checked = ts.check_budget(report, BUDGET)
     pending = {item["cell"] for item in checked["pending"]}
-    assert "task.history_value_lookup" in pending
+    assert (
+        not {
+            "task.history_value_lookup",
+            "task.layer_cleanup_300",
+            "task.dimension_plate",
+        }
+        & pending
+    )
     passed = {item["cell"] for item in checked["checked"]}
     assert "task.history_value_lookup" not in passed
 
@@ -451,6 +468,16 @@ def test_the_h4_and_h5_oracles_are_measured_within_their_ci_ceilings(report):
         assert batched["calls"] == calls <= BUDGET["task"][name]["ceiling"]
         assert BUDGET["task"][name]["gate"] == "ci"
         assert batched["session"]["turns"] == calls + 1
+
+
+def test_the_history_oracle_finds_round_2_in_two_calls(report):
+    """1.8-10: drawing_open (what a restarted server needs) + one drawing_history."""
+    batched = _scenarios(report)["history_value_lookup"]["arms"]["batched"]
+    assert batched["status"] == "measured", batched["detail"]
+    assert batched["verified"] is True
+    assert batched["by_tool"] == {"drawing_history": 1, "drawing_open": 1}
+    assert batched["calls"] <= BUDGET["task"]["history_value_lookup"]["ceiling"] == 2
+    assert BUDGET["task"]["history_value_lookup"]["gate"] == "ci", "the owner flipped it"
 
 
 def test_every_measured_arm_is_priced_as_a_session(report):

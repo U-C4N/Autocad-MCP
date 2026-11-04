@@ -84,7 +84,9 @@ def test_the_harness_passes_its_own_budget_on_this_tree(monkeypatch, capsys):
     assert cb.main([]) == 0
     out = capsys.readouterr().out
     assert "sketch_20_entities" in out
-    assert "PENDING task.history_value_lookup" in out
+    # 1.8-10's drawing_history is on this tree: its oracle is measured, not pending.
+    assert "PENDING task.history_value_lookup" not in out
+    assert "history_value_lookup" in out
     assert "PENDING task.layer_cleanup_300" not in out
     assert "PENDING task.dimension_plate" not in out
 

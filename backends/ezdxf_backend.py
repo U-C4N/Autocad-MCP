@@ -49,6 +49,7 @@ from .base import (
     parse_lineweight,
     shoelace_area,
 )
+from .change_sets import EzdxfChangeSets
 from .contracts.entity_modification import TEXT_SEARCH_SCOPE
 from .contracts.settings import (
     SUMMARY_FIELDS,
@@ -66,6 +67,7 @@ from .entity_fields import (
     hatch_props,
     nesting_depths,
 )
+from .ezdxf_checkpoints import EzdxfCheckpoints
 from .operations import CURRENT_OPERATION
 from .quarantine import (
     AbandonedCall,
@@ -1709,13 +1711,33 @@ class _DocState:
     lineage_id: str = ""
     lineage_parent: str | None = None
     recovered_from: str | None = None
+    # 1.8-08 (backends/ezdxf_checkpoints.py): the newest checkpoint id, a
+    # drawing_new S0 not written yet, the sha256 of the content at
+    # `content_sha_rev`, the revision an undo steps back from while the content
+    # is one an undo reached, the states an undo replaced (redo), the revision
+    # each in-memory undo snapshot holds, and each open transaction's
+    # (revision, undo base) at its begin.
+    latest_cp: str | None = None
+    s0: dict | None = None
+    content_sha: str | None = None
+    content_sha_rev: int | None = None
+    undo_base: int | None = None
+    undo_base_rev: int | None = None
+    store_redo: list[str] = field(default_factory=list)
+    # The in-memory redo branch an undo that crossed into the store set aside,
+    # keyed by the `store_redo` entry whose redo brings it back.
+    parked_redo: dict[str, list[Path]] = field(default_factory=dict)
+    snapshot_revs: dict[str, int] = field(default_factory=dict)
+    transaction_revs: dict[str, tuple] = field(default_factory=dict)
 
     @property
     def label(self) -> str:
         return Path(self.path).name if self.path else self.key
 
     def discard_snapshots(self) -> None:
-        for stack in (self.undo_stack, self.redo_stack, self.transaction_stack):
+        parked = [path for branch in self.parked_redo.values() for path in branch]
+        self.parked_redo.clear()
+        for stack in (self.undo_stack, self.redo_stack, self.transaction_stack, parked):
             while stack:
                 try:
                     stack.pop().unlink()
@@ -1765,7 +1787,7 @@ class _DirtyField(_ActiveField):
 # ---------------------------------------------------------------------------
 
 
-class EzdxfBackend(AutoCADBackend):
+class EzdxfBackend(EzdxfCheckpoints, EzdxfChangeSets, AutoCADBackend):
     """File-based ezdxf backend – no live AutoCAD needed."""
 
     # Old per-backend attributes, now routed to the active document (v1.6).
@@ -1813,6 +1835,9 @@ class EzdxfBackend(AutoCADBackend):
         # ``revision_high_lookup(document_id)``.
         self._issued_high: dict[str, int] = {}
         self.revision_high_lookup = None
+        # 1.8-08: the journal's count of calls a reopened file no longer holds
+        # (``lost_since_save(document_id, saved_revision)``), wired by the lifespan.
+        self.lost_since_save_lookup = None
 
     @property
     def _state(self) -> _DocState:
@@ -1975,6 +2000,7 @@ class EzdxfBackend(AutoCADBackend):
             if render_available
             else FeatureCapability(False, reason="optional_dependency_missing:matplotlib")
         )
+        checkpoints_on = self._cp_store() is not None
         return CapabilityMap(
             backend="ezdxf",
             features={
@@ -2011,8 +2037,27 @@ class EzdxfBackend(AutoCADBackend):
                 "undo_history": (
                     FeatureCapability(True, "snapshot")
                     if config.settings.ezdxf_undo_depth > 0
-                    else FeatureCapability(False, reason="set_EZDXF_UNDO_DEPTH_to_enable")
+                    else FeatureCapability(
+                        True,
+                        "checkpoint",
+                        reason="save_batch_and_label_checkpoints;"
+                        "set_EZDXF_UNDO_DEPTH_for_per_operation_steps",
+                    )
+                    if checkpoints_on
+                    else FeatureCapability(
+                        False,
+                        reason="set_EZDXF_UNDO_DEPTH_to_enable;or_a_state_folder_for_checkpoints",
+                    )
                 ),
+                # 1.8-08: save-anchored checkpoints in the state folder.
+                "checkpoints": (
+                    FeatureCapability(True, "state_dir", reason="save_batch_and_label_anchored")
+                    if checkpoints_on
+                    else FeatureCapability(
+                        False, reason="no_state_folder:JOURNAL_DURABLE_off_or_STATE_DIR_refused"
+                    )
+                ),
+                "checkpoint_restore_in_place": FeatureCapability(True, "snapshot"),
                 "measure_area_acis": FeatureCapability(
                     False, reason="acis_evaluation_requires_live_autocad"
                 ),
@@ -2272,7 +2317,8 @@ class EzdxfBackend(AutoCADBackend):
         if repoint and state.recovered_from and not overwrite_source:
             if self._same_file(state.recovered_from, target):
                 raise recovered_source_refusal(op, state.label, state.recovered_from)
-        written = atomic_write_dxf(state.doc, target)
+        # 1.8-08: a save keeps the bytes it wrote for its checkpoint.
+        written = atomic_write_dxf(state.doc, target, keep_data=repoint)
         if not repoint:
             return written
         state.doc.filename = str(target)
@@ -2291,6 +2337,7 @@ class EzdxfBackend(AutoCADBackend):
                 "engine": "ezdxf",
             },
         )
+        written["checkpoint"] = self._cp_on_save(state, written, op)
         return written
 
     @staticmethod
@@ -2298,6 +2345,8 @@ class EzdxfBackend(AutoCADBackend):
         out = {"sha256": written["sha256"], "bytes": written["bytes"]}
         if written.get("backup"):
             out["backup"] = written["backup"]
+        if written.get("checkpoint"):
+            out["checkpoint"] = written["checkpoint"]
         return out
 
     def _activate_key(self, key: str) -> None:
@@ -3114,6 +3163,8 @@ class EzdxfBackend(AutoCADBackend):
             key, _ = self._register_document(doc, None)
             self._reset_document_state()
             self._reset_history_baseline()
+            # 1.8-08: S0, written only when the lineage writes its first checkpoint.
+            self._cp_on_new(self._state, template)
             result = {
                 "ok": True,
                 "name": "untitled.dxf",
@@ -3174,6 +3225,8 @@ class EzdxfBackend(AutoCADBackend):
             else:
                 doc = read_dxf(path)
             sha = file_sha256(path)
+            # 1.8-08: the revision the file was saved at, before the open moves it.
+            saved_record = None if recover else lineage.read_record(path)
             _normalise_dimstyle_rounding(doc)
             if recover:
                 line = {
@@ -3226,6 +3279,18 @@ class EzdxfBackend(AutoCADBackend):
                 self._current_layer = "0"
             self._reset_document_state()
             self._reset_history_baseline()
+            # 1.8-08: S0 of the opened file (skipped when the lineage's newest
+            # checkpoint holds these bytes), and what the last save lost.
+            self._cp_on_open(
+                state,
+                path,
+                sha,
+                doc=doc if recover else None,
+                unchanged=bool(line.get("continued"))
+                and not line.get("external_change")
+                and line.get("revision_floor") is None,
+            )
+            lost = self._lost_since_save(state, line, saved_record)
             result = {
                 "ok": True,
                 "name": Path(path).name,
@@ -3252,6 +3317,8 @@ class EzdxfBackend(AutoCADBackend):
                 result["dwg_read"] = converted
             if save_recovery:
                 result["save_recovery"] = save_recovery
+            if lost is not None:
+                result["lost_since_save"] = lost
             if reloaded:
                 result["reloaded"] = True
             if released is not None:
@@ -3259,6 +3326,25 @@ class EzdxfBackend(AutoCADBackend):
             return result
 
         return await self._async(_sync, quarantine_exit=True)
+
+    def _lost_since_save(self, state: _DocState, line: dict, record: dict | None) -> dict | None:
+        """``{count, last_operation}``: calls the reopened file no longer holds (1.8-08).
+
+        Only when the open continues a saved document and the server wired the
+        journal in (``lost_since_save_lookup``): every call on that
+        ``document_id`` past the revision the file was saved at - committed, or
+        left ``unknown_commit`` by a server that died - is work the file lacks.
+        """
+        lookup = getattr(self, "lost_since_save_lookup", None)
+        if lookup is None or not line.get("continued") or record is None:
+            return None
+        try:
+            return lookup(
+                state.document_id, int(record.get("revision") or 0), record.get("recorded")
+            )
+        except Exception as exc:  # the journal is evidence, never a reason to fail an open
+            log.debug("lost_since_save(%s): %s", state.document_id, exc)
+            return None
 
     async def drawing_save(self, path: str | None = None, overwrite_source: bool = False) -> dict:
         """Save through the atomic protocol (1.8-04, ``backends/atomic_write.py``).
@@ -5511,6 +5597,10 @@ class EzdxfBackend(AutoCADBackend):
         return await self._async(_sync, quarantine_exit=True)
 
     async def drawing_undo(self) -> dict:
+        """Step back: ``EZDXF_UNDO_DEPTH``'s in-memory steps first, then the
+        checkpoint store (1.8-08) - the newest checkpoint below the current
+        revision, after a restart as well as in the session, reported with its
+        ``granularity`` (``save`` / ``batch`` / ``label``)."""
         self._require_undo_history("drawing_undo")
 
         # NEW-undo-1: read+mutate _undo_stack under self._lock (via _async) so
@@ -5519,6 +5609,8 @@ class EzdxfBackend(AutoCADBackend):
             # Two entries minimum: the top is the current state, and undo means
             # restoring the one below it.
             if len(self._undo_stack) < 2:
+                if self._cp_store() is not None:
+                    return self._cp_undo_sync()
                 return {
                     "ok": False,
                     "error": "Nothing to undo — this is the oldest state in the history.",
@@ -5526,6 +5618,7 @@ class EzdxfBackend(AutoCADBackend):
                 }
             self._redo_stack.append(self._undo_stack.pop())
             self._restore_snapshot(self._undo_stack[-1])
+            self._note_snapshot_base(self._undo_stack[-1])
             return {
                 "ok": True,
                 # 1.8-05 parity with the live engine: a snapshot restore is the
@@ -5543,6 +5636,8 @@ class EzdxfBackend(AutoCADBackend):
 
         def _sync():
             if not self._redo_stack:
+                if self._cp_store() is not None:
+                    return self._cp_redo_sync()
                 return {
                     "ok": False,
                     "error": "Nothing to redo — nothing has been undone, or a "
@@ -5552,6 +5647,7 @@ class EzdxfBackend(AutoCADBackend):
             snapshot = self._redo_stack.pop()
             self._undo_stack.append(snapshot)
             self._restore_snapshot(snapshot)
+            self._note_snapshot_base(snapshot)
             return {
                 "ok": True,
                 "verified": True,  # 1.8-05: the snapshot restore is the evidence
@@ -5636,6 +5732,9 @@ class EzdxfBackend(AutoCADBackend):
         snapshot = self._snapshot_doc()
         if snapshot is None:
             return
+        # 1.8-08: the revision this step holds, so an undo that exhausts the
+        # in-memory steps continues in the checkpoint store from below it.
+        self._state.snapshot_revs[str(snapshot)] = self._state.revision
         self._undo_stack.append(snapshot)
         # A mutation after an undo abandons the branch the user stepped off.
         # Keeping it would let redo restore a state that never existed: geometry
@@ -5655,6 +5754,14 @@ class EzdxfBackend(AutoCADBackend):
         self._current_layer = str(self._doc.header.get("$CLAYER", "0"))
         self._dirty = True
 
+    def _note_snapshot_base(self, path: Path) -> None:
+        """After an in-memory undo / redo: the content is the revision ``path`` held."""
+        state = self._state
+        held = state.snapshot_revs.get(str(path))
+        state.undo_base = held
+        state.undo_base_rev = state.revision if held is not None else None
+        self._cp_drop_redo(state)
+
     def _reset_history_baseline(self) -> None:
         """Start the history at the document as opened or created.
 
@@ -5666,12 +5773,15 @@ class EzdxfBackend(AutoCADBackend):
         self._push_undo_snapshot()
 
     def _require_undo_history(self, operation: str) -> None:
-        if config.settings.ezdxf_undo_depth > 0:
+        if config.settings.ezdxf_undo_depth > 0 or self._cp_store() is not None:
             return
         raise UnsupportedCapabilityError(
             "undo_history",
-            f"{operation}: the headless backend keeps no history by default. ezdxf "
-            "has no journal, so every step is a full DXF snapshot — measured at "
+            f"{operation}: the headless backend has no history here. Its default "
+            "history is the checkpoint store (states at saves, batches and "
+            "checkpoint_create, 1.8.0), which lives in the state folder - and there "
+            "is none (JOURNAL_DURABLE=off, or ACADMCP_STATE_DIR was refused). ezdxf "
+            "has no journal, so a per-call step is a full DXF snapshot — measured at "
             "3 ms for 10 entities but 130 ms and 658 KB at 5000, paid on every "
             "mutating call. Set EZDXF_UNDO_DEPTH to the number of steps you want "
             "(e.g. 10) to switch it on, or use transaction_begin/rollback for a "
@@ -9433,9 +9543,13 @@ class EzdxfBackend(AutoCADBackend):
                     pass
                 raise
             self._transaction_stack.append(Path(tmp_path))
+            # 1.8-08: the revision the snapshot holds; it becomes a checkpoint
+            # when the transaction closes.
+            self._cp_transaction_opened(self._state, Path(tmp_path))
             max_stack = config.settings.max_undo_stack
             while len(self._transaction_stack) > max_stack:
                 old = self._transaction_stack.pop(0)
+                self._state.transaction_revs.pop(str(old), None)
                 try:
                     old.unlink()
                 except OSError:
@@ -9451,11 +9565,16 @@ class EzdxfBackend(AutoCADBackend):
             if not self._transaction_stack:
                 return {"ok": False, "error": "No active transaction"}
             p = self._transaction_stack.pop()
-            try:
-                p.unlink()
-            except OSError:
-                pass
-            return {"ok": True, "message": "Transaction committed (snapshot discarded)"}
+            # 1.8-08: the begin's snapshot is kept as a checkpoint (the batch
+            # boundary drawing_undo steps back to), not deleted.
+            row = self._cp_transaction_closed(self._state, p, "transaction_commit")
+            if row is None:
+                return {"ok": True, "message": "Transaction committed (snapshot discarded)"}
+            return {
+                "ok": True,
+                "message": "Transaction committed (the begin's snapshot kept as a checkpoint)",
+                "checkpoint": row["cp"],
+            }
 
         return await self._async(_sync)
 
@@ -9466,16 +9585,32 @@ class EzdxfBackend(AutoCADBackend):
             if not self._transaction_stack:
                 return {"ok": False, "error": "No active transaction to rollback"}
             p = self._transaction_stack.pop()
+            state = self._state
             try:
                 self._doc = ezdxf.readfile(str(p))
                 _normalise_dimstyle_rounding(self._doc)
                 self._current_layer = str(self._doc.header.get("$CLAYER", "0"))
                 self._dirty = True
-            finally:
+            except BaseException:
+                state.transaction_revs.pop(str(p), None)
                 try:
                     p.unlink()
                 except OSError:
                     pass
+                raise
+            # 1.8-08: the snapshot is kept as a checkpoint; the content is its
+            # revision again, so an undo steps back from below it.
+            _rev, base = state.transaction_revs.get(str(p), (None, None))
+            row = self._cp_transaction_closed(state, p, "transaction_rollback")
+            if row is not None:
+                self._cp_note_content(state, row.get("sha256"))
+                state.undo_base, state.undo_base_rev = base, state.revision
+                self._cp_drop_redo(state)
+                return {
+                    "ok": True,
+                    "message": "Transaction rolled back to snapshot",
+                    "checkpoint": row["cp"],
+                }
             return {"ok": True, "message": "Transaction rolled back to snapshot"}
 
         return await self._async(_sync)

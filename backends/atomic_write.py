@@ -360,6 +360,7 @@ def atomic_write_dxf(
     *,
     backup: bool | None = None,
     state: Any = _DEFAULT,
+    keep_data: bool = False,
 ) -> dict:
     """Write ``doc`` as DXF onto ``target`` so that the target is never half written.
 
@@ -370,6 +371,8 @@ def atomic_write_dxf(
     ``header`` (default; one read of the written bytes), ``full`` (ezdxf reads
     the tmp back) or ``none``. ``backup`` defaults to ``SAVE_BACKUP``.
     ``doc.filename`` is not touched: re-pointing is the caller's decision.
+    ``keep_data`` adds ``data``: the bytes written, already in memory for the
+    check - 1.8-08 copies them into a checkpoint without serialising again.
     """
     if verify not in VERIFY_MODES:
         raise ValueError(f"verify must be one of {VERIFY_MODES}, got {verify!r}")
@@ -414,7 +417,7 @@ def atomic_write_dxf(
             _unlink(tmp)
         if marker is not None:
             _unlink(marker)
-    return {
+    written = {
         "path": target,
         "sha256": sha,
         "previous_sha256": previous,
@@ -425,6 +428,9 @@ def atomic_write_dxf(
         "recovery_marker": marker is not None,
         "method": "in_place" if in_place else "replace",
     }
+    if keep_data:
+        written["data"] = data
+    return written
 
 
 # ── recovery ─────────────────────────────────────────────────────────────────

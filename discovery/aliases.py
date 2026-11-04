@@ -1657,6 +1657,43 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
         ),
     ),
     # ── Transactions ────────────────────────────────────────────────────────
+    "checkpoint_create": ToolAliases(
+        synonyms=(
+            "create a checkpoint",
+            "restore point",
+            "snapshot the drawing",
+            "label this state",
+            "remember this version",
+        ),
+    ),
+    "checkpoint_list": ToolAliases(
+        synonyms=(
+            "list checkpoints",
+            "saved states",
+            "version history",
+            "what can i roll back to",
+        ),
+    ),
+    "checkpoint_restore": ToolAliases(
+        synonyms=(
+            "restore a checkpoint",
+            "roll back to a checkpoint",
+            "go back to an earlier version",
+            "undo after a restart",
+            "recover an earlier state",
+        ),
+    ),
+    "drawing_history": ToolAliases(
+        synonyms=(
+            "drawing history",
+            "what did i change earlier",
+            "value in an earlier round",
+            "operation log",
+            "audit trail",
+            "previous value of a parameter",
+            "what was the diameter before",
+        ),
+    ),
     "transaction_begin": ToolAliases(
         synonyms=(
             "start a transaction",

@@ -1812,11 +1812,35 @@ async def lineweight_truth():
 
 async def _step_error(client, tool: str, args: dict) -> dict | None:
     """The one step row's error of ``cad_batch``; a step the batch refuses before
-    running anything is read off the dry run, where its row is reported."""
+    running anything is read off the dry run, where its row is reported.
+
+    1.8.0 (plan 1.8-09) refuses a LITERAL handle that names nothing before any
+    step runs (``unknown_handle``). The step route is then staged so that the
+    handle goes missing while the batch runs - a line created and deleted by
+    two earlier steps, referenced as ``$gone`` - and the last row is read: that
+    is the route on which the step itself meets the missing handle.
+    """
     steps = [{"tool": tool, "args": args}]
     result = await client.call_tool(
         "cad_batch", {"steps": steps, "on_error": "continue"}, raise_on_error=False
     )
+    refused = result.structured_content if result.is_error else None
+    if isinstance(refused, dict) and refused.get("kind") == "unknown_handle":
+        staged = [
+            {
+                "tool": "entity_create_line",
+                "args": {"x1": 0, "y1": 0, "x2": 1, "y2": 0},
+                "bind": "gone",
+            },
+            {"tool": "entity_delete", "args": {"handle": "$gone"}},
+            {"tool": tool, "args": {**args, "handle": "$gone"}},
+        ]
+        result = await client.call_tool(
+            "cad_batch", {"steps": staged, "on_error": "continue"}, raise_on_error=False
+        )
+        rows = (result.structured_content or {}).get("results") or []
+        last = rows[-1] if len(rows) == 3 else {}
+        return last.get("error") if isinstance(last.get("error"), dict) else None
     if result.is_error:
         result = await client.call_tool(
             "cad_batch", {"steps": steps, "dry_run": True}, raise_on_error=False
@@ -2971,6 +2995,328 @@ async def pid_avoid_no_symbol_crossing():
     )
 
 
+def _undo_after_restart() -> bool:
+    script = os.path.join(os.getcwd(), "server.py")
+    if not os.path.isfile(script):
+        return False
+    env = _server_env(_scratch_dir("acadmcp_state_"))
+    env.pop("EZDXF_UNDO_DEPTH", None)  # no undo setting: the default server
+    drawings = _scratch_dir()
+    log_path = os.path.join(drawings, "server.log")
+    path = os.path.join(drawings, "undo.dxf")
+
+    first = _StdioServer(script, env, drawings, log_path, timeout=40.0)
+    try:
+        first.call("drawing_new")
+        handle = first.call("entity_create_line", {"x1": 0, "y1": 0, "x2": 10, "y2": 0}).get(
+            "handle"
+        )
+        first.call("drawing_save_as", {"path": path})
+        moved = first.call("entity_move", {"handle": handle, "dx": 5, "dy": 5})
+        saved = first.call("drawing_save", {})
+    finally:
+        first.kill()
+    if not handle or moved["is_error"] or saved["is_error"]:
+        return False
+
+    second = _StdioServer(script, env, drawings, log_path, timeout=40.0)
+    try:
+        opened = second.call("drawing_open", {"path": path})
+        undone = second.call("drawing_undo")
+        line = second.call("entity_get", {"handle": handle})
+        # The unsaved variant: saved, one more move, killed.
+        second.call("drawing_save", {})
+        with open(path, "rb") as stream:
+            on_disk = stream.read()
+        second.call("entity_move", {"handle": handle, "dx": 1, "dy": 0})
+    finally:
+        second.kill()
+
+    third = _StdioServer(script, env, drawings, log_path, timeout=40.0)
+    try:
+        reopened = third.call("drawing_open", {"path": path})
+    finally:
+        third.kill()
+    with open(path, "rb") as stream:
+        unchanged = stream.read() == on_disk
+    props = line.get("properties") or {}
+    lost = reopened.get("lost_since_save") or {}
+    return (
+        opened["is_error"] is False
+        and undone.get("ok") is True
+        and undone.get("granularity") == "save"
+        and list(props.get("start") or [])[:2] == [0.0, 0.0]
+        and list(props.get("end") or [])[:2] == [10.0, 0.0]
+        and unchanged
+        and lost.get("count") == 1
+    )
+
+
+async def undo_after_restart():
+    """Undo works after the server is killed and restarted (1.8-08, §4.2).
+
+    Server A (``python server.py`` of the tree under test, stdio, headless, a
+    fresh ``ACADMCP_STATE_DIR``, no ``EZDXF_UNDO_DEPTH``) draws a line from
+    (0, 0) to (10, 0), saves, moves it by (5, 5), saves again and is killed.
+    Server B opens the file and calls ``drawing_undo``: the line must be back
+    at (0, 0)-(10, 0) and the step reported ``granularity: "save"``. B then
+    saves, moves the line once more and is killed unsaved; server C's
+    ``drawing_open`` must leave the file as B saved it and report
+    ``lost_since_save.count == 1``. 1.7.0 kept no history across a restart -
+    its headless ``drawing_undo`` was refused (``undo_history``) without
+    ``EZDXF_UNDO_DEPTH``, and the in-memory steps died with the process.
+    """
+    return await asyncio.to_thread(_undo_after_restart)
+
+
+async def atomic_batch_default():
+    """A batch with no on_error is all or nothing (1.8-09, §4.3).
+
+    The rival's probe through the real tool: line L, then ``cad_batch`` with
+    ``[entity_move(L), entity_delete("DEAD")]`` and no ``on_error``. The batch
+    must be refused ``unknown_handle`` with ``executed: 0`` and L's
+    ``entity_get`` summary must be what it was - 1.7.0 moved L, then failed
+    the delete and kept the move (default ``stop``). The run-time twin:
+    ``[entity_move(L), entity_edit_text(L)]`` (a LINE has no text, so the
+    second step fails while it runs) must come back ``ok: false``, rolled
+    back by the default with ``atomicity.verified`` true, L unchanged again.
+    """
+    async with _served_headless() as client:
+        created = await client.call_tool(
+            "entity_create_line", {"x1": 0, "y1": 0, "x2": 10, "y2": 0}
+        )
+        line = (created.structured_content or {}).get("handle")
+
+        async def summary():
+            got = await client.call_tool("entity_get", {"handle": line}, raise_on_error=False)
+            return None if got.is_error else got.structured_content
+
+        original = await summary()
+        move = {"tool": "entity_move", "args": {"handle": line, "dx": 5.0, "dy": 5.0}}
+        probe = await client.call_tool(
+            "cad_batch",
+            {"steps": [move, {"tool": "entity_delete", "args": {"handle": "DEAD"}}]},
+            raise_on_error=False,
+        )
+        refused = probe.structured_content or {}
+        after_probe = await summary()
+        runtime = await client.call_tool(
+            "cad_batch",
+            {
+                "steps": [
+                    move,
+                    {"tool": "entity_edit_text", "args": {"handle": line, "text": "X"}},
+                ]
+            },
+            raise_on_error=False,
+        )
+        undone = runtime.structured_content or {}
+        atomicity = undone.get("atomicity") or {}
+        after_runtime = await summary()
+    return (
+        original is not None
+        and probe.is_error is True
+        and refused.get("kind") == "unknown_handle"
+        and refused.get("executed") == 0
+        and after_probe == original
+        and runtime.is_error is False
+        and undone.get("ok") is False
+        and atomicity.get("rolled_back") is True
+        and atomicity.get("verified") is True
+        and after_runtime == original
+    )
+
+
+async def delete_many_all_or_nothing():
+    """``entity_delete_many`` deletes all of its handles or none (1.8-09).
+
+    Three lines A, B, C. ``[A, "DEAD"]`` must not answer ``ok: true`` and A
+    must still exist - 1.7.0 deleted A and answered ``ok: true`` with an
+    ``errors`` row. Then the delete of B is made to fail while the call runs
+    (a locked layer, staged on the engine class): ``[A, B, C]`` must answer
+    ``ok: false`` with all three still in the drawing - 1.7.0 kept A and C
+    deleted.
+    """
+    from backends.ezdxf_backend import EzdxfBackend
+
+    async with _served_headless() as client:
+        handles = []
+        for y in (0.0, 5.0, 10.0):
+            made = await client.call_tool(
+                "entity_create_line", {"x1": 0, "y1": y, "x2": 10, "y2": y}
+            )
+            handles.append((made.structured_content or {}).get("handle"))
+        a, b, c = handles
+
+        async def exists(handle):
+            got = await client.call_tool("entity_get", {"handle": handle}, raise_on_error=False)
+            return not got.is_error
+
+        missing = await client.call_tool(
+            "entity_delete_many", {"handles": [a, "DEAD"]}, raise_on_error=False
+        )
+        missing_ok = (missing.structured_content or {}).get("ok")
+        a_kept = await exists(a)
+
+        real = EzdxfBackend.entity_delete
+
+        async def locked(self, handle):
+            if str(handle).upper() == str(b).upper():
+                raise RuntimeError("the entity is on a locked layer")
+            return await real(self, handle)
+
+        EzdxfBackend.entity_delete = locked
+        try:
+            midway = await client.call_tool(
+                "entity_delete_many", {"handles": [a, b, c]}, raise_on_error=False
+            )
+        finally:
+            EzdxfBackend.entity_delete = real
+        midway_ok = (midway.structured_content or {}).get("ok")
+        all_kept = [await exists(h) for h in (a, b, c)]
+    return missing_ok is not True and a_kept and midway_ok is False and all(all_kept)
+
+
+#: 1.8-10 (H1): the plate of every round; only the hole's diameter changes.
+_HISTORY_PLATE = {
+    "kind": "prismatic",
+    "name": "plate",
+    "material": "aluminium",
+    "thickness": 8.0,
+    "outline": [[0.0, 0.0], [80.0, 0.0], [80.0, 50.0], [0.0, 50.0]],
+    "features": [{"kind": "hole", "id": "h1", "x": 40.0, "y": 25.0, "diameter": 10.0}],
+}
+
+
+def _history_rounds(script: str, env: dict, folder: str, log_path: str) -> dict:
+    """The H1 probe across a real restart (shared by the v9 ``history_value_lookup``).
+
+    Server A: rounds 1-3 of a plate drawn with ``mech_part_draw`` (hole 10, 12,
+    16; round 2's call labelled ``"round 2"`` through ``_meta.label``), saved
+    after each round; then the unlabelled twin - one circle edited 5 -> 6 -> 8
+    with ``entity_edit_geometry``, saved after each round. Killed. Server B
+    answers with ``drawing_open`` + ``drawing_history``: the labelled value, a
+    label nobody gave, and the unlabelled round from the checkpoint diff.
+    """
+    import copy
+
+    labelled = os.path.join(folder, "rounds.dxf")
+    plain = os.path.join(folder, "plain.dxf")
+
+    def spec(diameter: float) -> dict:
+        part = copy.deepcopy(_HISTORY_PLATE)
+        part["features"][0]["diameter"] = diameter
+        return part
+
+    first = _StdioServer(script, env, folder, log_path, timeout=60.0)
+    try:
+        first.call("drawing_new")
+        for index, diameter in enumerate((10.0, 12.0, 16.0), start=1):
+            params = {
+                "name": "mech_part_draw",
+                "arguments": {"spec": spec(diameter), "at_x": 200.0 * index, "dimension": False},
+            }
+            if index == 2:
+                params["_meta"] = {"label": "round 2"}
+            first.request("tools/call", params, 60.0)
+            if index == 1:
+                first.call("drawing_save_as", {"path": labelled})
+            else:
+                first.call("drawing_save", {})
+        first.call("drawing_new")
+        hole = first.call(
+            "entity_create_circle", {"cx": 50.0, "cy": 50.0, "radius": 5.0, "layer": "GEOMETRY"}
+        ).get("handle")
+        first.call("drawing_save_as", {"path": plain})
+        for radius in (6.0, 8.0):
+            first.call("entity_edit_geometry", {"handle": hole, "radius": radius})
+            first.call("drawing_save", {})
+    finally:
+        first.kill()
+
+    second = _StdioServer(script, env, folder, log_path, timeout=60.0)
+    try:
+        calls = 0
+        second.call("drawing_open", {"path": labelled})
+        calls += 1
+        found = second.call("drawing_history", {"label": "round 2", "detail": "args"})
+        calls += 1
+        wrong = second.call("drawing_history", {"label": "round 9"})
+        second.call("drawing_open", {"path": plain})
+        edits = second.call(
+            "drawing_history", {"tool": "entity_edit_geometry", "detail": "changes", "limit": 5}
+        )
+    finally:
+        second.kill()
+
+    labelled_value = None
+    rows = found.get("rows") or []
+    if rows:
+        features = ((rows[0].get("args") or {}).get("spec") or {}).get("features") or [{}]
+        labelled_value = features[0].get("diameter")
+    unlabelled_value = None
+    ordered = sorted(edits.get("rows") or [], key=lambda row: row.get("seq") or 0)
+    if ordered:
+        diff = ordered[0].get("diff") or {}
+        for row in diff.get("changed") or []:
+            radius = (row.get("changes") or {}).get("radius") or {}
+            if radius.get("to") is not None:
+                unlabelled_value = 2.0 * float(radius["to"])
+    return {
+        "calls": calls,
+        "labelled": {
+            "value": labelled_value,
+            "is_error": found.get("is_error"),
+            "label": rows[0].get("label") if rows else None,
+        },
+        "missing_label": {
+            "is_error": wrong.get("is_error"),
+            "kind": wrong.get("kind"),
+            "names_the_labels": "'round 2'" in str(wrong.get("message") or ""),
+        },
+        "unlabelled": {"value": unlabelled_value, "rows": len(ordered)},
+    }
+
+
+def _history_rounds_pass(seen: dict) -> bool:
+    return (
+        seen["calls"] <= 2
+        and seen["labelled"]["is_error"] is False
+        and seen["labelled"]["value"] == 12.0
+        and seen["labelled"]["label"] == "round 2"
+        and seen["missing_label"]["is_error"] is True
+        and seen["missing_label"]["kind"] == "invalid_args"
+        and seen["missing_label"]["names_the_labels"]
+        and seen["unlabelled"]["value"] == 12.0
+    )
+
+
+def _history_round2_value() -> bool:
+    script = os.path.join(os.getcwd(), "server.py")
+    if not os.path.isfile(script):
+        return False
+    env = _server_env(_scratch_dir("acadmcp_state_"))
+    drawings = _scratch_dir()
+    seen = _history_rounds(script, env, drawings, os.path.join(drawings, "server.log"))
+    return _history_rounds_pass(seen)
+
+
+async def history_round2_value():
+    """The value of round 2, read back after a restart in two calls (1.8-10, H1).
+
+    A real ``python server.py`` draws three rounds of a plate with
+    ``mech_part_draw`` - hole 10, 12, 16, round 2's call labelled ``round 2``
+    with ``_meta.label`` - saving after each, then is killed. A new process
+    answers with ``drawing_open`` + ``drawing_history(label="round 2",
+    detail="args")``: 12. A label nobody gave is refused ``invalid_args``
+    naming the labels there are (never guessed), and an unlabelled round (one
+    circle edited 5 -> 6 -> 8) is read from the checkpoint diff of
+    ``detail="changes"``: 12 again. 1.7.0 kept no history across a restart and
+    has no ``drawing_history`` - the rival measured us at 0/3.
+    """
+    return await asyncio.to_thread(_history_round2_value)
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -3069,6 +3415,10 @@ CHECKS = {
     "b40_between_rows_refused": (b40_between_rows_refused, "Mechanical"),
     "mech_revise_keeps_handles": (mech_revise_keeps_handles, "Mechanical"),
     "pid_avoid_no_symbol_crossing": (pid_avoid_no_symbol_crossing, "P&ID"),
+    "undo_after_restart": (undo_after_restart, "Durability"),
+    "atomic_batch_default": (atomic_batch_default, "Durability"),
+    "delete_many_all_or_nothing": (delete_many_all_or_nothing, "Durability"),
+    "history_round2_value": (history_round2_value, "Durability"),
 }
 
 

@@ -267,7 +267,9 @@ async def test_a_refused_state_dir_degrades_and_every_call_still_runs(monkeypatc
     async with Client(server.mcp) as client:
         await client.call_tool("drawing_new", {})
         await client.call_tool("entity_create_line", _LINE)
-        status = (await client.call_tool("system_status", {})).structured_content
+        status = (
+            await client.call_tool("system_status", {"detail": "operations"})
+        ).structured_content
     store = status["state_store"]
     assert store["mode"] == "durable" and store["degraded"]["kind"] == "state_dir_refused"
     assert any(row["tool"] == "entity_create_line" for row in status["operations"])

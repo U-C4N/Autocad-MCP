@@ -3,7 +3,7 @@
   "schema_version": 2,
   "package_version": "1.7.0",
   "totals": {
-    "tools": 253,
+    "tools": 257,
     "resources": 13,
     "prompts": 5,
     "groups": 28
@@ -33,7 +33,7 @@
     "styles": 10,
     "system": 7,
     "templates": 2,
-    "transactions": 3,
+    "transactions": 7,
     "understanding": 5,
     "validation": 1,
     "view": 4
@@ -1084,6 +1084,70 @@
       }
     },
     {
+      "name": "checkpoint_create",
+      "group": "transactions",
+      "cost": "safe",
+      "summary": "Keep a named restore point of the drawing that survives a restart.",
+      "acad": [],
+      "synonyms": [
+        "create a checkpoint",
+        "restore point",
+        "snapshot the drawing",
+        "label this state",
+        "remember this version"
+      ],
+      "tags": [
+        "transaction"
+      ],
+      "annotations": {
+        "title": "Create Checkpoint",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "checkpoint_list",
+      "group": "transactions",
+      "cost": "read",
+      "summary": "List the drawing's durable checkpoints, newest first.",
+      "acad": [],
+      "synonyms": [
+        "list checkpoints",
+        "saved states",
+        "version history",
+        "what can i roll back to"
+      ],
+      "tags": [
+        "transaction"
+      ],
+      "annotations": {
+        "title": "List Checkpoints",
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "checkpoint_restore",
+      "group": "transactions",
+      "cost": "destructive",
+      "summary": "Bring a checkpoint back: in place (undoable) or as a new document.",
+      "acad": [],
+      "synonyms": [
+        "restore a checkpoint",
+        "roll back to a checkpoint",
+        "go back to an earlier version",
+        "undo after a restart",
+        "recover an earlier state"
+      ],
+      "tags": [
+        "transaction"
+      ],
+      "annotations": {
+        "title": "Restore Checkpoint",
+        "readOnlyHint": false,
+        "destructiveHint": true
+      }
+    },
+    {
       "name": "construction_clear",
       "group": "premium",
       "cost": "destructive",
@@ -1765,6 +1829,29 @@
       "annotations": {
         "title": "Drawing: Finalize (validate + save + screenshot)",
         "destructiveHint": true
+      }
+    },
+    {
+      "name": "drawing_history",
+      "group": "transactions",
+      "cost": "read",
+      "summary": "What was done to this drawing, and with which values - across restarts.",
+      "acad": [],
+      "synonyms": [
+        "drawing history",
+        "what did i change earlier",
+        "value in an earlier round",
+        "operation log",
+        "audit trail",
+        "previous value of a parameter",
+        "what was the diameter before"
+      ],
+      "tags": [
+        "transaction"
+      ],
+      "annotations": {
+        "title": "Drawing History",
+        "readOnlyHint": true
       }
     },
     {

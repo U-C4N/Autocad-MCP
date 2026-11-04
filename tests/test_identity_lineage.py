@@ -125,7 +125,9 @@ async def test_an_external_edit_is_journalled_as_its_own_row(tmp_path):
         foreign.modelspace().add_circle((0, 0), 5)
         foreign.saveas(path)
         opened = (await client.call_tool("drawing_open", {"path": str(path)})).structured_content
-        status = (await client.call_tool("system_status", {})).structured_content
+        status = (
+            await client.call_tool("system_status", {"detail": "operations"})
+        ).structured_content
     assert opened["external_change"] is True
     (row,) = [r for r in status["operations"] if r["tool"] == "external_edit"]
     assert row["state"] == "committed" and row["document_id"] == opened["document_id"]

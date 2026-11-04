@@ -2900,3 +2900,221 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
             },
             [],
         )
+
+    async def _task_undo_across_restart(self):
+        """v9 (1.8-08, §4.2): undo works after the server is killed and restarted.
+
+        A real ``python server.py`` (headless, a private state folder, no
+        ``EZDXF_UNDO_DEPTH``) draws a line (0, 0)-(10, 0), saves, moves it by
+        (5, 5), saves and is killed with ``Popen.kill()``. A new process opens
+        the file and one ``drawing_undo`` must put the line back at
+        (0, 0)-(10, 0) - endpoints read with ``entity_get``, an independent
+        oracle - reported at ``granularity: "save"``. The twin: that process
+        saves, moves the line once more and is killed unsaved; a third
+        process's ``drawing_open`` must find the file byte for byte as saved
+        and report ``lost_since_save.count == 1``.
+        """
+        import tempfile
+
+        from benchmarks.correctness_suite import _server_env, _StdioServer
+
+        root = Path(__file__).resolve().parents[2]
+        script = str(root / "server.py")
+        state = tempfile.mkdtemp(prefix="acadmcp-v9-state-")
+        env = {**_server_env(state), "PYTHONPATH": str(root)}
+        env.pop("EZDXF_UNDO_DEPTH", None)
+        folder = self.artifact_dir / "undo_across_restart"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = str(folder / "undo.dxf")
+        log_path = str(folder / "server.log")
+
+        def run() -> dict:
+            first = _StdioServer(script, env, str(folder), log_path, timeout=60.0)
+            try:
+                first.call("drawing_new")
+                handle = first.call(
+                    "entity_create_line", {"x1": 0, "y1": 0, "x2": 10, "y2": 0}
+                ).get("handle")
+                first.call("drawing_save_as", {"path": path})
+                first.call("entity_move", {"handle": handle, "dx": 5, "dy": 5})
+                first.call("drawing_save", {})
+            finally:
+                first.kill()
+            second = _StdioServer(script, env, str(folder), log_path, timeout=60.0)
+            try:
+                second.call("drawing_open", {"path": path})
+                undone = second.call("drawing_undo")
+                line = second.call("entity_get", {"handle": handle})
+                second.call("drawing_save", {})
+                with open(path, "rb") as stream:
+                    on_disk = stream.read()
+                second.call("entity_move", {"handle": handle, "dx": 1, "dy": 0})
+            finally:
+                second.kill()
+            third = _StdioServer(script, env, str(folder), log_path, timeout=60.0)
+            try:
+                reopened = third.call("drawing_open", {"path": path})
+            finally:
+                third.kill()
+            with open(path, "rb") as stream:
+                unchanged = stream.read() == on_disk
+            return {"undone": undone, "line": line, "reopened": reopened, "unchanged": unchanged}
+
+        try:
+            seen = await asyncio.to_thread(run)
+        finally:
+            import shutil
+
+            shutil.rmtree(state, ignore_errors=True)
+        props = seen["line"].get("properties") or {}
+        start, end = list(props.get("start") or [])[:2], list(props.get("end") or [])[:2]
+        lost = seen["reopened"].get("lost_since_save") or {}
+        passed = (
+            seen["undone"].get("ok") is True
+            and seen["undone"].get("granularity") == "save"
+            and start == [0.0, 0.0]
+            and end == [10.0, 0.0]
+            and seen["unchanged"]
+            and lost.get("count") == 1
+        )
+        return (
+            passed,
+            {
+                "undo": {
+                    key: seen["undone"].get(key)
+                    for key in ("ok", "granularity", "checkpoint", "restored_revision")
+                },
+                "endpoints_after_undo": [start, end],
+                "file_unchanged_after_unsaved_kill": seen["unchanged"],
+                "lost_since_save": lost,
+                "server_env_undo_depth": env.get("EZDXF_UNDO_DEPTH"),
+            },
+            [path],
+        )
+
+    async def _task_atomic_batch_default(self):
+        """v9 (1.8-09, §4.3): a batch with no ``on_error`` is all or nothing.
+
+        The rival's probe through the real ``cad_batch`` tool: line L, then
+        ``[entity_move(L), entity_delete("DEAD")]`` with no ``on_error``. The
+        oracle is L's ``entity_get`` summary read straight from the engine
+        before and after - the batch must be refused ``unknown_handle`` with
+        ``executed: 0`` and the summary unchanged (1.7.0 kept the move). The
+        run-time twin, ``[entity_move(L), entity_edit_text(L)]`` (a LINE has
+        no text, so the second step fails while it runs), must be rolled back
+        by the default: ``ok: false``, ``atomicity.default_applied`` and
+        ``verified`` true, the summary unchanged again. Headless lane only:
+        the live engine's undo is ``scripts/smoke_durability_com.py``.
+        """
+        from dataclasses import asdict
+
+        line = await self.backend.entity_create_line(0, 0, 10, 0)
+        handle = line.handle
+
+        async def summary() -> dict:
+            return asdict(await self.backend.entity_get(handle))
+
+        original = await summary()
+        move = {"tool": "entity_move", "args": {"handle": handle, "dx": 5.0, "dy": 5.0}}
+        async with self._served() as client:
+            probe = await client.call_tool(
+                "cad_batch",
+                {"steps": [move, {"tool": "entity_delete", "args": {"handle": "DEAD"}}]},
+                raise_on_error=False,
+            )
+            refused = probe.structured_content or {}
+            after_probe = await summary()
+            runtime = await client.call_tool(
+                "cad_batch",
+                {
+                    "steps": [
+                        move,
+                        {"tool": "entity_edit_text", "args": {"handle": handle, "text": "X"}},
+                    ]
+                },
+                raise_on_error=False,
+            )
+            undone = runtime.structured_content or {}
+        after_runtime = await summary()
+        atomicity = undone.get("atomicity") or {}
+        passed = (
+            probe.is_error is True
+            and refused.get("kind") == "unknown_handle"
+            and refused.get("executed") == 0
+            and after_probe == original
+            and runtime.is_error is False
+            and undone.get("ok") is False
+            and undone.get("on_error") == "auto"
+            and atomicity.get("default_applied") is True
+            and atomicity.get("rolled_back") is True
+            and atomicity.get("verified") is True
+            and after_runtime == original
+        )
+        return (
+            passed,
+            {
+                "probe": {
+                    "kind": refused.get("kind"),
+                    "executed": refused.get("executed"),
+                    "missing": refused.get("missing"),
+                    "summary_unchanged": after_probe == original,
+                },
+                "runtime_twin": {
+                    "ok": undone.get("ok"),
+                    "on_error": undone.get("on_error"),
+                    "atomicity": {
+                        key: atomicity.get(key)
+                        for key in (
+                            "mode",
+                            "guarantee",
+                            "default_applied",
+                            "rolled_back",
+                            "verified",
+                        )
+                    },
+                    "summary_unchanged": after_runtime == original,
+                },
+            },
+            [],
+        )
+
+    async def _task_history_value_lookup(self):
+        """v9 (1.8-10, H1): the round-2 value, after a restart, in at most two calls.
+
+        A real ``python server.py`` (headless, a private state folder) draws
+        three rounds of a plate with ``mech_part_draw`` - hole 10, 12 (the call
+        labelled ``round 2`` through ``_meta.label``), 16 - saving after each
+        round, plus the unlabelled twin (one circle edited 5 -> 6 -> 8), and is
+        killed with ``Popen.kill()``. A new process: ``drawing_open`` +
+        ``drawing_history(label="round 2", detail="args")`` must answer 12 in
+        at most two calls; ``label="round 9"`` must be refused ``invalid_args``
+        naming the labels there are; the unlabelled round's checkpoint diff
+        (``detail="changes"``) must say radius 5 -> 6, a 12 diameter. The
+        oracle is the values the script itself drew, never the server's word.
+        """
+        import shutil
+        import tempfile
+
+        from benchmarks.correctness_suite import (
+            _history_rounds,
+            _history_rounds_pass,
+            _server_env,
+        )
+
+        root = Path(__file__).resolve().parents[2]
+        script = str(root / "server.py")
+        state = tempfile.mkdtemp(prefix="acadmcp-v9-state-")
+        env = {**_server_env(state), "PYTHONPATH": str(root)}
+        folder = self.artifact_dir / "history_value_lookup"
+        folder.mkdir(parents=True, exist_ok=True)
+        try:
+            seen = await asyncio.to_thread(
+                _history_rounds, script, env, str(folder), str(folder / "server.log")
+            )
+        finally:
+            shutil.rmtree(state, ignore_errors=True)
+        return (
+            _history_rounds_pass(seen),
+            seen,
+            [str(folder / "rounds.dxf"), str(folder / "plain.dxf")],
+        )

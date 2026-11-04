@@ -176,3 +176,7 @@ def task_by_id(task_id: str, matrix: str = DEFAULT_MATRIX) -> TaskSpec:
         if task.task_id == task_id:
             return task
     raise KeyError(f"{task_id} is not in matrix {matrix}")
+
+
+# 1.8.0: the v9 matrix registers itself in MATRICES ("v9"); DEFAULT_MATRIX stays.
+import benchmarks.tasks_v9  # noqa: E402, F401
