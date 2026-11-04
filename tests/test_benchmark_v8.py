@@ -81,20 +81,26 @@ def test_v8_extends_v7_without_touching_it():
 
 def test_the_runner_and_the_chart_read_the_current_matrix():
     from benchmarks import render_matrix_chart, run_competitors
+    from benchmarks.tasks_v9 import TASKS_V9
 
-    assert run_competitors.DEFAULT_MATRIX == "v8"
-    # 1.8.0 adds v9 beside the earlier matrices (benchmarks/tasks_v9.py); the
-    # default stays v8 until 1.8-25, and every earlier matrix is the same object.
+    # 1.8-25: the runner's default is v9 (benchmarks/tasks_v9.py); this
+    # module's DEFAULT_MATRIX stays v8, and every earlier matrix is the same object.
+    assert run_competitors.DEFAULT_MATRIX == "v9" and DEFAULT_MATRIX == "v8"
+    assert run_competitors.MATRICES["v9"] is TASKS_V9
     assert all(run_competitors.MATRICES[name] is tasks for name, tasks in MATRICES.items())
     assert set(run_competitors.MATRICES) == {*MATRICES, "v9"}
+    # the chart still renders the published v8 report; it moves with the v9 one
     assert render_matrix_chart.CURRENT_TASKS == TASKS_V8
     assert "environment_blocked" in render_matrix_chart.STATUS_COLORS
 
 
-def test_the_doc_number_gate_counts_the_v8_matrix():
+def test_the_doc_number_gate_counts_the_v9_matrix():
+    from benchmarks.tasks_v9 import TASKS_V9
     from scripts import check_doc_numbers
 
-    assert check_doc_numbers.matrix_tasks() == len(TASKS_V8) == 31
+    # 1.8-25 moved the source to tasks_v9: "the current set" is the v9 matrix
+    # the eighteen rows of plan section 8 (tests/test_benchmark_v9_section8.py)
+    assert check_doc_numbers.matrix_tasks() == len(TASKS_V9) == len(TASKS_V8) + 18
 
 
 def test_the_published_reference_report_covers_the_whole_current_matrix():
@@ -474,16 +480,59 @@ def test_a_registry_entry_without_an_adapter_is_a_not_run_lane():
     assert report["adapter"] == "best-cad-mcp"
 
 
+def test_agentcads_ground_is_mapped_in_v9_and_its_lane_is_not_run():
+    # 1.8-25: lizaixi01-agentcad joins RIVAL_GROUND on the v9 tasks that answer
+    # its published scenarios (plan sections 2 / 8); it has no adapter, so every
+    # task of its lane is not_run, never a zero.
+    from benchmarks.run_competitors import _load_registry, not_run_report
+    from benchmarks.tasks_v9 import NEW_TASKS_V9, RIVAL_SCENARIO, TASKS_V9
+    from benchmarks.tasks_v9 import RIVAL_GROUND as RIVAL_GROUND_V9
+
+    v9_ids = {task.task_id for task in NEW_TASKS_V9}
+    agentcad = {task for task, rival in RIVAL_GROUND_V9.items() if rival == "lizaixi01-agentcad"}
+    assert agentcad == {
+        "history_value_lookup",
+        "undo_across_restart",
+        "atomic_batch_default",
+        "layer_cleanup_budget",
+        "call_count_dimension_part",
+        "parametric_revise_keeps_handles",
+        "bylayer_truth",
+        "space_context",
+        "lisp_read_tier",
+    }
+    assert agentcad <= v9_ids and set(RIVAL_SCENARIO) == agentcad
+    assert {k: v for k, v in RIVAL_GROUND_V9.items() if k not in agentcad} == RIVAL_GROUND
+    assert "H1" in RIVAL_SCENARIO["history_value_lookup"]
+    assert "H4" in RIVAL_SCENARIO["layer_cleanup_budget"]
+    assert "H5" in RIVAL_SCENARIO["call_count_dimension_part"]
+
+    entry = _load_registry()["lizaixi01-agentcad"]
+    assert entry["adapter"] is None
+    report = not_run_report(entry, list(TASKS_V9), matrix="v9")
+    assert {item["status"] for item in report["results"]} == {"not_run"}
+    assert report["summary"]["score"] is None and report["summary"]["not_run"] == len(TASKS_V9)
+
+
 @pytest.mark.asyncio
 async def test_the_report_carries_a_run_manifest(tmp_path):
     from benchmarks.run_competitors import run_tasks
+    from benchmarks.tasks_v9 import EVALUATOR_VERSION as EVALUATOR_VERSION_V9
+    from benchmarks.tasks_v9 import FIXTURE_SOURCES as FIXTURE_SOURCES_V9
 
     report = await run_tasks(_Fixed(["pass"]), list(TASKS_V8[:1]), tmp_path)
     manifest = report["manifest"]
-    assert manifest["evaluator_version"] == EVALUATOR_VERSION
+    # the runner measures with the 1.8.0 evaluator (1.8-25); v8.1 is the
+    # published v8 report's
+    assert manifest["evaluator_version"] == EVALUATOR_VERSION_V9 == "v9.0"
+    assert EVALUATOR_VERSION == "v8.1"
+    assert FIXTURE_SOURCES_V9[: len(FIXTURE_SOURCES)] == FIXTURE_SOURCES
+    # a report of one v8 task names no kill point; the state-folder policy is always there
+    assert manifest["fault_injection"]["kill_points"] == {}
+    assert "outside the repository" in manifest["fault_injection"]["state_dir"]
     assert manifest["server_sha"] == report["git_sha"]
     assert isinstance(manifest["dirty"], (bool, type(None)))
-    for row, relative in zip(manifest["fixtures"], FIXTURE_SOURCES, strict=True):
+    for row, relative in zip(manifest["fixtures"], FIXTURE_SOURCES_V9, strict=True):
         assert row["path"] == relative
         expected = hashlib.sha256((ROOT / relative).read_bytes()).hexdigest()
         assert row["sha256"] == expected

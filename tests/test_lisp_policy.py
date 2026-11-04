@@ -820,7 +820,7 @@ def test_the_smoke_fails_on_each_broken_report(overrides):
     assert any(row["status"] == "fail" for row in broken.checks)
 
 
-def test_v9_carries_lisp_read_tier_without_moving_the_default():
+def test_v9_carries_lisp_read_tier_and_is_the_default():
     from benchmarks.adapters.autocad_mcp_pro import AutoCADMCPProAdapter
     from benchmarks.tasks_v9 import DEFAULT_MATRIX, NEW_TASKS_V9, task_by_id
 
@@ -829,7 +829,7 @@ def test_v9_carries_lisp_read_tier_without_moving_the_default():
     # items (1.8-12/13, 1.8-08..10) append theirs after it.
     ids = [task.task_id for task in NEW_TASKS_V9]
     assert ids.index("lisp_read_tier") == ids.index("policy_read_only") + 1
-    assert DEFAULT_MATRIX == "v8"
+    assert DEFAULT_MATRIX == "v9"  # 1.8-25
     assert hasattr(AutoCADMCPProAdapter, "_task_lisp_read_tier")
 
 

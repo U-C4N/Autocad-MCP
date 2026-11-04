@@ -53,6 +53,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from backends import fault_barrier
+
 log = logging.getLogger("autocad_mcp.atomic_write")
 
 __all__ = [
@@ -405,6 +407,9 @@ def atomic_write_dxf(
         entities = _verify(doc, tmp, data, verify) if verify != "none" else None
         if marker is not None:
             _write_json(marker, _marker_payload(target, tmp, previous, sha, in_place))
+        # Test-only kill point (inert without the unshipped marker module): the
+        # tmp is verified, the marker says so, the target is not replaced yet.
+        fault_barrier.barrier("save.before_replace", key=os.path.basename(target))
         backup_path = None
         if backup and previous is not None:
             backup_path = os.path.splitext(target)[0] + ".bak"

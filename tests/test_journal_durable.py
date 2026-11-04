@@ -1,28 +1,25 @@
 """B13 (1.8-03) gate - a real server killed and restarted keeps its operations.
 
 ``python server.py`` runs as a stdio subprocess with a temporary
-``ACADMCP_STATE_DIR`` and the headless engine; the test speaks newline-framed
-JSON-RPC to it directly so that ``Popen.kill()`` (TerminateProcess on Windows,
-SIGKILL elsewhere) is a real, unannounced death - no shutdown hook runs.
+``ACADMCP_STATE_DIR`` and the headless engine, through the fault-injection
+harness (``benchmarks/fault_inject.py``): newline-framed JSON-RPC on the
+child's pipes, so that ``Popen.kill()`` (TerminateProcess on Windows, SIGKILL
+elsewhere) is a real, unannounced death - no shutdown hook runs.
 
 (a) ``cad_batch(operation_id="op-1")`` -> kill -> restart -> ``drawing_open`` ->
     the same id and steps answer ``replayed: true`` and draw nothing;
 (b) the same id with other steps is ``operation_conflict``;
-(c) a call killed while it runs (the test-only ``ACADMCP_TEST_HANG_AFTER_BEGIN``
-    hook parks it after its ``running`` row is committed) is
+(c) a call killed while it runs (the test-only barrier ``journal.after_begin``
+    of ``backends/fault_barrier.py`` parks it after its ``running`` row is
+    committed; the variable AND the unshipped marker module arm it) is
     ``requires_reconcile`` with ``error_kind: "process_exit"`` after the
     restart, and ``JOURNAL_ARGS=digest`` left no argument text in the files.
 """
 
 from __future__ import annotations
 
-import json
 import os
-import queue
 import sqlite3
-import subprocess
-import sys
-import threading
 import time
 from pathlib import Path
 
@@ -31,85 +28,21 @@ from fastmcp import Client
 
 import server
 from backends.journal_store import JOURNAL_FILE
+from benchmarks.fault_inject import ServerProcess, barrier_env
 
 ROOT = Path(__file__).resolve().parents[1]
 _LINE = {"x1": 0, "y1": 0, "x2": 10, "y2": 0}
-_STARTUP_S = 120.0
-_CALL_S = 60.0
 
 
-class StdioServer:
-    """``python server.py`` over stdio, driven with raw JSON-RPC lines."""
-
-    def __init__(self, env: dict, cwd: Path, log: Path):
-        self._log = log.open("ab")
-        self.proc = subprocess.Popen(
-            [sys.executable, str(ROOT / "server.py")],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=self._log,
-            env=env,
-            cwd=str(cwd),
-        )
-        self._lines: queue.Queue = queue.Queue()
-        threading.Thread(target=self._pump, daemon=True).start()
-        self._next_id = 0
-        self._pending: dict[int, dict] = {}
-        self.request(
-            "initialize",
-            {
-                "protocolVersion": "2025-06-18",
-                "capabilities": {},
-                "clientInfo": {"name": "journal-durable-test", "version": "0"},
-            },
-            timeout=_STARTUP_S,
-        )
-        self._write({"jsonrpc": "2.0", "method": "notifications/initialized"})
-
-    def _pump(self) -> None:
-        for raw in self.proc.stdout:
-            line = raw.strip()
-            if line:
-                self._lines.put(json.loads(line))
-        self._lines.put(None)
-
-    def _write(self, message: dict) -> None:
-        self.proc.stdin.write(json.dumps(message).encode("utf-8") + b"\n")
-        self.proc.stdin.flush()
-
-    def send(self, method: str, params: dict) -> int:
-        self._next_id += 1
-        self._write({"jsonrpc": "2.0", "id": self._next_id, "method": method, "params": params})
-        return self._next_id
-
-    def wait(self, request_id: int, timeout: float = _CALL_S) -> dict:
-        deadline = time.monotonic() + timeout
-        while request_id not in self._pending:
-            left = deadline - time.monotonic()
-            if left <= 0:
-                raise AssertionError(f"no answer to request {request_id} within {timeout:.0f}s")
-            message = self._lines.get(timeout=left)
-            if message is None:
-                raise AssertionError("the server closed its stdout")
-            if "id" in message and ("result" in message or "error" in message):
-                self._pending[message["id"]] = message
-        message = self._pending.pop(request_id)
-        assert "error" not in message, message
-        return message["result"]
-
-    def request(self, method: str, params: dict, timeout: float = _CALL_S) -> dict:
-        return self.wait(self.send(method, params), timeout)
-
-    def call(self, name: str, arguments: dict | None = None) -> dict:
-        result = self.request("tools/call", {"name": name, "arguments": arguments or {}})
-        return {"is_error": bool(result.get("isError")), **(result.get("structuredContent") or {})}
-
-    def kill(self) -> None:
-        self.proc.kill()
-        self.proc.wait(timeout=30)
-        self.proc.stdin.close()
-        self.proc.stdout.close()
-        self._log.close()
+def StdioServer(env: dict, cwd: Path, log: Path) -> ServerProcess:  # noqa: N802 - the old class name
+    """``python server.py`` over stdio, initialized (benchmarks/fault_inject.py)."""
+    child = ServerProcess(env, cwd, log)
+    try:
+        child.initialize()
+    except BaseException:
+        child.kill()
+        raise
+    return child
 
 
 def _env(state_dir: Path, **extra: str) -> dict:
@@ -216,8 +149,10 @@ def test_a_call_killed_mid_run_must_be_reconciled_after_the_restart(folders):
         "operation_id": "op-3",
     }
 
+    signals = drawings / "barriers"
+    signals.mkdir()
     first = StdioServer(
-        _env(state_dir, JOURNAL_ARGS="digest", ACADMCP_TEST_HANG_AFTER_BEGIN="op-3"),
+        barrier_env("journal.after_begin:op-3", signals, _env(state_dir, JOURNAL_ARGS="digest")),
         drawings,
         log,
     )

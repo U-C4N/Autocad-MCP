@@ -28,6 +28,11 @@
       "backends": ["com"],
       "repo": "https://github.com/LokmenoWer/best-cad-mcp",
       "notes": "COM-only server (live AutoCAD): no headless lane exists and no adapter was written, so every task is not_run, never zero."
+    },
+    {
+      "id": "lizaixi01-agentcad",
+      "adapter": null,
+      "notes": "AgentCAD: the v9 tasks on its ground (tasks_v9.RIVAL_GROUND) answer the comparison it published against us; no adapter or pinned checkout exists here, so every task is not_run, never zero."
     }
   ]
 }
