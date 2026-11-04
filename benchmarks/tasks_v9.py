@@ -58,6 +58,14 @@ until plan item 1.8-25 publishes the v9 matrix, so a run without
   no table filled - 1.8.0 ships none, the licensed copies were not at hand -
   the task is ``not_run`` naming the tables deferred to 1.8.1, never a vacuous
   pass. It runs through the backend contract, so it is not headless-only.
+* ``dwg_headless_roundtrip`` (K1, reliability) - a DWG (the bundled
+  ``templates/iso_a3_mech.dwt`` under a ``.dwg`` name: a DWT is a DWG
+  container) opened by ``drawing_open`` on the headless engine through a
+  converter (ODA, then accoreconsole) and saved as DXF holds the layers,
+  blocks and per-layout entity counts of the template's DXF twin. Its
+  broken-input twin: with the converters switched off the same open is refused
+  ``unsupported`` / capability ``dwg_read`` with the open document unchanged.
+  No converter on the machine is ``environment_blocked``, never a pass.
 """
 
 from __future__ import annotations
@@ -139,6 +147,14 @@ NEW_TASKS_V9: tuple[TaskSpec, ...] = (
         "by name with nothing drawn; no filled table is not_run naming the deferred tables",
         1.0,
     ),
+    TaskSpec(
+        "dwg_headless_roundtrip",
+        "reliability",
+        "Open a DWG on the headless engine through a converter and save it as DXF with the "
+        "layers, blocks and entity counts of its DXF twin; with no converter the open is "
+        "refused dwg_read (no converter on the machine: environment_blocked)",
+        1.0,
+    ),
 )
 
 TASKS_V9: tuple[TaskSpec, ...] = TASKS_V8 + NEW_TASKS_V9
@@ -154,6 +170,7 @@ HEADLESS_ONLY_V9: frozenset[str] = frozenset(
         "layer_cleanup_budget",
         "call_count_dimension_part",
         "pid_project_offpage",
+        "dwg_headless_roundtrip",
     }
 )
 

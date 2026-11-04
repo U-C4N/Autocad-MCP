@@ -456,6 +456,8 @@ _STATE_OF_KIND = {
     "save_verify_failed": "failed",
     "save_failed": "failed",
     "process_exit": "unknown_commit",
+    # K1: no route converted the DWG; nothing was opened.
+    "dwg_conversion_failed": "refused",
 }
 
 
@@ -1071,16 +1073,11 @@ def _is_dwg_path(path: str) -> bool:
 
 # T0.2 — the read-side twin of the backend's DWG write refusal. ezdxf detects
 # format by content, so a DXF saved under a .dwg name (what pre-1.5.0
-# drawing_save produced) opens fine and gets reported as an opened DWG, while a
-# genuine DWG dies with ezdxf's "is not a DXF file" — which blames the file
-# instead of the backend. Refuse both, in the backend's own vocabulary.
-_DWG_READ_REFUSAL = (
-    "drawing_open: backend '{backend}' has no DWG support (capability 'dwg' is "
-    "unsupported), so '{path}' is refused rather than opened as something else: "
-    "a DXF saved under a .dwg name would be parsed and reported back as a DWG. "
-    "Open the .dxf instead, or switch to the live COM backend "
-    "(AUTOCAD_MCP_BACKEND=com, needs Windows + AutoCAD) to read real DWG."
-)
+# drawing_save produced) would open fine and be reported as an opened DWG, while
+# a genuine DWG dies with ezdxf's "is not a DXF file" — which blames the file
+# instead of the backend. K1 (1.8.0): a .dwg is never handed to the DXF parser;
+# the headless engine converts it (capability `dwg_read`, backends/dwg_read.py)
+# or refuses with that capability, naming both converters.
 
 
 def _dc(obj) -> dict:
@@ -2025,7 +2022,7 @@ async def drawing_new(
 
 
 @cad_tool(
-    summary="Load an existing DXF from disk (DWG only on the live AutoCAD backend).",
+    summary="Load an existing DXF or DWG from disk (headless DWG via a converter).",
     cost="mutate",
 )
 @mcp.tool(
@@ -2035,8 +2032,8 @@ async def drawing_new(
 async def drawing_open(
     path: Annotated[
         str,
-        "Full path to the .dxf file. .dwg needs a backend that can read it "
-        "(the live COM backend); the headless ezdxf backend refuses it.",
+        "Full path to the .dxf or .dwg. Live COM reads DWG natively; headless "
+        "converts it (ODA, then accoreconsole) or refuses `dwg_read`.",
     ],
     recover: Annotated[
         bool,
@@ -2048,10 +2045,10 @@ async def drawing_open(
 ) -> dict:
     """Open an existing DXF drawing file (DWG too, on the live COM backend).
 
-    T0.2: a .dwg path is refused up front when the active backend has no `dwg`
-    capability. ezdxf sniffs content rather than extensions, so it would parse a
-    mislabelled DXF-in-a-.dwg and this tool would answer with a document that
-    does not exist in that format.
+    Headless, a .dwg is converted to DXF (ODA File Converter, then
+    accoreconsole); the result carries `dwg_read: {route, seconds, log}`. No
+    converter: refused `dwg_read`; a failed conversion: `dwg_conversion_failed`
+    with each route's log.
 
     A file that does not parse is refused (`damaged_drawing`) and the open
     document is kept; the refusal names `recover=True`. The result carries the
@@ -2063,8 +2060,10 @@ async def drawing_open(
     """
     validated = validate_path(path, allow_write=False)
     backend = _backend(ctx)
-    if _is_dwg_path(str(validated)) and not _backend_supports(backend, "dwg"):
-        raise ToolError(_DWG_READ_REFUSAL.format(backend=backend.name, path=validated))
+    if _is_dwg_path(str(validated)) and not _backend_supports(backend, "dwg_read"):
+        from backends.dwg_read import refusal as _dwg_read_refusal
+
+        raise _dwg_read_refusal(str(validated), backend.name)
     await ctx.info(f"Opening drawing: {validated}")
     await ctx.report_progress(0, 100)
     if recover:

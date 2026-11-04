@@ -157,6 +157,22 @@ def test_track_e_capability_keys_carry_the_agreed_flags():
         assert com_features[key]["supported"] is flags["com"], key
 
 
+def test_dwg_read_is_declared_on_both_engines(monkeypatch):
+    """K1 (1.8.0): ``drawing_open`` on a DWG. Not an ``@capability`` method -
+    ``drawing_open`` is abstract - but a refusal the ezdxf engine raises, so
+    both maps carry the key: COM reads natively, ezdxf per call (odafc,
+    accoreconsole, or unsupported with a reason naming both)."""
+    from backends import ezdxf_backend
+
+    monkeypatch.setenv("ACCORECONSOLE_PATH", "off")
+    monkeypatch.setattr(ezdxf_backend, "_odafc_available", lambda: False)
+    com = _feature_keys_full(ComBackend())["dwg_read"]
+    assert (com["supported"], com["mode"]) == (True, "native")
+    headless = _feature_keys_full(EzdxfBackend())["dwg_read"]
+    assert headless["supported"] is False
+    assert "oda_file_converter" in headless["reason"] and "accoreconsole" in headless["reason"]
+
+
 def test_layer_states_are_declared_as_ours_not_autocads():
     """Spec §7.2 / §8.3: the states live in the file and travel with it, and do
     not appear in AutoCAD's Layer States Manager. Said in the map, not only in

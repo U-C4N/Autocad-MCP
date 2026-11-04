@@ -15,6 +15,9 @@ DEFAULT_MAX_DXF_BYTES = 512 * 1024 * 1024
 #: Default ``MAX_HTTP_BODY_BYTES``: 8 MiB (1.8-17).
 DEFAULT_MAX_HTTP_BODY_BYTES = 8 * 1024 * 1024
 
+#: Default ``ACCORECONSOLE_TIMEOUT_S`` (K1): a conversion measured 1-2 s here.
+DEFAULT_ACCORECONSOLE_TIMEOUT_S = 60.0
+
 #: ``LISP_POLICY`` values (1.8-18, ``security_lisp.py``); the first is the default.
 LISP_POLICIES: tuple[str, ...] = ("read", "denylist", "off")
 
@@ -75,6 +78,32 @@ class Settings:
         is unverifiable by us, and only AutoCAD is tested.
         """
         return os.environ.get("CAD_PROGID", "").strip() or DEFAULT_CAD_PROGID
+
+    @property
+    def accoreconsole_path(self) -> str:
+        """``ACCORECONSOLE_PATH`` as set, stripped ("" when unset; K1, 1.8.0).
+
+        The headless engine's second DWG reader (``backends/dwg_read.py``):
+        unset means AutoCAD 2026's installed ``accoreconsole.exe`` when it
+        exists, ``off`` disables the route. Read live, like ``backend``.
+        """
+        return os.environ.get("ACCORECONSOLE_PATH", "").strip()
+
+    @property
+    def accoreconsole_timeout_s(self) -> float:
+        """``ACCORECONSOLE_TIMEOUT_S`` (default 60): one DWG -> DXF conversion's
+        deadline; an overrun kills the process tree. Read live."""
+        raw = os.environ.get("ACCORECONSOLE_TIMEOUT_S", "").strip()
+        try:
+            value = float(raw) if raw else DEFAULT_ACCORECONSOLE_TIMEOUT_S
+        except ValueError:
+            raise ValueError(
+                f"ACCORECONSOLE_TIMEOUT_S={raw!r}: expected a number of seconds "
+                f"(default {DEFAULT_ACCORECONSOLE_TIMEOUT_S:g})"
+            ) from None
+        if value <= 0:
+            raise ValueError(f"ACCORECONSOLE_TIMEOUT_S={raw!r}: must be more than 0 seconds")
+        return value
 
     def __init__(self):
         self.log_level: str = os.environ.get("LOG_LEVEL", "INFO").upper().strip()

@@ -6,7 +6,9 @@ non-blocking use in the FastMCP async context.
 
 DXF only: ezdxf has no DWG writer, so every save path that would put DXF bytes
 behind a ``.dwg`` name refuses instead (capability ``dwg``). Real DWG I/O needs
-the live COM backend.
+the live COM backend; ``drawing_open`` reads a DWG by converting it to DXF
+first, through the ODA File Converter or AutoCAD's accoreconsole (capability
+``dwg_read``, ``backends/dwg_read.py``, K1).
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ import config
 from engineering import measure
 from engineering.errors import DimensionRenderError, EntityNotFoundError
 
-from . import lineage, ocs
+from . import dwg_read, lineage, ocs
 from .atomic_write import atomic_write_dxf, file_sha256, resolve_pending
 from .base import (
     AutoCADBackend,
@@ -2111,6 +2113,9 @@ class EzdxfBackend(AutoCADBackend):
                     False,
                     reason="reload_and_bind_need_a_live_seat;list_detach_path_are_headless",
                 ),
+                # K1 (1.8.0): drawing_open converts a DWG to DXF - the ODA File
+                # Converter first, then accoreconsole - re-evaluated per call.
+                "dwg_read": dwg_read.capability(_odafc_available()),
                 "xlsx_write": (
                     FeatureCapability(True, "openpyxl")
                     if find_spec("openpyxl") is not None
@@ -3134,9 +3139,19 @@ class EzdxfBackend(AutoCADBackend):
         errors, messages, entities_read}`` and starts a new lineage with
         ``recovered_from`` - a later save onto the source needs
         ``overwrite_source=True``.
+
+        K1: a ``.dwg`` path is converted to DXF first (``backends/dwg_read.py``:
+        the ODA File Converter, then accoreconsole) and the result carries
+        ``dwg_read: {route, seconds, ...}`` - the console's exit code and its
+        log's last lines on that route. No converter is a ``dwg_read``
+        capability refusal; every route failing is ``dwg_conversion_failed``.
+        The document keeps the ``.dwg`` path, so a save onto it is still refused
+        (``dwg``) - save it as a ``.dxf``.
         """
 
         def _sync():
+            if not recover and _is_dwg_path(path) and not os.path.isfile(path):
+                raise FileNotFoundError(f"drawing_open: {path} does not exist")
             max_bytes = config.settings.max_dxf_bytes
             if max_bytes > 0:
                 try:
@@ -3151,8 +3166,11 @@ class EzdxfBackend(AutoCADBackend):
             # Before the read: a finished replace changes the bytes read below.
             save_recovery = resolve_pending(path)
             recovered = None
+            converted = None
             if recover:
                 doc, recovered = recover_dxf(path)
+            elif _is_dwg_path(path):
+                doc, converted = dwg_read.read_dwg(path, odafc=_odafc_available(), read=read_dxf)
             else:
                 doc = read_dxf(path)
             sha = file_sha256(path)
@@ -3230,6 +3248,8 @@ class EzdxfBackend(AutoCADBackend):
                 result["recovered"] = recovered
                 result["recovered_from"] = path
                 result["lineage"]["recovered_from"] = path
+            if converted is not None:
+                result["dwg_read"] = converted
             if save_recovery:
                 result["save_recovery"] = save_recovery
             if reloaded:

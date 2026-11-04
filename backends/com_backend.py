@@ -2965,6 +2965,8 @@ class ComBackend(AutoCADBackend):
                 "xref_live": FeatureCapability(
                     True, "native", reason="block_reload_bind_detach_on_the_live_seat"
                 ),
+                # K1 (1.8.0): AutoCAD opens a DWG itself (Documents.Open).
+                "dwg_read": FeatureCapability(True, "native"),
                 "xlsx_write": (
                     FeatureCapability(True, "openpyxl")
                     if find_spec("openpyxl") is not None

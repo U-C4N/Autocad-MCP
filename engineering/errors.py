@@ -124,6 +124,8 @@ FILE_KINDS = (
     "save_locked",
     "save_verify_failed",
     "save_failed",
+    # K1: every available DWG -> DXF route failed (backends/dwg_read.py).
+    "dwg_conversion_failed",
 )
 
 #: Every kind an error envelope or a step row can carry. Closed: a client that
@@ -238,6 +240,9 @@ ERROR_TABLE: dict[str, KindSpec] = {
     ),
     "process_exit": KindSpec(
         "dependency", False, "The server ended mid-call; inspect the drawing before a retry."
+    ),
+    "dwg_conversion_failed": KindSpec(
+        "dependency", False, "The DWG converter failed; see attempts[].log, or use the COM engine."
     ),
 }
 
@@ -545,6 +550,12 @@ def _file_refusal_types() -> tuple[type, ...]:
             found.append(AtomicWriteError)
         except Exception as exc:  # pragma: no cover - a core module
             log.debug("atomic write error type unavailable: %s", exc)
+        try:
+            from backends.dwg_read import DwgConversionError
+
+            found.append(DwgConversionError)
+        except Exception as exc:  # pragma: no cover - a core module
+            log.debug("dwg conversion error type unavailable: %s", exc)
         _file_error_types = tuple(found)
     return _file_error_types
 
@@ -749,7 +760,10 @@ def classify(exc: BaseException) -> dict:
         # 1.8-04: a damaged or protected drawing, a save that did not land. By
         # type; the instance's own ``kind`` (a SaveLockedError is an
         # AtomicWriteError whose kind is save_locked), and its own sentence.
-        return {"kind": str(found.kind), "message": compact_message(str(found))}
+        # K1: a failed DWG conversion adds its ``attempts`` (route, reason, log).
+        row = {"kind": str(found.kind), "message": compact_message(str(found))}
+        row.update(getattr(found, "details", None) or {})
+        return row
     incomplete = _first_of(exc, CommandIncompleteError)
     if incomplete is not None:
         return {

@@ -98,6 +98,18 @@ def full_catalog(request):
         module._apply_discovery_mode()
 
 
+@pytest.fixture(autouse=True)
+def no_dwg_converter(monkeypatch):
+    """No test spawns AutoCAD's accoreconsole unless it says so (K1, 1.8.0).
+
+    Unset, ``ACCORECONSOLE_PATH`` means AutoCAD 2026's installed console when it
+    exists, so on a developer machine with AutoCAD every ``drawing_open`` of a
+    ``.dwg`` would start a real AutoCAD engine. ``tests/test_dwg_read.py`` sets
+    the variable itself, to a fake or to the real executable.
+    """
+    monkeypatch.setenv("ACCORECONSOLE_PATH", "off")
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",

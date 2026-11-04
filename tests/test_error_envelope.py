@@ -107,9 +107,10 @@ def test_the_table_declares_every_kind_once_with_a_known_category():
 def test_every_kind_attribute_the_code_raises_is_declared():
     """A ``.kind`` an exception class carries reaches the wire through
     ``classify``; an undeclared one would read as ``internal``'s row."""
-    from backends import atomic_write, dxf_recover, operations
+    from backends import atomic_write, dwg_read, dxf_recover, operations
 
     raised = [
+        dwg_read.DwgConversionError,
         dxf_recover.DrawingParseError,
         dxf_recover.RecoveredSourceError,
         dxf_recover.RecoverUnsupportedError,
@@ -140,6 +141,8 @@ FILE_KIND_OUTCOMES = {
     "save_locked": ("refused", True, "file"),
     "save_verify_failed": ("failed", False, "file"),
     "save_failed": ("failed", False, "file"),
+    # K1: no converter route produced a DXF - nothing was opened.
+    "dwg_conversion_failed": ("refused", False, "dependency"),
 }
 
 
