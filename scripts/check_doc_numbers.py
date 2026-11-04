@@ -119,13 +119,72 @@ LIVE_HARNESS_SCHEMA = "acadmcp-live-harness/1"
 #: The documents whose live claims are held to evidence.
 LIVE_CLAIM_FILES: tuple[str, ...] = ("README.md", "CLAUDE.md")
 
-#: ``executed live once by `scripts/smoke_x_com.py` (AutoCAD 2026)`` and the
-#: pinned form ``(AutoCAD 2026, 1.8.0)``. Group 1 the script, 2 the AutoCAD
-#: year, 3 the pinned release (optional).
+#: The canonical sentence, ``executed live once by `scripts/smoke_x_com.py`
+#: (AutoCAD 2026)`` with the pinned form ``(AutoCAD 2026, 1.8.0)``. Group 1 the
+#: script, 2 the AutoCAD year, 3 the pinned release (optional). Kept for its
+#: readers; the claims are found by the sentence reader below, which matches
+#: this form and every other wording of a live run.
 LIVE_CLAIM_PATTERN = re.compile(
     r"executed live once by `scripts/(smoke_[A-Za-z0-9_]+\.py)`\s*"
     r"\(AutoCAD (\d{4})(?:[,;]\s*(?:release\s+)?v?(\d+\.\d+\.\d+))?\)"
 )
+
+# A live claim is not one phrasing. Review 1.8-25a: "run against a **live
+# AutoCAD 2027**", "AutoCAD 2027 tested: `scripts/smoke_x.py` passed live" and
+# "executed live by `scripts/smoke_x.py` on AutoCAD 2026" all claim a run, and
+# the one pattern above read none of them. So the documents are read sentence
+# by sentence (a table cell is a sentence): a sentence that says a run happened
+# (``LIVE_WORDS``) and names an AutoCAD year or a concrete smoke script is a
+# claim, unless it says the run did NOT happen (``LIVE_NEGATION``):
+#
+# * a smoke script and a year -> that smoke must have passed on that seat;
+# * a smoke script, no year   -> that smoke must have passed on some seat;
+# * a year, no script         -> a seat claim: some smoke must have passed on a
+#   seat of that year ("the live COM harness passing on AutoCAD 2026").
+#
+# Every year in the sentence is claimed. A glob (``smoke_*_com.py``) names no
+# script. The release ceiling and the pinned form are the same as before.
+
+#: An AutoCAD year: ``AutoCAD 2026``, ``**live AutoCAD 2026**``, and the pinned
+#: ``(AutoCAD 2026, 1.8.0)``. Group 1 the year, 2 the pinned release.
+LIVE_YEAR = re.compile(
+    r"AutoCAD(?:\*\*|\s)+(20\d{2})\b(?:\s*[,;]\s*(?:release\s+)?v?(\d+\.\d+\.\d+)\b)?"
+)
+
+#: A concrete smoke script, with or without ``scripts/`` (group 1).
+LIVE_SCRIPT = re.compile(r"(?:scripts/)?\b(smoke_[A-Za-z0-9_]+\.py)\b")
+
+#: Words that say a run happened.
+LIVE_WORDS = re.compile(
+    r"\blive\b|\bexecuted\b|\bpass(?:ed|es|ing)?\b|\btested\b|\bverified\b|\bmeasured\b|\bran\b",
+    re.IGNORECASE,
+)
+
+#: Words that say it did not: "have not been run on a live seat yet", "(written,
+#: not yet run on a seat)", "never in CI", "environment_blocked", "unmeasured
+#: until the `set edits` stage of `scripts/smoke_settings_com.py` runs".
+LIVE_NEGATION = re.compile(
+    r"\b(?:not|never)\b(?:\W+\w+){0,4}?\W+(?:run|ran|executed|tested|passed|live|seat|CI)\b"
+    r"|\benvironment_blocked\b|\bun(?:tested|measured|verified|backed)\b|\buntil\b"
+    r"|\bno\s+(?:live\s+)?(?:20\d{2}\s+)?seat\b",
+    re.IGNORECASE,
+)
+
+#: Where a sentence ends: after . ! ? before the next one starts, at a line
+#: break, or at a table cell border.
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z>*`(\[_])|\n|\s\|\s|^\||\|$", re.MULTILINE)
+
+
+def _sentences(text: str):
+    """``(offset, sentence)`` for every sentence of ``text``."""
+    start = 0
+    for match in _SENTENCE_END.finditer(text):
+        if match.start() > start:
+            yield start, text[start : match.start()]
+        start = match.end()
+    if start < len(text):
+        yield start, text[start:]
+
 
 #: ``Application.Version`` (the harness drops the licence text) -> AutoCAD year.
 ACAD_RELEASE_YEARS: dict[str, int] = {
@@ -179,7 +238,11 @@ def documented_release() -> str:
 
 
 def live_claims(files: tuple[str, ...] = LIVE_CLAIM_FILES, root: Path | None = None) -> list[dict]:
-    """Every live claim in ``files``: ``{file, line, script, smoke, year, release}``."""
+    """Every live claim in ``files``: ``{file, line, script, smoke, year, release}``.
+
+    ``script`` / ``smoke`` are None for a seat claim (a year, no script);
+    ``year`` is None for a script claimed live on no named seat.
+    """
     base = ROOT if root is None else Path(root)
     claims = []
     for relative in files:
@@ -187,17 +250,26 @@ def live_claims(files: tuple[str, ...] = LIVE_CLAIM_FILES, root: Path | None = N
         if not path.is_file():
             continue
         text = path.read_text(encoding="utf-8")
-        for match in LIVE_CLAIM_PATTERN.finditer(text):
-            claims.append(
-                {
-                    "file": relative,
-                    "line": text.count("\n", 0, match.start()) + 1,
-                    "script": match.group(1),
-                    "smoke": smoke_name(match.group(1)),
-                    "year": int(match.group(2)),
-                    "release": match.group(3),
-                }
-            )
+        for offset, sentence in _sentences(text):
+            if not LIVE_WORDS.search(sentence) or LIVE_NEGATION.search(sentence):
+                continue
+            years = [(int(m.group(1)), m.group(2)) for m in LIVE_YEAR.finditer(sentence)]
+            scripts = list(dict.fromkeys(m.group(1) for m in LIVE_SCRIPT.finditer(sentence)))
+            if not years and not scripts:
+                continue
+            line = text.count("\n", 0, offset) + 1
+            for year, release in years or [(None, None)]:
+                for script in scripts or [None]:
+                    claims.append(
+                        {
+                            "file": relative,
+                            "line": line,
+                            "script": script,
+                            "smoke": smoke_name(script) if script else None,
+                            "year": year,
+                            "release": release,
+                        }
+                    )
     return claims
 
 
@@ -249,10 +321,14 @@ def backing(claim: dict, evidence: list[dict], release: str) -> dict | None:
     """The first pass result that backs ``claim`` when ``release`` is documented."""
     ceiling = _release_key(release)
     for row in evidence:
-        if row["smoke"] != claim["smoke"] or row["status"] != "pass":
+        if row["status"] != "pass":
             continue
-        if row["year"] != claim["year"]:
+        if claim["smoke"] is not None and row["smoke"] != claim["smoke"]:
+            continue  # a seat claim (no script) is backed by any smoke's pass
+        if claim["year"] is not None and row["year"] != claim["year"]:
             continue
+        if claim["year"] is None and row["year"] is None:
+            continue  # a pass on no recorded seat backs no live claim
         key = _release_key(row["release"])
         if key is None or (ceiling is not None and key > ceiling):
             continue
@@ -275,12 +351,20 @@ def check_live_claims(
         table.append({**claim, "evidence": None if row is None else row["source"]})
         if row is None:
             pinned = f", release {claim['release']}" if claim["release"] else ""
-            problems.append(
-                f"UNBACKED  {claim['file']}:{claim['line']}: `scripts/{claim['script']}` is "
-                f"claimed live (AutoCAD {claim['year']}{pinned}) but no pass result of "
-                f"'{claim['smoke']}' on that seat exists for release {release} or earlier "
-                f"({LIVE_DIR}/<release>/{LIVE_MATRIX} or a {LIVE_HARNESS_SCHEMA} file)"
-            )
+            seat = f"AutoCAD {claim['year']}" if claim["year"] else "a seat"
+            where = f"{claim['file']}:{claim['line']}"
+            sources = f"({LIVE_DIR}/<release>/{LIVE_MATRIX} or a {LIVE_HARNESS_SCHEMA} file)"
+            if claim["script"] is None:
+                problems.append(
+                    f"UNBACKED  {where}: a live {seat}{pinned} run is claimed but no smoke "
+                    f"passed on that seat for release {release} or earlier {sources}"
+                )
+            else:
+                problems.append(
+                    f"UNBACKED  {where}: `scripts/{claim['script']}` is claimed live "
+                    f"({seat}{pinned}) but no pass result of '{claim['smoke']}' on that seat "
+                    f"exists for release {release} or earlier {sources}"
+                )
     return problems, table
 
 
@@ -408,22 +492,24 @@ CHECKS: list[tuple[str, str, str, str]] = [
 
 def run(verbose: bool = False) -> int:
     values = derived()
+    failures = 0
 
     if values["suite_checks"] != values["ab_total"]:
+        # Reported, not returned: the live claims below are still checked
+        # (review 1.8-25a - an early return hid them until the A/B rerun).
         print(
             f"DRIFT  correctness_suite.py has {values['suite_checks']} checks but the published "
             f"A/B report was run over {values['ab_total']} -- regenerate the report:\n"
             f"       python benchmarks/compare_versions.py {values['ab_baseline_ref']} "
             f"--json {AB_REPORT}"
         )
-        return 1
+        failures += 1
 
     if verbose:
         for key, value in values.items():
             print(f"  {key:20s} {value}")
         print()
 
-    failures = 0
     for relative, label, pattern, key in CHECKS:
         text = _read(relative)
         match = re.search(pattern, text, re.DOTALL)

@@ -5,6 +5,12 @@
 that smoke on that seat, from the documented release or an earlier one: a row
 of ``benchmarks/results/live/<release>/matrix.json`` (``scripts/live/run_all.py``)
 or a pre-matrix harness file. A claim without one is named.
+
+Review 1.8-25a: that one phrasing was all the gate read, so README's "run
+against a **live AutoCAD 2026**" and any "AutoCAD 2027 tested" passed
+unchecked. The claims are now read sentence by sentence: a sentence saying a
+run happened and naming a seat year or a smoke script is a claim, whatever its
+wording, unless it says the run did not happen.
 """
 
 from __future__ import annotations
@@ -145,3 +151,81 @@ def test_every_live_claim_of_this_tree_is_backed():
     problems, table = cdn.check_live_claims()
     assert problems == [], problems
     assert table, "the documents carry live claims; the pattern still finds them"
+
+
+# -- review 1.8-25a: a live claim is not one phrasing -----------------------------------
+
+#: Every wording below claims a run that no result file backs: the evidence is
+#: one pid pass on a 2026 seat from 1.7.0 (and nothing for space, nothing on 2027).
+_UNBACKED_WORDINGS = (
+    "> The COM paths run against a **live AutoCAD 2027** through thirteen asserting smoke scripts.",
+    "The COM paths were executed live by `scripts/smoke_space_com.py` (AutoCAD 2026)",
+    "The COM paths were executed live once by `scripts/smoke_space_com.py` on AutoCAD 2026",
+    "AutoCAD 2027 tested: `scripts/smoke_space_com.py` passed live.",
+    "| **Evidence** | the live COM harness passing on AutoCAD 2027, and no workload slower |",
+    "`scripts/smoke_space_com.py` passed live.",
+    "Measured on AutoCAD 2027: an entity added moves the revision by one.",
+    "The COM paths were executed live once by `scripts/smoke_pid_com.py` (AutoCAD 2027).",
+)
+
+
+@pytest.mark.parametrize("sentence", _UNBACKED_WORDINGS)
+def test_any_wording_of_an_unbacked_live_run_is_named(tmp_path, sentence):
+    root = _tree(tmp_path, "", readme="# Title\n\nSome prose.\n\n" + sentence + "\n")
+    _harness_file(root, "pid", "pass", "1.7.0")
+    problems, table = cdn.check_live_claims(root, release="1.8.0")
+    assert len(problems) == 1 and problems[0].startswith("UNBACKED  README.md:5:"), problems
+    assert all(row["evidence"] is None for row in table)
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "The live COM harness passed on AutoCAD 2026.",
+        "> The COM paths run against a **live AutoCAD 2026** through one smoke script.",
+        "The COM paths were executed live once by `scripts/smoke_pid_com.py` (AutoCAD 2026).",
+        "`scripts/smoke_pid_com.py` passed live on AutoCAD 2026.",
+    ],
+)
+def test_a_backed_wording_passes(tmp_path, sentence):
+    root = _tree(tmp_path, "", readme=sentence + "\n")
+    _harness_file(root, "pid", "pass", "1.7.0")
+    problems, table = cdn.check_live_claims(root, release="1.8.0")
+    assert problems == [] and table and all(row["evidence"] for row in table)
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "Four of them have not been run on a live seat yet: `smoke_space_com.py`, "
+        "`smoke_edit_com.py` and `smoke_render_com.py`.",
+        "The live check is `scripts/smoke_lisp_com.py` (written, not yet run on a seat).",
+        "The live COM paths are checked on a running AutoCAD, never in CI: "
+        "`python scripts/smoke_verify_com.py --json out/verify.json`.",
+        "No 2027 seat was at hand: the AutoCAD 2027 lane is environment_blocked.",
+        "The live assumption is unmeasured until the `set edits` stage of "
+        "`scripts/smoke_settings_com.py` runs.",
+        "The `scripts/smoke_*_com.py` scripts attach to a live seat.",
+    ],
+)
+def test_a_sentence_that_says_the_run_did_not_happen_claims_nothing(tmp_path, sentence):
+    root = _tree(tmp_path, "", readme=sentence + "\n")
+    assert cdn.live_claims(root=root) == []
+
+
+def test_a_seat_claim_is_backed_only_by_a_pass_on_that_years_seat(tmp_path):
+    root = _tree(tmp_path, "", readme="The live COM harness passes on AutoCAD 2026.\n")
+    _matrix(root, "1.8.0", [("space", "environment_blocked"), ("edit", "fail")])
+    (problem,) = cdn.check_live_claims(root, release="1.8.0")[0]
+    assert "a live AutoCAD 2026 run is claimed" in problem
+    _harness_file(root, "pid", "pass", "1.7.0", acad="26.0")  # a 2027 seat
+    assert len(cdn.check_live_claims(root, release="1.8.0")[0]) == 1
+    _harness_file(root, "arch", "pass", "1.7.0", acad="25.1s")  # a 2026 seat
+    assert cdn.check_live_claims(root, release="1.8.0")[0] == []
+
+
+def test_the_readme_live_claims_of_this_tree_are_read():
+    # review 1.8-25a: live_claims(files=("README.md",)) was [] on this tree
+    readme = cdn.live_claims(files=("README.md",))
+    assert readme, "README states live runs on AutoCAD 2026; the reader must find them"
+    assert {claim["year"] for claim in readme} == {2026}
