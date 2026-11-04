@@ -126,6 +126,76 @@ _COM_ERROR: tuple[type[BaseException], ...] = (pywintypes.com_error,) if _COM_IM
 #: per call, so the read-only reads that follow a switch wait it out themselves.
 _RPC_E_CALL_REJECTED = -2147418111
 
+#: ``RPC_E_SERVERCALL_RETRYLATER``: the same "busy, did not run" answer from a
+#: message filter that asks the caller to retry.
+_RPC_E_SERVERCALL_RETRYLATER = -2147417846
+
+
+if _COM_IMPORTS_OK:
+
+    class RejectedLookupError(AttributeError, pywintypes.com_error):
+        """A member lookup AutoCAD refused because it was busy - not a missing member.
+
+        MEASURED on AutoCAD 2026 (live smokes ``document`` / ``space``,
+        2026-11-04): right after ``Documents.Close`` the first read of a member
+        name not yet looked up on that proxy - ``app.Documents.Count``,
+        ``Documents.Item``, ``doc.HandleToObject`` - raised ``AttributeError:
+        <unknown>.Count``. pywin32's dynamic ``CDispatch.__getattr__`` swallows
+        the ``RPC_E_CALL_REJECTED`` its ``GetIDsOfNames`` got and reports the
+        name as missing, so no rejection handler (``_wait_out_rejected_call``,
+        ``_acad_doc``'s ``application_busy``, the live harness's retry) saw it.
+        This error is both: an ``AttributeError`` (``hasattr`` still answers
+        False) and a ``com_error`` carrying the HRESULT, so every one of them
+        does.
+        """
+
+        def __init__(self, hresult: int, name: str):
+            super().__init__(hresult, f"AutoCAD refused the lookup of {name!r} (busy)", None, None)
+            self.hresult = hresult
+
+    def _surface_rejected_lookups() -> None:
+        """Wrap ``CDispatch.__getattr__`` so a refused lookup raises ``RejectedLookupError``.
+
+        Only a lookup that already failed costs one more call
+        (``GetIDsOfNames``), and only its busy answers change the outcome;
+        a member that does not exist stays the ``AttributeError`` it was.
+        """
+        from win32com.client import dynamic
+
+        original = dynamic.CDispatch.__getattr__
+        if getattr(original, "_acadmcp_rejection_aware", False):
+            return
+
+        def __getattr__(self, attr):  # noqa: N807 - pywin32's own hook
+            try:
+                return original(self, attr)
+            except AttributeError:
+                oleobj = None if attr.startswith("_") else self.__dict__.get("_oleobj_")
+                if oleobj is None:
+                    raise
+                try:
+                    oleobj.GetIDsOfNames(0, attr)  # (lcid, name), as pywin32 calls it
+                except pywintypes.com_error as exc:
+                    hr = exc.args[0] if exc.args else 0
+                    if hr in (_RPC_E_CALL_REJECTED, _RPC_E_SERVERCALL_RETRYLATER):
+                        raise RejectedLookupError(hr, attr) from None
+                    raise AttributeError(f"{self._username_}.{attr}") from None
+                except Exception:  # the classification is best effort
+                    raise AttributeError(f"{self._username_}.{attr}") from None
+            # The name resolves now: the failed lookup was a transient refusal
+            # (pywin32 raises AttributeError only when GetIDsOfNames failed).
+            # Measured live: the first lookup after Close was refused and the
+            # next one answered. One more attempt, whose errors are its own.
+            return original(self, attr)
+
+        __getattr__._acadmcp_rejection_aware = True
+        dynamic.CDispatch.__getattr__ = __getattr__
+
+    try:
+        _surface_rejected_lookups()
+    except Exception as _exc:  # pragma: no cover - a pywin32 without dynamic
+        log.debug("rejected-lookup hook not installed: %s", _exc)
+
 
 def _wait_out_rejected_call(read: Callable[[], Any], *, budget_s: float, first_pause_s: float):
     """Run a read-only COM callable again while it answers ``RPC_E_CALL_REJECTED``.
