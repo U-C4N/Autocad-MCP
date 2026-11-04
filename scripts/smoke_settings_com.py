@@ -506,7 +506,13 @@ async def _dimension_truth(h: LiveHarness) -> dict:
         "scale": scaled,
         "rerender": rerender,
         "double_prefix_rendered": double_text,
-        "double_prefix_is_double": bool(double_text and double_text.count("Ø") >= 2),
+        # Both glyphs count: measured on AutoCAD 2026 (2026-11-04) the *D text
+        # of "%%c<>" is "Ø∅20" - U+00D8 from %%c, then U+2205, the diameter
+        # dimension's own prefix - which a count of "Ø" alone read as single.
+        "double_prefix_is_double": bool(
+            double_text and sum(double_text.count(sign) for sign in ("Ø", "∅")) >= 2
+        ),
+        "double_prefix_codepoints": [f"U+{ord(c):04X}" for c in (double_text or "")],
         "dimension_truth": [i.to_dict() for i in issues],
     }
 
