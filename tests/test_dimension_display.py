@@ -606,7 +606,7 @@ def com(monkeypatch):
 
     doc = _Doc(_Dim("2A"), _Dim("2B"), _Dim("3C", "AcDbLine"))
     monkeypatch.setattr(module, "_acad_doc", lambda: doc)
-    monkeypatch.setattr(module, "_regen", lambda: None)
+    monkeypatch.setattr(module, "_regen", lambda *_entity: None)
     backend = module.ComBackend()
 
     async def _run_inline(func, *args, **kwargs):

@@ -143,22 +143,43 @@ def _make_mock_doc(
 
     doc.GetVariable.side_effect = _get_variable
     doc.SetVariable.return_value = None
-    doc.SendCommand.return_value = None
 
-    # Modelspace iteration for handle snapshotting
-    pre = modelspace_handles_pre or set()
-    post = modelspace_handles_post or set()
-    call_count: list[int] = [0]
+    # No layout members: the fallback reads the target space's own block.
+    doc.Layouts.Item.side_effect = RuntimeError("no Layouts on this seat")
 
-    def _iter_modelspace():
-        call_count[0] += 1
-        handles = pre if call_count[0] == 1 else post
-        for h in handles:
-            entity = MagicMock()
-            entity.Handle = h
-            yield entity
+    # 1.8-23: model space as Count / Item - the fallback reads its Count and
+    # last handle before the command and only its new tail after, never the
+    # whole space (iterating it fails the test).
+    pre = sorted(modelspace_handles_pre or set(), key=lambda h: int(h, 16))
+    post = sorted(modelspace_handles_post or set(), key=lambda h: int(h, 16))
+    items: list = []
 
-    doc.ModelSpace.__iter__ = lambda _: _iter_modelspace()
+    def _entity(handle):
+        entity = MagicMock()
+        entity.Handle = handle
+        entity.ObjectName = "AcDbLine"
+        return entity
+
+    items.extend(_entity(h) for h in pre)
+
+    def _send(_text):
+        for handle in post:
+            if handle not in pre:
+                items.append(_entity(handle))
+
+    class _Space:
+        @property
+        def Count(self):
+            return len(items)
+
+        def Item(self, index):
+            return items[index]
+
+        def __iter__(self):
+            raise AssertionError("model space was walked whole")
+
+    doc.SendCommand.side_effect = _send
+    doc.ModelSpace = _Space()
     return doc
 
 

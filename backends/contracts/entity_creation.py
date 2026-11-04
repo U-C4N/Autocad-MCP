@@ -187,6 +187,97 @@ class EntityCreationContract(ABC):
         layer: str | None = None,
     ) -> EntityInfo: ...
 
+    # ── bulk tools (1.8-23) ──────────────────────────────────────────────────
+    #
+    # Concrete: the base implementation is the loop ``server.py`` ran up to
+    # 1.8.0 - one ``entity_create_*`` / ``entity_delete`` per item - so the
+    # headless results are what they were, byte for byte. ``ComBackend``
+    # overrides both with ONE STA job (one guard, one refresh, per-item rows
+    # carrying a ``kind``). Neither is atomic: an item that fails leaves the
+    # earlier ones written; atomicity is ``cad_batch(transaction=True)``'s and,
+    # for the delete tool, the server's transaction around this call.
+
+    #: ``entity_batch_create``'s ``type`` -> the ``entity_create_*`` it calls.
+    BATCH_CREATE_TYPES = (
+        "line",
+        "circle",
+        "arc",
+        "polyline",
+        "text",
+        "mtext",
+        "point",
+        "hatch",
+        "spline",
+        "ellipse",
+    )
+
+    async def entity_batch_create(self, specs: list[dict], *, progress=None) -> dict:
+        """Create every spec in ``specs``. ``{created, errors, entities}``.
+
+        A spec is ``{"type": <BATCH_CREATE_TYPES>, ...that create's
+        arguments}`` plus an optional ``lineweight`` (refused by name before
+        the create, so a bad one draws nothing). ``errors`` rows are
+        ``{index, error}`` for a missing or unknown type and
+        ``{index, type, error}`` for a create that raised; ``entities`` the
+        created ``EntityInfo`` as dicts, in spec order. ``progress(i, total)``
+        is awaited before each spec when given. The specs are not modified.
+        """
+        from dataclasses import asdict
+
+        from backends.base import lineweight_name, parse_lineweight
+
+        results: list[dict] = []
+        errors: list[dict] = []
+        total = len(specs)
+        for index, raw in enumerate(specs):
+            if progress is not None:
+                await progress(index, total)
+            spec = dict(raw)
+            kind = spec.pop("type", None)
+            if not kind:
+                errors.append({"index": index, "error": "Missing 'type' key"})
+                continue
+            if str(kind).lower() not in self.BATCH_CREATE_TYPES:
+                errors.append({"index": index, "error": f"Unknown type: {kind}"})
+                continue
+            creator = getattr(self, f"entity_create_{str(kind).lower()}")
+            try:
+                # Parsed before the create, so a refused lineweight draws nothing.
+                weight = parse_lineweight(spec.pop("lineweight", None))
+                info = await creator(**spec)
+                if weight is not None:
+                    await self.entity_set_properties(info.handle, lineweight=weight)
+                    info.lineweight_name = lineweight_name(weight)
+                results.append(asdict(info))
+            except Exception as exc:
+                errors.append({"index": index, "type": kind, "error": str(exc)})
+        return {"created": len(results), "errors": errors, "entities": results}
+
+    async def entity_delete_many(
+        self, handles: list[str], *, progress=None, stop_on_error: bool = False
+    ) -> dict:
+        """Delete every handle in ``handles``. ``{deleted, errors}``.
+
+        ``errors`` rows are ``{handle, error}`` (the live engine adds
+        ``kind``). ``stop_on_error`` stops at the first failure - for a caller
+        that rolls the whole call back anyway. ``progress(i, total)`` is
+        awaited before each handle when given.
+        """
+        deleted = 0
+        errors: list[dict] = []
+        total = len(handles)
+        for index, handle in enumerate(handles):
+            if progress is not None:
+                await progress(index, total)
+            try:
+                await self.entity_delete(handle)
+                deleted += 1
+            except Exception as exc:
+                errors.append({"handle": handle, "error": str(exc)})
+                if stop_on_error:
+                    break
+        return {"deleted": deleted, "errors": errors}
+
     # ── hatch depth (M8 / F4) ────────────────────────────────────────────────
 
     @abstractmethod

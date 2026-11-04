@@ -21,13 +21,18 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
 import config
-from engineering.errors import ApplicationBusyError, CommandIncompleteError, EntityNotFoundError
+from engineering.errors import (
+    ApplicationBusyError,
+    CommandIncompleteError,
+    EntityNotFoundError,
+    classify,
+)
 from engineering.measure import is_self_intersecting, polygon_area_perimeter
 from security import sanitize_macro_argument, sanitize_symbol_name, validate_path
 
@@ -636,6 +641,61 @@ def _handle_to_object(doc, handle):
         raise EntityNotFoundError(handle) from exc
 
 
+def _job_named(job, method: str):
+    """``job`` reported under ``method`` (1.8-23's create job builders).
+
+    ``real_call_name`` names a call by the method its ``_sync`` closure was
+    defined in; a builder's closure lives in ``_create_<type>_job``, so the
+    call_outcomes rows and timeouts would name the builder instead of the
+    tool. The qualname is set to what it was before the split.
+    """
+    job.__qualname__ = f"ComBackend.{method}.<locals>._sync"
+    return job
+
+
+def _reraise_if_connection_lost(exc: BaseException) -> None:
+    """Re-raise a COM error that is about the connection (``_NOT_A_HANDLE_ANSWER``).
+
+    A bulk job's per-item ``try`` (1.8-23) types one item's failure into its
+    row; a refused call or a server that went away is not one item's problem -
+    every later item would fail the same way - so it ends the job and reaches
+    ``_run`` as the COM error it is.
+    """
+    if isinstance(exc, _COM_ERROR):
+        hr = exc.args[0] if exc.args else 0
+        if hr in _NOT_A_HANDLE_ANSWER:
+            raise exc
+
+
+def _batch_error(index: int, exc: BaseException, *, type, before_job: bool = False) -> dict:
+    """``entity_batch_create``'s error row: the contract's keys plus the 1.8-02 ``kind``.
+
+    A spec refused before the job (a wrong argument, a lineweight or XDATA
+    the validators refuse) wrote nothing and is ``invalid_args`` unless
+    ``classify`` names something more specific.
+    """
+    kind = classify(exc)["kind"]
+    if before_job and kind in ("failed", "internal") and isinstance(exc, (TypeError, ValueError)):
+        kind = "invalid_args"
+    return {"index": index, "type": type, "error": str(exc), "kind": kind}
+
+
+#: The share of ``COM_CALL_TIMEOUT`` one slice of a bulk job may spend on its
+#: items (1.8-23). ``_run`` holds every job to that one deadline and treats an
+#: overrun as a hung AutoCAD - the executor is abandoned while the job keeps
+#: writing - so a long but healthy list must never be one job. A slice stops
+#: after the item that crosses this budget (at least one item per slice), which
+#: leaves three quarters of the deadline for the queue, the guard, the one
+#: refresh and the operator counter.
+_BULK_SLICE_SHARE = 0.25
+
+
+def _bulk_slice_budget() -> float | None:
+    """Seconds of item work one bulk slice may take; None without a deadline."""
+    timeout = config.settings.com_call_timeout
+    return timeout * _BULK_SLICE_SHARE if timeout > 0 else None
+
+
 def _target_space_name() -> str:
     """The bound document's target space: ``"Model"`` or a paper layout's name.
 
@@ -1100,7 +1160,7 @@ def _com_write_vertices(doc, ent, handle, pts, bulges, closed, where: str) -> En
             ent.SetBulge(index, ocs.wcs_bulge(normal, bulge) if framed else bulge)
     if closed is not None:
         ent.Closed = bool(closed)
-    _regen()
+    _regen(ent)
     return _entity_info(ent)
 
 
@@ -1150,7 +1210,7 @@ def _com_replace_polyline(doc, old, handle, pts, bulges, closed, normal, where) 
             f"place, and recreating it failed ({type(exc).__name__}: {exc}); the polyline "
             "was left as it was."
         ) from exc
-    _regen()
+    _regen(new)
     info = _entity_info(new)
     info.properties["replaced"] = [{"old": str(handle), "new": info.handle}]
     return info
@@ -1175,10 +1235,56 @@ def _com_move_text(ent, handle, tx, ty, where: str) -> None:
     ent.Move(_apoint(0.0, 0.0, 0.0), _apoint(dx, dy, 0.0))
 
 
-def _regen():
-    """Regen the active viewport so new entities appear immediately on screen."""
+class _Refresh:
+    """One COM job's pending display refresh (1.8-23).
+
+    Up to 1.8.0 every create path ended in ``Regen(acActiveViewport)`` - a
+    regeneration of the whole viewport, O(drawing), once per entity, so a
+    200-entity batch regenerated a 5,000-line drawing 200 times. ``_regen``
+    now only records the request here; ``ComBackend._run``'s job flushes it
+    once, in its ``finally``, through ``_flush_refresh``.
+    """
+
+    __slots__ = ("requests", "last", "anonymous", "done")
+
+    def __init__(self):
+        #: ``_regen`` calls in this job (one per entity a create path drew).
+        self.requests = 0
+        #: The entity the latest request named.
+        self.last = None
+        #: A request named no entity (a layer change, an explode, an array):
+        #: only a Regen repaints that.
+        self.anonymous = False
+        #: What the flush did: ``"update"`` / ``"regen"`` / None (nothing asked).
+        self.done = None
+
+
+def _regen(entity=None):
+    """Ask for a display refresh of ``entity`` (or of the viewport) - per job, not per call.
+
+    Inside a ``ComBackend._run`` job the request is recorded and the job's
+    ``finally`` refreshes once (``_flush_refresh``): ``entity.Update()`` when
+    the job asked at most ``COM_REFRESH_UPDATE_MAX`` times (default 1) and
+    every request named its entity, one ``Regen(acActiveViewport)`` otherwise
+    or with ``COM_REFRESH_MODE=regen``. Outside a job (a test calling a
+    ``_sync`` body directly) the viewport is regenerated at once, as up to
+    1.8.0.
+    """
     if _COM_STATE.get("batch_mode"):
         return
+    pending = getattr(_JOB_STATE, "refresh", None)
+    if pending is None:
+        _regen_viewport()
+        return
+    pending.requests += 1
+    if entity is None:
+        pending.anonymous = True
+    else:
+        pending.last = entity
+
+
+def _regen_viewport() -> None:
+    """``Regen(acActiveViewport)`` on the job's document, booked as ``refresh``; never raises."""
     try:
         doc = _acad_doc()
         began = time.perf_counter()
@@ -1188,6 +1294,38 @@ def _regen():
             _job_clock_add("refresh", (time.perf_counter() - began) * 1000.0)
     except Exception as exc:
         log.debug("Regen failed: %s", exc)
+
+
+def _flush_refresh(pending: _Refresh | None) -> str | None:
+    """Refresh once for the whole job (COM thread; never raises). What it did, or None.
+
+    S4 (``Entity.Update()`` display) is still unmeasured, so the choice is the
+    plan's safe default: ``Update()`` only for a job of at most
+    ``com_refresh_update_max`` named entities (default 1 - a single create),
+    one Regen above that, and one Regen whenever ``Update()`` raises.
+    """
+    if pending is None or not pending.requests:
+        return None
+    settings = config.settings
+    if (
+        settings.com_refresh_mode == "auto"
+        and not pending.anonymous
+        and pending.last is not None
+        and pending.requests <= settings.com_refresh_update_max
+    ):
+        began = time.perf_counter()
+        try:
+            pending.last.Update()
+        except Exception as exc:  # falls back to the viewport Regen below
+            log.debug("Update() failed (%s); regenerating the viewport instead", exc)
+        else:
+            pending.done = "update"
+            return pending.done
+        finally:
+            _job_clock_add("refresh", (time.perf_counter() - began) * 1000.0)
+    _regen_viewport()
+    pending.done = "regen"
+    return pending.done
 
 
 # ── styles (track E): module helpers ─────────────────────────────────────────
@@ -2408,7 +2546,8 @@ class CommandOutcome:
     their new ARC / LINE from it); ``created`` the first
     ``COMMAND_CREATED_ROWS`` as ``{handle, type, space}``; ``created_count``
     None when no space could be read. ``entities_before`` / ``_after`` are the
-    totals over every layout block (model space and each sheet).
+    totals over every layout block (model space and each sheet), or the owner
+    block's alone when the command was sent with ``owner`` (1.8-23).
     """
 
     command: str
@@ -2494,39 +2633,75 @@ def _space_snapshot(doc) -> tuple[int, int] | None:
         total = 0
         top = -1
         for index in range(int(layouts.Count)):
-            block = layouts.Item(index).Block
-            count = int(block.Count)
+            count, last = _block_mark(layouts.Item(index).Block)
             total += count
-            if count:
-                top = max(top, int(str(block.Item(count - 1).Handle), 16))
+            top = max(top, last)
         return total, top
-    except Exception as exc:  # the report then falls back to model space
+    except Exception as exc:  # the report then falls back to the owner block
         log.debug("layout snapshot unavailable: %s", exc)
         return None
+
+
+def _block_mark(block) -> tuple[int, int]:
+    """``(block.Count, the handle value of its last item - or -1 when empty)``.
+
+    Two reads whatever the block holds: the ``Count`` and its last index.
+    """
+    count = int(block.Count)
+    return count, int(str(block.Item(count - 1).Handle), 16) if count else -1
+
+
+def _block_tail(block, top: int, space: str) -> tuple[list[tuple[int, str, Any, str]], int]:
+    """The entities appended to ``block`` with a handle above ``top``, and its ``Count``.
+
+    Read backwards from the last index and stopped at the first handle at or
+    below ``top`` (1.8-23): the cost is the number of new entities, whatever
+    the block held before. Walking from the end rather than from the old
+    ``Count`` keeps an entity the command added after it erased another one
+    (the indices shift down). Rows are ``(handle value, handle, entity,
+    space)``, oldest first.
+    """
+    count = int(block.Count)
+    rows: list[tuple[int, str, Any, str]] = []
+    for position in range(count - 1, -1, -1):
+        entity = block.Item(position)
+        handle = str(entity.Handle)
+        value = int(handle, 16)
+        if value <= top:
+            break
+        rows.append((value, handle, entity, space))
+    rows.reverse()
+    return rows, count
+
+
+def _owner_block(doc, space: str) -> tuple[Any, str]:
+    """``(block, its space name)`` for ``space`` (``"Model"`` or a paper layout) in
+    ``doc``; model space when the layout cannot be read. Never ``ActiveLayout``:
+    the target, not the tab the operator has open."""
+    if space.lower() == "model":
+        return doc.ModelSpace, "Model"
+    try:
+        return doc.Layouts.Item(space).Block, space
+    except Exception as exc:  # the operator deleted the sheet; _msp() falls back alike
+        log.debug("layout %r unreadable (%s); reading model space", space, exc)
+        return doc.ModelSpace, "Model"
 
 
 def _created_since(doc, top: int) -> tuple[list[tuple[int, str, Any, str]], int]:
     """Entities with a handle above ``top`` in every layout block, and the new total.
 
     Rows are ``(handle value, handle, entity, space)``, oldest first. The
-    layouts are read again, so a sheet the command itself added is included.
+    layouts are read again, so a sheet the command itself added is included;
+    each block is read only from its end (``_block_tail``).
     """
     layouts = doc.Layouts
     rows: list[tuple[int, str, Any, str]] = []
     total = 0
     for index in range(int(layouts.Count)):
         layout = layouts.Item(index)
-        block = layout.Block
-        count = int(block.Count)
+        found, count = _block_tail(layout.Block, top, str(layout.Name))
+        rows.extend(found)
         total += count
-        name = str(layout.Name)
-        for position in range(count - 1, -1, -1):
-            entity = block.Item(position)
-            handle = str(entity.Handle)
-            value = int(handle, 16)
-            if value <= top:
-                break
-            rows.append((value, handle, entity, name))
     rows.sort(key=lambda row: row[0])
     return rows, total
 
@@ -3242,10 +3417,17 @@ class ComBackend(AutoCADBackend):
             clock = _JOB_STATE.clock = {}
             token = CURRENT_OPERATION.set(operation_id)
             _JOB_STATE.guard = guard
+            # 1.8-23: the create paths' _regen() calls are collected here and
+            # flushed once below - an Update() or one Regen per job.
+            pending = _JOB_STATE.refresh = _Refresh()
             guard.touched = False
             try:
                 return func(*args, **kwargs)
             finally:
+                # Also after a failure: what a batch wrote before it is drawn.
+                _JOB_STATE.refresh = None
+                _flush_refresh(pending)
+                pending.last = None  # a COM proxy is dropped on the COM thread
                 ran = (time.perf_counter() - began) * 1000.0
                 ended = time.perf_counter()
                 if guard.doc is not None:
@@ -6409,6 +6591,28 @@ class ComBackend(AutoCADBackend):
         linetype=None,
         xdata=None,
     ) -> EntityInfo:
+        return await self._run(
+            self._create_line_job(x1, y1, x2, y2, z1, z2, layer, color, linetype, xdata)
+        )
+
+    # 1.8-23: each batchable create is split into a job builder - the
+    # arguments are checked on the caller's thread, the returned ``_sync`` is
+    # the COM-thread body - so ``entity_batch_create`` runs many of them in
+    # ONE ``_run`` job and the single tool runs one, with the same code.
+
+    def _create_line_job(
+        self,
+        x1,
+        y1,
+        x2,
+        y2,
+        z1=0.0,
+        z2=0.0,
+        layer=None,
+        color=None,
+        linetype=None,
+        xdata=None,
+    ):
         prepared = prepare_xdata(xdata)
 
         def _sync():
@@ -6416,10 +6620,10 @@ class ComBackend(AutoCADBackend):
             line = mspace.AddLine(_apoint(x1, y1, z1), _apoint(x2, y2, z2))
             _apply_entity_attrs(line, layer, color, linetype)
             _attach_xdata(line, prepared)
-            _regen()
+            _regen(line)
             return _entity_info(line)
 
-        return await self._run(_sync)
+        return _job_named(_sync, "entity_create_line")
 
     async def entity_create_circle(
         self,
@@ -6430,6 +6634,9 @@ class ComBackend(AutoCADBackend):
         color=None,
         xdata=None,
     ) -> EntityInfo:
+        return await self._run(self._create_circle_job(cx, cy, radius, layer, color, xdata))
+
+    def _create_circle_job(self, cx, cy, radius, layer=None, color=None, xdata=None):
         prepared = prepare_xdata(xdata)
 
         def _sync():
@@ -6437,10 +6644,10 @@ class ComBackend(AutoCADBackend):
             circle = mspace.AddCircle(_apoint(cx, cy), float(radius))
             _apply_entity_attrs(circle, layer, color, None)
             _attach_xdata(circle, prepared)
-            _regen()
+            _regen(circle)
             return _entity_info(circle)
 
-        return await self._run(_sync)
+        return _job_named(_sync, "entity_create_circle")
 
     async def entity_create_arc(
         self,
@@ -6453,6 +6660,13 @@ class ComBackend(AutoCADBackend):
         color=None,
         xdata=None,
     ) -> EntityInfo:
+        return await self._run(
+            self._create_arc_job(cx, cy, radius, start_angle, end_angle, layer, color, xdata)
+        )
+
+    def _create_arc_job(
+        self, cx, cy, radius, start_angle, end_angle, layer=None, color=None, xdata=None
+    ):
         prepared = prepare_xdata(xdata)
 
         def _sync():
@@ -6465,10 +6679,10 @@ class ComBackend(AutoCADBackend):
             )
             _apply_entity_attrs(arc, layer, color, None)
             _attach_xdata(arc, prepared)
-            _regen()
+            _regen(arc)
             return _entity_info(arc)
 
-        return await self._run(_sync)
+        return _job_named(_sync, "entity_create_arc")
 
     async def entity_create_polyline(
         self,
@@ -6479,6 +6693,13 @@ class ComBackend(AutoCADBackend):
         xdata=None,
         bulges=None,
     ) -> EntityInfo:
+        return await self._run(
+            self._create_polyline_job(points, closed, layer, color, xdata, bulges)
+        )
+
+    def _create_polyline_job(
+        self, points, closed=False, layer=None, color=None, xdata=None, bulges=None
+    ):
         prepared = prepare_xdata(xdata)
         checked_bulges = None
         if bulges is not None:
@@ -6496,10 +6717,10 @@ class ComBackend(AutoCADBackend):
                     pline.SetBulge(index, bulge)
             _apply_entity_attrs(pline, layer, color, None)
             _attach_xdata(pline, prepared)
-            _regen()
+            _regen(pline)
             return _entity_info(pline)
 
-        return await self._run(_sync)
+        return _job_named(_sync, "entity_create_polyline")
 
     async def entity_create_text(
         self,
@@ -6512,6 +6733,13 @@ class ComBackend(AutoCADBackend):
         color=None,
         xdata=None,
     ) -> EntityInfo:
+        return await self._run(
+            self._create_text_job(text, x, y, height, rotation, layer, color, xdata)
+        )
+
+    def _create_text_job(
+        self, text, x, y, height=2.5, rotation=0.0, layer=None, color=None, xdata=None
+    ):
         prepared = prepare_xdata(xdata)
 
         def _sync():
@@ -6520,10 +6748,10 @@ class ComBackend(AutoCADBackend):
             txt.Rotation = deg2rad(rotation)
             _apply_entity_attrs(txt, layer, color, None)
             _attach_xdata(txt, prepared)
-            _regen()
+            _regen(txt)
             return _entity_info(txt)
 
-        return await self._run(_sync)
+        return _job_named(_sync, "entity_create_text")
 
     async def entity_create_mtext(
         self,
@@ -6536,6 +6764,13 @@ class ComBackend(AutoCADBackend):
         layer=None,
         color=None,
     ) -> EntityInfo:
+        return await self._run(
+            self._create_mtext_job(text, x, y, width, height, rotation, layer, color)
+        )
+
+    def _create_mtext_job(
+        self, text, x, y, width=100.0, height=2.5, rotation=0.0, layer=None, color=None
+    ):
         def _sync():
             mspace = _msp()
             mt = mspace.AddMText(_apoint(x, y), float(width), text)
@@ -6543,10 +6778,10 @@ class ComBackend(AutoCADBackend):
             if rotation:
                 mt.Rotation = deg2rad(rotation)  # NEW-mtext-1: honor caller rotation
             _apply_entity_attrs(mt, layer, color, None)
-            _regen()
+            _regen(mt)
             return _entity_info(mt)
 
-        return await self._run(_sync)
+        return _job_named(_sync, "entity_create_mtext")
 
     async def entity_create_table(
         self,
@@ -6588,7 +6823,7 @@ class ComBackend(AutoCADBackend):
                     table.SetCellTextHeight(row_index, column_index, layout.text_height)
             _apply_entity_attrs(table, layer, None, None)
             _attach_xdata(table, prepared)
-            _regen()
+            _regen(table)
             info = _entity_info(table)
             info.type = "TABLE"
             info.layer = layer
@@ -6636,7 +6871,7 @@ class ComBackend(AutoCADBackend):
             leader.LandingGap = float(landing_gap)
             leader.ArrowheadSize = float(arrow_size)
             _apply_entity_attrs(leader, layer, None, None)
-            _regen()
+            _regen(leader)
             info = _entity_info(leader)
             info.type = "MLEADER"
             info.layer = layer
@@ -6667,6 +6902,13 @@ class ComBackend(AutoCADBackend):
         color=None,
         xdata=None,
     ) -> EntityInfo:
+        return await self._run(
+            self._create_hatch_job(pattern, boundary_points, scale, angle, layer, color, xdata)
+        )
+
+    def _create_hatch_job(
+        self, pattern, boundary_points, scale=1.0, angle=0.0, layer=None, color=None, xdata=None
+    ):
         prepared = prepare_xdata(xdata)
 
         def _sync():
@@ -6687,10 +6929,10 @@ class ComBackend(AutoCADBackend):
             bnd_pline.Delete()
             _apply_entity_attrs(hatch, layer, color, None)
             _attach_xdata(hatch, prepared)
-            _regen()
+            _regen(hatch)
             return _entity_info(hatch)
 
-        return await self._run(_sync)
+        return _job_named(_sync, "entity_create_hatch")
 
     async def entity_create_spline(
         self,
@@ -6698,6 +6940,9 @@ class ComBackend(AutoCADBackend):
         layer=None,
         color=None,
     ) -> EntityInfo:
+        return await self._run(self._create_spline_job(fit_points, layer, color))
+
+    def _create_spline_job(self, fit_points, layer=None, color=None):
         def _sync():
             mspace = _msp()
             flat = []
@@ -6709,10 +6954,10 @@ class ComBackend(AutoCADBackend):
                 _apoint(0, 1),  # end tangent
             )
             _apply_entity_attrs(sp, layer, color, None)
-            _regen()
+            _regen(sp)
             return _entity_info(sp)
 
-        return await self._run(_sync)
+        return _job_named(_sync, "entity_create_spline")
 
     async def entity_create_ellipse(
         self,
@@ -6724,6 +6969,11 @@ class ComBackend(AutoCADBackend):
         layer=None,
         color=None,
     ) -> EntityInfo:
+        return await self._run(
+            self._create_ellipse_job(cx, cy, major_x, major_y, ratio, layer, color)
+        )
+
+    def _create_ellipse_job(self, cx, cy, major_x, major_y, ratio=0.5, layer=None, color=None):
         def _sync():
             mspace = _msp()
             ellipse = mspace.AddEllipse(
@@ -6732,10 +6982,10 @@ class ComBackend(AutoCADBackend):
                 float(ratio),  # ratio of minor to major axis
             )
             _apply_entity_attrs(ellipse, layer, color, None)
-            _regen()
+            _regen(ellipse)
             return _entity_info(ellipse)
 
-        return await self._run(_sync)
+        return _job_named(_sync, "entity_create_ellipse")
 
     async def entity_create_point(
         self,
@@ -6744,14 +6994,175 @@ class ComBackend(AutoCADBackend):
         layer=None,
         color=None,
     ) -> EntityInfo:
+        return await self._run(self._create_point_job(x, y, layer, color))
+
+    def _create_point_job(self, x, y, layer=None, color=None):
         def _sync():
             mspace = _msp()
             pt = mspace.AddPoint(_apoint(x, y))
             _apply_entity_attrs(pt, layer, color, None)
-            _regen()
+            _regen(pt)
             return _entity_info(pt)
 
-        return await self._run(_sync)
+        return _job_named(_sync, "entity_create_point")
+
+    # ── bulk tools in one job (1.8-23) ─────────────────────────────────────────
+
+    #: ``entity_batch_create``'s types -> the job builder of each (the same
+    #: ten the contract's loop maps to ``entity_create_*``).
+    _BATCH_JOBS = {
+        "line": "_create_line_job",
+        "circle": "_create_circle_job",
+        "arc": "_create_arc_job",
+        "polyline": "_create_polyline_job",
+        "text": "_create_text_job",
+        "mtext": "_create_mtext_job",
+        "point": "_create_point_job",
+        "hatch": "_create_hatch_job",
+        "spline": "_create_spline_job",
+        "ellipse": "_create_ellipse_job",
+    }
+
+    async def entity_batch_create(self, specs, *, progress=None) -> dict:
+        """The specs in as few STA jobs as the deadline allows (1.8-23), the contract's shape.
+
+        Before the jobs, on the caller's thread: each spec's type, lineweight
+        and arguments are checked by the same job builders the single tools
+        use, so a refused spec draws nothing. The planned specs then run in
+        slices: one job takes items until their time crosses
+        ``_bulk_slice_budget()`` (a quarter of ``COM_CALL_TIMEOUT``), so a
+        long but healthy list is never mistaken for a hung AutoCAD - one
+        ``_run`` deadline over the whole list would abandon the executor while
+        the job kept writing. Per slice: one bound-document guard (and so one
+        operator-counter begin / end), one display refresh at its end
+        (``_flush_refresh``: one Regen for more than ``COM_REFRESH_UPDATE_MAX``
+        entities); per spec a ``try`` whose error row carries the 1.8-02
+        ``kind``. A list that fits the budget is one job. A failure in the
+        middle leaves the earlier entities written - atomicity is
+        ``cad_batch``'s (``transaction=True``) - except a lost connection,
+        which ends the call. The call is one revision step however many
+        slices it took; it can be cancelled between slices, not inside one.
+        """
+        total = len(specs)
+        if progress is not None:
+            await progress(0, total)
+        planned: list = []
+        errors: list[dict] = []
+        for index, raw in enumerate(specs):
+            spec = dict(raw)
+            kind = spec.pop("type", None)
+            if not kind:
+                errors.append(
+                    {"index": index, "error": "Missing 'type' key", "kind": "invalid_args"}
+                )
+                continue
+            builder = self._BATCH_JOBS.get(str(kind).lower())
+            if builder is None:
+                errors.append(
+                    {"index": index, "error": f"Unknown type: {kind}", "kind": "invalid_args"}
+                )
+                continue
+            try:
+                weight = parse_lineweight(spec.pop("lineweight", None))
+                job = getattr(self, builder)(**spec)
+            except Exception as exc:  # noqa: BLE001 - one spec's refusal is its own row
+                errors.append(_batch_error(index, exc, type=kind, before_job=True))
+                continue
+            planned.append((index, kind, job, weight))
+
+        budget = _bulk_slice_budget()
+
+        def _sync(start):
+            doc = _acad_doc()  # the slice's guard: a refusal here wrote nothing
+            began = time.perf_counter()
+            rows: list[tuple[int, dict]] = []
+            failed: list[dict] = []
+            position = start
+            while position < len(planned):
+                index, kind, job, weight = planned[position]
+                position += 1
+                try:
+                    info = job()
+                    if weight is not None:
+                        _handle_to_object(doc, info.handle).Lineweight = weight
+                        info.lineweight_name = lineweight_name(weight)
+                except Exception as exc:  # noqa: BLE001 - typed into the item's row
+                    _reraise_if_connection_lost(exc)
+                    failed.append(_batch_error(index, exc, type=kind))
+                else:
+                    rows.append((index, asdict(info)))
+                if budget is not None and time.perf_counter() - began >= budget:
+                    break  # the rest is the next slice, inside its own deadline
+            return position, rows, failed
+
+        rows: list[tuple[int, dict]] = []
+        position = 0
+        while position < len(planned):
+            if position and progress is not None:
+                await progress(planned[position][0], total)
+            position, done, failed = await self._run(_sync, position)
+            rows += done
+            errors += failed
+        errors = sorted(errors, key=lambda row: row["index"])
+        return {
+            "created": len(rows),
+            "errors": errors,
+            "entities": [info for _index, info in rows],
+        }
+
+    async def entity_delete_many(self, handles, *, progress=None, stop_on_error=False) -> dict:
+        """The handles deleted in as few STA jobs as the deadline allows (1.8-23).
+
+        The contract's result shape. Slices as ``entity_batch_create`` does:
+        one job deletes until its time crosses ``_bulk_slice_budget()``, so a
+        10k-handle cleanup is never one job over ``COM_CALL_TIMEOUT``; per
+        slice one guard and one operator-counter begin / end. A handle
+        AutoCAD does not know is that item's ``kind: "unknown_handle"``; any
+        other failure its 1.8-02 kind. ``stop_on_error`` ends the call at the
+        first failure (the all-or-nothing caller rolls everything back
+        anyway); a lost connection always does.
+        """
+        names = list(handles)
+        if progress is not None:
+            await progress(0, len(names))
+        budget = _bulk_slice_budget()
+
+        def _sync(start):
+            doc = _acad_doc()  # the slice's guard: a refusal here deleted nothing
+            began = time.perf_counter()
+            deleted = 0
+            errors: list[dict] = []
+            position = start
+            while position < len(names):
+                handle = names[position]
+                position += 1
+                try:
+                    _handle_to_object(doc, handle).Delete()
+                except EntityNotFoundError as exc:
+                    errors.append({"handle": handle, "error": str(exc), "kind": "unknown_handle"})
+                except Exception as exc:  # noqa: BLE001 - typed into the item's row
+                    _reraise_if_connection_lost(exc)
+                    errors.append(
+                        {"handle": handle, "error": str(exc), "kind": classify(exc)["kind"]}
+                    )
+                else:
+                    deleted += 1
+                if errors and stop_on_error:
+                    return len(names), deleted, errors
+                if budget is not None and time.perf_counter() - began >= budget:
+                    break  # the rest is the next slice, inside its own deadline
+            return position, deleted, errors
+
+        deleted = 0
+        errors: list[dict] = []
+        position = 0
+        while position < len(names):
+            if position and progress is not None:
+                await progress(position, len(names))
+            position, done, failed = await self._run(_sync, position)
+            deleted += done
+            errors += failed
+        return {"deleted": deleted, "errors": errors}
 
     async def entity_create_block_ref(
         self,
@@ -6776,7 +7187,7 @@ class ComBackend(AutoCADBackend):
             )
             if layer:
                 ref.Layer = layer
-            _regen()
+            _regen(ref)
             return _entity_info(ref)
 
         return await self._run(_sync)
@@ -6815,7 +7226,7 @@ class ComBackend(AutoCADBackend):
                 dim.Layer = layer
             _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode, text_override)
             _attach_xdata(dim, prepared)
-            _regen()
+            _regen(dim)
             return _entity_info(dim)
 
         return await self._run(_sync)
@@ -6839,7 +7250,7 @@ class ComBackend(AutoCADBackend):
             if layer:
                 dim.Layer = layer
             _attach_xdata(dim, prepared)
-            _regen()
+            _regen(dim)
             return _entity_info(dim)
 
         return await self._run(_sync)
@@ -6866,7 +7277,7 @@ class ComBackend(AutoCADBackend):
             )
             if layer:
                 dim.Layer = layer
-            _regen()
+            _regen(dim)
             return _entity_info(dim)
 
         return await self._run(_sync)
@@ -6896,7 +7307,7 @@ class ComBackend(AutoCADBackend):
                 dim.Layer = layer
             _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode, text_override)
             _attach_xdata(dim, prepared)
-            _regen()
+            _regen(dim)
             return _entity_info(dim)
 
         return await self._run(_sync)
@@ -6924,7 +7335,7 @@ class ComBackend(AutoCADBackend):
                 dim.Layer = layer
             _apply_dim_tolerance(dim, tol_upper, tol_lower, tol_mode, text_override)
             _attach_xdata(dim, prepared)
-            _regen()
+            _regen(dim)
             return _entity_info(dim)
 
         return await self._run(_sync)
@@ -7233,7 +7644,7 @@ class ComBackend(AutoCADBackend):
             if rotation is not None:
                 # MTEXT uses radians for Rotation; DBText/Text uses radians too.
                 ent.Rotation = deg2rad(float(rotation))
-            _regen()
+            _regen(ent)
             return _entity_info(ent)
 
         return await self._run(_sync)
@@ -7285,7 +7696,7 @@ class ComBackend(AutoCADBackend):
                 )
             if route == "text":
                 _com_move_text(ent, handle, tx, ty, "entity_edit_geometry")
-                _regen()
+                _regen(ent)
                 return _entity_info(ent)
             if route == "dimension":
                 # 1.8-15: AcadDimRotated / AcadDimAligned expose their measured
@@ -7310,7 +7721,7 @@ class ComBackend(AutoCADBackend):
                         ),
                     )
                 ent.Update()
-                _regen()
+                _regen(ent)
                 return _entity_info(ent)
             name = ent.ObjectName.replace("AcDb", "").upper()
             if name == "CIRCLE":
@@ -7348,7 +7759,7 @@ class ComBackend(AutoCADBackend):
                     f"entity_edit_geometry: {name} not supported "
                     "(use CIRCLE, LINE, ARC, LWPOLYLINE, TEXT or MTEXT)."
                 )
-            _regen()
+            _regen(ent)
             return _entity_info(ent)
 
         return await self._run(_sync)
@@ -9629,7 +10040,11 @@ class ComBackend(AutoCADBackend):
 
     @staticmethod
     def _safe_send_command(
-        doc, cmd: str, deadline_s: float | None = None, target_space: str | None = None
+        doc,
+        cmd: str,
+        deadline_s: float | None = None,
+        target_space: str | None = None,
+        owner: str | None = None,
     ) -> CommandOutcome:
         """Send `cmd`, polling CMDACTIVE until the command finishes.
 
@@ -9651,9 +10066,19 @@ class ComBackend(AutoCADBackend):
           new entity is not in ``target_space`` (default: the bound
           document's target, ``_target_space_name()``).
 
-        A seat whose layouts cannot be read falls back to model space's own
-        handles (the 1.7 read); with neither, ``created_count`` is None -
-        unknown, never zero.
+        1.8-23 - **the owner block, O(new).** ``owner`` names the one space the
+        command can write into (a corner op runs in the target space's tab
+        and FILLET / CHAMFER / TRIM add to the space of the objects they
+        pick): only that block is read - its ``Count`` and last handle before,
+        its tail after (``_block_tail``) - plus, for a paper owner, model
+        space's mark and tail (so an entity the command wrote there is still
+        ``created_outside_target_space``); no other layout is touched and
+        ``entities_before`` / ``_after`` are the owner block's. Without ``owner``
+        every layout block is read the same way (``system_run_command``'s
+        paper-space report, the undo evidence). A seat whose layouts cannot be
+        read falls back to the target space's own block, read the same way -
+        no longer a walk over every model-space entity as in 1.7; with
+        neither, ``created_count`` is None - unknown, never zero.
         """
         if deadline_s is None:
             deadline_s = config.settings.command_deadline_s
@@ -9668,13 +10093,23 @@ class ComBackend(AutoCADBackend):
                     doc.SetVariable(var, 0)
                 except Exception:
                     pass
-            snapshot = _space_snapshot(doc)
-            pre_model: set | None = None
+            snapshot = None if owner is not None else _space_snapshot(doc)
+            block = space = mark = model_mark = None
             if snapshot is None:
-                try:  # the 1.7 read: model space's handles (best-effort)
-                    pre_model = {e.Handle for e in doc.ModelSpace}
-                except Exception:
-                    pre_model = None
+                try:
+                    block, space = _owner_block(doc, owner or target_space)
+                    mark = _block_mark(block)
+                except Exception as exc:  # unknown, never zero
+                    log.debug("owner block unreadable: %s", exc)
+                    mark = None
+                if mark is not None and space != "Model":
+                    # A paper owner: model space is marked too (two reads), so
+                    # an entity the command wrote there still reaches the
+                    # report as created_outside_target_space (1.8-05).
+                    try:
+                        model_mark = _block_mark(doc.ModelSpace)
+                    except Exception as exc:  # the owner block's report stands
+                        log.debug("model-space mark unreadable: %s", exc)
             payload = cmd if cmd.endswith("\n") else cmd + "\n"
             doc.SendCommand(payload)
             deadline = time.monotonic() + float(deadline_s)
@@ -9713,15 +10148,23 @@ class ComBackend(AutoCADBackend):
                     outcome.handles, outcome.created = _created_rows(found)
                     outcome.created_count = len(found)
                     outcome.entities_before, outcome.entities_after = before, after
-            elif pre_model is not None:
+            elif mark is not None:
+                before, top = mark
                 try:
-                    post = {e.Handle: e for e in doc.ModelSpace}
-                except Exception as exc:
-                    log.debug("post-command model-space read failed: %s", exc)
+                    found, after = _block_tail(block, top, space)
+                except Exception as exc:  # unknown, never zero
+                    log.debug("post-command owner-block read failed: %s", exc)
                 else:
-                    found = [(0, h, e, "Model") for h, e in post.items() if h not in pre_model]
+                    if model_mark is not None:
+                        try:
+                            strays, _count = _block_tail(doc.ModelSpace, model_mark[1], "Model")
+                        except Exception as exc:  # the owner block's report stands
+                            log.debug("post-command model-space read failed: %s", exc)
+                        else:
+                            found = sorted(found + strays, key=lambda row: row[0])
                     outcome.handles, outcome.created = _created_rows(found)
                     outcome.created_count = len(found)
+                    outcome.entities_before, outcome.entities_after = before, after
             return outcome
         finally:
             for var, val in saved.items():
@@ -9737,7 +10180,8 @@ class ComBackend(AutoCADBackend):
             # ucs_set cannot shift the pick (tool coordinates are WCS).
             cmd = f'_TRIM\n(handent "{cutter_handle}")\n\n*{float(keep_x)},{float(keep_y)}\n\n'
             with _target_tab(doc):
-                self._safe_send_command(doc, cmd)
+                # 1.8-23: only the target space's block is read, O(new)
+                self._safe_send_command(doc, cmd, owner=_target_space_name())
             ent = doc.HandleToObject(target_handle)
             return _entity_info(ent)
 
@@ -9772,7 +10216,8 @@ class ComBackend(AutoCADBackend):
                 ex, ey = float(end_x), float(end_y)
             cmd = f'_EXTEND\n(handent "{boundary_handle}")\n\n*{ex},{ey}\n\n'  # WCS pick
             with _target_tab(doc):
-                self._safe_send_command(doc, cmd)
+                # 1.8-23: only the target space's block is read, O(new)
+                self._safe_send_command(doc, cmd, owner=_target_space_name())
             return _entity_info(doc.HandleToObject(target_handle))
 
         return await self._run(_sync)
@@ -9786,7 +10231,9 @@ class ComBackend(AutoCADBackend):
                 f'(handent "{handle1}")\n(handent "{handle2}")\n'
             )
             with _target_tab(doc):
-                new_handles = self._safe_send_command(doc, cmd).handles
+                # 1.8-23: only the target space's block is read, O(new)
+                owner = _target_space_name()
+                new_handles = self._safe_send_command(doc, cmd, owner=owner).handles
             # Return the new ARC entity if one was created (radius > 0); else
             # fall back to handle1 (radius=0 = sharp corner, no arc).
             for h in new_handles:
@@ -9818,7 +10265,9 @@ class ComBackend(AutoCADBackend):
                 f'(handent "{handle1}")\n(handent "{handle2}")\n'
             )
             with _target_tab(doc):
-                new_handles = self._safe_send_command(doc, cmd).handles
+                # 1.8-23: only the target space's block is read, O(new)
+                owner = _target_space_name()
+                new_handles = self._safe_send_command(doc, cmd, owner=owner).handles
             for h in new_handles:
                 try:
                     ent = doc.HandleToObject(h)
@@ -9848,7 +10297,7 @@ class ComBackend(AutoCADBackend):
                 _apoint(float(x) + float(dx), float(y) + float(dy)),
             )
             _apply_entity_attrs(xline, layer, None, None)
-            _regen()
+            _regen(xline)
             return _entity_info(xline)
 
         return await self._run(_sync)
@@ -9935,7 +10384,10 @@ class ComBackend(AutoCADBackend):
 #: engine's dirty-setting methods that exist here, the undo / redo the headless
 #: engine implements as snapshot restores, the live-only 3D solids and the two
 #: escape hatches. tests/test_bound_document_com.py derives the same set from
-#: the headless source and holds this one to it.
+#: the headless source and holds this one to it. ``entity_batch_create`` and
+#: ``entity_delete_many`` (1.8-23) are one job each here, so one revision step
+#: per call; headlessly they are the contract's loops over the creates and
+#: deletes, which move the revision once per item.
 _MUTATING_METHODS: frozenset[str] = frozenset(
     {
         "_create_xline",
@@ -9961,6 +10413,7 @@ _MUTATING_METHODS: frozenset[str] = frozenset(
         "drawing_undo",
         "entity_array_polar",
         "entity_array_rectangular",
+        "entity_batch_create",
         "entity_chamfer",
         "entity_copy",
         "entity_create_arc",
@@ -9976,6 +10429,7 @@ _MUTATING_METHODS: frozenset[str] = frozenset(
         "entity_create_table",
         "entity_create_text",
         "entity_delete",
+        "entity_delete_many",
         "entity_edit_geometry",
         "entity_edit_text",
         "entity_extend",

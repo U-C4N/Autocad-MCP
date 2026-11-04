@@ -360,11 +360,16 @@ def test_every_content_changing_method_is_mutating_on_the_live_engine():
         "solid_boolean",
         "system_run_command",  # escape hatches: assume they write
         "system_run_lisp",
+        # 1.8-23: one STA job each live; headlessly the contract's loops over
+        # the dirty-setting creates / deletes, so no headless method of their own
+        "entity_batch_create",
+        "entity_delete_many",
     }
     assert cb._MUTATING_METHODS == expected
     # 99 after W1 (+ entity_set_vertices, 1.8-06); + dimension_rerender (1.8-15);
-    # + entity_modify_where, layer_rename, layer_merge (1.8-12)
-    assert len(cb._MUTATING_METHODS) == 103
+    # + entity_modify_where, layer_rename, layer_merge (1.8-12);
+    # + entity_batch_create, entity_delete_many (1.8-23)
+    assert len(cb._MUTATING_METHODS) == 105
     for name in cb._MUTATING_METHODS:
         assert getattr(vars(cb.ComBackend)[name], "__acadmcp_mutating__", False) is True, name
     never = {

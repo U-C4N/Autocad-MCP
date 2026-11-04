@@ -1,0 +1,83 @@
+{
+  "schema": "acadmcp-perf-com/1",
+  "item": "1.8-23",
+  "status": "pending",
+  "reason": "not run: AutoCAD was not open when 1.8-23 was written",
+  "generated_at": "2026-11-04T08:37:48+00:00",
+  "targets": {
+    "bulk_speedup_min": 5.0,
+    "single_create_median_drop_min": 0.3,
+    "fillet_n_ratio_max": 1.2
+  },
+  "workloads": [
+    "create_circle_singles",
+    "batch_create_200",
+    "delete_singles_200",
+    "delete_many_200",
+    "cad_batch_50",
+    "fillet_50_n5000",
+    "fillet_50_n10000"
+  ],
+  "sizes": {
+    "seed_lines": 5000,
+    "singles": 200,
+    "bulk": 200,
+    "fillets": 50,
+    "batch_steps": 50
+  },
+  "verdict": {
+    "bulk_create_speedup": {
+      "value": null,
+      "target": 5.0,
+      "pass": null
+    },
+    "bulk_delete_speedup": {
+      "value": null,
+      "target": 5.0,
+      "pass": null
+    },
+    "single_create_median_drop": {
+      "value": null,
+      "target": 0.3,
+      "pass": null
+    },
+    "fillet_n_ratio": {
+      "value": null,
+      "target": 1.2,
+      "pass": null
+    }
+  },
+  "sides": {
+    "base": null,
+    "current": null
+  },
+  "result_schema": {
+    "schema": "acadmcp-perf-com/1",
+    "item": "1.8-23",
+    "status": "pending | measured | unavailable | failed",
+    "targets": "TARGETS, fixed before the run",
+    "verdict": {
+      "bulk_create_speedup": "{value, target, pass (true / false / null = pending)}",
+      "bulk_delete_speedup": "{value, target, pass (true / false / null = pending)}",
+      "single_create_median_drop": "{value, target, pass (true / false / null = pending)}",
+      "fillet_n_ratio": "{value, target, pass (true / false / null = pending)}"
+    },
+    "sides": {
+      "base": "the v1.7.0 side (--base) or null",
+      "current": "this checkout's side",
+      "<side>": {
+        "code": "{root, version, sha, dirty}",
+        "harness": "the live harness JSON (status, checks, environment, documents)",
+        "workloads": {
+          "create_circle_singles": "{n, median_ms, p95_ms, min_ms, max_ms, total_ms, errors, run_breakdown}",
+          "batch_create_200": "{n, median_ms, p95_ms, min_ms, max_ms, total_ms, errors, run_breakdown}",
+          "delete_singles_200": "{n, median_ms, p95_ms, min_ms, max_ms, total_ms, errors, run_breakdown}",
+          "delete_many_200": "{n, median_ms, p95_ms, min_ms, max_ms, total_ms, errors, run_breakdown}",
+          "cad_batch_50": "{n, median_ms, p95_ms, min_ms, max_ms, total_ms, errors, run_breakdown}",
+          "fillet_50_n5000": "{n, median_ms, p95_ms, min_ms, max_ms, total_ms, errors, run_breakdown}",
+          "fillet_50_n10000": "{n, median_ms, p95_ms, min_ms, max_ms, total_ms, errors, run_breakdown}"
+        }
+      }
+    }
+  }
+}

@@ -424,7 +424,7 @@ def seat(monkeypatch):
     )
     monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
     monkeypatch.setattr(cb, "_msp", lambda: space)
-    monkeypatch.setattr(cb, "_regen", lambda: None)
+    monkeypatch.setattr(cb, "_regen", lambda *_entity: None)
     backend = cb.ComBackend()
 
     async def _run_inline(func, *args, **kwargs):
