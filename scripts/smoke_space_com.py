@@ -9,11 +9,12 @@ closed with ``Close(False)`` on every path. Through the real ``ComBackend``:
    ``entity_scale``, ``entity_trim`` and ``entity_fillet``: no paper layout's
    ``Block.Count`` moves, every new entity is owned by ModelSpace, and Layout1
    is still the active tab afterwards.
-2. **A raw command.** ``system_run_command("_CIRCLE ...")`` completes and
-   reports the circle in Model; ``system_run_command("_SCALE")`` (left at its
-   prompt) is ``command_incomplete`` with AutoCAD's own ``last_prompt`` and the
-   seat is idle (CMDACTIVE 0) afterwards; a following create still lands in
-   model space.
+2. **A raw command.** ``system_run_command("_CIRCLE ...")`` with the
+   operator still on Layout1 is reported in Layout1 with
+   ``created_outside_target_space``; on the Model tab it completes and reports
+   the circle in Model, and the seat is idle (CMDACTIVE 0) afterwards. No
+   command left at its prompt is sent: on this seat it blocks every COM call
+   until a key is pressed in AutoCAD (``PROMPT_LIMITATION``, measured).
 3. **A DWG saved with Layout1 active.** Saved, closed, reopened through
    ``drawing_open``: AutoCAD opens it on Layout1, the next create lands in
    model space all the same.
@@ -128,40 +129,53 @@ async def _layout1_active(h: LiveHarness) -> dict:
     return {"before": before, "after": after, "s5_operator_tab_rule_17": rule_17}
 
 
-async def _raw_command(h: LiveHarness) -> dict:
-    from engineering.errors import CommandIncompleteError
+#: Measured on AutoCAD 2026 (2026-11-04, scratch documents): why this smoke
+#: sends no raw command that stops at a prompt. It would leave the seat
+#: refusing every call until a person presses ESC in AutoCAD, so the run could
+#: neither go on nor close its own document.
+PROMPT_LIMITATION = {
+    "send_command": "SendCommand('_SCALE\\n') does not return until the prompt is answered",
+    "post_command": "PostCommand returns, then every COM call (CMDACTIVE, LASTPROMPT, "
+    "SendCommand, Close) is RPC_E_CALL_REJECTED until a key is pressed in AutoCAD",
+    "esc_in_string": "SendCommand with ESC characters raises 'Invalid input' and runs nothing",
+    "consequence": "a raw command left at its prompt overruns COM_CALL_TIMEOUT; "
+    "command_incomplete is not reachable through ActiveX on this seat",
+}
 
+
+async def _raw_command(h: LiveHarness) -> dict:
+    """A completed raw command, reported honestly in the space it drew in.
+
+    The operator's tab is still Layout1 from the first step and a raw command
+    runs in the active space (1.8-05 reports it, it does not move it), so the
+    first circle is reported in Layout1 with ``created_outside_target_space``;
+    with the Model tab active the same command is reported in Model, clean.
+    """
     backend = h.backend
+    tab = await h.raw(_tab)
+    on_paper = await backend.system_run_command("_CIRCLE 200,0 3\n")
+    h.check(
+        "a raw command on the operator's Layout1 is reported there, with the warning",
+        tab == "Layout1"
+        and on_paper.get("completed") is True
+        and on_paper.get("created_count") == 1
+        and on_paper["created"][0]["space"] == "Layout1"
+        and on_paper.get("warning") == "created_outside_target_space",
+        observed={"tab": tab, "result": on_paper},
+    )
+    await h.raw(_set_tab("Model"))
     done = await backend.system_run_command("_CIRCLE 200,0 3\n")
     h.check(
-        "a completed raw command reports its circle in Model",
+        "a completed raw command on the Model tab reports its circle in Model",
         done.get("completed") is True
         and done.get("created_count") == 1
         and done["created"][0]["space"] == "Model"
         and "warning" not in done,
         observed=done,
     )
-    incomplete = None
-    try:
-        await backend.system_run_command("_SCALE")
-    except CommandIncompleteError as exc:
-        incomplete = {"last_prompt": exc.last_prompt, "command": exc.command}
     cmdactive = await h.raw(lambda app: int(_active(app).GetVariable("CMDACTIVE")))
-    h.check(
-        "a command left at its prompt is command_incomplete with LASTPROMPT",
-        incomplete is not None and bool(incomplete["last_prompt"]),
-        observed=incomplete,
-    )
-    h.check("ESC x3 left the seat idle", cmdactive == 0, expected=0, observed=cmdactive)
-    before = await h.raw(_counts)
-    circle = await backend.entity_create_circle(300.0, 0.0, 2.0)
-    after = await h.raw(_counts)
-    h.check(
-        "a create after the abandoned _SCALE lands in model space",
-        after["Model"] == before["Model"] + 1 and _paper(after) == _paper(before),
-        observed={"before": before, "after": after, "handle": circle.handle},
-    )
-    return {"completed": done, "incomplete": incomplete}
+    h.check("the seat is idle after it", cmdactive == 0, expected=0, observed=cmdactive)
+    return {"on_paper": on_paper, "completed": done, "prompt_limitation": PROMPT_LIMITATION}
 
 
 async def _saved_on_layout1(h: LiveHarness, workspace: Path) -> dict:
@@ -248,9 +262,9 @@ def assess(h: LiveHarness, report: dict) -> None:
             "reproduces_on_1_7": first.get("s5_operator_tab_rule_17") not in (None, "Model"),
         },
         "scale_left_at_prompt": {
-            "last_prompt": (raw.get("incomplete") or {}).get("last_prompt"),
-            "note": "1.7.0 sent _SCALE and returned ok; the prompt then swallowed the next "
-            "command-line input. 1.8.0 cancels it and reports command_incomplete.",
+            "measured": raw.get("prompt_limitation"),
+            "note": "not sent by this smoke: on this seat a command left at its prompt "
+            "blocks every COM call until a key is pressed in AutoCAD",
         },
     }
 

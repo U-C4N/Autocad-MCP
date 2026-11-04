@@ -10267,6 +10267,15 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
           ``COMMAND_DEADLINE_S``, 8 s) - ``LASTPROMPT`` is read first (the
           prompt it stopped at), then ESC x3, then ``CommandIncompleteError``
           (kind ``command_incomplete``, ``{command, last_prompt}``).
+          MEASURED on AutoCAD 2026 (2026-11-04) - this branch is not reached
+          there: ``SendCommand`` of a command that stops at a prompt does not
+          return until the prompt is answered, ``PostCommand`` returns but
+          leaves every COM call ``RPC_E_CALL_REJECTED`` (CMDACTIVE, LASTPROMPT,
+          SendCommand, Close) until a key is pressed in AutoCAD, and an ESC
+          character in a ``SendCommand`` string is refused as ``Invalid
+          input``. A raw command left at its prompt therefore overruns
+          ``COM_CALL_TIMEOUT`` and the call ends as that timeout says; no
+          ActiveX call can cancel the prompt.
         * **Completed:** a ``CommandOutcome`` with every entity created, in
           which space (``{handle, type, space}``, the first 50 plus
           ``created_count``), ``LASTPROMPT``, and the totals before and after;
