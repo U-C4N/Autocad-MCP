@@ -702,6 +702,7 @@ async def run_spec(
     handles: dict[str, str] = {}
     crossings_total = 0
     hits: list[dict] = []
+    label_hits: list[dict] = []
     try:
         for section in _SECTIONS:
             for i, item in enumerate(norm[section]):
@@ -756,6 +757,7 @@ async def run_spec(
                 await watch.after()
             crossings_total += drawn["crossings"]
             hits.extend({"where": where, **hit} for hit in drawn["obstacle_hits"])
+            label_hits.extend({"where": where, **hit} for hit in drawn["label_hits"])
     except BaseException as exc:
         # ``Exception`` alone let a client cancellation (``CancelledError`` is
         # a ``BaseException``) leave the placed symbols in the drawing inside
@@ -811,6 +813,7 @@ async def run_spec(
         "crossings_scope": CROSSINGS_SCOPE,
         "routing": routing,
         "obstacle_hits": hits,
+        "label_hits": label_hits,
     }
     if watch is not None:
         result["revision"] = watch.report()

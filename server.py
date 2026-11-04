@@ -7339,7 +7339,8 @@ async def drawing_finalize(
     (iso128, layer_color, dim_overlap, untrimmed_corner, duplicate_entities, construction_left,
     property_override, dimension_truth, gdt, plus the P&ID focuses pid_dangling_line,
     pid_duplicate_tag, pid_incompatible_connection, pid_untagged_instrument, pid_illegal_tag,
-    pid_unconnected_equipment — silent on a sheet with no P&ID symbols, plus the
+    pid_unconnected_equipment, pid_line_through_symbol — silent on a sheet with no P&ID symbols,
+    plus the
     mechanical focuses mech_missing_centreline, mech_unhatched_section,
     mech_view_misaligned, mech_duplicate_dimension, mech_thread_unrepresented,
     mech_bom_balloon_mismatch — silent on a sheet with no mechanical part, plus the
@@ -8872,7 +8873,7 @@ async def pid_line_draw(
     last one); `crossings` follows existing arcs, not their chords.
     `avoid` keeps `clearance` from every other symbol and `keep_out` box;
     none possible: kind no_route naming the tags (or `on_blocked="cross"`).
-    Every route reports `obstacle_hits` [{handle, tag}].
+    Every route reports `obstacle_hits` and `label_hits` [{handle, tag}].
     """
     from engineering.pid.drawlines import draw_line
 
@@ -14009,10 +14010,11 @@ WORKFLOW
 5. pid_line_draw(from_={{"handle", "port"}}, to={{"handle", "port"}}, line_class=process_major|process_minor|
    utility|pneumatic|electric|hydraulic|capillary|data, size="100", service="P", spec="CS1")
    A bubble's radial port needs no name. Read `crossings` and `port_reuse` in the response.
+   A symbol between the ports: route="avoid" goes round it; `obstacle_hits` must be [].
 6. pid_graph() — `dangling` must be empty and `stats.confidence_min` 1.0 for a drawing you made.
 7. drawing_critique(focus=None) — must return [] (pid_dangling_line, pid_duplicate_tag,
-   pid_incompatible_connection, pid_untagged_instrument, pid_illegal_tag, pid_unconnected_equipment
-   are part of it).
+   pid_incompatible_connection, pid_untagged_instrument, pid_illegal_tag, pid_unconnected_equipment,
+   pid_line_through_symbol are part of it).
 8. pid_instrument_index() / pid_line_list() / pid_equipment_list() for the deliverables.
 9. drawing_finalize(save_path=...) — the score is the objective quality metric.
 

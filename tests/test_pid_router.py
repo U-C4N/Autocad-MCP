@@ -400,6 +400,32 @@ async def test_pid_line_draw_avoid_keeps_clear_of_symbols_and_keep_out(pid_backe
 
 
 @pytest.mark.asyncio
+async def test_a_label_over_a_symbol_is_reported_never_moved(pid_backend):
+    """Labels stand after routing (the plan's risk note): one that overlaps a
+    symbol is named in ``label_hits``, the line itself stays clear."""
+    vessel = await place_symbol(pid_backend, "vertical_vessel", 50, 25, tag="V-101")
+    over = await draw_line(pid_backend, {"x": 0, "y": 0}, {"x": 100, "y": 0}, line_number="L-1")
+    assert over["obstacle_hits"] == []
+    assert over["label_hits"] == [{"handle": vessel["handle"], "tag": "V-101"}]
+    clear = await draw_line(
+        pid_backend, {"x": 0, "y": -40}, {"x": 100, "y": -40}, line_number="L-2"
+    )
+    assert clear["label_hits"] == []
+    unlabelled = await draw_line(
+        pid_backend, {"x": 0, "y": 0.5}, {"x": 100, "y": 0.5}, line_number="L-3", label=False
+    )
+    assert unlabelled["label_hits"] == [] and unlabelled["label_handle"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_spec_reports_its_label_hits_by_path(pid_backend):
+    result = await run_spec(pid_backend, _sheet("avoid"))
+    assert isinstance(result["label_hits"], list)
+    for hit in result["label_hits"]:
+        assert hit["where"].startswith("lines[") and set(hit) >= {"handle", "tag"}
+
+
+@pytest.mark.asyncio
 async def test_an_enclosed_port_refuses_no_route_with_tags_and_draws_nothing(pid_backend):
     pump = await place_symbol(pid_backend, "centrifugal_pump", 0, 0, tag="P-101")
     for k, (x, y, rot) in enumerate(((0, 30, 0), (-25, 10, 0), (25, 10, 0), (0, -20, 0))):

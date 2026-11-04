@@ -351,6 +351,25 @@ def plan_route(
     return route(s_point, s_dir, e_point, e_dir, stub=stub, mode=route_mode), None
 
 
+def label_box(x: float, y: float, rotation: float, chars: int) -> tuple[float, float, float, float]:
+    """The axis-aligned box of a line-number label: ``chars`` characters of
+    ``TEXT_HEIGHT`` at 0.7 width each (the estimate ``draw_line`` centres the
+    label with), from its insertion point along ``rotation``."""
+    width, angle = chars * TEXT_HEIGHT * 0.7, math.radians(rotation)
+    ux, uy = math.cos(angle), math.sin(angle)
+    corners = [
+        (x + a * ux * width - b * uy * TEXT_HEIGHT, y + a * uy * width + b * ux * TEXT_HEIGHT)
+        for a, b in ((0, 0), (1, 0), (1, 1), (0, 1))
+    ]
+    xs, ys = [c[0] for c in corners], [c[1] for c in corners]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def boxes_overlap(a, b) -> bool:
+    """Two boxes sharing area (touching edges is not overlapping)."""
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
 def check_routing_options(route_mode, clearance, on_blocked) -> float:
     """Refuse a bad ``clearance`` / ``on_blocked`` before anything is read."""
     if isinstance(clearance, bool):
@@ -497,6 +516,22 @@ async def draw_line(
             }
             line_number = format_line_number(fmt, **fields) or None
 
+    # The label stands where label_placement puts it, after routing: a box it
+    # overlaps is reported (``label_hits``), never moved round (1.8-20). Read
+    # here, before anything is written, like ``obstacle_hits``.
+    placement = None
+    label_hits: list[dict] = []
+    if label and line_number:
+        lx, ly, rot, _index = label_placement(path)
+        shift = len(line_number) * TEXT_HEIGHT * 0.7 / 2.0
+        lx -= math.cos(math.radians(rot)) * shift
+        ly -= math.sin(math.radians(rot)) * shift
+        placement = (lx, ly, rot)
+        box = label_box(lx, ly, rot, len(line_number))
+        label_hits = await obstacle_rows(
+            backend, [o.ref for o in sheet + keep if boxes_overlap(box, o.box)]
+        )
+
     await ensure_layer(backend, cls.layer)
     poly = await backend.entity_create_polyline(
         [list(p) for p in path], closed=False, layer=cls.layer
@@ -512,12 +547,9 @@ async def draw_line(
     )
 
     label_handle = None
-    if label and line_number:
+    if placement is not None:
         await ensure_layer(backend, LABEL_LAYER)
-        lx, ly, rot, _index = label_placement(path)
-        shift = len(line_number) * TEXT_HEIGHT * 0.7 / 2.0
-        lx -= math.cos(math.radians(rot)) * shift
-        ly -= math.sin(math.radians(rot)) * shift
+        lx, ly, rot = placement
         text = await backend.entity_create_text(
             line_number, lx, ly, TEXT_HEIGHT, rot, layer=LABEL_LAYER
         )
@@ -574,6 +606,7 @@ async def draw_line(
         "port_reuse": port_reuse,
         "crossings": crossings,
         "obstacle_hits": hits,
+        "label_hits": label_hits,
         "label_handle": label_handle,
         "arrow_handle": arrow_handle,
         "marker_handles": marker_handles,
