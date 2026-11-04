@@ -126,9 +126,84 @@ async def test_the_full_catalog_lean_and_packs_list_the_wire_text(monkeypatch):
     for listed in surfaces:
         assert listed
         for name, description in listed.items():
+            if name == "describe_tool":  # synthetic: where the pointer leads (below)
+                continue
             assert description == tools[name].description, name
             assert len(description or "") <= WIRE_LIMIT, name
     assert any(name in split_tool_names() for name in surfaces[1]), "lean carries split tools"
+
+
+#: DISCOVERY_MODE=off under the full catalog, TOOL_PROFILE=lean and TOOL_PACKS=core.
+OFF_SURFACES = (("full", "all"), ("lean", "all"), ("full", "core"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("profile", "packs"), OFF_SURFACES, ids=["full", "lean", "core"])
+async def test_every_off_mode_surface_that_lists_the_pointer_lists_describe_tool(profile, packs):
+    """The reviewer's gap: in off mode the pointer named a tool that did not exist.
+
+    Every surface whose listing carries ``Details: describe_tool.`` lists
+    ``describe_tool`` too, and calling it returns each pointing tool's whole
+    docstring - the refusals, units and enums behind the split - on that surface.
+    """
+    tools = _registered()
+    previous_profile, previous_packs = config.settings.tool_profile, config.settings.tool_packs
+    try:
+        config.settings.tool_profile = profile
+        config.settings.tool_packs = packs
+        await server._apply_tool_profile(profile)
+        server._apply_discovery_mode("off")
+        async with Client(server.mcp) as client:
+            listed = {t.name: t for t in await client.list_tools()}
+            pointing = sorted(
+                name
+                for name, tool in listed.items()
+                if (tool.description or "").endswith(DETAILS_POINTER)
+            )
+            assert pointing, "the split reaches this surface"
+            assert "describe_tool" in listed, f"{len(pointing)} tools point to describe_tool"
+            assert "search_tools" not in listed and "call_tool" not in listed
+            cards = {}
+            for start in range(0, len(pointing), MAX_DESCRIBE_NAMES):
+                answer = await client.call_tool(
+                    "describe_tool", {"names": pointing[start : start + MAX_DESCRIBE_NAMES]}
+                )
+                cards.update({c["name"]: c for c in answer.structured_content["tools"]})
+    finally:
+        config.settings.tool_profile = previous_profile
+        config.settings.tool_packs = previous_packs
+        await server._apply_tool_profile(previous_profile)
+    assert set(pointing) <= split_tool_names()
+    for name in pointing:
+        doc = _docstring(tools[name])
+        assert cards[name]["description"] == doc, name
+        assert cards[name]["input_schema"] == listed[name].inputSchema, name
+        assert DETAILS_POINTER not in doc, name
+    # the sentences the reviewer found cut off the wire are on this route
+    if "selection_get" in cards:
+        assert "ok=False with an empty handles list" in cards["selection_get"]["description"]
+        assert "ok=False with an empty handles list" not in listed["selection_get"].description
+
+
+@pytest.mark.asyncio
+async def test_off_mode_lists_the_catalog_unchanged_and_describe_tool_last():
+    """Nothing but the one synthetic tool is added, at the end (a stable prefix)."""
+    server._apply_discovery_mode("off")
+    async with Client(server.mcp) as client:
+        names = [t.name for t in await client.list_tools()]
+    assert names[-1] == "describe_tool"
+    assert names.count("describe_tool") == 1
+    registered = _registered()
+    assert all(name in registered for name in names[:-1])
+    assert "describe_tool" not in registered, "synthetic: never in the registry or a count"
+
+
+@pytest.mark.asyncio
+async def test_off_mode_lists_no_describe_tool_when_nothing_points_to_it():
+    from discovery.transform import DetailsTransform
+
+    plain = Tool.from_function(fn=lambda: "", name="w3_plain_tool", description="Short.")
+    assert await DetailsTransform().transform_tools([plain]) == [plain]
 
 
 # -- the full text ----------------------------------------------------------------
@@ -142,7 +217,7 @@ async def test_describe_tool_returns_the_whole_docstring_of_every_split_tool():
         visible = {t.name for t in await client.list_tools()}
     names = sorted(split_tool_names() & visible)
     assert names
-    server._apply_discovery_mode("search")
+    server._apply_discovery_mode("search")  # off mode: the test above
     cards = {}
     async with Client(server.mcp) as client:
         for start in range(0, len(names), MAX_DESCRIBE_NAMES):

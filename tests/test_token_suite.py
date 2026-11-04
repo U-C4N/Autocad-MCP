@@ -179,7 +179,8 @@ def test_the_idle_lane_covers_the_advertised_surfaces_and_the_instructions(repor
         "instructions",
     }
     assert variants["default"]["advertised_tools"] > 100
-    assert variants["lean"]["advertised_tools"] == len(server.LEAN_TOOL_NAMES)
+    # + describe_tool: off mode lists it wherever a description is split (W3)
+    assert variants["lean"]["advertised_tools"] == len(server.LEAN_TOOL_NAMES) + 1
     # search_tools + call_tool + describe_tool
     assert variants["search"]["advertised_tools"] == 3
     # 1.8-11: + the three default pins (cad_batch, drawing_info, entity_list)
@@ -248,8 +249,9 @@ def test_the_meta_card_no_longer_carries_the_alias_lists(report, full_catalog):
 
     tools = asyncio.run(_tools())
     names = {tool.name for tool in tools}
-    # The check must cover the catalog, not the search-mode surface.
-    assert not names & {"search_tools", "call_tool", "describe_tool"}
+    # The check must cover the catalog, not the search-mode surface. (Off mode
+    # lists describe_tool beside it since W3 - card-less, so it passes below.)
+    assert not names & {"search_tools", "call_tool"}
     assert "entity_fillet" in names
     assert len(names) > 50
     for tool in tools:

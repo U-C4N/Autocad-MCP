@@ -1065,7 +1065,8 @@ mcp.add_middleware(CapabilityRefusalMiddleware())
 # ---------------------------------------------------------------------------
 # Tool discovery mode (DISCOVERY_MODE)
 # ---------------------------------------------------------------------------
-# "off"    the whole catalog is advertised (the 1.7.0 surface)
+# "off"    the whole catalog is advertised (the 1.7.0 surface), plus describe_tool
+#          whenever a listed description ends in "Details: describe_tool." (W3)
 # "search" (default since 1.8.0) list_tools returns the DISCOVERY_PINNED tools,
 #          a search tool, a call_tool proxy and describe_tool (one or several
 #          tools' full schemas) instead, and the catalog is reached through
@@ -1079,6 +1080,7 @@ mcp.add_middleware(CapabilityRefusalMiddleware())
 DISCOVERY_MODES = ("off", "search")
 
 _discovery_transform = None
+_details_transform = None
 
 
 def _tool_pack(name: str) -> str:
@@ -1094,12 +1096,13 @@ def _tool_pack(name: str) -> str:
 
 
 def _apply_discovery_mode(mode: str | None = None) -> str:
-    """Attach or detach the tool-search transform. Returns the mode applied.
+    """Attach the transform of one discovery mode. Returns the mode applied.
 
-    Idempotent: re-applying removes the previous transform first, so a mode
-    switch never stacks two search interfaces on one server.
+    ``search`` attaches the tool-search transform, ``off`` the one that adds
+    ``describe_tool`` beside the whole catalog. Idempotent: re-applying removes
+    the previous transform first, so a mode switch never stacks two of them.
     """
-    global _discovery_transform
+    global _discovery_transform, _details_transform
     selected = (mode or config.settings.discovery_mode or "off").lower().strip()
     if selected not in DISCOVERY_MODES:
         log.warning(
@@ -1108,15 +1111,28 @@ def _apply_discovery_mode(mode: str | None = None) -> str:
             ", ".join(DISCOVERY_MODES),
         )
         selected = "off"
-    if _discovery_transform is not None:
+    for attached in (_discovery_transform, _details_transform):
+        if attached is None:
+            continue
         try:
-            mcp._transforms.remove(_discovery_transform)
+            mcp._transforms.remove(attached)
         except (AttributeError, ValueError) as exc:  # pragma: no cover - layout change
             log.debug("Could not detach the discovery transform: %s", exc)
-        _discovery_transform = None
+    _discovery_transform = None
+    _details_transform = None
+    if selected == "off":
+        # W3: a long description is listed as its leading paragraphs and
+        # "Details: describe_tool." on every surface, so off mode lists the
+        # whole catalog plus describe_tool (discovery.transform.DetailsTransform)
+        # and the pointer leads somewhere. Kept apart from _discovery_transform,
+        # whose presence is what "search mode" means to the rest of the server.
+        from discovery.transform import DetailsTransform
+
+        _details_transform = DetailsTransform(pack_of=_tool_pack)
+        mcp.add_transform(_details_transform)
     if selected == "search":
-        # Imported lazily so "off" never pays for it, matching how the backend
-        # modules are kept out of import time.
+        # Imported here, as in "off", matching how the backend modules are kept
+        # out of import time.
         from discovery.transform import CadSearchTransform
 
         # 1.8-11: DISCOVERY_PINNED stays listed beside the synthetic tools (as a

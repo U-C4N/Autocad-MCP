@@ -679,11 +679,17 @@ SEARCH_LIMIT = 5
 
 
 async def _catalog() -> list[Any]:
-    """The visible catalog a search transform would rank, untransformed."""
+    """The visible catalog a search transform would rank, untransformed.
+
+    Off mode lists ``describe_tool`` beside the catalog (W3, the split's
+    pointer); search mode never ranks it, so neither does this lane.
+    """
+    from discovery.instructions import SYNTHETIC_TOOLS
+
     srv = _load_server()
     srv._apply_discovery_mode("off")
     await srv._apply_tool_profile("full")
-    return list(await srv.mcp.list_tools())
+    return [tool for tool in await srv.mcp.list_tools() if tool.name not in SYNTHETIC_TOOLS]
 
 
 async def discovery_lane(counter: Any, turns: int = SESSION_TURNS) -> dict[str, Any]:

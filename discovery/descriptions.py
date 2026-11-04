@@ -21,8 +21,10 @@ on the wire - and :func:`full_description` is how every reader that wants it
 gets it: ``describe_tool`` (``discovery.serialize.describe_payload``), the
 search-mode pinned card, the BM25 index. The listing a client receives - the
 full catalog, the lean profile and every ``TOOL_PACKS`` surface - carries the
-wire text. Nothing a call is validated against changes: the input schema is
-untouched.
+wire text, and ``describe_tool`` is listed beside it in both discovery modes
+(``discovery.transform.DetailsTransform`` in ``off``), so the pointer always
+names a tool the client can call. Nothing a call is validated against
+changes: the input schema is untouched.
 
 The split happens once, at registration, on purpose: a description changed
 *after* registration (a test inflating one to prove the token gate) is what
@@ -51,7 +53,8 @@ __all__ = [
 WIRE_DESCRIPTION_MAX = 800
 
 #: Appended, as a paragraph of its own, to a description that was split - so
-#: the cut is never silent and the reader knows where the rest is.
+#: the cut is never silent and the reader knows where the rest is. Every
+#: surface that lists such a description lists ``describe_tool`` too.
 DETAILS_POINTER = "Details: describe_tool."
 
 #: A paragraph that starts with this marks the split explicitly.

@@ -30,6 +30,12 @@ own examples; ``describe_tool(names=[...])`` returns several in one turn
 ``call_tool`` reaches, refuses a hidden or unknown name with the same
 ``Unknown tool`` refusal, and is itself refused by ``call_tool`` (and, being
 card-less, by ``cad_batch``) like the other synthetic tools.
+
+**``describe_tool`` in ``off`` mode too.** A description over 800 characters
+is listed as its leading paragraphs and ``Details: describe_tool.``
+(``discovery/descriptions.py``) on every surface, so :class:`DetailsTransform`
+lists the whole catalog unchanged plus the same ``describe_tool`` - the
+pointer leads somewhere in both modes.
 """
 
 from __future__ import annotations
@@ -43,6 +49,7 @@ from typing import Annotated, Any, Literal
 from fastmcp.exceptions import NotFoundError
 from fastmcp.server.context import Context
 from fastmcp.server.transforms import GetToolNext
+from fastmcp.server.transforms.catalog import CatalogTransform
 from fastmcp.server.transforms.search import BM25SearchTransform
 from fastmcp.server.transforms.search.base import SearchResultSerializer
 from fastmcp.server.transforms.search.base import (
@@ -55,7 +62,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from discovery.aliases import alias_text, aliases_for
-from discovery.descriptions import full_description
+from discovery.descriptions import DETAILS_POINTER, full_description
 from discovery.serialize import (
     describe_payload,
     lean_schema,
@@ -71,6 +78,7 @@ __all__ = [
     "RISK_CEILINGS",
     "SYNONYM_MATCH_BOOST",
     "CadSearchTransform",
+    "DetailsTransform",
     "SearchOutcome",
     "tool_risk",
 ]
@@ -500,55 +508,119 @@ class CadSearchTransform(BM25SearchTransform):
     # ------------------------------------------------------------------
 
     def _make_describe_tool(self) -> Tool:
-        transform = self
+        return _describe_tool_for(self)
 
-        async def describe_tool(
-            name: str | None = None,
-            names: Annotated[list[str] | None, Field(max_length=MAX_DESCRIBE_NAMES)] = None,
-            ctx: Context = None,  # type: ignore[assignment]
-        ) -> dict[str, Any]:
-            """Full schema, risk and examples of a tool (name) or several (names)."""
-            if (name is None) == (names is None):
-                raise ValueError(
-                    "describe_tool: pass exactly one of `name` (one tool) or `names` "
-                    "(several, one card each)"
-                )
-            wanted = [name] if names is None else list(dict.fromkeys(names))
-            if not wanted:
-                raise ValueError("describe_tool: `names` is empty")
-            synthetic = [n for n in wanted if n in transform.synthetic_names]
-            if synthetic:
-                raise ValueError(
-                    f"'{synthetic[0]}' is a synthetic search tool and cannot be described "
-                    "via describe_tool; list_tools already carries its full schema"
-                )
-            # The catalog call_tool reaches: every visibility gate (TOOL_PROFILE,
-            # TOOL_PACKS, ENABLE_3D) and auth filter already applied. Pinned
-            # tools are included - with their full description and schema, not
-            # the shortened card search mode lists - because call_tool accepts
-            # them too.
-            catalog = {t.name: t for t in await transform.get_tool_catalog(ctx)}
-            unknown = [n for n in wanted if n not in catalog]
-            if unknown:
-                # The exact refusal FastMCP raises when call_tool resolves the name;
-                # several unknown names are all named, nothing is described.
-                raise NotFoundError(f"Unknown tool: {', '.join(repr(n) for n in unknown)}")
-            cards = [
-                describe_payload(
-                    catalog[n],
-                    pack=transform._pack_of(n) if transform._pack_of is not None else None,
-                )
-                for n in wanted
-            ]
-            return cards[0] if names is None else {"tools": cards}
 
-        return _lean(
-            Tool.from_function(
-                fn=describe_tool,
-                name=self._describe_tool_name,
-                annotations=ToolAnnotations(readOnlyHint=True),
+def _describe_tool_for(transform: Any) -> Tool:
+    """The ``describe_tool`` a transform lists: its catalog, its pack table.
+
+    ``transform`` is a :class:`CatalogTransform` carrying ``synthetic_names``,
+    ``_describe_tool_name`` and ``_pack_of`` - :class:`CadSearchTransform` in
+    search mode, :class:`DetailsTransform` in ``off`` mode. One body for both,
+    so the card a client reads never depends on the mode.
+    """
+
+    async def describe_tool(
+        name: str | None = None,
+        names: Annotated[list[str] | None, Field(max_length=MAX_DESCRIBE_NAMES)] = None,
+        ctx: Context = None,  # type: ignore[assignment]
+    ) -> dict[str, Any]:
+        """Full schema, risk and examples of a tool (name) or several (names)."""
+        if (name is None) == (names is None):
+            raise ValueError(
+                "describe_tool: pass exactly one of `name` (one tool) or `names` "
+                "(several, one card each)"
             )
+        wanted = [name] if names is None else list(dict.fromkeys(names))
+        if not wanted:
+            raise ValueError("describe_tool: `names` is empty")
+        synthetic = [n for n in wanted if n in transform.synthetic_names]
+        if synthetic:
+            raise ValueError(
+                f"'{synthetic[0]}' is a synthetic search tool and cannot be described "
+                "via describe_tool; list_tools already carries its full schema"
+            )
+        # The catalog call_tool reaches: every visibility gate (TOOL_PROFILE,
+        # TOOL_PACKS, ENABLE_3D) and auth filter already applied. Pinned
+        # tools are included - with their full description and schema, not
+        # the shortened card search mode lists - because call_tool accepts
+        # them too.
+        catalog = {t.name: t for t in await transform.get_tool_catalog(ctx)}
+        unknown = [n for n in wanted if n not in catalog]
+        if unknown:
+            # The exact refusal FastMCP raises when call_tool resolves the name;
+            # several unknown names are all named, nothing is described.
+            raise NotFoundError(f"Unknown tool: {', '.join(repr(n) for n in unknown)}")
+        cards = [
+            describe_payload(
+                catalog[n],
+                pack=transform._pack_of(n) if transform._pack_of is not None else None,
+            )
+            for n in wanted
+        ]
+        return cards[0] if names is None else {"tools": cards}
+
+    return _lean(
+        Tool.from_function(
+            fn=describe_tool,
+            name=transform._describe_tool_name,
+            annotations=ToolAnnotations(readOnlyHint=True),
         )
+    )
+
+
+class DetailsTransform(CatalogTransform):
+    """``DISCOVERY_MODE=off``: the whole catalog, plus ``describe_tool``.
+
+    A description over 800 characters is listed as its leading paragraphs and
+    ``Details: describe_tool.`` (``discovery/descriptions.py``) on *every*
+    surface, the full catalog, ``TOOL_PROFILE=lean`` and each ``TOOL_PACKS``
+    one included. Search mode lists ``describe_tool`` already; this transform
+    is what makes the pointer lead somewhere in ``off`` mode too. It changes
+    nothing else: every catalog tool is listed as it comes, in order, and
+    ``describe_tool`` is appended last (a stable prompt-cache prefix) - only
+    when a listed description actually points to it. Like the search-mode one
+    it is synthetic: never in the registry, card-less (so ``cad_batch``
+    refuses it as a step) and never counted by ``system_about``.
+    """
+
+    def __init__(
+        self,
+        *,
+        describe_tool_name: str = "describe_tool",
+        pack_of: Callable[[str], str | None] | None = None,
+    ) -> None:
+        super().__init__()
+        self._describe_tool_name = describe_tool_name
+        self._pack_of = pack_of
+
+    @property
+    def synthetic_names(self) -> frozenset[str]:
+        """Every name this transform answers itself rather than the catalog."""
+        return frozenset({self._describe_tool_name})
+
+    async def transform_tools(self, tools: Sequence[Tool]) -> Sequence[Tool]:
+        """The catalog unchanged, then ``describe_tool`` when a listing points to it."""
+        if not any(_points_to_details(tool) for tool in tools):
+            return tools
+        return [*tools, self._make_describe_tool()]
+
+    async def get_tool(
+        self, name: str, call_next: GetToolNext, *, version: VersionSpec | None = None
+    ) -> Tool | None:
+        """Resolve ``describe_tool`` here; every other name passes through."""
+        if name == self._describe_tool_name:
+            return self._make_describe_tool()
+        return await call_next(name, version=version)
+
+    def _make_describe_tool(self) -> Tool:
+        return _describe_tool_for(self)
+
+
+def _points_to_details(tool: Tool) -> bool:
+    """True when ``tool`` lists a shortened description whose rest is elsewhere."""
+    listed = tool.description or ""
+    return listed.endswith(DETAILS_POINTER) and full_description(tool) != listed
 
 
 class _SyntheticTool(FunctionTool):

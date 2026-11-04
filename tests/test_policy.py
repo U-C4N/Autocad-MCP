@@ -256,7 +256,10 @@ async def test_read_only_lists_only_read_tools(monkeypatch):
     assert "drawing_info" in listed and "entity_list" in listed
     assert "entity_create_line" not in listed and "entity_delete" not in listed
     for name in listed:
-        assert _cost(name) == "read" or name in policy.PER_STEP_TOOLS, name
+        # describe_tool (a read-only discovery proxy) is listed in off mode since W3
+        assert (
+            _cost(name) == "read" or name in policy.PER_STEP_TOOLS or name in policy.DISCOVERY_TOOLS
+        ), name
 
 
 # â”€â”€ allow / deny lists and the cost ceiling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -275,7 +278,8 @@ async def test_allowlist_entity_glob_and_drawing_info(monkeypatch):
         ).structured_content
     finally:
         await client.__aexit__(None, None, None)
-    assert listed and all(n.startswith("entity_") or n == "drawing_info" for n in listed)
+    allowed = ("drawing_info", *policy.DISCOVERY_TOOLS)  # describe_tool: never refused by name
+    assert listed and all(n.startswith("entity_") or n in allowed for n in listed)
     assert "entity_create_line" in listed and "cad_batch" not in listed
     assert not created.is_error and not info.is_error
     assert refused.is_error and refused.structured_content["policy"] == "tool_allowlist"

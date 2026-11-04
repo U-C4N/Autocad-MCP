@@ -893,7 +893,10 @@ async def test_describe_tool_returns_the_full_mode_schema_of_every_visible_tool(
     """The gate: for every tool call_tool accepts, the schema is the full-mode one."""
     server._apply_discovery_mode("off")
     async with Client(server.mcp) as client:
-        full = {tool.name: tool for tool in await client.list_tools()}
+        # W3: off mode lists describe_tool too (the split's pointer); it is synthetic
+        full = {
+            tool.name: tool for tool in await client.list_tools() if tool.name != "describe_tool"
+        }
     registered = {t.name: t for t in server._local_tool_components()}
     server._apply_discovery_mode("search")
     async with Client(server.mcp) as client:
@@ -1034,7 +1037,8 @@ async def test_describe_tool_takes_one_name_or_several_and_reads_only(transform)
 
 
 async def test_describe_tool_is_not_a_registered_tool():
-    """Synthetic, search mode only: the registry and every count stay untouched."""
+    """Synthetic (listed by a transform in both modes since W3): the registry and
+    every count stay untouched."""
     assert "describe_tool" not in {t.name for t in await server._registered_tools()}
 
 
