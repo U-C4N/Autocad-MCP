@@ -36,7 +36,10 @@ call while it is busy (right after ``Documents.Add`` / ``Open`` / ``Close``,
 measured on this seat); a refused call did not run. Every job is retried with
 backoff (0.5 s doubling to 5 s) for up to ``REJECTED_PATIENCE_S`` and the
 retries are counted in the JSON. A job of several COM calls whose later call
-was refused is run again whole, which a smoke's checks then see.
+was refused is run again whole, which a smoke's checks then see - except a job
+of a content-changing (``_mutating``) backend call that had held the
+Application before the refusal: it may have written, and running it twice
+drew a LINE twice in the arch smoke (2026-11-04), so that refusal is raised.
 
 **The JSON** (``SCHEMA``): ``status`` (``pass`` / ``fail`` / ``refused`` /
 ``unavailable``), ``exit_code``, ``checks`` (name, status, expected, observed,
@@ -114,6 +117,32 @@ def hresult(exc: BaseException) -> int | None:
             if isinstance(first, int):
                 return first
     return None
+
+
+def _job_held_the_application() -> bool:
+    """Whether the running backend job held the Application proxy (COM thread).
+
+    ``ComBackend``'s per-job guard sets ``touched`` at the job's first
+    ``_acad_app()``; a job that never held it cannot have written anything. A
+    backend without that guard (a test's fake) answers False, as before.
+    """
+    try:
+        from backends import com_backend as com
+    except Exception:
+        return False
+    guard = getattr(getattr(com, "_JOB_STATE", None), "guard", None)
+    return bool(getattr(guard, "touched", False))
+
+
+def _in_mutating_call() -> bool:
+    """Whether the backend call now running is one of ``ComBackend``'s ``_mutating``
+    methods (its ``_MUTATION_PROBE`` context variable is set for the call)."""
+    try:
+        from backends import com_backend as com
+    except Exception:
+        return False
+    probe = getattr(com, "_MUTATION_PROBE", None)
+    return probe is not None and probe.get() is not None
 
 
 def _version_only(text: str) -> str:
@@ -328,11 +357,19 @@ class LiveHarness:
         self._original_run = original
 
         async def run(func, *args, **kwargs):
+            reached: list[bool] = [False]
+            mutating = _in_mutating_call()
+
             @functools.wraps(func)
             def job(*a, **kw):
+                reached[0] = False
                 app = self._attach_sync()
                 self._guard_sync(app)
-                return func(*a, **kw)
+                try:
+                    return func(*a, **kw)
+                except BaseException:
+                    reached[0] = _job_held_the_application()
+                    raise
 
             deadline = time.monotonic() + self.patience_s
             pause = _FIRST_PAUSE_S
@@ -343,6 +380,14 @@ class LiveHarness:
                     raise
                 except Exception as exc:
                     if hresult(exc) != RPC_E_CALL_REJECTED or time.monotonic() > deadline:
+                        raise
+                    if mutating and reached[0] and getattr(exc, "kind", None) != "application_busy":
+                        # A content-changing backend call whose job held the
+                        # Application before the refused call may have written:
+                        # running it again whole would write twice (measured: a
+                        # duplicated LINE in the arch smoke, 2026-11-04). A read,
+                        # the smoke's own raw jobs, and a refusal before anything
+                        # ran (the backend's application_busy) are retried.
                         raise
                     self.rpc_retries += 1
                     await self._sleep(pause)
