@@ -18,6 +18,9 @@ DEFAULT_MAX_HTTP_BODY_BYTES = 8 * 1024 * 1024
 #: ``LISP_POLICY`` values (1.8-18, ``security_lisp.py``); the first is the default.
 LISP_POLICIES: tuple[str, ...] = ("read", "denylist", "off")
 
+#: ``COM_REFRESH_MODE`` values (1.8-23); the first is the default.
+COM_REFRESH_MODES: tuple[str, ...] = ("auto", "regen")
+
 
 def parse_lisp_policy(raw: str | None) -> str:
     """A ``LISP_POLICY`` value; an unknown one falls back to ``read`` with a warning."""
@@ -122,6 +125,29 @@ class Settings:
         # and reported as command_incomplete with AutoCAD's LASTPROMPT. Well
         # inside COM_CALL_TIMEOUT, so the STA job always comes back.
         self.command_deadline_s: float = max(0.1, float(os.environ.get("COMMAND_DEADLINE_S", "8")))
+
+        # 1.8-23: the live engine refreshes the display once per COM job, not
+        # once per entity. A job that asked for at most COM_REFRESH_UPDATE_MAX
+        # refreshes, each naming its entity, calls Update() on the last one;
+        # a larger job (or one whose refresh names no entity) does one
+        # Regen(acActiveViewport). The default 1 is the safe reading while
+        # spike S4 (does Update() of the last entity paint the earlier ones?)
+        # is unmeasured: a single create is one Update(), anything more is one
+        # Regen. COM_REFRESH_MODE=regen is the plan's fallback for a graphics
+        # configuration where Update() does not paint: one Regen per job.
+        self.com_refresh_update_max: int = max(
+            0, int(os.environ.get("COM_REFRESH_UPDATE_MAX", "1"))
+        )
+        self.com_refresh_mode: str = os.environ.get("COM_REFRESH_MODE", "auto").strip().lower()
+        if self.com_refresh_mode not in COM_REFRESH_MODES:
+            import logging
+
+            logging.getLogger("autocad_mcp.config").warning(
+                "Unknown COM_REFRESH_MODE %r - falling back to 'auto'. Valid values: %s.",
+                self.com_refresh_mode,
+                ", ".join(COM_REFRESH_MODES),
+            )
+            self.com_refresh_mode = "auto"
 
         # Per-call timeout for the headless ezdxf backend. Every ezdxf method
         # runs under one document lock, so a single hung call (pathological DXF,

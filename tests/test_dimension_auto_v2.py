@@ -354,7 +354,7 @@ def seat(monkeypatch):
     doc = SimpleNamespace(RegisteredApplications=SimpleNamespace(Add=lambda name: None))
     monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
     monkeypatch.setattr(cb, "_msp", lambda: space)
-    monkeypatch.setattr(cb, "_regen", lambda: None)
+    monkeypatch.setattr(cb, "_regen", lambda *_entity: None)
     monkeypatch.setattr(cb, "_apply_dim_tolerance", lambda *a, **k: None)
     backend = cb.ComBackend()
 

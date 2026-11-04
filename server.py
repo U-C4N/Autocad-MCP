@@ -42,8 +42,6 @@ from backends.base import (
     EntityInfo,
     LayerInfo,
     Lineweight,
-    lineweight_name,
-    parse_lineweight,
 )
 from backends.journal_store import open_journal, state_store_status
 from backends.operations import (
@@ -3847,15 +3845,9 @@ async def entity_delete_many(
     """Delete multiple entities in one call. Returns count of deleted entities."""
     await ctx.info(f"Deleting {len(handles)} entities")
     b = _backend(ctx)
-    deleted = 0
-    errors = []
-    for i, h in enumerate(handles):
-        await ctx.report_progress(i, len(handles))
-        try:
-            await b.entity_delete(h)
-            deleted += 1
-        except Exception as exc:
-            errors.append({"handle": h, "error": str(exc)})
+    # 1.8-23: one backend call - the headless loop, or ONE STA job live.
+    outcome = await b.entity_delete_many(handles, progress=ctx.report_progress)
+    deleted, errors = outcome["deleted"], outcome["errors"]
     await ctx.report_progress(len(handles), len(handles))
     return {"ok": True, "deleted": deleted, "errors": errors}
 
@@ -6092,47 +6084,13 @@ async def entity_batch_create(
     differ, must be ordered, or must feed each other.
     """
     b = _backend(ctx)
-    results = []
-    errors = []
     total = len(entities)
     await ctx.info(f"Batch creating {total} entities")
-
-    create_map = {
-        "line": b.entity_create_line,
-        "circle": b.entity_create_circle,
-        "arc": b.entity_create_arc,
-        "polyline": b.entity_create_polyline,
-        "text": b.entity_create_text,
-        "mtext": b.entity_create_mtext,
-        "point": b.entity_create_point,
-        "hatch": b.entity_create_hatch,
-        "spline": b.entity_create_spline,
-        "ellipse": b.entity_create_ellipse,
-    }
-
-    for i, ent_def in enumerate(entities):
-        await ctx.report_progress(i, total)
-        ent_type = ent_def.pop("type", None)
-        if not ent_type:
-            errors.append({"index": i, "error": "Missing 'type' key"})
-            continue
-        creator = create_map.get(ent_type.lower())
-        if not creator:
-            errors.append({"index": i, "error": f"Unknown type: {ent_type}"})
-            continue
-        try:
-            # Parsed before the create, so a refused lineweight draws nothing.
-            weight = parse_lineweight(ent_def.pop("lineweight", None))
-            info = await creator(**ent_def)
-            if weight is not None:
-                await b.entity_set_properties(info.handle, lineweight=weight)
-                info.lineweight_name = lineweight_name(weight)
-            results.append(_dc(info))
-        except Exception as exc:
-            errors.append({"index": i, "type": ent_type, "error": str(exc)})
-
+    # 1.8-23: one backend call - the contract's loop over entity_create_*
+    # headlessly, ONE STA job with one display refresh live.
+    result = await b.entity_batch_create(entities, progress=ctx.report_progress)
     await ctx.report_progress(total, total)
-    return {"created": len(results), "errors": errors, "entities": results}
+    return result
 
 
 @cad_tool(

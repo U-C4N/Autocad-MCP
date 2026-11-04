@@ -199,7 +199,7 @@ def com(monkeypatch):
     document.owners[1] = space  # the active layout; a sheet registers itself under 2
     monkeypatch.setattr(module, "_acad_doc", lambda: document)
     monkeypatch.setattr(module, "_msp", lambda: space)
-    monkeypatch.setattr(module, "_regen", lambda: None)
+    monkeypatch.setattr(module, "_regen", lambda *_entity: None)
     # The real converter reads a dozen ActiveX members (bounding box, block
     # geometry, ...); the fixture only needs the handle and the name back.
     monkeypatch.setattr(
