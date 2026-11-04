@@ -1038,13 +1038,16 @@ async def test_every_key_the_graph_returns_is_documented(backend):
     from pathlib import Path
 
     import server
+    from discovery.descriptions import full_description
 
     ids = await _small_pid(backend)
     await backend.entity_create_line(130, 111, 130, 60, layer="PROCESS-PIPING-SECONDARY")
     graph = await build_graph(backend, include_geometry=True)
     assert graph["junctions"] and graph["dangling"] and ids
     keys = _keys_of(graph)
-    doc = (await server.mcp.get_tool("pid_graph")).description
+    # the docstring as written - since the W3 Details: split (1.8.0) the listing
+    # carries its leading paragraphs and describe_tool the full text read here
+    doc = full_description(await server.mcp.get_tool("pid_graph"))
     spec = Path(__file__).parents[1] / "docs/superpowers/specs/2026-09-15-v1.6-pid-design.md"
     model = spec.read_text(encoding="utf-8").split("### 9.1 Model", 1)[1].split("### 9.2", 1)[0]
     for record, names in keys.items():
