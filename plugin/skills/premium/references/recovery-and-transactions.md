@@ -27,18 +27,25 @@ report a write you cannot prove happened.
 
 ## Checkpoints, undo after a restart, history
 
-- Every save, open, new drawing and rollback batch keeps a durable checkpoint;
-  `checkpoint_create(label=...)` adds one before a risky step. They survive a
-  restart: `checkpoint_list` names them, `checkpoint_restore(checkpoint,
-  expected_revision=..., mode="in_place"|"new_document")` brings one back (live
-  AutoCAD restores only as a new document). A reference to a checkpoint that
-  does not exist, or that the disk budget evicted, is refused: pick a kept one
-  from `checkpoint_list`.
+- Headless, every save, open, new drawing and rollback batch keeps a durable
+  checkpoint. Live AutoCAD keeps one only at `checkpoint_create`, at each
+  `transaction_begin` (every rollback batch and the whole-sheet `*_from_spec`
+  tools) and before `entity_delete_many` / `drawing_purge` /
+  `text_find_replace` - not at a save, an open or a new drawing, so on a live
+  seat call `checkpoint_create(label=...)` after a save you may want back.
+  Either engine: `checkpoint_create(label=...)` adds one before a risky step.
+  They survive a restart: `checkpoint_list` names them,
+  `checkpoint_restore(checkpoint, expected_revision=...,
+  mode="in_place"|"new_document")` brings one back (live AutoCAD restores only
+  as a new document). A reference to a checkpoint that does not exist, or that
+  the disk budget evicted, is refused: pick a kept one from `checkpoint_list`.
 - The headless `drawing_undo` steps back to the newest checkpoint, also after a
   restart - to the last save, batch or label, not one call (`granularity`). Redo
-  across a restart is not kept.
-- `drawing_open` reports `lost_since_save`: calls the server committed but never
-  saved before it ended. Report them; they are not in the file.
+  across a restart is not kept. Live, undo is AutoCAD's own.
+- The headless `drawing_open` reports `lost_since_save`: calls the server
+  committed but never saved before it ended. Report them; they are not in the
+  file. (A killed server loses nothing of a live document: it stays open in
+  AutoCAD.)
 - `drawing_history(label=..., handle=..., query=..., detail="args")` reads what
   was done to the drawing, with which arguments, across restarts. Label a round
   with `cad_batch(label=...)` or `_meta.label`; `drawing_diff(old_checkpoint=...,
