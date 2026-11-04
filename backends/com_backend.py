@@ -6734,7 +6734,9 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         doc = _acad_doc()
         entry = self._known_documents.get(self._bound_entry_key()) or {}
         edits_before = entry.get("edits")
-        outcome = self._safe_send_command(doc, command)
+        # quiet=False: a SetVariable around the command is an undo record of
+        # its own (measured, AutoCAD 2026) - see _safe_send_command.
+        outcome = self._safe_send_command(doc, command, quiet=False)
         edits_after = None
         if edits_before is not None and entry.get("document_id"):
             try:
@@ -10242,6 +10244,7 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         target_space: str | None = None,
         owner: str | None = None,
         sysvars: dict[str, Any] | None = None,
+        quiet: bool = True,
     ) -> CommandOutcome:
         """Send `cmd`, polling CMDACTIVE until the command finishes.
 
@@ -10249,6 +10252,12 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         and chatty echoes; ``sysvars`` (a command script's own modes, e.g.
         ``TRIMEXTENDMODE``) are set the same way; everything is restored in the
         finally block. A variable the seat does not have is skipped.
+
+        ``quiet=False`` touches no variable at all - for ``_UNDO`` / ``_REDO``.
+        MEASURED on AutoCAD 2026 (live smoke ``space``, 2026-11-04): a
+        ``SetVariable`` is an undo record of its own, so ``_UNDO 1`` after the
+        zeroing undid the OSMODE change instead of the drawing's last step,
+        and the restore after the undo left ``_REDO`` with "Nothing to redo".
 
         1.8-05 - what the command did, not only that it was sent:
 
@@ -10287,7 +10296,7 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         saved: dict[str, Any] = {}
         try:
             wanted = {"OSMODE": 0, "SNAPMODE": 0, "CMDECHO": 0, **(sysvars or {})}
-            for var, value in wanted.items():
+            for var, value in wanted.items() if quiet else ():
                 try:
                     current = doc.GetVariable(var)
                     _set_variable(doc, var, value)

@@ -628,6 +628,23 @@ async def test_drawing_undo_and_redo_report_whether_the_drawing_changed(com, sea
 
 
 @pytest.mark.asyncio
+async def test_undo_and_redo_touch_no_system_variable(com, seat):
+    """Live smoke ``space`` (AutoCAD 2026): a SetVariable is an undo record of
+    its own - ``_UNDO 1`` after the OSMODE zeroing undid that instead of the
+    drawing's step, and the restore after it left ``_REDO`` "Nothing to redo"."""
+    doc = seat.doc
+    doc.vars["OSMODE"] = 4133
+    await com.entity_create_circle(0.0, 0.0, 1.0)
+    writes: list[tuple] = []
+    plain = doc.SetVariable
+    doc.SetVariable = lambda name, value: (writes.append((name, value)), plain(name, value))
+    doc.on_command = _undoes_last_create
+    assert (await com.drawing_undo())["verified"] is True
+    assert (await com.drawing_redo())["verified"] is True
+    assert writes == [] and doc.vars["OSMODE"] == 4133
+
+
+@pytest.mark.asyncio
 async def test_drawing_undo_left_at_a_prompt_is_command_incomplete(com, seat, short_deadline):
     seat.doc.on_command = _stops_at("Enter the number of operations to undo or [Auto]:")
     with pytest.raises(CommandIncompleteError) as raised:
