@@ -516,6 +516,15 @@ def test_every_smoke_runs_on_the_harness(name):
     assert callable(module.body) and callable(module.assess)
 
 
+_AVOID_CLEAN = {
+    "auto_handle": "2A",
+    "auto_hits": ["V-301"],
+    "avoid_hits": [],
+    "avoid_vertices": [[8.0, -220.0], [20.0, -220.0], [20.0, -240.0], [147.0, -240.0]],
+    "through": ["2A"],
+}
+
+
 def _pid_report(**overrides):
     report = {
         "graph_stats": {
@@ -529,6 +538,8 @@ def _pid_report(**overrides):
         "handles": {"P-101": "1A", "V-201": "1B", "FCV-101": "1C", "FIC-101": "1D", "OP-1": "1E"},
         "critique": [],
         "xdata_chunks": 3,
+        # 1.8-20: the auto control line hits the vessel, the avoid line does not.
+        "avoid": _AVOID_CLEAN,
     }
     report["reference_stats"] = dict(report["graph_stats"])
     for key, value in overrides.items():
@@ -548,6 +559,9 @@ def _pid_report(**overrides):
         {"unclassified": 1},
         {"handles": {"P-101": "1A"}},
         {"edges_by_class": {"process_major": 3}},
+        {"avoid": {**_AVOID_CLEAN, "avoid_hits": ["V-301"]}},
+        {"avoid": {**_AVOID_CLEAN, "auto_hits": []}},
+        {"avoid": {**_AVOID_CLEAN, "through": ["2A", "2F"]}},
     ],
 )
 def test_the_pid_smoke_fails_on_more_than_a_dangling_end(overrides):

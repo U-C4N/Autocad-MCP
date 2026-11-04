@@ -524,12 +524,18 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
         the drawing by the reader, which never sees the spec. Every expected
         number below is counted from the spec by hand.
         """
+        import copy
+
         from engineering.layers import apply_layer_set
         from engineering.pid.deliverables import instrument_index, line_list
         from engineering.pid.spec import EXAMPLE_SPEC, run_spec
 
         await apply_layer_set(self.backend, "pid")
-        result = await run_spec(self.backend, EXAMPLE_SPEC)
+        # Pinned to the fixed routes the v4 numbers were counted on (1.8-20:
+        # ``sheet.routing`` is ``auto`` by default; said here so it stays so).
+        spec = copy.deepcopy(EXAMPLE_SPEC)
+        spec["sheet"]["routing"] = "auto"
+        result = await run_spec(self.backend, spec)
         graph = result["graph"]
         index = instrument_index(graph)
         lines = line_list(graph)
@@ -2780,6 +2786,117 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
                     "handles": refusal.get("handles"),
                     "fingerprints_unchanged": before == after,
                 },
+            },
+            [],
+        )
+
+    async def _task_pid_routing_obstacles(self):
+        """Lines round the vessels in their way (``sheet.routing: "avoid"``, 1.8-20).
+
+        Two process lines whose fixed ``auto`` routes each run through a vessel
+        between their ports (the auto dry run must say so, or the fixture
+        proves nothing); drawn with ``avoid`` they must leave the critique
+        without a ``pid_line_through_symbol`` finding, the graph without a
+        dangling end, every ``obstacle_hits`` empty, the drawn polylines on the
+        dry run's vertices and the crossings within what the dry run declared.
+        The broken-input twin, on a document of its own: a pump walled in by
+        four vessels is refused ``no_route`` naming exactly those four tags,
+        and the rolled-back sheet holds nothing.
+        """
+        import copy
+
+        from backends.ezdxf_backend import EzdxfBackend
+        from engineering import errors
+        from engineering.critique import run_critique
+        from engineering.layers import apply_layer_set
+        from engineering.pid.graph import build_graph
+        from engineering.pid.router import NoRouteError
+        from engineering.pid.spec import run_spec
+
+        def vessel(item_id, x, tag):
+            return {"id": item_id, "symbol": "vertical_vessel", "x": x, "y": 0, "tag": tag}
+
+        sheet = {
+            "equipment": [
+                {"id": "P-1", "symbol": "centrifugal_pump", "x": 0, "y": -20, "tag": "P-101"},
+                vessel("V-1", 80, "V-101"),
+                vessel("V-2", 160, "V-102"),
+                vessel("V-3", 240, "V-103"),
+                vessel("V-4", 320, "V-104"),
+            ],
+            "lines": [
+                {"from": "P-1.discharge", "to": "V-2.N3"},
+                {"from": "V-2.N4", "to": "V-4.N3"},
+                {"from": "V-1.N1", "to": "V-3.N1", "class": "process_minor"},
+            ],
+        }
+        auto = copy.deepcopy(sheet)
+        auto["sheet"] = {"routing": "auto"}
+        avoid = copy.deepcopy(sheet)
+        avoid["sheet"] = {"routing": "avoid"}
+        await apply_layer_set(self.backend, "pid")
+        auto_dry = await run_spec(self.backend, auto, dry_run=True)
+        dry = await run_spec(self.backend, avoid, dry_run=True)
+        result = await run_spec(self.backend, avoid)
+        through = [
+            i for i in await run_critique(self.backend) if i.focus == "pid_line_through_symbol"
+        ]
+        graph = await build_graph(self.backend)
+        drawn = sorted(
+            [[float(x), float(y)] for x, y in info.properties["points"]]
+            for info in await self.backend.entity_list()
+            if info.type == "LWPOLYLINE" and info.layer.startswith("PROCESS-PIPING")
+        )
+        planned = sorted(line["vertices"] for line in dry["lines"])
+
+        twin_backend = EzdxfBackend()
+        await twin_backend.connect()
+        await twin_backend.drawing_new()
+        walled = {
+            "sheet": {"routing": "avoid"},
+            "equipment": [
+                {"id": "P-1", "symbol": "centrifugal_pump", "x": 0, "y": 0, "tag": "P-101"},
+                {"id": "TK-1", "symbol": "horizontal_vessel", "x": 0, "y": 30, "tag": "TK-1"},
+                {"id": "TK-2", "symbol": "horizontal_vessel", "x": -25, "y": 10, "tag": "TK-2"},
+                {"id": "TK-3", "symbol": "horizontal_vessel", "x": 25, "y": 10, "tag": "TK-3"},
+                {"id": "TK-4", "symbol": "horizontal_vessel", "x": 0, "y": -20, "tag": "TK-4"},
+                vessel("V-9", 200, "V-900"),
+            ],
+            "lines": [{"from": "P-1.discharge", "to": "V-9.N3"}],
+        }
+        refusal: dict = {}
+        try:
+            await run_spec(twin_backend, walled)
+        except NoRouteError as exc:
+            refusal = errors.classify(exc)
+        left = len(await twin_backend.entity_list())
+        await twin_backend.disconnect()
+        named = sorted(o.get("tag") for o in refusal.get("obstacles") or [])
+        twin_ok = (
+            refusal.get("kind") == "no_route" and named == ["TK-1", "TK-2", "TK-3", "TK-4"]
+        ) and left == 0
+        passed = (
+            len(auto_dry["obstacle_hits"]) >= 2
+            and through == []
+            and graph["stats"]["dangling"] == 0
+            and result["obstacle_hits"] == []
+            and drawn == planned
+            and result["crossings_total"] <= dry["crossings_total"]
+            and twin_ok
+        )
+        return (
+            passed,
+            {
+                "auto_obstacle_hits": [(h["where"], h["tag"]) for h in auto_dry["obstacle_hits"]],
+                "line_through_symbol": len(through),
+                "dangling": graph["stats"]["dangling"],
+                "obstacle_hits": len(result["obstacle_hits"]),
+                "vertices_match_dry_run": drawn == planned,
+                "crossings": result["crossings_total"],
+                "crossings_declared": dry["crossings_total"],
+                "twin_kind": refusal.get("kind"),
+                "twin_tags": named,
+                "twin_entities_left": left,
             },
             [],
         )

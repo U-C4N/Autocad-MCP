@@ -68,6 +68,11 @@ FOCUS_CATALOG: dict[str, tuple[str, str, str | None]] = {
     "pid_untagged_instrument": ("pid", "an instrument symbol without a tag", _PID),
     "pid_illegal_tag": ("pid", "a tag the ISA-5.1 grammar refuses", _PID),
     "pid_unconnected_equipment": ("pid", "equipment no line reaches", _PID),
+    "pid_line_through_symbol": (
+        "pid",
+        "a P&ID line segment running through the box of a symbol that is not its end",
+        _PID,
+    ),
     "mech_missing_centreline": ("mech", "a revolved feature without its centre line", _MECH),
     "mech_unhatched_section": ("mech", "a section view with no hatch", _MECH),
     "mech_view_misaligned": ("mech", "a projected view off its projection axis", _MECH),

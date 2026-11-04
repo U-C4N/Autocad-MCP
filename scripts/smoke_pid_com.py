@@ -19,12 +19,16 @@ and the same spec once more on the headless engine as the reference. Checks
   at least 0.95 - no heuristic node on a drawing this server drew);
 * the live graph has the nodes by kind and the edges by class of the
   headless reference;
-* the six pid_* critique focuses found nothing;
+* the pid_* critique focuses found nothing;
 * the pump carries ACADMCP_PID XDATA;
 * ``pid_project`` (1.8-21) over the live sheet as the active document plus
   two DXF sheets drawn headlessly into a temporary folder: the live OP-1
   (LINK L-17) matched to the first file's ``in`` connector, the second
-  file's L-99 an orphan, both with sheet + handle, no cross-sheet duplicate.
+  file's L-99 an orphan, both with sheet + handle, no cross-sheet duplicate;
+* (1.8-20) below the sheet, an ``auto`` line runs through the vessel between
+  its ports and a ``route="avoid"`` line between the same ports does not:
+  its ``obstacle_hits`` is empty and ``pid_line_through_symbol`` names only
+  the ``auto`` line.
 
 Exit codes are the harness's: 0 every check passed, 1 one failed or raised,
 2 no running AutoCAD to attach to or the active document changed under it.
@@ -104,7 +108,7 @@ def assess(h: LiveHarness, report: dict) -> None:
             observed=stats.get(key),
         )
     h.check(
-        "the six pid_* focuses found nothing",
+        "the pid_* focuses found nothing",
         not report["critique"],
         expected=0,
         observed=len(report["critique"]),
@@ -115,6 +119,53 @@ def assess(h: LiveHarness, report: dict) -> None:
         expected=">= 1",
         observed=report["xdata_chunks"],
     )
+    avoid = report["avoid"]
+    h.check(
+        "auto runs through the vessel between the ports (the fixture means something)",
+        avoid["auto_hits"] == ["V-301"],
+        expected=["V-301"],
+        observed=avoid["auto_hits"],
+    )
+    h.check(
+        "route='avoid' goes round it: no obstacle hit",
+        avoid["avoid_hits"] == [],
+        expected=[],
+        observed=avoid["avoid_hits"],
+    )
+    h.check(
+        "no pid_line_through_symbol on the avoid line",
+        avoid["through"] == [avoid["auto_handle"]],
+        expected=[avoid["auto_handle"]],
+        observed=avoid["through"],
+    )
+
+
+async def avoid_line(backend) -> dict:
+    """1.8-20 live: one ``auto`` and one ``avoid`` line past a vessel that
+    stands between the ports, below the example sheet. The ``auto`` line is
+    the control (it must hit the vessel); the ``avoid`` one must not, and the
+    critique must name only the ``auto`` line."""
+    from engineering.critique import run_critique
+    from engineering.pid.drawlines import draw_line
+    from engineering.pid.insert import place_symbol
+
+    pump = await place_symbol(backend, "centrifugal_pump", 0, -220, tag="P-301")
+    await place_symbol(backend, "vertical_vessel", 80, -200, tag="V-301")
+    target = await place_symbol(backend, "vertical_vessel", 160, -200, tag="V-302")
+    ends = (
+        {"handle": pump["handle"], "port": "discharge"},
+        {"handle": target["handle"], "port": "N3"},
+    )
+    auto = await draw_line(backend, *ends)
+    avoid = await draw_line(backend, *ends, route_mode="avoid")
+    issues = await run_critique(backend, ["pid_line_through_symbol"])
+    return {
+        "auto_handle": auto["handle"],
+        "auto_hits": [hit["tag"] for hit in auto["obstacle_hits"]],
+        "avoid_hits": [hit["tag"] for hit in avoid["obstacle_hits"]],
+        "avoid_vertices": avoid["vertices"],
+        "through": sorted({i.handles[0] for i in issues}),
+    }
 
 
 #: The two DXF sheets of the project step (1.8-21): the first receives the
@@ -228,6 +279,8 @@ async def body(h: LiveHarness) -> dict:
         sheets=[report["project_files"][n]["path"] for n in _PROJECT_SHEETS],
         include_current=True,
     )
+    h.stage("avoid")
+    report["avoid"] = await avoid_line(backend)
     h.stage("checks")
     assess(h, report)
     assess_project(h, report)

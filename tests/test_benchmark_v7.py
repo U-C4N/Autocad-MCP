@@ -64,7 +64,7 @@ def test_the_suite_carries_the_five_understanding_checks():
 
     for name in UNDERSTANDING_CHECKS:
         assert CHECKS[name][1] == "Understanding"
-    assert len(CHECKS) == 78
+    assert len(CHECKS) == 79
 
 
 async def _run(task_id, tmp_path):
@@ -166,7 +166,7 @@ def test_the_suite_carries_the_four_reliability_checks():
 
     for name in RELIABILITY_CHECKS:
         assert CHECKS[name][1] == "Reliability"
-    assert len(CHECKS) == 78
+    assert len(CHECKS) == 79
 
 
 def test_the_1_7_0_report_showed_the_four_fixed_and_nothing_regressed():

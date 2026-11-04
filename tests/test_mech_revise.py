@@ -706,7 +706,9 @@ async def test_the_tool_types_a_layout_refusal_as_refused_not_failed(monkeypatch
         assert payload["category"] == "policy"
 
 
-async def test_the_tool_is_registered_in_the_mech_pack():
+async def test_the_tool_is_registered_in_the_mech_pack(full_catalog):
+    # full_catalog: since 1.8-11 the default surface is the search one; this
+    # test reads the tool's card off the whole catalog.
     tools = {t.name: t for t in await server.mcp.list_tools()}
     assert tools["mech_part_revise"].meta["cad"]["cost"] == "destructive"
     assert server._tool_pack("mech_part_revise") == "mech"

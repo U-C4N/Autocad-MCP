@@ -1,7 +1,9 @@
-"""Six P&ID focuses over one graph per critique run.
+"""Seven P&ID focuses over one graph per critique run.
 
 Every check is pure over the graph dict; ``run_critique`` builds the graph once
-into the per-run ``shared`` context so six focuses cost one read. A drawing
+into the per-run ``shared`` context so seven focuses cost one read. The seventh,
+``pid_line_through_symbol`` (1.8-20), needs the graph's geometry, so the run's
+graph is built with it. A drawing
 with no recognised P&ID symbol yields no issues — mechanical sheets are never
 scored here.
 
@@ -28,7 +30,8 @@ from engineering.qa_coverage import domain_row
 from engineering.qa_scan import qa_snapshot, shared_index
 
 from .graph import NO_LOOP_NOTE, build_graph
-from .lines import LINE_CLASSES
+from .lines import LINE_CLASSES, flatten_bulges
+from .router import box_entered
 from .tags import parse_tag
 
 if TYPE_CHECKING:
@@ -41,6 +44,7 @@ PID_FOCUSES = (
     "pid_untagged_instrument",
     "pid_illegal_tag",
     "pid_unconnected_equipment",
+    "pid_line_through_symbol",
 )
 _KEY = "pid_graph"
 
@@ -338,6 +342,80 @@ def _unconnected(graph: dict) -> list[Issue]:
     ]
 
 
+def _through_symbol(graph: dict) -> list[Issue]:
+    """A P&ID line segment entering the drawn box of a symbol that is not one
+    of its ends (1.8-20). Read from the graph built with geometry: node
+    ``bbox`` (attributes excluded) and edge ``vertices`` / ``bulges`` (an arc
+    flattened to 0.05 mm). Entering means reaching more than the graph's
+    ``tolerance`` inside every wall, so a line along a symbol's edge or
+    touching a corner is not a finding. A box that holds either end of the
+    line is never scored: that symbol is the line's end in all but the
+    reader's port match (a dangling end is the dangling focus's), and a sheet
+    frame read as a node encloses every line. Only evidenced lines and
+    recognised symbols are scored; a graph without geometry yields nothing.
+    """
+    tolerance = float(graph.get("tolerance", 0.5))
+    evidenced = _evidenced_edges(graph)
+    symbols = [n for n in _scored_nodes(graph) if n.get("bbox")]
+    out = []
+    for edge in graph["edges"]:
+        vertices = edge.get("vertices")
+        if edge["id"] not in evidenced or not vertices or len(vertices) < 2:
+            continue
+        ends = {ref["node"] for ref in (edge["from"], edge["to"]) if ref and "node" in ref}
+        points = flatten_bulges(vertices, edge.get("bulges") or [])
+        first = (float(vertices[0][0]), float(vertices[0][1]))
+        last = (float(vertices[-1][0]), float(vertices[-1][1]))
+        for node in symbols:
+            if node["id"] in ends or node.get("space") != edge.get("space"):
+                continue
+            box = tuple(float(v) for v in node["bbox"])
+            grown = (box[0] - tolerance, box[1] - tolerance, box[2] + tolerance, box[3] + tolerance)
+            if any(
+                grown[0] <= p[0] <= grown[2] and grown[1] <= p[1] <= grown[3] for p in (first, last)
+            ):
+                continue
+            segment = next(
+                (
+                    k
+                    for k, (a, b) in enumerate(zip(points, points[1:], strict=False))
+                    if box_entered(a, b, box, tolerance)
+                ),
+                None,
+            )
+            if segment is None:
+                continue
+            name = node.get("tag") or node["id"]
+            out.append(
+                Issue(
+                    "error",
+                    "pid_line_through_symbol",
+                    f"Line {edge['id']} runs through {node['kind']} {name}, which is not one "
+                    "of its ends.",
+                    [edge["id"], node["id"]],
+                    {
+                        "symbol": node["id"],
+                        "tag": node.get("tag"),
+                        "bbox": list(box),
+                        "hint": "redraw it with pid_line_draw(..., route='avoid') or "
+                        "pid_from_spec with sheet.routing='avoid', or move the symbol",
+                    },
+                )
+            )
+    return out
+
+
+def strip_geometry(graph: dict) -> dict:
+    """The graph without the geometry a critique run read (node ``bbox``, edge
+    ``vertices`` / ``bulges``): the shape ``build_graph`` returns by default."""
+    out = dict(graph)
+    out["nodes"] = [{k: v for k, v in n.items() if k != "bbox"} for n in graph["nodes"]]
+    out["edges"] = [
+        {k: v for k, v in e.items() if k not in ("vertices", "bulges")} for e in graph["edges"]
+    ]
+    return out
+
+
 _CHECKS = {
     "pid_dangling_line": _dangling,
     "pid_duplicate_tag": _duplicate_tags,
@@ -345,6 +423,7 @@ _CHECKS = {
     "pid_untagged_instrument": _untagged,
     "pid_illegal_tag": _illegal,
     "pid_unconnected_equipment": _unconnected,
+    "pid_line_through_symbol": _through_symbol,
 }
 
 
@@ -367,7 +446,10 @@ async def _critique_graph(backend: AutoCADBackend, shared: dict) -> dict:
     snap, coverage = await qa_snapshot(backend, shared)
     if coverage.complete and snap is not None and not any(r.type == "INSERT" for r in snap.records):
         return dict(_NO_SYMBOLS)
-    return await build_graph(backend, include_foreign=True)
+    # With geometry: pid_line_through_symbol reads node boxes and edge vertices.
+    return await build_graph(
+        backend, include_foreign=True, include_geometry=True, include_boxes=True
+    )
 
 
 def _make(focus: str):

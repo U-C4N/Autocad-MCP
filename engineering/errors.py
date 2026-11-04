@@ -51,6 +51,7 @@ __all__ = [
     "ERROR_TABLE",
     "FILE_KINDS",
     "GATE_KINDS",
+    "ROUTING_KINDS",
     "ApplicationBusyError",
     "CommandIncompleteError",
     "CommandRefusedError",
@@ -144,6 +145,10 @@ REVISE_KINDS = ("hand_edited_tagged_entity", "model_drift")
 #: ``process_exit`` is the ``error_kind`` the durable journal (1.8-03) writes on
 #: the row of a call whose server died, which a ``requires_reconcile`` answer
 #: carries in its ``record``.
+#: The obstacle-aware P&ID router's refusals (1.8-20, ``engineering/pid/router.py``):
+#: each is the ``kind`` of the ``RoutingError`` subclass that raises it.
+ROUTING_KINDS = ("no_route", "routing_budget_exceeded")
+
 ERROR_KINDS = BATCH_KINDS_1_7 + (
     "not_found",
     "unknown_handle",
@@ -158,6 +163,7 @@ ERROR_KINDS = BATCH_KINDS_1_7 + (
     *FILE_KINDS,
     "process_exit",
     *REVISE_KINDS,
+    *ROUTING_KINDS,
 )
 
 
@@ -260,6 +266,12 @@ ERROR_TABLE: dict[str, KindSpec] = {
     ),
     "model_drift": KindSpec(
         "spec", False, "The drawn views are not this model's; overwrite=True redraws them."
+    ),
+    "no_route": KindSpec(
+        "geometry", False, "Move a named obstacle, lower clearance, or on_blocked='cross'."
+    ),
+    "routing_budget_exceeded": KindSpec(
+        "geometry", False, "Pass waypoints or fewer keep_out boxes; the search ran out."
     ),
 }
 
@@ -685,6 +697,14 @@ def stale_of(exc: BaseException) -> dict | None:
     return None
 
 
+def _routing_error_of(exc: BaseException):
+    """The P&ID router's refusal on the chain (``RoutingError``), or None.
+    Imported lazily: the router is a pure module of ``engineering.pid``."""
+    from engineering.pid.router import RoutingError
+
+    return _first_of(exc, RoutingError)
+
+
 def _first_of(exc: BaseException, kind: type):
     for error in cause_chain(exc):
         if isinstance(error, kind):
@@ -823,6 +843,15 @@ def classify(exc: BaseException) -> dict:
             "command": incomplete.command,
             "last_prompt": incomplete.last_prompt,
             "message": message,
+        }
+    routing = _routing_error_of(exc)
+    if routing is not None:
+        # 1.8-20: the obstacle-aware router; by type, the outermost on the
+        # chain (pid_from_spec prefixes its path, ``lines[2]: ...``).
+        return {
+            "kind": str(routing.kind),
+            **routing.fields(),
+            "message": compact_message(str(routing)),
         }
     chain = cause_chain(exc)
     if any(isinstance(error, NotFoundError) for error in chain):
