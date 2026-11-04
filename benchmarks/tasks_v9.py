@@ -152,10 +152,12 @@ __all__ = [
 DEFAULT_MATRIX = "v9"
 
 #: v8.1 -> v9.0 (1.8-25): the default matrix is v9 - thirteen new tasks, two new
-#: fixture generators (``FIXTURE_SOURCES``) and kill-based gates - and the
-#: reference adapter's v8 gates now run on the 1.8.0 engine (``dimension_binding``
-#: formats through ``engineering/dimtext.py``). A report from this tree, v8 or
-#: v9, was measured by this evaluator; ``tasks_v8.EVALUATOR_VERSION`` stays
+#: fixture generators (``FIXTURE_SOURCES``) and kill-based gates - and the v8
+#: tasks now run on the 1.8.0 engine: the binding ``dimension_binding`` reads
+#: formats a dimension's displayed text through ``engineering/dimtext.py``
+#: (1.8-15, DIMDEC honoured) and ``damaged_dxf_refusal``'s refusal names
+#: ``recover=True`` (1.8-04), its gate unchanged. A report from this tree, v8
+#: or v9, was measured by this evaluator; ``tasks_v8.EVALUATOR_VERSION`` stays
 #: ``"v8.1"``, the evaluator the published v8 report names.
 EVALUATOR_VERSION = "v9.0"
 

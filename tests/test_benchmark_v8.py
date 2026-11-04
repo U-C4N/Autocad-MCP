@@ -81,7 +81,6 @@ def test_v8_extends_v7_without_touching_it():
 
 def test_the_runner_and_the_chart_read_the_current_matrix():
     from benchmarks import render_matrix_chart, run_competitors
-
     from benchmarks.tasks_v9 import TASKS_V9
 
     # 1.8-25: the runner's default is v9 (benchmarks/tasks_v9.py); this
@@ -478,6 +477,37 @@ def test_a_registry_entry_without_an_adapter_is_a_not_run_lane():
     assert all("COM-only" in item["message"] for item in report["results"])
     assert report["summary"]["score"] is None
     assert report["adapter"] == "best-cad-mcp"
+
+
+def test_agentcads_ground_is_mapped_in_v9_and_its_lane_is_not_run():
+    # 1.8-25: lizaixi01-agentcad joins RIVAL_GROUND on the v9 tasks that answer
+    # its published scenarios (plan sections 2 / 8); it has no adapter, so every
+    # task of its lane is not_run, never a zero.
+    from benchmarks.run_competitors import _load_registry, not_run_report
+    from benchmarks.tasks_v9 import NEW_TASKS_V9, RIVAL_SCENARIO, TASKS_V9
+    from benchmarks.tasks_v9 import RIVAL_GROUND as RIVAL_GROUND_V9
+
+    v9_ids = {task.task_id for task in NEW_TASKS_V9}
+    agentcad = {task for task, rival in RIVAL_GROUND_V9.items() if rival == "lizaixi01-agentcad"}
+    assert agentcad == {
+        "history_value_lookup",
+        "undo_across_restart",
+        "atomic_batch_default",
+        "layer_cleanup_budget",
+        "call_count_dimension_part",
+        "parametric_revise_keeps_handles",
+    }
+    assert agentcad <= v9_ids and set(RIVAL_SCENARIO) == agentcad
+    assert {k: v for k, v in RIVAL_GROUND_V9.items() if k not in agentcad} == RIVAL_GROUND
+    assert "H1" in RIVAL_SCENARIO["history_value_lookup"]
+    assert "H4" in RIVAL_SCENARIO["layer_cleanup_budget"]
+    assert "H5" in RIVAL_SCENARIO["call_count_dimension_part"]
+
+    entry = _load_registry()["lizaixi01-agentcad"]
+    assert entry["adapter"] is None
+    report = not_run_report(entry, list(TASKS_V9), matrix="v9")
+    assert {item["status"] for item in report["results"]} == {"not_run"}
+    assert report["summary"]["score"] is None and report["summary"]["not_run"] == len(TASKS_V9)
 
 
 @pytest.mark.asyncio
