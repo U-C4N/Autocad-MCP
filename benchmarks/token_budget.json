@@ -51,25 +51,28 @@
       "gate": "ci",
       "owner": "1.8-14",
       "source": "plan section 4: full (prompt basis) = measured 1.7.0 prompt value 62,471 + 5 %, new tools included",
-      "lever": "W3: a Details: split of docstrings over 800 characters, only for the excess"
+      "lever": "W3: a Details: split of docstrings over 800 characters, only for the excess",
+      "measured": "W3, 2026-11-04: 59,138 tokens prompt payload (247,787 chars), 78,391 wire, 253 tools (252 + describe_tool, listed in off mode so the pointer leads somewhere) - 69,850 on release/1.8.0 (ab07c47) before the split; discovery/descriptions.py lists a description over 800 characters as its leading whole paragraphs + 'Details: describe_tool.' (47 of 257 tools), the full text served by describe_tool"
     },
     "lean": {
       "metric": "tokens",
       "basis": ["prompt_payload"],
       "ceiling": 18842,
-      "gate": "release",
+      "gate": "ci",
       "owner": "W3 (plan section 4 lever: a Details: split of docstrings over 800 characters, only for the excess)",
       "source": "plan section 4: lean (prompt basis) = measured 1.7.0 prompt value 17,945 + 5 %",
-      "note": "18,961 at W2 start: W1's description growth is already over the ceiling."
+      "note": "18,961 at W2 start: W1's description growth is already over the ceiling.",
+      "measured": "W3, 2026-11-04: 16,182 tokens prompt payload (67,803 chars), 21,189 wire, 68 tools (describe_tool included) - 20,082 on release/1.8.0 (ab07c47) before the Details: split; flipped to ci"
     },
     "packs_core": {
       "metric": "tokens",
       "basis": ["prompt_payload"],
       "ceiling": 43997,
-      "gate": "release",
+      "gate": "ci",
       "owner": "W3 (plan section 4 lever: a Details: split of docstrings over 800 characters, only for the excess)",
       "source": "plan section 4: core (prompt basis, TOOL_PACKS=core) = measured 1.7.0 prompt value 41,902 + 5 %",
-      "note": "44,235 at W2 start: W1's description growth is already over the ceiling."
+      "note": "44,235 at W2 start: W1's description growth is already over the ceiling.",
+      "measured": "W3, 2026-11-04: 40,722 tokens prompt payload (170,625 chars), 55,169 wire, 192 tools (describe_tool included) - 48,268 on release/1.8.0 (ab07c47) before the Details: split; flipped to ci"
     },
     "search": {
       "metric": "tokens",

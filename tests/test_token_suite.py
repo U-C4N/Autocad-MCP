@@ -179,7 +179,8 @@ def test_the_idle_lane_covers_the_advertised_surfaces_and_the_instructions(repor
         "instructions",
     }
     assert variants["default"]["advertised_tools"] > 100
-    assert variants["lean"]["advertised_tools"] == len(server.LEAN_TOOL_NAMES)
+    # + describe_tool: off mode lists it wherever a description is split (W3)
+    assert variants["lean"]["advertised_tools"] == len(server.LEAN_TOOL_NAMES) + 1
     # search_tools + call_tool + describe_tool
     assert variants["search"]["advertised_tools"] == 3
     # 1.8-11: + the three default pins (cad_batch, drawing_info, entity_list)
@@ -248,8 +249,9 @@ def test_the_meta_card_no_longer_carries_the_alias_lists(report, full_catalog):
 
     tools = asyncio.run(_tools())
     names = {tool.name for tool in tools}
-    # The check must cover the catalog, not the search-mode surface.
-    assert not names & {"search_tools", "call_tool", "describe_tool"}
+    # The check must cover the catalog, not the search-mode surface. (Off mode
+    # lists describe_tool beside it since W3 - card-less, so it passes below.)
+    assert not names & {"search_tools", "call_tool"}
     assert "entity_fillet" in names
     assert len(names) > 50
     for tool in tools:
@@ -612,17 +614,24 @@ def test_a_published_report_from_before_the_prompt_headline_is_read_on_its_promp
 def test_a_docstring_inflated_by_two_thousand_tokens_fails_the_budget(report, monkeypatch):
     """The gate shown once: +2k tokens on one lean tool's description must fail it.
 
-    In memory only - nothing is committed. It fails twice over: the default
-    surface passes its ci ceiling, and lean grows more than 5 % on the
-    report this module measured a moment ago.
+    In memory only - nothing is committed. +2k tokens makes lean grow more
+    than 5 % on the report this module measured a moment ago, and it reaches
+    the default surface just as much. The W3 Details: split (1.8.0) left the
+    default surface ~6k tokens under its ci ceiling, which +2k (3 %) neither
+    crosses nor grows 5 % past; so the same edit, sized past that headroom,
+    must then fail ``idle.default`` itself. The inflation happens after
+    registration, so it is exactly what the listing carries: the split never
+    undoes it.
     """
-    padding = " Inflated." * int(2_000 * ts.CHARS_PER_TOKEN["json_schema"].chars_per_token / 10)
+    chars_per_token = ts.CHARS_PER_TOKEN["json_schema"].chars_per_token
+    padding = " Inflated." * int(2_000 * chars_per_token / 10)
     # the module the suite measures: tests/test_http_auth.py re-imports server.py,
     # so this module's own `server` may be an older copy than sys.modules holds
     live = ts._load_server()
     tool = next(t for t in live._local_tool_components() if t.name == "entity_create_line")
     assert tool.name in live.LEAN_TOOL_NAMES
-    monkeypatch.setattr(tool, "description", (tool.description or "") + padding)
+    original = tool.description or ""
+    monkeypatch.setattr(tool, "description", original + padding)
     inflated = {"idle": asyncio.run(ts.idle_lane(ts.RatioTokenCounter())), "task": None}
     budget = {key: BUDGET[key] for key in ("growth_limit_pct", "idle")}
     clean = ts.check_budget(
@@ -633,7 +642,19 @@ def test_a_docstring_inflated_by_two_thousand_tokens_fails_the_budget(report, mo
     assert not checked["ok"]
     failed = {item["cell"] for item in checked["violations"]}
     assert "growth.lean" in failed
-    assert "idle.default" in failed or "growth.default" in failed
+    before = {row["variant"]: row["tokens"]["value"] for row in report["idle"]}
+    after = {row["variant"]: row["tokens"]["value"] for row in inflated["idle"]}
+    for variant in ("default", "lean"):
+        assert after[variant] - before[variant] >= 1_900, variant  # the listing carries it
+    # the default surface: an inflation past its remaining headroom fails its ci cell
+    headroom = BUDGET["idle"]["default"]["ceiling"] - before["default"]
+    assert headroom > 0, "the default surface stands under its ci ceiling"
+    past = " Inflated." * int((headroom + 200) * chars_per_token / 10)
+    monkeypatch.setattr(tool, "description", original + past)
+    overgrown = {"idle": asyncio.run(ts.idle_lane(ts.RatioTokenCounter())), "task": None}
+    checked = ts.check_budget(overgrown, budget, {"idle": report["idle"]})
+    assert not checked["ok"]
+    assert "idle.default" in {item["cell"] for item in checked["violations"]}
 
 
 def test_ci_runs_both_budgets_on_every_pull_request():

@@ -27,6 +27,11 @@ async def _restore_full_profile():
     await server._apply_tool_profile("full")
 
 
+#: W3: off mode lists describe_tool beside the catalog wherever a description
+#: is split (``discovery.transform.DetailsTransform``); synthetic, never registered.
+OFF_MODE_SYNTHETIC = frozenset({"describe_tool"})
+
+
 async def _registered_names() -> set[str]:
     return {tool.name for tool in await server._registered_tools() if getattr(tool, "name", None)}
 
@@ -101,7 +106,7 @@ async def test_core_env_value_still_serves_the_full_surface(full_catalog, monkey
     async with Client(server.mcp) as client:
         visible = {tool.name for tool in await client.list_tools()}
     registered = await _registered_names()
-    assert visible == registered - server.SOLID_TOOL_NAMES
+    assert visible - OFF_MODE_SYNTHETIC == registered - server.SOLID_TOOL_NAMES
     # The escape hatches core used to hide are back on the wire.
     assert "system_run_command" in visible
 
@@ -111,7 +116,7 @@ async def test_lean_profile_filters_client_view(full_catalog, monkeypatch):
     monkeypatch.setattr(config.settings, "tool_profile", "lean")
     async with Client(server.mcp) as client:
         visible = {tool.name for tool in await client.list_tools()}
-    assert visible == set(server.LEAN_TOOL_NAMES)
+    assert visible - OFF_MODE_SYNTHETIC == set(server.LEAN_TOOL_NAMES)
 
 
 async def test_profile_switch_is_idempotent():
@@ -142,5 +147,5 @@ async def test_reapplying_a_profile_replaces_its_visibility_instead_of_stacking(
     async with Client(server.mcp) as client:
         visible = {tool.name for tool in await client.list_tools()}
         status = (await client.call_tool("system_status", {})).structured_content
-    assert visible == set(server.LEAN_TOOL_NAMES)
+    assert visible - OFF_MODE_SYNTHETIC == set(server.LEAN_TOOL_NAMES)
     assert status["backend"] == "ezdxf"

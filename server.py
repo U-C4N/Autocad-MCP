@@ -52,6 +52,7 @@ from backends.operations import (
 )
 from backends.session_metrics import SESSION_METRICS, result_text_bytes
 from discovery.aliases import aliases_for, tools_for_command
+from discovery.descriptions import record_wire_description
 from engineering.errors import (
     ERROR_KINDS,
     CommandRefusedError,
@@ -1064,7 +1065,8 @@ mcp.add_middleware(CapabilityRefusalMiddleware())
 # ---------------------------------------------------------------------------
 # Tool discovery mode (DISCOVERY_MODE)
 # ---------------------------------------------------------------------------
-# "off"    the whole catalog is advertised (the 1.7.0 surface)
+# "off"    the whole catalog is advertised (the 1.7.0 surface), plus describe_tool
+#          whenever a listed description ends in "Details: describe_tool." (W3)
 # "search" (default since 1.8.0) list_tools returns the DISCOVERY_PINNED tools,
 #          a search tool, a call_tool proxy and describe_tool (one or several
 #          tools' full schemas) instead, and the catalog is reached through
@@ -1078,6 +1080,7 @@ mcp.add_middleware(CapabilityRefusalMiddleware())
 DISCOVERY_MODES = ("off", "search")
 
 _discovery_transform = None
+_details_transform = None
 
 
 def _tool_pack(name: str) -> str:
@@ -1093,12 +1096,13 @@ def _tool_pack(name: str) -> str:
 
 
 def _apply_discovery_mode(mode: str | None = None) -> str:
-    """Attach or detach the tool-search transform. Returns the mode applied.
+    """Attach the transform of one discovery mode. Returns the mode applied.
 
-    Idempotent: re-applying removes the previous transform first, so a mode
-    switch never stacks two search interfaces on one server.
+    ``search`` attaches the tool-search transform, ``off`` the one that adds
+    ``describe_tool`` beside the whole catalog. Idempotent: re-applying removes
+    the previous transform first, so a mode switch never stacks two of them.
     """
-    global _discovery_transform
+    global _discovery_transform, _details_transform
     selected = (mode or config.settings.discovery_mode or "off").lower().strip()
     if selected not in DISCOVERY_MODES:
         log.warning(
@@ -1107,15 +1111,28 @@ def _apply_discovery_mode(mode: str | None = None) -> str:
             ", ".join(DISCOVERY_MODES),
         )
         selected = "off"
-    if _discovery_transform is not None:
+    for attached in (_discovery_transform, _details_transform):
+        if attached is None:
+            continue
         try:
-            mcp._transforms.remove(_discovery_transform)
+            mcp._transforms.remove(attached)
         except (AttributeError, ValueError) as exc:  # pragma: no cover - layout change
             log.debug("Could not detach the discovery transform: %s", exc)
-        _discovery_transform = None
+    _discovery_transform = None
+    _details_transform = None
+    if selected == "off":
+        # W3: a long description is listed as its leading paragraphs and
+        # "Details: describe_tool." on every surface, so off mode lists the
+        # whole catalog plus describe_tool (discovery.transform.DetailsTransform)
+        # and the pointer leads somewhere. Kept apart from _discovery_transform,
+        # whose presence is what "search mode" means to the rest of the server.
+        from discovery.transform import DetailsTransform
+
+        _details_transform = DetailsTransform(pack_of=_tool_pack)
+        mcp.add_transform(_details_transform)
     if selected == "search":
-        # Imported lazily so "off" never pays for it, matching how the backend
-        # modules are kept out of import time.
+        # Imported here, as in "off", matching how the backend modules are kept
+        # out of import time.
         from discovery.transform import CadSearchTransform
 
         # 1.8-11: DISCOVERY_PINNED stays listed beside the synthetic tools (as a
@@ -1605,6 +1622,11 @@ def cad_tool(*, summary: str, cost: str):
     ``_tool_groups()`` — whose frozen 20-tag priority list feeds system_about.
     It also leaves the registration itself literally intact for that gate.
 
+    It is also where the wire description is set (W3, 1.8.0): a description
+    over ``discovery.descriptions.WIRE_DESCRIPTION_MAX`` characters is listed
+    as its leading whole paragraphs plus ``Details: describe_tool.``, and the
+    full text is kept by ``discovery.descriptions`` for ``describe_tool``.
+
     Writes a single ``cad`` key into the tool's MCP ``meta`` channel:
 
       ``summary``   one compact line, for a search hit's preview
@@ -1640,6 +1662,10 @@ def cad_tool(*, summary: str, cost: str):
         meta = dict(component.meta or {})
         meta["cad"] = {"summary": summary, "cost": cost}
         component.meta = meta
+        # W3 (1.8.0): a description over WIRE_DESCRIPTION_MAX is listed as its
+        # leading whole paragraphs + "Details: describe_tool."; the full text
+        # stays in discovery.descriptions (never meta, which is on the wire).
+        record_wire_description(component)
         return target
 
     return decorate
@@ -8057,6 +8083,9 @@ async def drawing_finalize(
     ctx: Context = None,
 ) -> dict:
     """Premium completion gate: runs BOTH the 8-step validator AND the premium critique focuses
+    (each named below), then saves to disk, exports a screenshot, and returns the DWG path.
+
+    The premium critique focuses
     (iso128, layer_color, dim_overlap, untrimmed_corner, duplicate_entities, construction_left,
     property_override, dimension_truth, gdt, plus the P&ID focuses pid_dangling_line,
     pid_duplicate_tag, pid_incompatible_connection, pid_untagged_instrument, pid_illegal_tag,
@@ -8068,8 +8097,8 @@ async def drawing_finalize(
     architectural focuses arch_room_unlabelled, arch_wall_gap, arch_opening_clash —
     silent on a sheet with no ACADMCP_ARCH record, plus the topology focuses
     topo_dangling_endpoint, topo_near_miss, topo_interior_crossing — on network
-    layers no P&ID or architectural focus reads, silent on every sheet this server draws),
-    then saves to disk, exports a screenshot, and returns the DWG path.
+    layers no P&ID or architectural focus reads, silent on every sheet this server draws)
+    all run before the save.
 
     The validator and the critique share one read of the drawing - every entity of
     every space, model and paper, with no cap (one DXF export on the live engine). A
@@ -9865,10 +9894,13 @@ async def pid_from_spec(
     `transaction_begin` set, so it never waits at an AutoCAD prompt; should
     that rollback itself fail, the failure is logged, the cancellation is what
     the client sees, and the drawing must be checked before a retry).
+
     A non-finite coordinate, rotation, scale or stub is refused
     by path before anything is placed. The response carries the graph read
     back from the drawing and the P&ID critique issues, so the caller sees
-    dangling ends or duplicate tags in the same round trip. `dry_run` returns
+    dangling ends or duplicate tags in the same round trip.
+
+    `dry_run` returns
     the planned vertices and crossings without touching the drawing; crossings
     are counted, on both runs, against the spec's own lines and the P&ID lines
     already on the current layout (`crossings_scope`). The dry run also returns
@@ -9879,6 +9911,7 @@ async def pid_from_spec(
     revision) changed; a region precondition taken from another spec is
     refused by path. A guarded run reports `revision` ({checked, after,
     interleaved}).
+
     `sheet.routing`: `auto` (default) or `avoid` (lines go round symbols;
     no_route by path). Both runs report `obstacle_hits`.
     """
