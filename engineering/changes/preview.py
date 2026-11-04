@@ -13,7 +13,10 @@ group code and value - layer, colour, linetype, lineweight, geometry, XDATA,
 an ellipse's axes, a DIMENSION's measurement and override text, MTEXT
 formatting codes - each value hashed through ``repr``, so a float compares bit
 for bit. An INSERT's tags carry its ATTRIBs. ``diff.signature`` is not used: it
-rounds to 0.01 and leaves most of that out.
+rounds to 0.01 and leaves most of that out. Two things are not the entity and
+are left out, because AutoCAD regenerates them on every export (measured on a
+live ACAD_TABLE): the extension dictionary's handle (its presence still
+counts) and the proxy graphics (``_content_tags``).
 
 **The same reader at preview and at apply.** Headless, the tags come from the
 in-memory document under the backend's lock (``_async(readonly=True)``); live,
@@ -85,12 +88,44 @@ _ROW_KEYS = frozenset({"handle", "region", "fingerprint"})
 # -- fingerprints ---------------------------------------------------------------
 
 
+#: Proxy graphics in the AcDbEntity subclass: the byte count (92 up to R2007,
+#: 160 from R2010) and the 310 chunks.
+_PROXY_GRAPHICS = frozenset({92, 160, 310})
+
+
+def _content_tags(tags):
+    """``tags`` without what AutoCAD regenerates on every export.
+
+    MEASURED on AutoCAD 2026 (live smoke ``mech``, 2026-11-04): two
+    ``Document.Export`` reads of one untouched ACAD_TABLE, nothing in between,
+    differed in two places - the ``{ACAD_XDICTIONARY`` pointer (360 ``9C``,
+    then ``A3``: the export hands the table a new extension dictionary) and the
+    proxy graphics (160 + 310 chunks in AcDbEntity), a display cache. Both are
+    left out: the dictionary's pointer becomes a marker that one is there, the
+    proxy graphics are dropped. Every other tag counts.
+    """
+    subclass = None
+    in_xdict = False
+    for code, value in tags:
+        if code == 100:
+            subclass = value
+        elif code == 102:
+            in_xdict = value == "{ACAD_XDICTIONARY"
+        elif in_xdict and code == 360:
+            yield code, "<xdict>"
+            continue
+        elif subclass == "AcDbEntity" and code in _PROXY_GRAPHICS:
+            continue
+        yield code, value
+
+
 def entity_tags_digest(entity, dxfversion: str) -> str:
-    """sha256 of ``entity``'s exported DXF tags, every value through ``repr``."""
+    """sha256 of ``entity``'s exported DXF tags, every value through ``repr``
+    (the extension-dictionary pointer and proxy graphics excepted, ``_content_tags``)."""
     collector = TagCollector(dxfversion=dxfversion)
     entity.export_dxf(collector)
     digest = hashlib.sha256()
-    for code, value in collector.tags:
+    for code, value in _content_tags(collector.tags):
         digest.update(f"{code}\x1f{value!r}\x1e".encode())
     return digest.hexdigest()
 

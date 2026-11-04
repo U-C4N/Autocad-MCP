@@ -422,3 +422,28 @@ async def test_the_live_engine_fingerprints_its_dxf_export(monkeypatch, tmp_path
     assert found == {handle: _oracle(oracle.entitydb[handle], oracle.dxfversion)}
     payload = (await preview.make_preview(live, handles=[handle])).to_dict()
     assert payload["revision"] == 7 and payload["document_id"] == "f" * 32
+
+
+async def test_what_autocad_regenerates_on_every_export_does_not_move_a_fingerprint():
+    """Live smoke ``mech`` (AutoCAD 2026): two exports of one untouched
+    ACAD_TABLE differed in the extension dictionary's handle (360 9C, then A3)
+    and the proxy graphics (160 + 310), so a refused mech_part_revise looked as
+    if it had changed the sheet. Neither counts; every other tag still does."""
+    from engineering.changes.preview import entity_tags_digest
+
+    doc = ezdxf.new("R2018")
+    line = doc.modelspace().add_line((0, 0), (10, 0))
+    line.new_extension_dict()
+    line.proxy_graphic = b"\x01" * 40
+    first = entity_tags_digest(line, doc.dxfversion)
+
+    line.discard_extension_dict()
+    line.new_extension_dict()  # a new handle, as each live export hands out
+    line.proxy_graphic = b"\x02" * 64
+    assert entity_tags_digest(line, doc.dxfversion) == first
+
+    line.discard_extension_dict()
+    assert entity_tags_digest(line, doc.dxfversion) != first, "having one still counts"
+    line.new_extension_dict()
+    line.dxf.end = (10, 1e-9)
+    assert entity_tags_digest(line, doc.dxfversion) != first
