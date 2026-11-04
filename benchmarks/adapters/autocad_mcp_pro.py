@@ -1832,8 +1832,8 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
 
         The default ``drawing_open`` does not recover a damaged DXF; what it
         must do is refuse honestly (since 1.8.0 the refusal names
-        ``recover=True``, B09, which the v9 ``damaged_dxf_recover`` task
-        measures). A valid 50-line DXF is cut in half
+        ``recover=True``, B09, and that opt-in recovers the truncated file -
+        ``tests/test_identity_lineage.py``). A valid 50-line DXF is cut in half
         (no ENDSEC, no EOF) and a text file is given a .dxf name. Opening each
         must raise an error that names the fault (DXF in its text), and the
         document that was open - one line - must still be the current document,

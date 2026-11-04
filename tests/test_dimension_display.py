@@ -566,7 +566,7 @@ async def test_the_v9_dimension_lie_detect_task_passes_headlessly(tmp_path):
     from benchmarks.adapters.autocad_mcp_pro import AutoCADMCPProAdapter
     from benchmarks.tasks_v9 import DEFAULT_MATRIX, MATRICES, task_by_id
 
-    assert DEFAULT_MATRIX == "v8", "1.8-25 switches the default, not 1.8-15"
+    assert DEFAULT_MATRIX == "v9", "1.8-25 switched the default"
     assert task_by_id("dimension_lie_detect", "v9") in MATRICES["v9"]
     adapter = AutoCADMCPProAdapter(backend="ezdxf")
     await adapter.setup(tmp_path)

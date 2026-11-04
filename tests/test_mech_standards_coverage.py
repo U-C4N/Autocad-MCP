@@ -610,13 +610,13 @@ def test_the_probe_picks_a_listed_size_and_one_to_refuse(synthetic_registry):
 # ── (7) the v9 task and the correctness check ────────────────────────────────
 
 
-def test_v9_carries_std_tables_b40_without_moving_the_default():
+def test_v9_carries_std_tables_b40_and_is_the_default():
     from benchmarks.adapters.autocad_mcp_pro import AutoCADMCPProAdapter
     from benchmarks.tasks_v9 import DEFAULT_MATRIX, HEADLESS_ONLY_V9, task_by_id
 
     assert task_by_id("std_tables_b40", "v9").category == "standards"
     assert "std_tables_b40" not in HEADLESS_ONLY_V9  # it runs through the backend contract
-    assert DEFAULT_MATRIX == "v8"
+    assert DEFAULT_MATRIX == "v9"  # 1.8-25
     assert hasattr(AutoCADMCPProAdapter, "_task_std_tables_b40")
 
 

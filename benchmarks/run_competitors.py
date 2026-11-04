@@ -32,13 +32,15 @@ from benchmarks.adapters.base import (
     TaskResult,
 )
 
-# v9 (1.8.0) is selectable; the default stays v8 until 1.8-25 (tasks_v9
-# re-exports the v8 constants and registers v9 in the one MATRICES registry).
+# v9 (1.8.0) is the default since 1.8-25; tasks_v9 registers it in the one
+# MATRICES registry beside v2-v8, which stay addressable with --matrix.
 from benchmarks.tasks_v9 import (
     DEFAULT_MATRIX,
     EVALUATOR_VERSION,
     FIXTURE_SOURCES,
+    KILL_POINTS,
     MATRICES,
+    STATE_DIR_POLICY,
     TaskSpec,
     task_by_id,
 )
@@ -99,9 +101,11 @@ def _version(distribution: str) -> str | None:
         return None
 
 
-def run_manifest() -> dict:
+def run_manifest(tasks=None) -> dict:
     """What a report measured: the server's commit, the fixture generators'
-    hashes, the evaluator version and the dependency versions."""
+    hashes, the evaluator version, the dependency versions and (v9, plan
+    section 8) where the run's tasks killed a real server and on which state
+    folder - ``tasks`` limits ``kill_points`` to the tasks the report holds."""
     status = _git("status", "--porcelain", "--untracked-files=no")
     fixtures = []
     for relative in FIXTURE_SOURCES:
@@ -117,6 +121,12 @@ def run_manifest() -> dict:
             )
         else:
             fixtures.append({"path": relative, "missing": True})
+    wanted = None if tasks is None else {task.task_id for task in tasks}
+    kill_points = {
+        task_id: list(points)
+        for task_id, points in KILL_POINTS.items()
+        if wanted is None or task_id in wanted
+    }
     return {
         "server_sha": _git_sha(),
         # tracked files edited after the commit: the sha alone would not name the tree
@@ -124,6 +134,7 @@ def run_manifest() -> dict:
         "evaluator_version": EVALUATOR_VERSION,
         "fixtures": fixtures,
         "dependencies": {name: _version(name) for name in DEPENDENCIES},
+        "fault_injection": {"state_dir": STATE_DIR_POLICY, "kill_points": kill_points},
     }
 
 
@@ -190,7 +201,7 @@ def _report(
     timeout: float | None,
     matrix: str,
 ) -> dict:
-    manifest = run_manifest()
+    manifest = run_manifest(tasks)
     return {
         # The *report* schema keeps every v1.4 key, so the chart renderers still
         # read the published v1.4 files; `summary` gained `not_run` /

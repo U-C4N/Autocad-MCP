@@ -16,12 +16,12 @@ from benchmarks.tasks_v9 import DEFAULT_MATRIX, MATRICES, NEW_TASKS_V9, task_by_
 ECONOMY = ("layer_cleanup_budget", "call_count_dimension_part")
 
 
-def test_the_tasks_are_in_v9_and_the_default_matrix_is_unchanged():
+def test_the_tasks_are_in_v9_and_v9_is_the_default_matrix():
     ids = [task.task_id for task in MATRICES["v9"]]
     assert set(ECONOMY) <= {task.task_id for task in NEW_TASKS_V9}
     assert set(ECONOMY) <= set(ids)
     assert not set(ECONOMY) & {task.task_id for task in MATRICES["v8"]}
-    assert DEFAULT_MATRIX == "v8", "1.8-25 moves the default"
+    assert DEFAULT_MATRIX == "v9", "1.8-25 moved the default"
     assert set(ECONOMY) <= HEADLESS_ONLY
     for task_id in ECONOMY:
         assert task_by_id(task_id, "v9").category == "ergonomics"

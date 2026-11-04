@@ -436,7 +436,7 @@ def test_the_v9_task_is_registered_headless_only():
     assert "dwg_headless_roundtrip" in {task.task_id for task in NEW_TASKS_V9}
     assert "dwg_headless_roundtrip" in HEADLESS_ONLY
     assert hasattr(AutoCADMCPProAdapter, "_task_dwg_headless_roundtrip")
-    assert DEFAULT_MATRIX == "v8"
+    assert DEFAULT_MATRIX == "v9"  # 1.8-25
 
 
 async def _run_v9_task(tmp_path):

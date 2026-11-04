@@ -57,9 +57,14 @@ drawings is refused at startup - the journal holds tool
 arguments and answers, which belong beside neither - and the server runs on in
 memory, saying so in ``system_status.state_store``.
 
-Test-only: ``ACADMCP_TEST_HANG_AFTER_BEGIN=<operation id>`` parks the server
-right after that id's ``running`` row is committed, so a test can kill it
-mid-call (``tests/test_journal_durable.py``). Unset, it costs nothing.
+Test-only: the fault barrier ``journal.after_begin`` (``backends/fault_barrier.py``,
+armed with ``ACADMCP_TEST_BARRIER=journal.after_begin:<operation id>`` AND the
+unshipped test marker module) parks the server right after that id's
+``running`` row is committed, so a test can kill it mid-call
+(``tests/test_journal_durable.py`` through ``benchmarks/fault_inject.py``).
+Unset, it costs one environment lookup when the journal opens. Until 1.8-25 it
+was the environment variable ``ACADMCP_TEST_HANG_AFTER_BEGIN`` alone, which a
+production host could set; that variable is gone.
 """
 
 from __future__ import annotations
@@ -78,6 +83,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from backends import fault_barrier
 from backends.operations import OperationJournal, OperationRecord, history_row_matches
 
 __all__ = [
@@ -111,7 +117,8 @@ FLUSH_DELAY_S = 0.1
 OPEN_RETRY_DELAYS_S: tuple[float, ...] = (0.0, 0.25, 1.0)
 SCHEMA_VERSION = "1"
 DRAWING_SUFFIXES = frozenset({".dxf", ".dwg", ".dwt", ".dxb", ".dws"})
-TEST_HANG_ENV = "ACADMCP_TEST_HANG_AFTER_BEGIN"
+#: The fault barrier a kill-mid-call test arms (backends/fault_barrier.py).
+AFTER_BEGIN_BARRIER = "journal.after_begin"
 _DAY_S = 86400.0
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -622,7 +629,7 @@ class DurableJournal(OperationJournal):
         self._wake = threading.Event()
         self._flusher: threading.Thread | None = None
         self._stopped = threading.Event()
-        self._hang = os.environ.get(TEST_HANG_ENV) or None
+        self._barrier_armed = fault_barrier.armed(AFTER_BEGIN_BARRIER)
         self.degraded: dict | None = degraded
         self.write_failures = 0
         self.swept_at_open = 0
@@ -974,11 +981,6 @@ class DurableJournal(OperationJournal):
             self._failed(exc, "read")
             return None
 
-    def _park(self, operation_id: str) -> None:
-        log.warning("%s=%s: parked after its running row (test hook)", TEST_HANG_ENV, operation_id)
-        while True:
-            time.sleep(1.0)
-
     # ── the OperationJournal API ──
 
     def begin(
@@ -1036,8 +1038,8 @@ class DurableJournal(OperationJournal):
                     self._connection.execute("COMMIT")
                 except sqlite3.Error as exc:
                     self._failed(exc, "begin")
-        if replay is None and self._hang is not None and record.operation_id == self._hang:
-            self._park(record.operation_id)
+        if replay is None and self._barrier_armed:
+            fault_barrier.barrier(AFTER_BEGIN_BARRIER, key=record.operation_id)
         return record, replay
 
     def finish(

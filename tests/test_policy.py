@@ -410,7 +410,7 @@ async def test_every_writer_costs_mutate_or_is_covered_by_the_path_guard(monkeyp
 # ── the v9 matrix task ──────────────────────────────────────────────────────
 
 
-def test_v9_carries_policy_read_only_without_moving_the_default():
+def test_v9_carries_policy_read_only_and_is_the_default():
     from benchmarks import run_competitors
     from benchmarks.adapters.autocad_mcp_pro import AutoCADMCPProAdapter
     from benchmarks.tasks_v8 import TASKS_V8
@@ -419,7 +419,7 @@ def test_v9_carries_policy_read_only_without_moving_the_default():
     assert TASKS_V9[: len(TASKS_V8)] == TASKS_V8
     assert task_by_id("policy_read_only", "v9").category == "security"
     assert MATRICES["v9"] == TASKS_V9 and run_competitors.MATRICES is MATRICES
-    assert DEFAULT_MATRIX == "v8" and run_competitors.DEFAULT_MATRIX == "v8"
+    assert DEFAULT_MATRIX == "v9" and run_competitors.DEFAULT_MATRIX == "v9"  # 1.8-25
     assert hasattr(AutoCADMCPProAdapter, "_task_policy_read_only")
 
 
