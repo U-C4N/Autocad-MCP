@@ -431,7 +431,9 @@ def test_the_v9_task_is_registered_headless_only():
     from benchmarks.tasks_v9 import DEFAULT_MATRIX, NEW_TASKS_V9, task_by_id
 
     assert task_by_id("dwg_headless_roundtrip", "v9").category == "reliability"
-    assert NEW_TASKS_V9[-1].task_id == "dwg_headless_roundtrip"
+    # Appended at the end of NEW_TASKS_V9; parallel items append after it, so
+    # membership, not the last position, is what this pins.
+    assert "dwg_headless_roundtrip" in {task.task_id for task in NEW_TASKS_V9}
     assert "dwg_headless_roundtrip" in HEADLESS_ONLY
     assert hasattr(AutoCADMCPProAdapter, "_task_dwg_headless_roundtrip")
     assert DEFAULT_MATRIX == "v8"
