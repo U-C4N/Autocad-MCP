@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import time
 
 import pytest
 
@@ -277,6 +278,90 @@ async def test_entity_delete_many_can_stop_at_the_first_failure(com, seat):
     assert _model(seat).Count == 2, "nothing after the failure ran"
 
 
+# A healthy bulk call longer than COM_CALL_TIMEOUT: one deadline over the whole
+# list sent it down the hung-AutoCAD path (executor abandoned, the old job still
+# writing beside the new thread). The list is sliced inside the deadline instead.
+
+
+def _slow(monkeypatch, cls, name, seconds: float = 0.02) -> None:
+    original = getattr(cls, name)
+
+    def slow(*args, **kwargs):
+        time.sleep(seconds)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cls, name, slow)
+
+
+def _abandoned(com) -> list[dict]:
+    return [row for row in com.call_outcomes if row.get("outcome") == "abandoned_deadline"]
+
+
+@pytest.mark.asyncio
+async def test_a_batch_longer_than_the_deadline_is_sliced_not_abandoned(com, seat, monkeypatch):
+    monkeypatch.setattr(config.settings, "com_call_timeout", 0.5)
+    _slow(monkeypatch, _Block, "AddCircle")  # 50 x 20 ms = 1 s, twice the deadline
+    await com.system_get_variable("CMDECHO")  # binds the document
+    jobs = _jobs(com)
+    revision = com.document_identity()["revision"]
+    seen: list[tuple[int, int]] = []
+
+    async def progress(done, total):
+        seen.append((done, total))
+
+    result = await com.entity_batch_create(_circles(50), progress=progress)
+    assert result["created"] == 50 and result["errors"] == []
+    assert [row["handle"] for row in result["entities"]] == [e.Handle for e in _model(seat)]
+    assert com._connected is True and _abandoned(com) == [], "no job overran the deadline"
+    slices = _jobs(com) - jobs
+    assert 2 <= slices <= 50, "sliced inside the deadline"
+    assert seat.regens <= slices, "one refresh per slice at most"
+    assert com.document_identity()["revision"] == revision + 1, "one call, one revision step"
+    assert seen[0] == (0, 50) and len(seen) == slices
+    assert [done for done, _total in seen] == sorted({done for done, _total in seen})
+
+
+@pytest.mark.asyncio
+async def test_a_delete_many_longer_than_the_deadline_is_sliced_not_abandoned(
+    com, seat, monkeypatch
+):
+    made = await com.entity_batch_create(_circles(50))
+    handles = [row["handle"] for row in made["entities"]]
+    monkeypatch.setattr(config.settings, "com_call_timeout", 0.5)
+    _slow(monkeypatch, _Entity, "Delete")
+    jobs = _jobs(com)
+    revision = com.document_identity()["revision"]
+    result = await com.entity_delete_many([*handles[:25], "FFFF", *handles[25:]])
+    assert result["deleted"] == 50 and _model(seat).Count == 0
+    assert [(row["handle"], row["kind"]) for row in result["errors"]] == [
+        ("FFFF", "unknown_handle")
+    ]
+    assert com._connected is True and _abandoned(com) == []
+    assert _jobs(com) - jobs >= 2
+    assert com.document_identity()["revision"] == revision + 1
+
+
+@pytest.mark.asyncio
+async def test_stop_on_error_still_stops_the_whole_call_across_slices(com, seat, monkeypatch):
+    made = await com.entity_batch_create(_circles(30))
+    handles = [row["handle"] for row in made["entities"]]
+    monkeypatch.setattr(config.settings, "com_call_timeout", 0.2)
+    _slow(monkeypatch, _Entity, "Delete")
+    result = await com.entity_delete_many(
+        [*handles[:10], "FFFF", *handles[10:]], stop_on_error=True
+    )
+    assert result["deleted"] == 10 and len(result["errors"]) == 1
+    assert _model(seat).Count == 20, "no slice ran after the failure"
+
+
+@pytest.mark.asyncio
+async def test_without_a_deadline_a_bulk_call_is_one_job(com, seat, monkeypatch):
+    monkeypatch.setattr(config.settings, "com_call_timeout", 0)
+    jobs = _jobs(com)
+    await com.entity_batch_create(_circles(20))
+    assert _jobs(com) - jobs == 1
+
+
 @pytest.mark.asyncio
 async def test_the_server_tools_call_the_one_job_methods(com, seat, monkeypatch):
     async def make():
@@ -320,9 +405,23 @@ async def test_a_corner_op_on_a_paper_layout_reads_only_the_owner_block(com, sea
     seat.item_reads.clear()
     info = await com.entity_fillet(a.Handle, b.Handle, 2.0)
     assert info.type == "ARC" and sheet.Count == 3
-    assert seat.item_reads.get(doc.ModelSpace.ObjectID, 0) == 0, "model space is not read"
+    assert seat.item_reads.get(doc.ModelSpace.ObjectID, 0) <= 2, "5,000 lines: its mark and stop"
     assert seat.item_reads.get(doc.space("Layout1").ObjectID, 0) == 0
     assert seat.item_reads[sheet.ObjectID] <= 3, "the mark, the new arc and the stop"
+
+
+@pytest.mark.asyncio
+async def test_a_paper_owner_still_reports_an_entity_written_into_model_space(com, seat):
+    """1.8-05's cross-space signal survives the owner-block read (1.8-23)."""
+    doc = seat.doc
+    await com.layout_set_current("A3")
+    doc.on_command = lambda d, _t: d.ModelSpace.add("AcDbArc", Center=(2, 2, 0), Radius=2.0)
+    outcome = await com._run(
+        lambda: cb.ComBackend._safe_send_command(cb._acad_doc(), "_X", owner="A3")
+    )
+    assert outcome.created_count == 1 and outcome.created[0]["space"] == "Model"
+    assert outcome.report()["warning"] == "created_outside_target_space"
+    assert (outcome.entities_before, outcome.entities_after) == (0, 0), "the owner block's"
 
 
 @pytest.mark.asyncio

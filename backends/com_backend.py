@@ -680,6 +680,22 @@ def _batch_error(index: int, exc: BaseException, *, type, before_job: bool = Fal
     return {"index": index, "type": type, "error": str(exc), "kind": kind}
 
 
+#: The share of ``COM_CALL_TIMEOUT`` one slice of a bulk job may spend on its
+#: items (1.8-23). ``_run`` holds every job to that one deadline and treats an
+#: overrun as a hung AutoCAD - the executor is abandoned while the job keeps
+#: writing - so a long but healthy list must never be one job. A slice stops
+#: after the item that crosses this budget (at least one item per slice), which
+#: leaves three quarters of the deadline for the queue, the guard, the one
+#: refresh and the operator counter.
+_BULK_SLICE_SHARE = 0.25
+
+
+def _bulk_slice_budget() -> float | None:
+    """Seconds of item work one bulk slice may take; None without a deadline."""
+    timeout = config.settings.com_call_timeout
+    return timeout * _BULK_SLICE_SHARE if timeout > 0 else None
+
+
 def _target_space_name() -> str:
     """The bound document's target space: ``"Model"`` or a paper layout's name.
 
@@ -7008,17 +7024,24 @@ class ComBackend(AutoCADBackend):
     }
 
     async def entity_batch_create(self, specs, *, progress=None) -> dict:
-        """Every spec in ONE STA job (1.8-23), the contract's result shape.
+        """The specs in as few STA jobs as the deadline allows (1.8-23), the contract's shape.
 
-        Before the job, on the caller's thread: each spec's type, lineweight
+        Before the jobs, on the caller's thread: each spec's type, lineweight
         and arguments are checked by the same job builders the single tools
-        use, so a refused spec draws nothing. In the job: one bound-document
-        guard (and so one operator-counter begin / end), one display refresh
-        at the end (``_flush_refresh``: one Regen for more than
-        ``COM_REFRESH_UPDATE_MAX`` entities), and per spec a ``try`` whose
-        error row carries the 1.8-02 ``kind``. A failure in the middle leaves
-        the earlier entities written - atomicity is ``cad_batch``'s
-        (``transaction=True``) - except a lost connection, which ends the job.
+        use, so a refused spec draws nothing. The planned specs then run in
+        slices: one job takes items until their time crosses
+        ``_bulk_slice_budget()`` (a quarter of ``COM_CALL_TIMEOUT``), so a
+        long but healthy list is never mistaken for a hung AutoCAD - one
+        ``_run`` deadline over the whole list would abandon the executor while
+        the job kept writing. Per slice: one bound-document guard (and so one
+        operator-counter begin / end), one display refresh at its end
+        (``_flush_refresh``: one Regen for more than ``COM_REFRESH_UPDATE_MAX``
+        entities); per spec a ``try`` whose error row carries the 1.8-02
+        ``kind``. A list that fits the budget is one job. A failure in the
+        middle leaves the earlier entities written - atomicity is
+        ``cad_batch``'s (``transaction=True``) - except a lost connection,
+        which ends the call. The call is one revision step however many
+        slices it took; it can be cancelled between slices, not inside one.
         """
         total = len(specs)
         if progress is not None:
@@ -7047,11 +7070,17 @@ class ComBackend(AutoCADBackend):
                 continue
             planned.append((index, kind, job, weight))
 
-        def _sync():
-            doc = _acad_doc()  # the one guard: a refusal here wrote nothing
+        budget = _bulk_slice_budget()
+
+        def _sync(start):
+            doc = _acad_doc()  # the slice's guard: a refusal here wrote nothing
+            began = time.perf_counter()
             rows: list[tuple[int, dict]] = []
             failed: list[dict] = []
-            for index, kind, job, weight in planned:
+            position = start
+            while position < len(planned):
+                index, kind, job, weight = planned[position]
+                position += 1
                 try:
                     info = job()
                     if weight is not None:
@@ -7060,12 +7089,21 @@ class ComBackend(AutoCADBackend):
                 except Exception as exc:  # noqa: BLE001 - typed into the item's row
                     _reraise_if_connection_lost(exc)
                     failed.append(_batch_error(index, exc, type=kind))
-                    continue
-                rows.append((index, asdict(info)))
-            return rows, failed
+                else:
+                    rows.append((index, asdict(info)))
+                if budget is not None and time.perf_counter() - began >= budget:
+                    break  # the rest is the next slice, inside its own deadline
+            return position, rows, failed
 
-        rows, failed = await self._run(_sync) if planned else ([], [])
-        errors = sorted(errors + failed, key=lambda row: row["index"])
+        rows: list[tuple[int, dict]] = []
+        position = 0
+        while position < len(planned):
+            if position and progress is not None:
+                await progress(planned[position][0], total)
+            position, done, failed = await self._run(_sync, position)
+            rows += done
+            errors += failed
+        errors = sorted(errors, key=lambda row: row["index"])
         return {
             "created": len(rows),
             "errors": errors,
@@ -7073,23 +7111,31 @@ class ComBackend(AutoCADBackend):
         }
 
     async def entity_delete_many(self, handles, *, progress=None, stop_on_error=False) -> dict:
-        """Every handle deleted in ONE STA job (1.8-23), the contract's result shape.
+        """The handles deleted in as few STA jobs as the deadline allows (1.8-23).
 
-        One guard, one operator-counter begin / end, one job whatever the
-        number of handles. A handle AutoCAD does not know is that item's
-        ``kind: "unknown_handle"``; any other failure its 1.8-02 kind.
-        ``stop_on_error`` ends the job at the first failure (the all-or-nothing
-        caller rolls everything back anyway); a lost connection always does.
+        The contract's result shape. Slices as ``entity_batch_create`` does:
+        one job deletes until its time crosses ``_bulk_slice_budget()``, so a
+        10k-handle cleanup is never one job over ``COM_CALL_TIMEOUT``; per
+        slice one guard and one operator-counter begin / end. A handle
+        AutoCAD does not know is that item's ``kind: "unknown_handle"``; any
+        other failure its 1.8-02 kind. ``stop_on_error`` ends the call at the
+        first failure (the all-or-nothing caller rolls everything back
+        anyway); a lost connection always does.
         """
         names = list(handles)
         if progress is not None:
             await progress(0, len(names))
+        budget = _bulk_slice_budget()
 
-        def _sync():
-            doc = _acad_doc()  # the one guard: a refusal here deleted nothing
+        def _sync(start):
+            doc = _acad_doc()  # the slice's guard: a refusal here deleted nothing
+            began = time.perf_counter()
             deleted = 0
             errors: list[dict] = []
-            for handle in names:
+            position = start
+            while position < len(names):
+                handle = names[position]
+                position += 1
                 try:
                     _handle_to_object(doc, handle).Delete()
                 except EntityNotFoundError as exc:
@@ -7101,14 +7147,22 @@ class ComBackend(AutoCADBackend):
                     )
                 else:
                     deleted += 1
-                    continue
-                if stop_on_error:
-                    break
-            return {"deleted": deleted, "errors": errors}
+                if errors and stop_on_error:
+                    return len(names), deleted, errors
+                if budget is not None and time.perf_counter() - began >= budget:
+                    break  # the rest is the next slice, inside its own deadline
+            return position, deleted, errors
 
-        if not names:
-            return {"deleted": 0, "errors": []}
-        return await self._run(_sync)
+        deleted = 0
+        errors: list[dict] = []
+        position = 0
+        while position < len(names):
+            if position and progress is not None:
+                await progress(position, len(names))
+            position, done, failed = await self._run(_sync, position)
+            deleted += done
+            errors += failed
+        return {"deleted": deleted, "errors": errors}
 
     async def entity_create_block_ref(
         self,
@@ -10016,8 +10070,10 @@ class ComBackend(AutoCADBackend):
         command can write into (a corner op runs in the target space's tab
         and FILLET / CHAMFER / TRIM add to the space of the objects they
         pick): only that block is read - its ``Count`` and last handle before,
-        its tail after (``_block_tail``) - and no other layout is touched;
-        ``entities_before`` / ``_after`` are that block's. Without ``owner``
+        its tail after (``_block_tail``) - plus, for a paper owner, model
+        space's mark and tail (so an entity the command wrote there is still
+        ``created_outside_target_space``); no other layout is touched and
+        ``entities_before`` / ``_after`` are the owner block's. Without ``owner``
         every layout block is read the same way (``system_run_command``'s
         paper-space report, the undo evidence). A seat whose layouts cannot be
         read falls back to the target space's own block, read the same way -
@@ -10038,7 +10094,7 @@ class ComBackend(AutoCADBackend):
                 except Exception:
                     pass
             snapshot = None if owner is not None else _space_snapshot(doc)
-            block = space = mark = None
+            block = space = mark = model_mark = None
             if snapshot is None:
                 try:
                     block, space = _owner_block(doc, owner or target_space)
@@ -10046,6 +10102,14 @@ class ComBackend(AutoCADBackend):
                 except Exception as exc:  # unknown, never zero
                     log.debug("owner block unreadable: %s", exc)
                     mark = None
+                if mark is not None and space != "Model":
+                    # A paper owner: model space is marked too (two reads), so
+                    # an entity the command wrote there still reaches the
+                    # report as created_outside_target_space (1.8-05).
+                    try:
+                        model_mark = _block_mark(doc.ModelSpace)
+                    except Exception as exc:  # the owner block's report stands
+                        log.debug("model-space mark unreadable: %s", exc)
             payload = cmd if cmd.endswith("\n") else cmd + "\n"
             doc.SendCommand(payload)
             deadline = time.monotonic() + float(deadline_s)
@@ -10091,6 +10155,13 @@ class ComBackend(AutoCADBackend):
                 except Exception as exc:  # unknown, never zero
                     log.debug("post-command owner-block read failed: %s", exc)
                 else:
+                    if model_mark is not None:
+                        try:
+                            strays, _count = _block_tail(doc.ModelSpace, model_mark[1], "Model")
+                        except Exception as exc:  # the owner block's report stands
+                            log.debug("post-command model-space read failed: %s", exc)
+                        else:
+                            found = sorted(found + strays, key=lambda row: row[0])
                     outcome.handles, outcome.created = _created_rows(found)
                     outcome.created_count = len(found)
                     outcome.entities_before, outcome.entities_after = before, after
