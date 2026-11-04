@@ -184,6 +184,38 @@ def bbox(prims: Iterable[Prim]) -> tuple[float, float, float, float]:
     return (min(xs), min(ys), max(xs), max(ys))
 
 
+#: Decimals a coordinate is rounded to before :func:`prims_digest` hashes it:
+#: far below any drawn difference, far above float noise.
+DIGEST_DECIMALS = 9
+
+
+def _canonical(value):
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)):
+        return round(float(value), DIGEST_DECIMALS) + 0.0  # + 0.0 folds -0.0 into 0.0
+    if isinstance(value, (tuple, list)):
+        return [_canonical(item) for item in value]
+    raise TypeError(f"prims_digest: cannot canonicalise {type(value).__name__}")
+
+
+def prims_digest(prims: Iterable[Prim]) -> str:
+    """sha256 of a primitive list, every number rounded to ``DIGEST_DECIMALS``.
+
+    v1.8.0 (plan item 1.8-19): a view record stores the digest of the WCS
+    primitives it was drawn from, so a later revision can tell "the view engine
+    no longer draws this model the way it was drawn" (``model_drift``) from
+    "somebody moved a line by hand" (``hand_edited_tagged_entity``). Every field
+    counts - type, coordinates, role, feature, a hatch's material, a text.
+    """
+    import hashlib
+    import json
+
+    rows = [[type(prim).__name__, _canonical(tuple(prim))] for prim in prims]
+    text = json.dumps(rows, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(text.encode("ascii")).hexdigest()
+
+
 def _map_points(prim: Prim, fn) -> Prim:
     if isinstance(prim, Line):
         return prim._replace(p1=fn(prim.p1), p2=fn(prim.p2))

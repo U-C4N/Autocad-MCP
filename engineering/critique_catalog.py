@@ -74,6 +74,13 @@ FOCUS_CATALOG: dict[str, tuple[str, str, str | None]] = {
     "mech_duplicate_dimension": ("mech", "two dimensions of one type in the same place", _MECH),
     "mech_thread_unrepresented": ("mech", "a thread feature with no drawn representation", _MECH),
     "mech_bom_balloon_mismatch": ("mech", "a balloon and the parts list disagree", _MECH),
+    "model_drift": (
+        "mech",
+        "a drawn part whose tagged entities no longer match its stored model "
+        "(hand_edited_tagged_entity) or whose views the engine no longer reproduces "
+        "(model_drift); unstamped (info) is a part drawn before 1.8.0, not checked",
+        "silent (domain_absent) on a drawing with no mech_part_draw part anchor",
+    ),
     "arch_room_unlabelled": ("arch", "a room face with no room label inside it", _ARCH),
     "arch_wall_gap": ("arch", "two wall ends within 50 mm that do not join", _ARCH),
     "arch_opening_clash": (

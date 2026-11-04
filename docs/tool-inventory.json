@@ -3,7 +3,7 @@
   "schema_version": 2,
   "package_version": "1.7.0",
   "totals": {
-    "tools": 252,
+    "tools": 253,
     "resources": 13,
     "prompts": 5,
     "groups": 28
@@ -23,7 +23,7 @@
     "environment": 22,
     "layers": 16,
     "layouts": 12,
-    "mechanical": 14,
+    "mechanical": 15,
     "page_setup": 6,
     "pid": 10,
     "plant": 2,
@@ -4301,7 +4301,10 @@
         "read the part model back",
         "part features",
         "which views were drawn",
-        "parca bilgisi"
+        "parca bilgisi",
+        "was the part edited by hand",
+        "model drift",
+        "revision history of a part"
       ],
       "tags": [
         "mech",
@@ -4310,6 +4313,31 @@
       "annotations": {
         "title": "Mechanical: Inspect Part",
         "readOnlyHint": true
+      }
+    },
+    {
+      "name": "mech_part_revise",
+      "group": "mechanical",
+      "cost": "destructive",
+      "summary": "Change a drawn part's parameters and rebuild its views in place, keeping handles.",
+      "acad": [],
+      "synonyms": [
+        "change a parameter of a drawn part",
+        "revise the part",
+        "make the bore bigger",
+        "change the length of the part",
+        "parametric edit",
+        "update the part and keep handles",
+        "rebuild the part in place",
+        "parcayi revize et"
+      ],
+      "tags": [
+        "mech",
+        "modify"
+      ],
+      "annotations": {
+        "title": "Mechanical: Revise Part",
+        "destructiveHint": true
       }
     },
     {

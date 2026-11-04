@@ -2227,6 +2227,22 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "part features",
             "which views were drawn",
             "parca bilgisi",
+            "was the part edited by hand",
+            "model drift",
+            "revision history of a part",
+        ),
+    ),
+    "mech_part_revise": ToolAliases(
+        acad=(),
+        synonyms=(
+            "change a parameter of a drawn part",
+            "revise the part",
+            "make the bore bigger",
+            "change the length of the part",
+            "parametric edit",
+            "update the part and keep handles",
+            "rebuild the part in place",
+            "parcayi revize et",
         ),
     ),
     # ── Standard parts (SECTION 22, tracks B+G group S) ─────────────────────

@@ -66,6 +66,16 @@ until plan item 1.8-25 publishes the v9 matrix, so a run without
   broken-input twin: with the converters switched off the same open is refused
   ``unsupported`` / capability ``dwg_read`` with the open document unchanged.
   No converter on the machine is ``environment_blocked``, never a pass.
+* ``parametric_revise_keeps_handles`` (1.8-19, parametric, B24-B28) - a
+  dimensioned flange in three views with a bolt circle and a stored Ø24 bore
+  requirement; one ``mech_part_revise`` (bore 20 -> 24, length 60 -> 70, a
+  chamfer added, the step radius removed) must keep every LINE / CIRCLE / ARC
+  handle it edits in place, leave the drawing's entity signatures equal to a
+  fresh draw of the revised part (written out by hand here, not derived), make
+  the dimensions read ⌀24 and (70) and the requirement pass. Its broken-input
+  twin ``revise_hand_edit_refused``: a tagged line moved by hand refuses the
+  same revision ``hand_edited_tagged_entity`` with that handle, every
+  fingerprint unchanged.
 """
 
 from __future__ import annotations
@@ -155,6 +165,15 @@ NEW_TASKS_V9: tuple[TaskSpec, ...] = (
         "refused dwg_read (no converter on the machine: environment_blocked)",
         1.0,
     ),
+    TaskSpec(
+        "parametric_revise_keeps_handles",
+        "parametric",
+        "Revise a dimensioned three-view flange (bore 20->24, length 60->70, +chamfer, "
+        "-radius) in one call: in-place handles kept, signatures equal a fresh draw, dims "
+        "read 24 and 70, the bore requirement passes; a hand-moved tagged line is refused "
+        "hand_edited_tagged_entity with the fingerprints unchanged",
+        1.0,
+    ),
 )
 
 TASKS_V9: tuple[TaskSpec, ...] = TASKS_V8 + NEW_TASKS_V9
@@ -171,6 +190,7 @@ HEADLESS_ONLY_V9: frozenset[str] = frozenset(
         "call_count_dimension_part",
         "pid_project_offpage",
         "dwg_headless_roundtrip",
+        "parametric_revise_keeps_handles",
     }
 )
 

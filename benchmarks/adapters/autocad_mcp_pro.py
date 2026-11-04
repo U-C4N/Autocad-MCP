@@ -2619,3 +2619,167 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
         metrics["entities"] = observed["entities"]
         passed = twin_ok and all(metrics["equal"].values())
         return passed, metrics, [str(target)]
+
+    async def _task_parametric_revise_keeps_handles(self):
+        """B24-B28 in one call (``mech_part_revise``, 1.8-19).
+
+        A flange (Ø120 x 20 disc, Ø60 x 40 hub, Ø20 bore, 4 x Ø11 on a Ø90
+        bolt circle, R3 at the step) is drawn in front, end and section A-A
+        views and dimensioned, with a stored requirement "the bore is Ø24".
+        One revision - bore 24, hub 50 (length 70), a 1.5 chamfer on the hub
+        end, the R3 removed - must keep every LINE / CIRCLE / ARC it edits in
+        place under its handle, leave the entity signatures (``drawing_diff``'s,
+        handles excluded) equal to a fresh draw of ``REVISED_FLANGE`` - written
+        out by hand below, not derived from the call - show ⌀24 and (70) on its
+        DIMENSIONs and pass the requirement. The broken-input twin
+        ``revise_hand_edit_refused``: on a fresh copy, a tagged line moved 1 mm
+        by hand must refuse the same revision ``hand_edited_tagged_entity``,
+        naming that handle, with every entity's fingerprint unchanged.
+        """
+        from engineering.changes.preview import entity_fingerprints
+        from engineering.errors import HandEditedTaggedEntityError, classify
+        from engineering.mech.draw import add_view, draw_part
+        from engineering.mech.drift import tagged_entities
+        from engineering.mech.part import build_part
+        from engineering.mech.revise import revise_part
+        from engineering.understand.diff import signature
+        from engineering.understand.snapshot import take_snapshot
+        from engineering.verification.requirements import parse_requirements, store_requirements
+
+        flange = {
+            "kind": "revolved",
+            "name": "flange",
+            "material": "steel",
+            "segments": [{"length": 20.0, "d_outer": 120.0}, {"length": 40.0, "d_outer": 60.0}],
+            "features": [
+                {"kind": "axial_bore", "id": "bore", "diameter": 20.0},
+                {
+                    "kind": "hole_circle",
+                    "id": "hc",
+                    "x": 10.0,
+                    "pcd": 90.0,
+                    "count": 4,
+                    "diameter": 11.0,
+                },
+                {"kind": "fillet", "id": "r1", "at": "step:0", "radius": 3.0},
+            ],
+        }
+        revised = {
+            "kind": "revolved",
+            "name": "flange",
+            "material": "steel",
+            "segments": [{"length": 20.0, "d_outer": 120.0}, {"length": 50.0, "d_outer": 60.0}],
+            "features": [
+                {"kind": "axial_bore", "id": "bore", "diameter": 24.0},
+                {
+                    "kind": "hole_circle",
+                    "id": "hc",
+                    "x": 10.0,
+                    "pcd": 90.0,
+                    "count": 4,
+                    "diameter": 11.0,
+                },
+                {"kind": "chamfer", "id": "c2", "at": "end", "size": 1.5},
+            ],
+        }
+        changes = {
+            "features.bore.diameter": 24.0,
+            "segments[1].length": 50.0,
+            "features+": {"kind": "chamfer", "id": "c2", "at": "end", "size": 1.5},
+            "features.r1": None,
+        }
+        plane = {"p1": [-5.0, 0.0], "p2": [80.0, 0.0], "label": "A"}
+        bore = {
+            "units": "mm",
+            "items": [
+                {
+                    "id": "BORE",
+                    "quantity": "diameter",
+                    "target": {"nominal": 24.0},
+                    "provenance": "explicit",
+                    "features": [
+                        {
+                            "kind": "predicate",
+                            "type": "circle",
+                            "layer": "GEOMETRY",
+                            "radius_min": 8.0,
+                            "radius_max": 15.0,
+                        }
+                    ],
+                }
+            ],
+        }
+
+        async def sheet(backend, spec) -> str:
+            await backend.system_set_variable("INSUNITS", 4)
+            drawn = await draw_part(backend, build_part(spec), views=("front", "side"))
+            await add_view(backend, drawn["part_id"], "section", plane=plane)
+            return drawn["part_id"]
+
+        def signatures(snap) -> Counter:
+            return Counter(signature(rec) for rec in snap.records)
+
+        pid = await sheet(self.backend, flange)
+        await store_requirements(self.backend, parse_requirements(bore))
+        result = await revise_part(self.backend, pid, changes)
+        snap = await take_snapshot(self.backend)
+        alive = {rec.handle for rec in snap.records}
+        kept = set(result["in_place"])
+        texts = [rec.rendered_text or "" for rec in snap.records if rec.type == "DIMENSION"]
+
+        from backends.ezdxf_backend import EzdxfBackend
+
+        fresh = EzdxfBackend()
+        await fresh.connect()
+        try:
+            await fresh.drawing_new()
+            await sheet(fresh, revised)
+            same = signatures(snap) == signatures(await take_snapshot(fresh))
+        finally:
+            await fresh.disconnect()
+
+        # the broken-input twin, on a fresh copy of the original sheet
+        await self._reset()
+        twin_pid = await sheet(self.backend, flange)
+        before_snap = await take_snapshot(self.backend)
+        line = next(t for t in tagged_entities(before_snap.records, twin_pid) if t.type == "LINE")
+        await self.backend.entity_move(line.handle, 1.0, 0.0)
+        handles = [rec.handle for rec in (await take_snapshot(self.backend)).records]
+        before = await entity_fingerprints(self.backend, handles)
+        refusal: dict = {}
+        try:
+            await revise_part(self.backend, twin_pid, changes)
+        except HandEditedTaggedEntityError as exc:
+            refusal = classify(exc)
+        after = await entity_fingerprints(self.backend, handles)
+        twin_ok = (
+            refusal.get("kind") == "hand_edited_tagged_entity"
+            and refusal.get("handles") == [line.handle]
+            and before == after
+        )
+        passed = (
+            len(kept) >= 40
+            and kept <= alive
+            and same
+            and any("⌀24" in t for t in texts)
+            and any("(70)" in t for t in texts)
+            and (result.get("verify") or {}).get("status") == "pass"
+            and twin_ok
+        )
+        return (
+            passed,
+            {
+                "in_place": len(kept),
+                "in_place_alive": len(kept & alive),
+                "handle_map": len(result["handle_map"]),
+                "signatures_equal_fresh_draw": same,
+                "dimension_texts": sorted(texts),
+                "requirement": (result.get("verify") or {}).get("status"),
+                "twin": {
+                    "kind": refusal.get("kind"),
+                    "handles": refusal.get("handles"),
+                    "fingerprints_unchanged": before == after,
+                },
+            },
+            [],
+        )

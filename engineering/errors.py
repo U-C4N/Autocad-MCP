@@ -57,10 +57,14 @@ __all__ = [
     "DimensionRenderError",
     "EntityNotFoundError",
     "GateFailure",
+    "HandEditedTaggedEntityError",
     "InvalidArgsError",
     "KindSpec",
+    "ModelDriftError",
     "PathRefusedError",
     "PolicyRefusedError",
+    "REVISE_KINDS",
+    "RevisionRefusedError",
     "annotate",
     "capability_of",
     "cause_chain",
@@ -128,6 +132,12 @@ FILE_KINDS = (
     "dwg_conversion_failed",
 )
 
+#: ``mech_part_revise``'s refusals (1.8-19): a tagged entity edited by hand
+#: since it was drawn, and a part whose drawn views the model no longer
+#: reproduces (drawn before 1.8.0, or by another view engine). Each is the
+#: ``kind`` of a :class:`RevisionRefusedError` subclass.
+REVISE_KINDS = ("hand_edited_tagged_entity", "model_drift")
+
 #: Every kind an error envelope or a step row can carry. Closed: a client that
 #: branches on the taxonomy needs it enumerable. ``requires_reconcile`` is the
 #: operation journal's refusal (B12), already on the wire in 1.7.0;
@@ -147,6 +157,7 @@ ERROR_KINDS = BATCH_KINDS_1_7 + (
     *GATE_KINDS,
     *FILE_KINDS,
     "process_exit",
+    *REVISE_KINDS,
 )
 
 
@@ -243,6 +254,12 @@ ERROR_TABLE: dict[str, KindSpec] = {
     ),
     "dwg_conversion_failed": KindSpec(
         "dependency", False, "The DWG converter failed; see attempts[].log, or use the COM engine."
+    ),
+    "hand_edited_tagged_entity": KindSpec(
+        "geometry", False, "Undo the hand edit, or pass overwrite=True to replace it."
+    ),
+    "model_drift": KindSpec(
+        "spec", False, "The drawn views are not this model's; overwrite=True redraws them."
     ),
 }
 
@@ -354,6 +371,36 @@ class InvalidArgsError(ToolError):
     """
 
     kind = "invalid_args"
+
+
+class RevisionRefusedError(ToolError):
+    """``mech_part_revise`` refused before writing anything (1.8-19).
+
+    A ``ToolError`` so the tool layer passes it through untouched; ``fields()``
+    is what the envelope carries besides the kind and the message (the
+    handles, the drift rows, the views)."""
+
+    kind = "refused"
+
+    def __init__(self, message: str, **details):
+        super().__init__(message)
+        self.details = dict(details)
+
+    def fields(self) -> dict:
+        return dict(self.details)
+
+
+class HandEditedTaggedEntityError(RevisionRefusedError):
+    """A tagged entity of the part no longer has the geometry its model drew."""
+
+    kind = "hand_edited_tagged_entity"
+
+
+class ModelDriftError(RevisionRefusedError):
+    """The part's views cannot be checked against its model: no gen stamp, or
+    the view engine now draws the same model differently."""
+
+    kind = "model_drift"
 
 
 #: How many blocking rows a gate failure carries unless ``detail="full"``.
@@ -739,6 +786,11 @@ def classify(exc: BaseException) -> dict:
         # column, tier_needed, reason.
         row.update(refused.fields())
         return row
+    revise = _first_of(exc, RevisionRefusedError)
+    if revise is not None:
+        # 1.8-19: mech_part_revise refused before writing - the handles and
+        # the drift rows that decided it.
+        return {"kind": revise.kind, **revise.fields(), "message": message}
     for typed in (
         PathRefusedError,
         ApplicationBusyError,
