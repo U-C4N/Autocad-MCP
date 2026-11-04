@@ -1019,6 +1019,188 @@ async def result_lane(
 
 
 # ---------------------------------------------------------------------------
+# Result-lane budget cells (token_budget.json "result", 1.8-25)
+# ---------------------------------------------------------------------------
+#
+# The five result cells of the plan's section 4 table, measured the way their
+# owners' tests measure them (tests/test_drawing_history.py,
+# tests/test_qa_coverage.py), so ``--budget --release`` compares a number this
+# run took instead of reporting the cell unmeasured. Each runs on its own
+# in-memory client over a private state folder: the 1,000 journal rows must not
+# land in the developer's real ``%LOCALAPPDATA%`` store.
+
+#: The env var the server's lifespan opens its durable journal under.
+STATE_ENV = "ACADMCP_STATE_DIR"
+
+#: What 1.8-02's envelope adds to an error (``server._error_envelope``): every
+#: field but ``message`` (and ``error``, its 1.7 copy) - the sentence the client
+#: read before 1.8.0 - and but the kind's own fields, which are the error's content.
+ENVELOPE_FIELDS: tuple[str, ...] = (
+    "ok",
+    "kind",
+    "category",
+    "retryable",
+    "hint",
+    "tool",
+    "backend",
+    "operation_id",
+)
+
+#: The errors the envelope cell provokes: (tool, arguments).
+ENVELOPE_PROBES: tuple[tuple[str, dict[str, Any]], ...] = (
+    ("entity_get", {"handle": "DEAD"}),
+    ("entity_move", {"handle": "DEAD", "dx": 1.0, "dy": 0.0}),
+    ("entity_create_circle", {"cx": 0.0, "cy": 0.0, "radius": -1.0}),
+)
+
+
+def _structured(result: Any) -> Any:
+    content = result.structured_content
+    if isinstance(content, dict) and set(content) == {"result"}:
+        return content["result"]
+    return content
+
+
+def _lifespan(srv: Any) -> dict[str, Any]:
+    context = getattr(srv.mcp, "_lifespan_result", None)
+    return context if isinstance(context, dict) else {}
+
+
+async def _cell_status_rows(client: Any, srv: Any) -> dict[str, Any]:
+    """``system_status`` with 1,000 journal rows, against the same call at none."""
+    await client.call_tool("drawing_new", {"bootstrap": False})
+    empty = await client.call_tool("system_status", {})
+    journal = _lifespan(srv).get("operations") or srv._FALLBACK_OPERATIONS
+    document = {"document_id": "token-suite", "revision": 1}
+    for index in range(1000):
+        record, _ = journal.begin("entity_create_line", {"i": index}, document=document)
+        journal.finish(record, "committed", document={**document, "revision": index + 2})
+    full = await client.call_tool("system_status", {})
+    small = len(json.dumps(empty.structured_content).encode("utf-8"))
+    large = len(json.dumps(full.structured_content).encode("utf-8"))
+    return {
+        "metric": "bytes",
+        "measured": large - small,
+        "bytes_at_0_rows": small,
+        "bytes_at_1000_rows": large,
+        "journal_count": int(full.structured_content["operations"]["count"]),
+    }
+
+
+async def _cell_critique_summary(client: Any, srv: Any) -> dict[str, Any]:
+    """``drawing_critique(summary=True)`` over 500 ``duplicate_entities`` issues."""
+    await client.call_tool("drawing_new", {"bootstrap": False})
+    msp = _lifespan(srv)["backend"]._doc.modelspace()
+    for _ in range(501):
+        msp.add_line((0, 0), (10, 0))
+    summary = _structured(await client.call_tool("drawing_critique", {"summary": True}))
+    return {
+        "metric": "chars",
+        "measured": len(json.dumps(summary)),
+        "total": summary["total"],
+        "duplicate_entities": summary["by_focus"].get("duplicate_entities"),
+    }
+
+
+async def _cell_finalize_coverage(client: Any, counter: Any, folder: Path) -> dict[str, Any]:
+    """finalize's ``qa_coverage`` with three layouts it could not check."""
+    await client.call_tool("drawing_new", {})
+    await client.call_tool(
+        "entity_create_line", {"x1": 0, "y1": 0, "x2": 50, "y2": 0, "layer": "GEOMETRY"}
+    )
+    for name in ("Layout1", "Layout2", "Layout3"):
+        if name != "Layout1":
+            await client.call_tool("layout_create", {"name": name})
+        await client.call_tool("layout_set_current", {"name": name})
+        await client.call_tool(
+            "entity_create_line", {"x1": 0, "y1": 0, "x2": 420, "y2": 0, "layer": "TITLEBLOCK"}
+        )
+        await client.call_tool("layout_set_current", {"name": "Model"})
+    result = await client.call_tool(
+        "drawing_finalize", {"save_path": str(folder / "finalize.dxf")}, raise_on_error=False
+    )
+    coverage = result.structured_content["qa_coverage"]
+    return {
+        "metric": "tokens",
+        "measured": counter.count(json.dumps(coverage), FORMAT_JSON_DATA),
+        "chars": len(json.dumps(coverage)),
+        "not_checked": len(coverage["not_checked"]),
+    }
+
+
+async def _cell_error_envelope(client: Any, counter: Any) -> dict[str, Any]:
+    """The envelope fields per error, the largest of three provoked errors."""
+    await client.call_tool("drawing_new", {"bootstrap": False})
+    probes = []
+    for tool, arguments in ENVELOPE_PROBES:
+        result = await client.call_tool(tool, arguments, raise_on_error=False)
+        payload = result.structured_content or {}
+        envelope = {key: payload[key] for key in ENVELOPE_FIELDS if key in payload}
+        probes.append(
+            {
+                "tool": tool,
+                "kind": payload.get("kind"),
+                "tokens": counter.count(json.dumps(envelope), FORMAT_JSON_DATA),
+                "chars": len(json.dumps(envelope)),
+            }
+        )
+    return {
+        "metric": "tokens_per_error",
+        "measured": max(probe["tokens"] for probe in probes),
+        "fields": list(ENVELOPE_FIELDS),
+        "probes": probes,
+    }
+
+
+async def _cell_history_row(client: Any, counter: Any) -> dict[str, Any]:
+    """``drawing_history(limit=10)`` after twelve writes, each followed by a read."""
+    await client.call_tool("drawing_new", {})
+    for index in range(12):
+        await client.call_tool("entity_create_line", {"x1": 0, "y1": index, "x2": 5, "y2": index})
+        await client.call_tool("entity_list", {"limit": 1})
+    result = await client.call_tool("drawing_history", {"limit": 10})
+    text = "".join(block.text for block in result.content)
+    return {
+        "metric": "tokens",
+        "measured": counter.count(text, FORMAT_JSON_DATA),
+        "chars": len(text),
+        "rows": len(_structured(result)["rows"]),
+    }
+
+
+async def result_budget_cells(counter: Any) -> dict[str, dict[str, Any]]:
+    """The five ``result`` cells of ``token_budget.json``, each on a fresh client."""
+    import shutil
+    import tempfile
+
+    srv = _load_server()
+    previous = os.environ.get(STATE_ENV)
+    state = Path(tempfile.mkdtemp(prefix="acadmcp-token-state-"))
+    drawings = Path(tempfile.mkdtemp(prefix="acadmcp-token-drawings-"))
+    os.environ[STATE_ENV] = str(state)
+    cells: dict[str, dict[str, Any]] = {}
+    try:
+        async with _client() as client:
+            cells["system_status_1000_rows"] = await _cell_status_rows(client, srv)
+        async with _client() as client:
+            cells["critique_500_summary"] = await _cell_critique_summary(client, srv)
+        async with _client() as client:
+            cells["finalize_qa_coverage"] = await _cell_finalize_coverage(client, counter, drawings)
+        async with _client() as client:
+            cells["error_envelope"] = await _cell_error_envelope(client, counter)
+        async with _client() as client:
+            cells["history_row"] = await _cell_history_row(client, counter)
+    finally:
+        if previous is None:
+            os.environ.pop(STATE_ENV, None)
+        else:
+            os.environ[STATE_ENV] = previous
+        shutil.rmtree(state, ignore_errors=True)
+        shutil.rmtree(drawings, ignore_errors=True)
+    return cells
+
+
+# ---------------------------------------------------------------------------
 # Lane 4: task cost (scripted jobs, two arms - benchmarks/call_budget.py)
 # ---------------------------------------------------------------------------
 
@@ -1177,6 +1359,9 @@ def check_budget(
             elif measured > cell["ceiling"]:
                 _breach({**item, "reason": "over the ceiling"}, cell["gate"])
 
+    # 1.8-25: the result lane measures these cells (``result.budget_cells``);
+    # a run without that lane leaves them unmeasured, as before.
+    cells = (report.get("result") or {}).get("budget_cells") or {}
     for name, cell in (budget.get("result") or {}).items():
         item = {
             "cell": f"result.{name}",
@@ -1184,7 +1369,14 @@ def check_budget(
             "gate": cell["gate"],
             "owner": cell.get("owner"),
         }
-        _unmeasured(item, cell["gate"])
+        measured = (cells.get(name) or {}).get("measured")
+        if measured is None:
+            _unmeasured(item, cell["gate"])
+            continue
+        item = {**item, "basis": cell.get("metric"), "measured": measured}
+        checked.append(item)
+        if measured > cell["ceiling"]:
+            _breach({**item, "reason": "over the ceiling"}, cell["gate"])
 
     task = report.get("task")
     if task is not None:
@@ -1292,6 +1484,7 @@ async def run_suite(
             discovery = await discovery_lane(counter, turns)
         if "result" in lanes:
             result = await result_lane(counter, turns, entities)
+            result["budget_cells"] = await result_budget_cells(counter)
         if "task" in lanes:
             task = await task_lane(counter, turns)
     finally:
@@ -1428,6 +1621,8 @@ def _summarize_result(report: dict[str, Any], lines: list[str]) -> None:
         f"{projection['extrapolated_chars_at_config_cap']:,} chars, but the tool's "
         f"schema caps limit at {projection['schema_max_limit']}"
     )
+    for name, cell in (result.get("budget_cells") or {}).items():
+        lines.append(f"  budget cell {name:24} {cell['measured']:6,d} {cell['metric']}")
     lines.append("")
 
 

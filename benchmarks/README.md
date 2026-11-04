@@ -449,22 +449,34 @@ history oracle counts its two calls in one in-process client; the restart half
 is proven by the v9 task and the `history_round2_value` check, which kill real
 server processes.
 
-The cells' gates as `token_budget.json` holds them now:
+The cells as `token_budget.json` holds them, measured on the release tree by
+`python -m benchmarks.token_suite --budget benchmarks/token_budget.json --release`
+(exit 0; the same run without `--budget` is the published
+[`results/published/token-cost.json`](results/published/token-cost.json), the
+report the growth check compares against from 1.8.0 on):
 
-| Lane | Cell | Ceiling | Gate | State |
+| Lane | Cell | Ceiling | Gate | Release tree |
 |---|---|---:|---|---|
-| idle | `default` | 65,594 tokens | `ci` | owner 1.8-14 |
-| idle | `lean` | 18,842 | `release` | over its ceiling at W2 start (18,961); owner W3, the `Details:` split, which is 1.8.1 |
-| idle | `packs_core` | 43,997 | `release` | over its ceiling at W2 start (44,235); same owner |
-| idle | `search` | 250 | `ci` | measured by 1.8-11: 220 prompt / 230 wire |
-| idle | `search_pinned` | 1,500 | `ci` | measured by 1.8-11: 1,003 prompt / 1,277 wire, six tools |
-| idle | `instructions` | 250 | `ci` | measured by 1.8-11: 199 tokens |
-| result | `system_status_1000_rows`, `critique_500_summary`, `finalize_qa_coverage`, `error_envelope`, `history_row` | see the file | `release` | the result-lane rows are not yet measured by `token_suite`; tests hold `system_status` (+300 bytes at 1,000 rows), the 500-issue summary, finalize's `qa_coverage` and `drawing_history(limit=10)` (under 400 tokens) |
-| task | `sketch_20_entities`, `inspect_foreign`, `layer_cleanup_300`, `dimension_plate`, `history_value_lookup` | 1, 1, 3, 2, 2 calls | `ci` | measured |
-| real model | `plugin_eval` | 6 calls per case | `release` | 1.8-11's runs: `layer-cleanup-budget` 3 and 6 (pass), `dimension-budget` 9 and 12 (over); `history-round2` written, not yet run |
+| idle | `default` (`DISCOVERY_MODE=off`, 253 tools) | 65,594 tokens | `ci` | 59,138 prompt / 78,391 wire (1.7.0: 62,471 / 89,350) |
+| idle | `lean` (68 tools) | 18,842 | `ci` | 16,182 / 21,189 - over its ceiling at W2 start (18,961) and flipped to `ci` by the W3 `Details:` split |
+| idle | `packs_core` (192 tools) | 43,997 | `ci` | 40,722 / 55,169 - over at W2 start (44,235), flipped the same way |
+| idle | `search` (3 tools) | 250 | `ci` | 220 / 230 (1.7.0: 455 / 503) |
+| idle | `search_pinned` (6 tools, the 1.8.0 default) | 1,500 | `ci` | 1,026 / 1,300 (1.8-11 measured 1,003 / 1,277) |
+| idle | `instructions` | 250 | `ci` | 199 tokens (1.7.0: 461) |
+| result | `system_status_1000_rows` | +300 bytes | `release` | +18 bytes at 1,002 journal rows |
+| result | `critique_500_summary` | 2,500 chars | `release` | 735 chars for 500 issues |
+| result | `finalize_qa_coverage` | 300 tokens | `release` | 226 tokens, three layouts `not_checked` |
+| result | `error_envelope` | 60 tokens per error | `release` | 58, the largest of three provoked errors (the envelope fields, not the message) |
+| result | `history_row` | 400 tokens | `release` | 344 for `drawing_history(limit=10)` |
+| task | `sketch_20_entities`, `inspect_foreign`, `layer_cleanup_300`, `dimension_plate`, `history_value_lookup` | 1, 1, 3, 2, 2 calls | `ci` | 1, 1, 2, 2, 2 |
+| real model | `plugin_eval` | 6 calls per case | `release` | not checked by `--budget`; 1.8-11's runs: `layer-cleanup-budget` 3 and 6 (pass), `dimension-budget` 9 and 12 (over); `history-round2` written, not yet run |
 
-The measured token values above are the items' own; the numbers pass retakes
-every cell on the release tree.
+Since 1.8-25 the result lane measures the five result cells itself
+(`result.budget_cells`, each the way its owner's test measures it, on a private
+state folder); they stay `release` because the PR job runs only `idle,task`, so
+on a PR they are `pending`, never a pass. The growth rows are all negative
+against the 1.8-14 publication (default -8.89 %, lean -15.12 %, packs_core
+-8.16 %, search -51.65 %, instructions -56.83 %).
 
 ## Correctness A/B suite
 

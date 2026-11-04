@@ -40,15 +40,15 @@
         "note": "Ours: alias-aware BM25 plus the risk filter, compact cards.",
         "queries": [
           {
-            "bytes_utf8": 612,
-            "chars": 612,
+            "bytes_utf8": 587,
+            "chars": 587,
             "cost": {
-              "cached_input_tokens_per_request": 18.6,
-              "session_cached": 771.9,
+              "cached_input_tokens_per_request": 17.8,
+              "session_cached": 738.7,
               "session_saving_ratio": 0.862,
-              "session_uncached": 5580,
+              "session_uncached": 5340,
               "turns": 30,
-              "uncached_input_tokens_per_request": 186,
+              "uncached_input_tokens_per_request": 178,
               "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
             },
             "hits": 5,
@@ -59,11 +59,11 @@
               "estimated": true,
               "format": "compact_text",
               "method": "ratio/v1",
-              "value": 186
+              "value": 178
             },
             "top": [
               "entity_fillet",
-              "entity_create_circle",
+              "drawing_history",
               "view_zoom_window"
             ]
           },
@@ -176,15 +176,15 @@
             ]
           },
           {
-            "bytes_utf8": 671,
-            "chars": 671,
+            "bytes_utf8": 673,
+            "chars": 673,
             "cost": {
-              "cached_input_tokens_per_request": 20.4,
-              "session_cached": 846.6,
+              "cached_input_tokens_per_request": 20.5,
+              "session_cached": 850.8,
               "session_saving_ratio": 0.862,
-              "session_uncached": 6120,
+              "session_uncached": 6150,
               "turns": 30,
-              "uncached_input_tokens_per_request": 204,
+              "uncached_input_tokens_per_request": 205,
               "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
             },
             "hits": 5,
@@ -195,7 +195,7 @@
               "estimated": true,
               "format": "compact_text",
               "method": "ratio/v1",
-              "value": 204
+              "value": 205
             },
             "top": [
               "dimension_auto",
@@ -260,15 +260,15 @@
             ]
           },
           {
-            "bytes_utf8": 658,
-            "chars": 658,
+            "bytes_utf8": 709,
+            "chars": 709,
             "cost": {
-              "cached_input_tokens_per_request": 20.0,
-              "session_cached": 830.0,
+              "cached_input_tokens_per_request": 21.6,
+              "session_cached": 896.4,
               "session_saving_ratio": 0.862,
-              "session_uncached": 6000,
+              "session_uncached": 6480,
               "turns": 30,
-              "uncached_input_tokens_per_request": 200,
+              "uncached_input_tokens_per_request": 216,
               "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
             },
             "hits": 5,
@@ -279,12 +279,12 @@
               "estimated": true,
               "format": "compact_text",
               "method": "ratio/v1",
-              "value": 200
+              "value": 216
             },
             "top": [
-              "analysis_select_by_type",
+              "dimension_auto",
               "entity_create_circle",
-              "entity_edit_geometry"
+              "analysis_select_by_type"
             ]
           }
         ],
@@ -376,15 +376,15 @@
             ]
           },
           {
-            "bytes_utf8": 599,
-            "chars": 599,
+            "bytes_utf8": 557,
+            "chars": 557,
             "cost": {
-              "cached_input_tokens_per_request": 18.2,
-              "session_cached": 755.3,
+              "cached_input_tokens_per_request": 16.9,
+              "session_cached": 701.4,
               "session_saving_ratio": 0.862,
-              "session_uncached": 5460,
+              "session_uncached": 5070,
               "turns": 30,
-              "uncached_input_tokens_per_request": 182,
+              "uncached_input_tokens_per_request": 169,
               "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
             },
             "hits": 5,
@@ -395,12 +395,12 @@
               "estimated": true,
               "format": "compact_text",
               "method": "ratio/v1",
-              "value": 182
+              "value": 169
             },
             "top": [
               "point_intersection",
               "layer_state_restore",
-              "entity_delete_many"
+              "drawing_diff"
             ]
           },
           {
@@ -432,15 +432,15 @@
             ]
           },
           {
-            "bytes_utf8": 614,
-            "chars": 614,
+            "bytes_utf8": 603,
+            "chars": 603,
             "cost": {
-              "cached_input_tokens_per_request": 18.7,
-              "session_cached": 776.0,
+              "cached_input_tokens_per_request": 18.3,
+              "session_cached": 759.5,
               "session_saving_ratio": 0.862,
-              "session_uncached": 5610,
+              "session_uncached": 5490,
               "turns": 30,
-              "uncached_input_tokens_per_request": 187,
+              "uncached_input_tokens_per_request": 183,
               "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
             },
             "hits": 5,
@@ -451,24 +451,24 @@
               "estimated": true,
               "format": "compact_text",
               "method": "ratio/v1",
-              "value": 187
+              "value": 183
             },
             "top": [
               "dimension_auto",
               "mech_dimension_part",
-              "boundary_from_entities"
+              "mech_part_draw"
             ]
           },
           {
-            "bytes_utf8": 625,
-            "chars": 625,
+            "bytes_utf8": 634,
+            "chars": 634,
             "cost": {
-              "cached_input_tokens_per_request": 19.0,
-              "session_cached": 788.5,
+              "cached_input_tokens_per_request": 19.3,
+              "session_cached": 801.0,
               "session_saving_ratio": 0.862,
-              "session_uncached": 5700,
+              "session_uncached": 5790,
               "turns": 30,
-              "uncached_input_tokens_per_request": 190,
+              "uncached_input_tokens_per_request": 193,
               "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
             },
             "hits": 5,
@@ -479,12 +479,12 @@
               "estimated": true,
               "format": "compact_text",
               "method": "ratio/v1",
-              "value": 190
+              "value": 193
             },
             "top": [
               "drawing_export_pdf",
               "batch_plot",
-              "drawing_save_as"
+              "drawing_deliver"
             ]
           },
           {
@@ -512,19 +512,19 @@
             "top": [
               "entity_chamfer",
               "balloon_add",
-              "mleaderstyle_list"
+              "leader_create_mleader"
             ]
           },
           {
-            "bytes_utf8": 647,
-            "chars": 647,
+            "bytes_utf8": 660,
+            "chars": 660,
             "cost": {
-              "cached_input_tokens_per_request": 19.7,
-              "session_cached": 817.6,
+              "cached_input_tokens_per_request": 20.1,
+              "session_cached": 834.2,
               "session_saving_ratio": 0.862,
-              "session_uncached": 5910,
+              "session_uncached": 6030,
               "turns": 30,
-              "uncached_input_tokens_per_request": 197,
+              "uncached_input_tokens_per_request": 201,
               "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
             },
             "hits": 5,
@@ -535,12 +535,12 @@
               "estimated": true,
               "format": "compact_text",
               "method": "ratio/v1",
-              "value": 197
+              "value": 201
             },
             "top": [
-              "analysis_select_by_type",
+              "dimension_auto",
               "analysis_measure_entity",
-              "entity_edit_geometry"
+              "analysis_select_by_type"
             ]
           }
         ],
@@ -632,15 +632,15 @@
             ]
           },
           {
-            "bytes_utf8": 8173,
-            "chars": 8167,
+            "bytes_utf8": 7534,
+            "chars": 7528,
             "cost": {
-              "cached_input_tokens_per_request": 194.9,
-              "session_cached": 8088.4,
+              "cached_input_tokens_per_request": 179.7,
+              "session_cached": 7457.6,
               "session_saving_ratio": 0.862,
-              "session_uncached": 58470,
+              "session_uncached": 53910,
               "turns": 30,
-              "uncached_input_tokens_per_request": 1949,
+              "uncached_input_tokens_per_request": 1797,
               "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
             },
             "hits": 5,
@@ -651,24 +651,24 @@
               "estimated": true,
               "format": "json_schema",
               "method": "ratio/v1",
-              "value": 1949
+              "value": 1797
             },
             "top": [
               "point_intersection",
               "layer_state_restore",
-              "entity_delete_many"
+              "drawing_diff"
             ]
           },
           {
-            "bytes_utf8": 11418,
-            "chars": 11416,
+            "bytes_utf8": 10160,
+            "chars": 10158,
             "cost": {
-              "cached_input_tokens_per_request": 272.5,
-              "session_cached": 11308.8,
+              "cached_input_tokens_per_request": 242.4,
+              "session_cached": 10059.6,
               "session_saving_ratio": 0.862,
-              "session_uncached": 81750,
+              "session_uncached": 72720,
               "turns": 30,
-              "uncached_input_tokens_per_request": 2725,
+              "uncached_input_tokens_per_request": 2424,
               "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
             },
             "hits": 5,
@@ -679,7 +679,7 @@
               "estimated": true,
               "format": "json_schema",
               "method": "ratio/v1",
-              "value": 2725
+              "value": 2424
             },
             "top": [
               "mech_hole_pattern",
@@ -688,15 +688,15 @@
             ]
           },
           {
-            "bytes_utf8": 9014,
-            "chars": 9012,
+            "bytes_utf8": 7622,
+            "chars": 7614,
             "cost": {
-              "cached_input_tokens_per_request": 215.1,
-              "session_cached": 8926.7,
+              "cached_input_tokens_per_request": 181.7,
+              "session_cached": 7540.6,
               "session_saving_ratio": 0.862,
-              "session_uncached": 64530,
+              "session_uncached": 54510,
               "turns": 30,
-              "uncached_input_tokens_per_request": 2151,
+              "uncached_input_tokens_per_request": 1817,
               "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
             },
             "hits": 5,
@@ -707,24 +707,24 @@
               "estimated": true,
               "format": "json_schema",
               "method": "ratio/v1",
-              "value": 2151
+              "value": 1817
             },
             "top": [
               "dimension_auto",
               "mech_dimension_part",
-              "boundary_from_entities"
+              "mech_part_draw"
             ]
           },
           {
-            "bytes_utf8": 5327,
-            "chars": 5319,
+            "bytes_utf8": 6403,
+            "chars": 6395,
             "cost": {
-              "cached_input_tokens_per_request": 126.9,
-              "session_cached": 5266.4,
+              "cached_input_tokens_per_request": 152.6,
+              "session_cached": 6332.9,
               "session_saving_ratio": 0.862,
-              "session_uncached": 38070,
+              "session_uncached": 45780,
               "turns": 30,
-              "uncached_input_tokens_per_request": 1269,
+              "uncached_input_tokens_per_request": 1526,
               "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
             },
             "hits": 5,
@@ -735,12 +735,12 @@
               "estimated": true,
               "format": "json_schema",
               "method": "ratio/v1",
-              "value": 1269
+              "value": 1526
             },
             "top": [
               "drawing_export_pdf",
               "batch_plot",
-              "drawing_save_as"
+              "drawing_deliver"
             ]
           },
           {
@@ -768,19 +768,19 @@
             "top": [
               "entity_chamfer",
               "balloon_add",
-              "mleaderstyle_list"
+              "leader_create_mleader"
             ]
           },
           {
-            "bytes_utf8": 9926,
-            "chars": 9914,
+            "bytes_utf8": 8629,
+            "chars": 8623,
             "cost": {
-              "cached_input_tokens_per_request": 236.6,
-              "session_cached": 9818.9,
+              "cached_input_tokens_per_request": 205.8,
+              "session_cached": 8540.7,
               "session_saving_ratio": 0.862,
-              "session_uncached": 70980,
+              "session_uncached": 61740,
               "turns": 30,
-              "uncached_input_tokens_per_request": 2366,
+              "uncached_input_tokens_per_request": 2058,
               "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
             },
             "hits": 5,
@@ -791,12 +791,12 @@
               "estimated": true,
               "format": "json_schema",
               "method": "ratio/v1",
-              "value": 2366
+              "value": 2058
             },
             "top": [
-              "analysis_select_by_type",
+              "dimension_auto",
               "analysis_measure_entity",
-              "entity_edit_geometry"
+              "analysis_select_by_type"
             ]
           }
         ],
@@ -805,7 +805,7 @@
         "transform": "fastmcp.server.transforms.search.BM25SearchTransform"
       }
     ],
-    "catalog_tools": 243,
+    "catalog_tools": 252,
     "limit": 5,
     "summary": {
       "comparable_queries": 8,
@@ -818,14 +818,14 @@
         "stock_bm25_default": 0.889
       },
       "mean_chars": {
-        "cad_search": 570.8,
-        "stock_bm25_compact": 567.8,
-        "stock_bm25_default": 7139.2
+        "cad_search": 574.2,
+        "stock_bm25_compact": 563.9,
+        "stock_bm25_default": 6700.5
       },
       "mean_tokens": {
-        "cad_search": 173.5,
-        "stock_bm25_compact": 172.8,
-        "stock_bm25_default": 1703.9
+        "cad_search": 174.6,
+        "stock_bm25_compact": 171.5,
+        "stock_bm25_default": 1599.1
       },
       "note": "Means cover only queries every arm answered; zero-hit answers are excluded from size means and reported in hit_rate instead. The compact serializer, not the ranker, is what makes a search answer small - stock BM25 with the same serializer lands within a few percent. Ours differs in finding the tool at all.",
       "queries": 9
@@ -842,21 +842,21 @@
   },
   "idle": [
     {
-      "advertised_tools": 243,
+      "advertised_tools": 253,
       "basis": "prompt_payload",
-      "bytes_utf8": 272334,
-      "chars": 271966,
+      "bytes_utf8": 248085,
+      "chars": 247787,
       "cost": {
-        "cached_input_tokens_per_request": 6490.8,
-        "session_cached": 269368.2,
+        "cached_input_tokens_per_request": 5913.8,
+        "session_cached": 245422.7,
         "session_saving_ratio": 0.862,
-        "session_uncached": 1947240,
+        "session_uncached": 1774140,
         "turns": 30,
-        "uncached_input_tokens_per_request": 64908,
+        "uncached_input_tokens_per_request": 59138,
         "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
       },
       "kind": "tools_list",
-      "note": "TOOL_PROFILE=full, DISCOVERY_MODE=off - the shipped default.",
+      "note": "TOOL_PROFILE=full, DISCOVERY_MODE=off - the full catalog (the shipped default up to 1.7.0; DISCOVERY_MODE=search is since 1.8.0).",
       "prompt_cache": {
         "cacheable": {
           "1024": true,
@@ -888,26 +888,26 @@
         },
         "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
       },
-      "prompt_chars": 271966,
+      "prompt_chars": 247787,
       "tokens": {
         "chars_per_token": 4.19,
         "confidence": "carried-over-measurement",
         "estimated": true,
         "format": "json_schema",
         "method": "ratio/v1",
-        "value": 64908
+        "value": 59138
       },
       "variant": "default",
       "wire": {
-        "bytes_utf8": 350176,
-        "chars": 349807,
+        "bytes_utf8": 328759,
+        "chars": 328460,
         "cost": {
-          "cached_input_tokens_per_request": 8348.6,
-          "session_cached": 346466.9,
+          "cached_input_tokens_per_request": 7839.1,
+          "session_cached": 325322.7,
           "session_saving_ratio": 0.862,
-          "session_uncached": 2504580,
+          "session_uncached": 2351730,
           "turns": 30,
-          "uncached_input_tokens_per_request": 83486,
+          "uncached_input_tokens_per_request": 78391,
           "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
         },
         "tokens": {
@@ -916,23 +916,23 @@
           "estimated": true,
           "format": "json_schema",
           "method": "ratio/v1",
-          "value": 83486
+          "value": 78391
         }
       },
-      "wire_chars": 349807
+      "wire_chars": 328460
     },
     {
-      "advertised_tools": 66,
+      "advertised_tools": 68,
       "basis": "prompt_payload",
-      "bytes_utf8": 79943,
-      "chars": 79883,
+      "bytes_utf8": 67850,
+      "chars": 67803,
       "cost": {
-        "cached_input_tokens_per_request": 1906.5,
-        "session_cached": 79119.8,
+        "cached_input_tokens_per_request": 1618.2,
+        "session_cached": 67155.3,
         "session_saving_ratio": 0.862,
-        "session_uncached": 571950,
+        "session_uncached": 485460,
         "turns": 30,
-        "uncached_input_tokens_per_request": 19065,
+        "uncached_input_tokens_per_request": 16182,
         "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
       },
       "kind": "tools_list",
@@ -968,26 +968,26 @@
         },
         "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
       },
-      "prompt_chars": 79883,
+      "prompt_chars": 67803,
       "tokens": {
         "chars_per_token": 4.19,
         "confidence": "carried-over-measurement",
         "estimated": true,
         "format": "json_schema",
         "method": "ratio/v1",
-        "value": 19065
+        "value": 16182
       },
       "variant": "lean",
       "wire": {
-        "bytes_utf8": 100524,
-        "chars": 100463,
+        "bytes_utf8": 88828,
+        "chars": 88780,
         "cost": {
-          "cached_input_tokens_per_request": 2397.7,
-          "session_cached": 99504.6,
+          "cached_input_tokens_per_request": 2118.9,
+          "session_cached": 87934.4,
           "session_saving_ratio": 0.862,
-          "session_uncached": 719310,
+          "session_uncached": 635670,
           "turns": 30,
-          "uncached_input_tokens_per_request": 23977,
+          "uncached_input_tokens_per_request": 21189,
           "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
         },
         "tokens": {
@@ -996,23 +996,23 @@
           "estimated": true,
           "format": "json_schema",
           "method": "ratio/v1",
-          "value": 23977
+          "value": 21189
         }
       },
-      "wire_chars": 100463
+      "wire_chars": 88780
     },
     {
-      "advertised_tools": 184,
+      "advertised_tools": 192,
       "basis": "prompt_payload",
-      "bytes_utf8": 186015,
-      "chars": 185782,
+      "bytes_utf8": 170811,
+      "chars": 170625,
       "cost": {
-        "cached_input_tokens_per_request": 4433.9,
-        "session_cached": 184006.9,
+        "cached_input_tokens_per_request": 4072.2,
+        "session_cached": 168996.3,
         "session_saving_ratio": 0.862,
-        "session_uncached": 1330170,
+        "session_uncached": 1221660,
         "turns": 30,
-        "uncached_input_tokens_per_request": 44339,
+        "uncached_input_tokens_per_request": 40722,
         "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
       },
       "kind": "tools_list",
@@ -1048,26 +1048,26 @@
         },
         "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
       },
-      "prompt_chars": 185782,
+      "prompt_chars": 170625,
       "tokens": {
         "chars_per_token": 4.19,
         "confidence": "carried-over-measurement",
         "estimated": true,
         "format": "json_schema",
         "method": "ratio/v1",
-        "value": 44339
+        "value": 40722
       },
       "variant": "packs_core",
       "wire": {
-        "bytes_utf8": 244389,
-        "chars": 244156,
+        "bytes_utf8": 231345,
+        "chars": 231159,
         "cost": {
-          "cached_input_tokens_per_request": 5827.1,
-          "session_cached": 241824.7,
+          "cached_input_tokens_per_request": 5516.9,
+          "session_cached": 228951.4,
           "session_saving_ratio": 0.862,
-          "session_uncached": 1748130,
+          "session_uncached": 1655070,
           "turns": 30,
-          "uncached_input_tokens_per_request": 58271,
+          "uncached_input_tokens_per_request": 55169,
           "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
         },
         "tokens": {
@@ -1076,23 +1076,23 @@
           "estimated": true,
           "format": "json_schema",
           "method": "ratio/v1",
-          "value": 58271
+          "value": 55169
         }
       },
-      "wire_chars": 244156
+      "wire_chars": 231159
     },
     {
-      "advertised_tools": 198,
+      "advertised_tools": 207,
       "basis": "prompt_payload",
-      "bytes_utf8": 211399,
-      "chars": 211143,
+      "bytes_utf8": 196162,
+      "chars": 195953,
       "cost": {
-        "cached_input_tokens_per_request": 5039.2,
-        "session_cached": 209126.8,
+        "cached_input_tokens_per_request": 4676.7,
+        "session_cached": 194083.0,
         "session_saving_ratio": 0.862,
-        "session_uncached": 1511760,
+        "session_uncached": 1403010,
         "turns": 30,
-        "uncached_input_tokens_per_request": 50392,
+        "uncached_input_tokens_per_request": 46767,
         "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
       },
       "kind": "tools_list",
@@ -1128,26 +1128,26 @@
         },
         "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
       },
-      "prompt_chars": 211143,
+      "prompt_chars": 195953,
       "tokens": {
         "chars_per_token": 4.19,
         "confidence": "carried-over-measurement",
         "estimated": true,
         "format": "json_schema",
         "method": "ratio/v1",
-        "value": 50392
+        "value": 46767
       },
       "variant": "packs_core_mech",
       "wire": {
-        "bytes_utf8": 274509,
-        "chars": 274253,
+        "bytes_utf8": 261769,
+        "chars": 261560,
         "cost": {
-          "cached_input_tokens_per_request": 6545.4,
-          "session_cached": 271634.1,
+          "cached_input_tokens_per_request": 6242.5,
+          "session_cached": 259063.8,
           "session_saving_ratio": 0.862,
-          "session_uncached": 1963620,
+          "session_uncached": 1872750,
           "turns": 30,
-          "uncached_input_tokens_per_request": 65454,
+          "uncached_input_tokens_per_request": 62425,
           "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
         },
         "tokens": {
@@ -1156,23 +1156,23 @@
           "estimated": true,
           "format": "json_schema",
           "method": "ratio/v1",
-          "value": 65454
+          "value": 62425
         }
       },
-      "wire_chars": 274253
+      "wire_chars": 261560
     },
     {
-      "advertised_tools": 196,
+      "advertised_tools": 204,
       "basis": "prompt_payload",
-      "bytes_utf8": 206041,
-      "chars": 205797,
+      "bytes_utf8": 188333,
+      "chars": 188137,
       "cost": {
-        "cached_input_tokens_per_request": 4911.6,
-        "session_cached": 203831.4,
+        "cached_input_tokens_per_request": 4490.1,
+        "session_cached": 186339.2,
         "session_saving_ratio": 0.862,
-        "session_uncached": 1473480,
+        "session_uncached": 1347030,
         "turns": 30,
-        "uncached_input_tokens_per_request": 49116,
+        "uncached_input_tokens_per_request": 44901,
         "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
       },
       "kind": "tools_list",
@@ -1208,26 +1208,26 @@
         },
         "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
       },
-      "prompt_chars": 205797,
+      "prompt_chars": 188137,
       "tokens": {
         "chars_per_token": 4.19,
         "confidence": "carried-over-measurement",
         "estimated": true,
         "format": "json_schema",
         "method": "ratio/v1",
-        "value": 49116
+        "value": 44901
       },
       "variant": "packs_core_arch",
       "wire": {
-        "bytes_utf8": 268357,
-        "chars": 268112,
+        "bytes_utf8": 252809,
+        "chars": 252612,
         "cost": {
-          "cached_input_tokens_per_request": 6398.9,
-          "session_cached": 265554.3,
+          "cached_input_tokens_per_request": 6028.9,
+          "session_cached": 250199.4,
           "session_saving_ratio": 0.862,
-          "session_uncached": 1919670,
+          "session_uncached": 1808670,
           "turns": 30,
-          "uncached_input_tokens_per_request": 63989,
+          "uncached_input_tokens_per_request": 60289,
           "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
         },
         "tokens": {
@@ -1236,27 +1236,27 @@
           "estimated": true,
           "format": "json_schema",
           "method": "ratio/v1",
-          "value": 63989
+          "value": 60289
         }
       },
-      "wire_chars": 268112
+      "wire_chars": 252612
     },
     {
       "advertised_tools": 3,
       "basis": "prompt_payload",
-      "bytes_utf8": 1910,
-      "chars": 1908,
+      "bytes_utf8": 922,
+      "chars": 922,
       "cost": {
-        "cached_input_tokens_per_request": 45.5,
-        "session_cached": 1888.2,
+        "cached_input_tokens_per_request": 22.0,
+        "session_cached": 913.0,
         "session_saving_ratio": 0.862,
-        "session_uncached": 13650,
+        "session_uncached": 6600,
         "turns": 30,
-        "uncached_input_tokens_per_request": 455,
+        "uncached_input_tokens_per_request": 220,
         "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
       },
       "kind": "tools_list",
-      "note": "DISCOVERY_MODE=search - search_tools, the call_tool proxy and describe_tool; the catalog is reached through the search tool instead of advertised.",
+      "note": "DISCOVERY_MODE=search, DISCOVERY_PINNED empty - search_tools, the call_tool proxy and describe_tool; the catalog is reached through the search tool instead of advertised.",
       "prompt_cache": {
         "cacheable": {
           "1024": false,
@@ -1288,26 +1288,26 @@
         },
         "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
       },
-      "prompt_chars": 1908,
+      "prompt_chars": 922,
       "tokens": {
         "chars_per_token": 4.19,
         "confidence": "carried-over-measurement",
         "estimated": true,
         "format": "json_schema",
         "method": "ratio/v1",
-        "value": 455
+        "value": 220
       },
       "variant": "search",
       "wire": {
-        "bytes_utf8": 2110,
-        "chars": 2108,
+        "bytes_utf8": 965,
+        "chars": 965,
         "cost": {
-          "cached_input_tokens_per_request": 50.3,
-          "session_cached": 2087.4,
+          "cached_input_tokens_per_request": 23.0,
+          "session_cached": 954.5,
           "session_saving_ratio": 0.862,
-          "session_uncached": 15090,
+          "session_uncached": 6900,
           "turns": 30,
-          "uncached_input_tokens_per_request": 503,
+          "uncached_input_tokens_per_request": 230,
           "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
         },
         "tokens": {
@@ -1316,23 +1316,103 @@
           "estimated": true,
           "format": "json_schema",
           "method": "ratio/v1",
-          "value": 503
+          "value": 230
         }
       },
-      "wire_chars": 2108
+      "wire_chars": 965
+    },
+    {
+      "advertised_tools": 6,
+      "basis": "prompt_payload",
+      "bytes_utf8": 4299,
+      "chars": 4299,
+      "cost": {
+        "cached_input_tokens_per_request": 102.6,
+        "session_cached": 4257.9,
+        "session_saving_ratio": 0.862,
+        "session_uncached": 30780,
+        "turns": 30,
+        "uncached_input_tokens_per_request": 1026,
+        "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+      },
+      "kind": "tools_list",
+      "note": "DISCOVERY_MODE=search with the default DISCOVERY_PINNED (cad_batch, drawing_info, entity_list) listed as shortened cards - the plugin's surface.",
+      "prompt_cache": {
+        "cacheable": {
+          "1024": true,
+          "2048": false,
+          "4096": false,
+          "512": true
+        },
+        "models_by_minimum": {
+          "1024": [
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "claude-sonnet-4-6",
+            "claude-sonnet-4-5"
+          ],
+          "2048": [
+            "claude-opus-4-7",
+            "claude-haiku-3-5"
+          ],
+          "4096": [
+            "claude-opus-4-6",
+            "claude-opus-4-5",
+            "claude-haiku-4-5"
+          ],
+          "512": [
+            "claude-opus-5",
+            "claude-fable-5",
+            "claude-mythos-5"
+          ]
+        },
+        "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
+      },
+      "prompt_chars": 4299,
+      "tokens": {
+        "chars_per_token": 4.19,
+        "confidence": "carried-over-measurement",
+        "estimated": true,
+        "format": "json_schema",
+        "method": "ratio/v1",
+        "value": 1026
+      },
+      "variant": "search_pinned",
+      "wire": {
+        "bytes_utf8": 5449,
+        "chars": 5449,
+        "cost": {
+          "cached_input_tokens_per_request": 130.0,
+          "session_cached": 5395.0,
+          "session_saving_ratio": 0.862,
+          "session_uncached": 39000,
+          "turns": 30,
+          "uncached_input_tokens_per_request": 1300,
+          "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
+        },
+        "tokens": {
+          "chars_per_token": 4.19,
+          "confidence": "carried-over-measurement",
+          "estimated": true,
+          "format": "json_schema",
+          "method": "ratio/v1",
+          "value": 1300
+        }
+      },
+      "wire_chars": 5449
     },
     {
       "advertised_tools": 0,
       "basis": "text",
-      "bytes_utf8": 1961,
-      "chars": 1933,
+      "bytes_utf8": 832,
+      "chars": 832,
       "cost": {
-        "cached_input_tokens_per_request": 46.1,
-        "session_cached": 1913.2,
+        "cached_input_tokens_per_request": 19.9,
+        "session_cached": 825.9,
         "session_saving_ratio": 0.862,
-        "session_uncached": 13830,
+        "session_uncached": 5970,
         "turns": 30,
-        "uncached_input_tokens_per_request": 461,
+        "uncached_input_tokens_per_request": 199,
         "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
       },
       "kind": "instructions",
@@ -1368,26 +1448,26 @@
         },
         "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
       },
-      "prompt_chars": 1933,
+      "prompt_chars": 832,
       "tokens": {
         "chars_per_token": 4.19,
         "confidence": "borrowed",
         "estimated": true,
         "format": "text",
         "method": "ratio/v1",
-        "value": 461
+        "value": 199
       },
       "variant": "instructions",
       "wire": {
-        "bytes_utf8": 1961,
-        "chars": 1933,
+        "bytes_utf8": 832,
+        "chars": 832,
         "cost": {
-          "cached_input_tokens_per_request": 46.1,
-          "session_cached": 1913.2,
+          "cached_input_tokens_per_request": 19.9,
+          "session_cached": 825.9,
           "session_saving_ratio": 0.862,
-          "session_uncached": 13830,
+          "session_uncached": 5970,
           "turns": 30,
-          "uncached_input_tokens_per_request": 461,
+          "uncached_input_tokens_per_request": 199,
           "unit": "input tokens (cached figures are price-equivalent: read at 0.1x, write at 1.25x)"
         },
         "tokens": {
@@ -1396,10 +1476,10 @@
           "estimated": true,
           "format": "text",
           "method": "ratio/v1",
-          "value": 461
+          "value": 199
         }
       },
-      "wire_chars": 1933
+      "wire_chars": 832
     }
   ],
   "idle_basis": "prompt_payload",
@@ -1411,6 +1491,67 @@
   ],
   "result": {
     "backend": "ezdxf",
+    "budget_cells": {
+      "critique_500_summary": {
+        "duplicate_entities": 500,
+        "measured": 735,
+        "metric": "chars",
+        "total": 500
+      },
+      "error_envelope": {
+        "fields": [
+          "ok",
+          "kind",
+          "category",
+          "retryable",
+          "hint",
+          "tool",
+          "backend",
+          "operation_id"
+        ],
+        "measured": 58,
+        "metric": "tokens_per_error",
+        "probes": [
+          {
+            "chars": 230,
+            "kind": "not_found",
+            "tokens": 55,
+            "tool": "entity_get"
+          },
+          {
+            "chars": 231,
+            "kind": "not_found",
+            "tokens": 55,
+            "tool": "entity_move"
+          },
+          {
+            "chars": 244,
+            "kind": "invalid_args",
+            "tokens": 58,
+            "tool": "entity_create_circle"
+          }
+        ]
+      },
+      "finalize_qa_coverage": {
+        "chars": 947,
+        "measured": 226,
+        "metric": "tokens",
+        "not_checked": 3
+      },
+      "history_row": {
+        "chars": 1441,
+        "measured": 344,
+        "metric": "tokens",
+        "rows": 10
+      },
+      "system_status_1000_rows": {
+        "bytes_at_0_rows": 1280,
+        "bytes_at_1000_rows": 1298,
+        "journal_count": 1002,
+        "measured": 18,
+        "metric": "bytes"
+      }
+    },
     "entities_in_drawing": 300,
     "entity_types": {
       "ARC": 60,
@@ -1690,10 +1831,10 @@
   "task": {
     "naive_label": "naive: one tool per entity - the shape the rival observed an agent take with this server; not the least this server needs",
     "prefix": {
-      "instructions_tokens": 461,
+      "instructions_tokens": 199,
       "surface": "default (TOOL_PROFILE=full, DISCOVERY_MODE=off) + instructions",
-      "tokens": 65369,
-      "tools_tokens": 64908
+      "tokens": 59337,
+      "tools_tokens": 59138
     },
     "scenarios": [
       {
@@ -1708,10 +1849,10 @@
             "label": "cad_batch: the 20 creates as one round trip",
             "request_chars": 2090,
             "request_tokens": 499,
-            "result_chars": 1876,
-            "result_tokens": 448,
+            "result_chars": 2704,
+            "result_tokens": 645,
             "session": {
-              "history_tokens": 947,
+              "history_tokens": 1144,
               "note": "per turn: the prefix plus every previous request and result. Cached: each span written once at 1.25x, read at 0.1x after.",
               "prefix_cache": {
                 "cacheable": {
@@ -1744,15 +1885,15 @@
                 },
                 "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
               },
-              "prefix_tokens": 65369,
-              "session_input_cached": 89431.9,
-              "session_input_uncached": 131685,
+              "prefix_tokens": 59337,
+              "session_input_cached": 81534.9,
+              "session_input_uncached": 119818,
               "turns": 2
             },
             "sizes": [
               [
                 2090,
-                1876
+                2704
               ]
             ],
             "status": "measured",
@@ -1807,9 +1948,9 @@
                 },
                 "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
               },
-              "prefix_tokens": 65369,
-              "session_input_cached": 216159.8,
-              "session_input_uncached": 1389986,
+              "prefix_tokens": 59337,
+              "session_input_cached": 196555.8,
+              "session_input_uncached": 1263314,
               "turns": 21
             },
             "sizes": [
@@ -1906,21 +2047,68 @@
         "arms": {
           "batched": {
             "arm": "batched",
-            "by_tool": {},
-            "calls": 0,
-            "detail": "the least-call oracle needs a verb this tree does not have yet (owner 1.8-12 / 1.8-13); never counted as a pass",
-            "label": "layer_merge per misnamed layer + one entity_modify_where (1.8-12)",
-            "missing_tools": [
-              "entity_modify_where",
-              "layer_merge"
+            "by_tool": {
+              "cad_batch": 1,
+              "drawing_critique": 1
+            },
+            "calls": 2,
+            "detail": "300 entities, 0 off the ISO layers, 0 with an override, misnamed layers left: [], empty layers: [], critique ['iso128', 'layer_color', 'property_override']: 0 issue(s)",
+            "label": "cad_batch: a layer_merge per misnamed layer + one entity_modify_where (1.8-12), then drawing_critique",
+            "request_chars": 698,
+            "request_tokens": 166,
+            "result_chars": 3707,
+            "result_tokens": 885,
+            "session": {
+              "history_tokens": 1051,
+              "note": "per turn: the prefix plus every previous request and result. Cached: each span written once at 1.25x, read at 0.1x after.",
+              "prefix_cache": {
+                "cacheable": {
+                  "1024": true,
+                  "2048": true,
+                  "4096": true,
+                  "512": true
+                },
+                "models_by_minimum": {
+                  "1024": [
+                    "claude-opus-4-8",
+                    "claude-sonnet-5",
+                    "claude-sonnet-4-6",
+                    "claude-sonnet-4-5"
+                  ],
+                  "2048": [
+                    "claude-opus-4-7",
+                    "claude-haiku-3-5"
+                  ],
+                  "4096": [
+                    "claude-opus-4-6",
+                    "claude-opus-4-5",
+                    "claude-haiku-4-5"
+                  ],
+                  "512": [
+                    "claude-opus-5",
+                    "claude-fable-5",
+                    "claude-mythos-5"
+                  ]
+                },
+                "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
+              },
+              "prefix_tokens": 59337,
+              "session_input_cached": 87455.3,
+              "session_input_uncached": 180091,
+              "turns": 3
+            },
+            "sizes": [
+              [
+                604,
+                3707
+              ],
+              [
+                94,
+                0
+              ]
             ],
-            "owner": "1.8-12 / 1.8-13",
-            "request_chars": 0,
-            "result_chars": 0,
-            "session": null,
-            "sizes": [],
-            "status": "pending_tool",
-            "verified": null
+            "status": "measured",
+            "verified": true
           },
           "naive": {
             "arm": "naive",
@@ -1931,7 +2119,7 @@
               "layer_list": 1
             },
             "calls": 311,
-            "detail": "300 entities, 0 off the ISO layers, 0 with an override, misnamed layers left: []",
+            "detail": "300 entities, 0 off the ISO layers, 0 with an override, misnamed layers left: [], empty layers: [], critique ['iso128', 'layer_color', 'property_override']: 0 issue(s)",
             "label": "naive: one tool per entity - the shape the rival observed an agent take with this server; not the least this server needs",
             "request_chars": 32000,
             "request_tokens": 7661,
@@ -1971,9 +2159,9 @@
                 },
                 "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
               },
-              "prefix_tokens": 65369,
-              "session_input_cached": 2829817.3,
-              "session_input_uncached": 27237457,
+              "prefix_tokens": 59337,
+              "session_input_cached": 2634682.1,
+              "session_input_uncached": 25355473,
               "turns": 312
             },
             "sizes": [
@@ -3234,20 +3422,68 @@
         "arms": {
           "batched": {
             "arm": "batched",
-            "by_tool": {},
-            "calls": 0,
-            "detail": "the least-call oracle needs a verb this tree does not have yet (owner 1.8-13); never counted as a pass",
+            "by_tool": {
+              "dimension_auto": 1,
+              "drawing_critique": 1
+            },
+            "calls": 2,
+            "detail": "12 of 12 dimensions, 9 features bound",
             "label": "dimension_auto(selector={'layer': 'GEOMETRY'}) + drawing_critique (1.8-13)",
-            "missing_tools": [
-              "dimension_auto_v2"
+            "request_chars": 136,
+            "request_tokens": 33,
+            "result_chars": 363,
+            "result_tokens": 87,
+            "session": {
+              "history_tokens": 120,
+              "note": "per turn: the prefix plus every previous request and result. Cached: each span written once at 1.25x, read at 0.1x after.",
+              "prefix_cache": {
+                "cacheable": {
+                  "1024": true,
+                  "2048": true,
+                  "4096": true,
+                  "512": true
+                },
+                "models_by_minimum": {
+                  "1024": [
+                    "claude-opus-4-8",
+                    "claude-sonnet-5",
+                    "claude-sonnet-4-6",
+                    "claude-sonnet-4-5"
+                  ],
+                  "2048": [
+                    "claude-opus-4-7",
+                    "claude-haiku-3-5"
+                  ],
+                  "4096": [
+                    "claude-opus-4-6",
+                    "claude-opus-4-5",
+                    "claude-haiku-4-5"
+                  ],
+                  "512": [
+                    "claude-opus-5",
+                    "claude-fable-5",
+                    "claude-mythos-5"
+                  ]
+                },
+                "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
+              },
+              "prefix_tokens": 59337,
+              "session_input_cached": 86199.0,
+              "session_input_uncached": 178235,
+              "turns": 3
+            },
+            "sizes": [
+              [
+                71,
+                363
+              ],
+              [
+                65,
+                0
+              ]
             ],
-            "owner": "1.8-13",
-            "request_chars": 0,
-            "result_chars": 0,
-            "session": null,
-            "sizes": [],
-            "status": "pending_tool",
-            "verified": null
+            "status": "measured",
+            "verified": true
           },
           "naive": {
             "arm": "naive",
@@ -3260,7 +3496,7 @@
               "entity_list": 1
             },
             "calls": 23,
-            "detail": "12 of 12 dimensions",
+            "detail": "12 of 12 dimensions, 9 features bound",
             "label": "naive: one tool per entity - the shape the rival observed an agent take with this server; not the least this server needs; reads every entity with entity_get, then one dimension per feature",
             "request_chars": 2049,
             "request_tokens": 492,
@@ -3300,9 +3536,9 @@
                 },
                 "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
               },
-              "prefix_tokens": 65369,
-              "session_input_cached": 238166.0,
-              "session_input_uncached": 1602247,
+              "prefix_tokens": 59337,
+              "session_input_cached": 216752.4,
+              "session_input_uncached": 1457479,
               "turns": 24
             },
             "sizes": [
@@ -3455,9 +3691,9 @@
                 },
                 "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
               },
-              "prefix_tokens": 65369,
-              "session_input_cached": 92784.3,
-              "session_input_uncached": 134367,
+              "prefix_tokens": 59337,
+              "session_input_cached": 84641.1,
+              "session_input_uncached": 122303,
               "turns": 2
             },
             "sizes": [
@@ -3516,9 +3752,9 @@
                 },
                 "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
               },
-              "prefix_tokens": 65369,
-              "session_input_cached": 144602.4,
-              "session_input_uncached": 454987,
+              "prefix_tokens": 59337,
+              "session_input_cached": 134046.4,
+              "session_input_uncached": 418795,
               "turns": 6
             },
             "sizes": [
@@ -3555,36 +3791,19 @@
         "arms": {
           "batched": {
             "arm": "batched",
-            "by_tool": {},
-            "calls": 0,
-            "detail": "the least-call oracle needs a verb this tree does not have yet (owner 1.8-10); never counted as a pass",
-            "label": "drawing_history(limit=...) and its value (1.8-10)",
-            "missing_tools": [
-              "drawing_history"
-            ],
-            "owner": "1.8-10",
-            "request_chars": 0,
-            "result_chars": 0,
-            "session": null,
-            "sizes": [],
-            "status": "pending_tool",
-            "verified": null
-          },
-          "naive": {
-            "arm": "naive",
             "by_tool": {
-              "drawing_open": 2,
-              "entity_list": 1
+              "drawing_history": 1,
+              "drawing_open": 1
             },
-            "calls": 3,
+            "calls": 2,
             "detail": "round 2 diameter 12.0 (want 12.0); latest round reopened: True",
-            "label": "naive: one tool per entity - the shape the rival observed an agent take with this server; not the least this server needs; assumes the agent saved one file per round and reopens round 2's; without those files 1.7.0 cannot answer at all (the rival measured 0/3)",
-            "request_chars": 369,
-            "request_tokens": 88,
-            "result_chars": 1358,
-            "result_tokens": 324,
+            "label": "drawing_open (what a restarted server needs first) + drawing_history(handle=..., detail='args') (1.8-10)",
+            "request_chars": 238,
+            "request_tokens": 56,
+            "result_chars": 1277,
+            "result_tokens": 305,
             "session": {
-              "history_tokens": 412,
+              "history_tokens": 361,
               "note": "per turn: the prefix plus every previous request and result. Cached: each span written once at 1.25x, read at 0.1x after.",
               "prefix_cache": {
                 "cacheable": {
@@ -3617,15 +3836,80 @@
                 },
                 "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
               },
-              "prefix_tokens": 65369,
-              "session_input_cached": 101879.1,
-              "session_input_uncached": 262309,
+              "prefix_tokens": 59337,
+              "session_input_cached": 86507.9,
+              "session_input_uncached": 178553,
+              "turns": 3
+            },
+            "sizes": [
+              [
+                157,
+                603
+              ],
+              [
+                81,
+                674
+              ]
+            ],
+            "status": "measured",
+            "verified": true
+          },
+          "naive": {
+            "arm": "naive",
+            "by_tool": {
+              "drawing_open": 2,
+              "entity_list": 1
+            },
+            "calls": 3,
+            "detail": "round 2 diameter 12.0 (want 12.0); latest round reopened: True",
+            "label": "naive: one tool per entity - the shape the rival observed an agent take with this server; not the least this server needs; assumes the agent saved one file per round and reopens round 2's; without those files 1.7.0 cannot answer at all (the rival measured 0/3)",
+            "request_chars": 369,
+            "request_tokens": 88,
+            "result_chars": 1412,
+            "result_tokens": 337,
+            "session": {
+              "history_tokens": 425,
+              "note": "per turn: the prefix plus every previous request and result. Cached: each span written once at 1.25x, read at 0.1x after.",
+              "prefix_cache": {
+                "cacheable": {
+                  "1024": true,
+                  "2048": true,
+                  "4096": true,
+                  "512": true
+                },
+                "models_by_minimum": {
+                  "1024": [
+                    "claude-opus-4-8",
+                    "claude-sonnet-5",
+                    "claude-sonnet-4-6",
+                    "claude-sonnet-4-5"
+                  ],
+                  "2048": [
+                    "claude-opus-4-7",
+                    "claude-haiku-3-5"
+                  ],
+                  "4096": [
+                    "claude-opus-4-6",
+                    "claude-opus-4-5",
+                    "claude-haiku-4-5"
+                  ],
+                  "512": [
+                    "claude-opus-5",
+                    "claude-fable-5",
+                    "claude-mythos-5"
+                  ]
+                },
+                "note": "Minimum cacheable prefix by model tier. A prefix below the minimum does not cache and reports no error, so its cached column is unreachable in practice."
+              },
+              "prefix_tokens": 59337,
+              "session_input_cached": 92545.8,
+              "session_input_uncached": 238194,
               "turns": 4
             },
             "sizes": [
               [
                 155,
-                582
+                583
               ],
               [
                 59,
@@ -3633,7 +3917,7 @@
               ],
               [
                 155,
-                546
+                599
               ]
             ],
             "status": "measured",

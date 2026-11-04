@@ -586,6 +586,46 @@ def test_a_ci_cell_nothing_measured_fails():
     assert checked["violations"][0]["reason"] == "not measured"
 
 
+def test_the_result_cells_are_measured_by_the_result_lane(report):
+    """1.8-25: the five ``result`` cells of token_budget.json are measured by the
+    result lane, the way their owners' tests measure them, each within its ceiling,
+    so ``--budget --release`` compares a measured number for every one."""
+    cells = report["result"]["budget_cells"]
+    assert set(cells) == set(BUDGET["result"])
+    for name, cell in BUDGET["result"].items():
+        assert cells[name]["metric"] == cell["metric"], name
+        assert 0 <= cells[name]["measured"] <= cell["ceiling"], (name, cells[name])
+    assert cells["system_status_1000_rows"]["journal_count"] >= 1000
+    assert cells["critique_500_summary"]["duplicate_entities"] == 500
+    assert cells["finalize_qa_coverage"]["not_checked"] == 3
+    kinds = {probe["kind"] for probe in cells["error_envelope"]["probes"]}
+    assert kinds == {"not_found", "invalid_args"}
+    assert cells["history_row"]["rows"] == 10
+    released = ts.check_budget(
+        {"result": report["result"]}, {"result": BUDGET["result"]}, release=True
+    )
+    assert released["ok"], released["violations"]
+    assert {item["cell"] for item in released["checked"]} == {
+        f"result.{name}" for name in BUDGET["result"]
+    }
+
+
+def test_a_result_cell_over_its_ceiling_or_unmeasured_fails_the_release_gate():
+    budget = {
+        "result": {
+            "history_row": {"metric": "tokens", "ceiling": 400, "gate": "release", "owner": "x"}
+        }
+    }
+    over = {"result": {"budget_cells": {"history_row": {"metric": "tokens", "measured": 401}}}}
+    assert [item["cell"] for item in ts.check_budget(over, budget)["over_ceiling"]] == [
+        "result.history_row"
+    ]
+    assert not ts.check_budget(over, budget, release=True)["ok"]
+    # a run without the result lane measures nothing: pending on a PR, a failure at release
+    assert ts.check_budget({"result": None}, budget)["pending"][0]["cell"] == "result.history_row"
+    assert not ts.check_budget({"result": None}, budget, release=True)["ok"]
+
+
 def test_growth_beyond_five_percent_against_the_published_report_fails():
     budget = {"growth_limit_pct": 5.0, "idle": {}}
     published = _idle_report(

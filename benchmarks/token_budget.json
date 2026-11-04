@@ -9,7 +9,7 @@
   "published_report": "benchmarks/results/published/token-cost.json",
   "gates": {
     "ci": "Checked on every PR by --budget: a measurement over its ceiling exits 1.",
-    "release": "Over its ceiling on this tree, with a later owner named. --budget reports it under over_ceiling (never as a pass) and exits 0; --budget --release exits 1 on it, as does a release cell that is still unmeasured. The owner flips the cell to ci when its ceiling is met.",
+    "release": "Over its ceiling on this tree, with a later owner named, or measured only by a lane the PR job does not run (the result cells: the result lane, since 1.8-25). --budget reports it under over_ceiling / pending (never as a pass) and exits 0; --budget --release exits 1 on it when it is over its ceiling or still unmeasured. The owner flips the cell to ci when its ceiling is met and the PR job measures it.",
     "growth": "Every idle row on the headline basis, and the instructions row, may not grow more than growth_limit_pct over the published report: exit 1 on every PR."
   },
   "baseline": {
@@ -41,6 +41,18 @@
       "packs_core_arch": {"tools": 196, "prompt_tokens": 49012, "prompt_chars": 205359, "wire_tokens": 70306, "wire_chars": 294582},
       "search": {"tools": 3, "prompt_tokens": 455, "prompt_chars": 1908, "wire_tokens": 503, "wire_chars": 2108},
       "instructions": {"tokens": 461, "chars": 1933}
+    },
+    "v1.8.0_release_measured": {
+      "_note": "1.8-25: the idle lane on the release tree (release/1.8.0 after 78b9b1e), python -m benchmarks.token_suite; the same run is benchmarks/results/published/token-cost.json, which --budget's growth check compares against from this release on. default is DISCOVERY_MODE=off (TOOL_PROFILE=full), search_pinned the 1.8.0 default surface.",
+      "measured_on": "2026-11-04",
+      "default": {"tools": 253, "prompt_tokens": 59138, "prompt_chars": 247787, "wire_tokens": 78391, "wire_chars": 328460},
+      "lean": {"tools": 68, "prompt_tokens": 16182, "prompt_chars": 67803, "wire_tokens": 21189, "wire_chars": 88780},
+      "packs_core": {"tools": 192, "prompt_tokens": 40722, "prompt_chars": 170625, "wire_tokens": 55169, "wire_chars": 231159},
+      "packs_core_mech": {"tools": 207, "prompt_tokens": 46767, "prompt_chars": 195953, "wire_tokens": 62425, "wire_chars": 261560},
+      "packs_core_arch": {"tools": 204, "prompt_tokens": 44901, "prompt_chars": 188137, "wire_tokens": 60289, "wire_chars": 252612},
+      "search": {"tools": 3, "prompt_tokens": 220, "prompt_chars": 922, "wire_tokens": 230, "wire_chars": 965},
+      "search_pinned": {"tools": 6, "prompt_tokens": 1026, "prompt_chars": 4299, "wire_tokens": 1300, "wire_chars": 5449},
+      "instructions": {"tokens": 199, "chars": 832}
     }
   },
   "idle": {
@@ -92,7 +104,7 @@
       "owner": "1.8-11",
       "source": "plan section 4: search + the default pins <= 1,500",
       "note": "Spike S1 measured search + the three proposed pins (cad_batch, drawing_info, entity_list) at 11,437 wire characters, ~2,730 tokens, cad_batch's docstring alone ~1,360. 1.8-11 lists a pin as a shortened card (discovery/serialize.py pinned_card): the same input schema - every property, type, enum, default, bound and the required list - with the description cut to its first paragraph plus 'Full description: describe_tool.' and each parameter description to whole sentences within 250 characters. The registered tool, its full-catalog listing and describe_tool keep the untouched text; nothing a call is validated against changed.",
-      "measured": "1.8-11, 2026-11-03: 1,003 tokens prompt payload (4,202 chars), 1,277 wire, 6 tools; the plan's 1,500 holds as measured, flipped to ci"
+      "measured": "1.8-11, 2026-11-03: 1,003 tokens prompt payload (4,202 chars), 1,277 wire, 6 tools; the plan's 1,500 holds as measured, flipped to ci. 1.8-25 release tree: 1,026 prompt (4,299 chars), 1,300 wire, 23 tokens over 1.8-11's figure and still under the ceiling"
     },
     "instructions": {
       "metric": "tokens",
@@ -112,33 +124,38 @@
       "ceiling": 300,
       "gate": "release",
       "owner": "1.8-10",
-      "v1_7_0": "20 full operation records"
+      "v1_7_0": "20 full operation records",
+      "measured": "1.8-25, 2026-11-04, release/1.8.0: +18 bytes (1,280 at 0 rows, 1,298 at 1,002 journal rows), token_suite result lane (result.budget_cells), measured as tests/test_drawing_history.py does"
     },
     "critique_500_summary": {
       "metric": "chars",
       "ceiling": 2500,
       "gate": "release",
       "owner": "1.8-16",
-      "v1_7_0": "an unbounded list"
+      "v1_7_0": "an unbounded list",
+      "measured": "1.8-25, 2026-11-04, release/1.8.0: 735 characters for 500 duplicate_entities issues (total 500), token_suite result lane, measured as tests/test_qa_coverage.py does"
     },
     "finalize_qa_coverage": {
       "metric": "tokens",
       "ceiling": 300,
       "gate": "release",
-      "owner": "1.8-16"
+      "owner": "1.8-16",
+      "measured": "1.8-25, 2026-11-04, release/1.8.0: 226 tokens (947 chars) with three layouts not_checked, token_suite result lane, measured as tests/test_qa_coverage.py does"
     },
     "error_envelope": {
       "metric": "tokens_per_error",
       "ceiling": 60,
       "gate": "release",
-      "owner": "1.8-02 (shipped in W1; the result-lane row that measures it is written by the W2 integration)"
+      "owner": "1.8-02 (shipped in W1; the result-lane row that measures it is written by the W2 integration)",
+      "measured": "1.8-25, 2026-11-04, release/1.8.0: 58 tokens, the largest of three provoked errors (entity_get and entity_move of a missing handle: not_found, 55 each; a negative circle radius: invalid_args, 58), over the envelope fields only (ok, kind, category, retryable, hint, tool, backend, operation_id - not the message the client read before 1.8.0, nor the kind's own fields)"
     },
     "history_row": {
       "metric": "tokens",
       "ceiling": 400,
       "gate": "release",
       "owner": "1.8-10",
-      "note": "drawing_history(limit=10)"
+      "note": "drawing_history(limit=10)",
+      "measured": "1.8-25, 2026-11-04, release/1.8.0: 344 tokens (1,441 chars) for ten rows after twelve writes, token_suite result lane, measured as tests/test_drawing_history.py does"
     }
   },
   "task": {

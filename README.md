@@ -23,7 +23,8 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 > 257 is the **registered** count. Since 1.8.0 a default install lists six over `tools/list`
 > (`DISCOVERY_MODE=search`: `search_tools`, `describe_tool`, `call_tool` and the three
 > `DISCOVERY_PINNED` tools), and every tool the profile and packs allow stays callable by name;
-> `DISCOVERY_MODE=off` lists 252, because `ENABLE_3D` is unset. `system_about` is the runtime authority.
+> `DISCOVERY_MODE=off` lists 253: the 252 a default profile enables (`ENABLE_3D` unset hides the five
+> solids) plus `describe_tool`. `system_about` is the runtime authority.
 
 ## What's new in 1.7
 
@@ -92,24 +93,23 @@ Five tracks of one [roadmap](https://github.com/U-C4N/Autocad-MCP/blob/main/docs
 
 ## Why this exists
 
-**A big MCP server is expensive to be connected to.** The full catalog costs a client **89,226 tokens** before it has asked for anything. Discovery mode replaces it with three tools and costs **503**.
+**A big MCP server is expensive to be connected to.** Listing the whole catalog (`DISCOVERY_MODE=off`, 253 tools) costs a client **59,138 tokens** of prompt payload before it has asked for anything. Since 1.8.0 a default install lists six tools instead - `search_tools`, `describe_tool`, `call_tool` and the three `DISCOVERY_PINNED` tools - for **1,026 tokens**, and every tool stays callable by name.
 
-**A drafter searches for `FILLET`, not `entity_fillet`.** Before the corpus, those command names appeared in no tool name or description. That was `df = 0` against a stock index: the tools were not ranked badly, they were *absent*. The fix was data: an authored corpus of **207 AutoCAD command names and 1475 synonym phrases** covering all 251 tools. A test refuses to let a tool exist without one.
+**A drafter searches for `FILLET`, not `entity_fillet`.** Before the corpus, those command names appeared in no tool name or description. That was `df = 0` against a stock index: the tools were not ranked badly, they were *absent*. The fix was data: an authored corpus of **207 AutoCAD command names and 1,479 distinct synonym phrases** covering all 257 registered tools. A test refuses to let a tool exist without one.
 
-| Advertised surface | Tools seen | Idle cost |
-|---|---:|---:|
-| `TOOL_PROFILE=full` (default) | 243 | 89,226 tokens |
-| `TOOL_PACKS=core,mech` (full profile) | 198 | 69,266 tokens |
-| `TOOL_PACKS=core,settings` (full profile) | 206 | 68,221 tokens |
-| `TOOL_PACKS=core,arch` (full profile) | 196 | 67,849 tokens |
-| `TOOL_PACKS=core,pid` (full profile) | 193 | 65,987 tokens |
-| `TOOL_PACKS=core,plant` (full profile) | 186 | 63,589 tokens |
-| `TOOL_PACKS=core` (full profile) | 184 | 61,422 tokens |
-| `TOOL_PROFILE=lean` | 66 | 25,066 tokens |
-| `DISCOVERY_MODE=search` | 3 | **503 tokens** |
+| Advertised surface | Tools listed | Prompt payload | Wire (`tools/list`) | 1.7.0 prompt payload | 1.7.0 wire |
+|---|---:|---:|---:|---:|---:|
+| `DISCOVERY_MODE=search` (default since 1.8.0, with the three pins) | 6 | **1,026** | 1,300 | — | — |
+| `DISCOVERY_MODE=search`, `DISCOVERY_PINNED=""` | 3 | **220** | 230 | 455 | 503 |
+| `DISCOVERY_MODE=off` (`TOOL_PROFILE=full`) | 253 | 59,138 | 78,391 | 62,471 (243 tools) | 89,350 |
+| `DISCOVERY_MODE=off`, `TOOL_PACKS=core,mech` | 207 | 46,767 | 62,425 | 47,955 (198) | 69,391 |
+| `DISCOVERY_MODE=off`, `TOOL_PACKS=core,arch` | 204 | 44,901 | 60,289 | 46,679 (196) | 67,974 |
+| `DISCOVERY_MODE=off`, `TOOL_PACKS=core` | 192 | 40,722 | 55,169 | 41,902 (184) | 61,546 |
+| `DISCOVERY_MODE=off`, `TOOL_PROFILE=lean` | 68 | 16,182 | 21,189 | 17,945 (66) | 25,146 |
+| Server instructions (the longest text the builder writes) | — | 199 | 199 | 461 | 461 |
 
 > [!NOTE]
-> Re-measured for 1.7.0 with `benchmarks/token_suite.py`'s idle lane, over the real in-memory server. These are offline ratio estimates, not tokenizer counts, and they are the *uncached* cost: prompt caching amortises the idle term. 1.7 made the default surface 5,305 tokens dearer than 1.6.0 (lean 2,405): one more tool, plus the revision, preview and requirement parameters added to existing ones. `benchmarks/token_suite.py --tokenizer anthropic` counts for real.
+> Measured on the 1.8.0 release tree with `python -m benchmarks.token_suite` (idle lane, over the real in-memory server; [`token-cost.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/token-cost.json)). The 1.7.0 columns are the v1.7.0 tag measured the same way with this release's lock (`benchmarks/token_budget.json`, `v1.7.0_measured`); 1.7.0's own README quoted the wire column on its older lock (89,226 / 61,422 / 25,066 / 503). Tokens are offline ratio estimates, not tokenizer counts, and they are the *uncached* cost: prompt caching amortises the idle term. The prompt payload is the `tools` array a client forwards to the model; the wire column is the whole `tools/list` result, the basis of every figure up to 1.7.0. In `off` mode the list carries `describe_tool` too, and a description over 800 characters is listed as its leading paragraphs plus `Details: describe_tool.`, the full text one `describe_tool` call away. `benchmarks/token_suite.py --tokenizer anthropic` counts for real.
 
 ## Install
 
@@ -185,7 +185,7 @@ It works with Claude Desktop, Cursor, or any stdio MCP host. For HTTP, run `auto
 | Understanding & takeoffs | `drawing_understand` reads a drawing somebody else made in one call: declared vs inferred units, robust extents and the outlier behind them, plan copies, each layer's discipline and service in five languages, tags, rooms. `drawing_scale_check` says whether a P&ID is to scale against its layout. `pipe_takeoff` / `cable_takeoff` take the topology from the P&ID and the lengths from the layout (rectilinear MST, statuses A/B/C, power never invented) into a Turkish / English / Russian workbook. `drawing_diff` compares revisions; `drawing_topology_check` finds dangling ends, near misses and crossings |
 | P&ID | catalogue blocks with ports and tags (ISO 10628-2 / ISA-5.1), port-to-port lines with ISA-5.1 classes and line numbers, `pid_graph` reads any P&ID back with confidence, instrument index / line list / equipment list, `pid_from_spec` one-call sheets. An `avoid` line (`pid_line_draw(route="avoid", clearance=, keep_out=)`, `pid_from_spec`'s `sheet.routing: "avoid"`) goes round the vessels between its ports, and `obstacle_hits` / the `pid_line_through_symbol` focus say when a line does not. `pid_project` checks a project of several sheet files without modifying any: off-page links matched across files, cross-sheet duplicate tags, line-number continuity, and the three lists merged with a `sheet` column (last result: `autocad://pid/project/last`) |
 | Styles & standards | ISO-25 / ANSI dimension styles, ISOCP / ROMANS text styles, ISO / ANSI leader styles from authored presets; `drawing_apply_standard("iso")` sets all of it plus units and the `mech` layers in one call; `changed` reports only what moved |
-| Discovery | the default since 1.8.0 (`DISCOVERY_MODE=search`): a client lists `search_tools`, `describe_tool`, `call_tool` and the `DISCOVERY_PINNED` tools (`cad_batch`, `drawing_info`, `entity_list`), and can still call every tool by name. `search_tools` is ranked over an AutoCAD command and synonym corpus — `FILLET`, `BPOLY`, `QSELECT`, `WBLOCK`, `OVERKILL`, `CHSPACE` each rank **#1** of the 243-tool advertised catalog; `describe_tool` returns one hit's full input schema, risk, pack and its docstring's own examples, or up to 25 with `names=[...]`. The server instructions name only the tools the client can see and teach batching first |
+| Discovery | the default since 1.8.0 (`DISCOVERY_MODE=search`): a client lists `search_tools`, `describe_tool`, `call_tool` and the `DISCOVERY_PINNED` tools (`cad_batch`, `drawing_info`, `entity_list`), and can still call every tool by name. `search_tools` is ranked over an AutoCAD command and synonym corpus — `FILLET`, `BPOLY`, `QSELECT`, `WBLOCK`, `OVERKILL`, `CHSPACE` each rank **#1** among the 252 tools a default install searches (the v9 `tool_discovery` task); `describe_tool` returns one hit's full input schema, risk, pack and its docstring's own examples, or up to 25 with `names=[...]`. The server instructions name only the tools the client can see and teach batching first |
 | Batching | `cad_batch` runs a step list in one round trip and, since 1.8.0, is all or nothing by default (`on_error="auto"`: a batch that writes is rolled back on a failure; `on_error="stop"` keeps the steps before it). A literal handle that names no entity refuses the whole batch before anything runs (`unknown_handle`); the result carries `changes` {added, deleted, counts} and `label=` names it in the history. `entity_delete_many` deletes all of its handles or none. `fields=` projects 11 result-heavy tools |
 | Paper space | tab lifecycle, viewports, `entity_change_space` (CHSPACE), `drawing_export_pdf(layout=…)` |
 | Page setup & templates | ISO 216 / ANSI Y14.1 sheets, ctb catalog, `page_setup_apply` on both engines, and `batch_plot` with every sheet size read back from its PDF's `/MediaBox`. Five bundled templates, built by the server's own tools and pinned reproducible: `drawing_new(template="iso_a3_mech")`, `iso_a1_arch`, `iso_a3_pid`, `ansi_b_mech`, `ansi_d_arch`. Save any drawing as a template (`.dwt` on live AutoCAD; `dwt_write` refused headlessly) |
@@ -398,7 +398,7 @@ The tasks added in 1.5 and 1.6, with what each is verified against:
 | Task | Verified against |
 |---|---|
 | `tool_discovery` | six AutoCAD command names, each ranking #1 |
-| `token_budget` | 89,226 → 503 tokens for the 243-tool catalog, against a ceiling fixed in advance |
+| `token_budget` | 78,391 → 1,300 wire tokens: the 253-tool `off` catalog against the six tools a default install lists, under a ceiling fixed in advance (2,000). 1.7.0 measured 89,226 → 503 for its 243 tools against three |
 | `hatch_islands` | 300 filled with the island, 400 ignoring it |
 | `selection_filter` | window 1, crossing 2, bounding box 3, polygon 1 |
 | `measure_from_handle` | 139.2699 against the 100.0 a vertex shoelace gives |
