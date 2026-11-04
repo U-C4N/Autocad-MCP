@@ -51,6 +51,7 @@ PID_TOOLS = {
     "pid_line_list",
     "pid_equipment_list",
     "pid_from_spec",
+    "pid_project",  # 1.8-21
 }
 
 STYLE_TOOLS = {

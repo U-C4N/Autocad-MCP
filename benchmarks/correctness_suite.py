@@ -2621,6 +2621,108 @@ async def search_default_lists_pins_and_batch_first():
     )
 
 
+async def pid_project_links():
+    """Off-page links checked across two sheet files, each defect once (1.8-21).
+
+    Two P&ID sheets drawn by ``run_spec`` and saved: L-1 leaves sheet A under
+    100-P-1 and arrives on sheet B under 100-P-2 (a matched pair whose line
+    numbers disagree), L-2 leaves A and never arrives (orphan), L-3 leaves both
+    (direction mismatch), and pump P-101 is drawn on both. ``pid_project``
+    must report exactly those four, each with the sheet and the handle the
+    drawing gave the connector or pump, and must refuse 51 sheets by name.
+    v1.7.0 matches off-page connectors inside one document only: there is no
+    ``engineering.pid.project`` to import.
+    """
+    from pathlib import Path
+
+    from engineering.pid.spec import run_spec
+
+    try:
+        from engineering.pid.project import run_project
+    except ImportError:  # v1.7.0
+        return False
+
+    def pump(item_id, y):
+        return {"id": item_id, "symbol": "centrifugal_pump", "x": 100, "y": y, "tag": item_id}
+
+    def conn(item_id, direction, link, port, number, y):
+        end = {"from": port} if direction == "out" else {"to": port}
+        x = 200 if direction == "out" else 20
+        return {
+            "id": item_id,
+            "direction": direction,
+            "x": x,
+            "y": y + 40 * (direction == "out"),
+            "tag": "CONTINUATION",
+            "link": link,
+            "number": number,
+            **end,
+        }
+
+    sheet = {"layer_set": "pid", "sheet_size": "A3", "scale": 1.0}
+    specs = {
+        "A": {
+            "sheet": sheet,
+            "equipment": [pump("P-101", 100), pump("P-102", 200), pump("P-103", 300)],
+            "connectors": [
+                conn("A1", "out", "L-1", "P-101.discharge", "100-P-1", 100),
+                conn("A2", "out", "L-2", "P-102.discharge", "100-P-2", 200),
+                conn("A3", "out", "L-3", "P-103.discharge", "100-P-3", 300),
+            ],
+        },
+        "B": {
+            "sheet": sheet,
+            "equipment": [pump("P-101", 100), pump("P-201", 300)],
+            "connectors": [
+                conn("B1", "in", "L-1", "P-101.suction", "100-P-9", 100),
+                conn("B3", "out", "L-3", "P-201.discharge", "100-P-3", 300),
+            ],
+        },
+    }
+    folder = Path(_scratch_dir("acadmcp_pid_project_"))
+    handles, paths = {}, {}
+    for name, spec in specs.items():
+        b = await _b()
+        handles[name] = (await run_spec(b, spec))["handles"]
+        paths[name] = folder / f"{name}.dxf"
+        await b.drawing_save_as(str(paths[name]))
+    reader = await _b()
+    manifest = {"sheets": [{"path": str(p), "number": n} for n, p in paths.items()]}
+    result = await run_project(reader, "check", manifest=manifest, include_current=False)
+    links = {row["link"]: row for row in result["links"]}
+    found = {
+        k: (v["status"], [(c["sheet"], c["handle"]) for c in v["connectors"]])
+        for k, v in links.items()
+    }
+    lines = [
+        (r["link"], r["status"], r["out"]["handle"], r["in"]["handle"])
+        for r in result["line_continuity"]
+    ]
+    dups = [
+        (d["tag"], [(o["sheet"], o["handle"]) for o in d["occurrences"]])
+        for d in result["duplicate_tags"]
+    ]
+    try:
+        await run_project(reader, sheets=[str(folder / f"s{i}.dxf") for i in range(51)])
+        refused = False
+    except Exception as exc:  # noqa: BLE001 - the refusal's type and words are the check
+        refused = "at most 50 sheets" in str(exc)
+    return (
+        found
+        == {
+            "L-1": ("matched", [("A", handles["A"]["A1"]), ("B", handles["B"]["B1"])]),
+            "L-2": ("orphan", [("A", handles["A"]["A2"])]),
+            "L-3": (
+                "direction_mismatch",
+                [("A", handles["A"]["A3"]), ("B", handles["B"]["B3"])],
+            ),
+        }
+        and lines == [("L-1", "mismatch", handles["A"]["A1"], handles["B"]["B1"])]
+        and dups == [("P-101", [("A", handles["A"]["P-101"]), ("B", handles["B"]["P-101"])])]
+        and refused
+    )
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -2715,6 +2817,7 @@ CHECKS = {
         search_default_lists_pins_and_batch_first,
         "Discovery",
     ),
+    "pid_project_links": (pid_project_links, "P&ID"),
 }
 
 

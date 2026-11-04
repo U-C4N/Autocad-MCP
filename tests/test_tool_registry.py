@@ -618,6 +618,8 @@ async def test_tool_group_sizes_are_unchanged():
 
     v1.8.0's 1.8-12 adds `entity_modify_where` to `entity_modification` (16 ->
     17) and `layer_rename` / `layer_merge` to `layers` (14 -> 16): 251 tools.
+    1.8-21 adds `pid_project` (the read-only multi-sheet P&ID check) to `pid`
+    (9 -> 10): 252.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
@@ -637,7 +639,7 @@ async def test_tool_group_sizes_are_unchanged():
         "layouts": 12,
         "mechanical": 14,
         "page_setup": 6,
-        "pid": 9,
+        "pid": 10,  # + pid_project (1.8-21)
         "plant": 2,
         "premium": 12,
         "sheet": 11,
@@ -650,4 +652,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 251
+    assert sum(sizes.values()) == 252

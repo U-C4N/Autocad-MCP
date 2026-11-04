@@ -3,8 +3,8 @@
   "schema_version": 2,
   "package_version": "1.7.0",
   "totals": {
-    "tools": 251,
-    "resources": 12,
+    "tools": 252,
+    "resources": 13,
     "prompts": 5,
     "groups": 28
   },
@@ -25,7 +25,7 @@
     "layouts": 12,
     "mechanical": 14,
     "page_setup": 6,
-    "pid": 9,
+    "pid": 10,
     "plant": 2,
     "premium": 12,
     "sheet": 11,
@@ -4585,6 +4585,29 @@
       }
     },
     {
+      "name": "pid_project",
+      "group": "pid",
+      "cost": "safe",
+      "summary": "Check a multi-sheet P&ID: off-page links, cross-sheet tags, line numbers; or index it.",
+      "acad": [],
+      "synonyms": [
+        "multi sheet p&id",
+        "off-page connector check",
+        "continuation sheets",
+        "cross sheet duplicate tag",
+        "project instrument index"
+      ],
+      "tags": [
+        "pid",
+        "query"
+      ],
+      "annotations": {
+        "title": "P&ID: Project",
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
       "name": "pid_symbol_insert",
       "group": "pid",
       "cost": "mutate",
@@ -6304,6 +6327,17 @@
       "mime_type": "application/json",
       "tags": [
         "layer"
+      ],
+      "templated": false,
+      "parameters": []
+    },
+    {
+      "uri": "autocad://pid/project/last",
+      "name": "Last P&ID Project Result",
+      "description": "The last pid_project result of this server process (check or index), or available: false when none has run",
+      "mime_type": "application/json",
+      "tags": [
+        "pid"
       ],
       "templated": false,
       "parameters": []
