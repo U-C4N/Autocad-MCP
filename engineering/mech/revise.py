@@ -21,8 +21,10 @@ the drawing that makes it the new model's drawing again:
    (``hand_edited_tagged_entity``, the handles named, nothing written); a part
    drawn before 1.8.0 (no gen stamp) or whose views the engine no longer
    reproduces refuses as ``model_drift``. ``overwrite=True`` replaces the hand
-   edits with the model. A layer or colour changed by hand is not geometry and
-   is kept.
+   edits with the model. A layer, colour, linetype or lineweight changed by
+   hand is not geometry and is kept - on an entity edited in place it is never
+   touched, and an entity that has to be drawn again gets it back
+   (``handle_map`` row ``kept``).
 5. A key on both sides keeps its entity: LINE / CIRCLE / ARC are edited in
    place (``entity_edit_geometry``), so their handles survive; LWPOLYLINE, TEXT
    and HATCH are deleted and created again when they changed, and
@@ -32,7 +34,13 @@ the drawing that makes it the new model's drawing again:
 6. The dimensions of every dimensioned view are found by their tags, deleted
    and placed again by ``mech_dimension_part``'s engine with the style and fits
    each view was dimensioned with - **their handles change**. The hole table is
-   rewritten; a balloon whose target was replaced is re-linked.
+   rewritten; a balloon whose target was replaced is re-linked. A part drawn
+   before 1.8.0 (``overwrite=True`` only) has no tags on its dimensions or its
+   table: a dimension is found by its definition points - the two points a
+   dimension of the OLD model's view measures, under any style - and the
+   table's pieces by the box its rows lay out from the stored ``hole_table``
+   line. Both are replaced; an untagged dimension on a dimensioned view that
+   matches none is left and named (``dimensions.legacy.left``).
 7. The payload becomes the new part, the gen stamp and each view's primitive
    digest; the change is appended to the part's model history
    (``engineering/mech/history.py``).
@@ -48,7 +56,10 @@ apply carrying the preview's ``revision`` / ``preconditions`` is refused
 
 Not in this release (1.8.1): reconciling a revision against a source spec, and
 a mode that keeps a hand edit. A part with a detail view, or with two views
-carrying the same view tag (a left and a right end view), is refused by name.
+carrying the same view tag (a left and a right end view), is refused by name
+(``refused``, reason ``detail_view`` / ``repeated_view_tag``), as are a payload
+with no view (``no_views``) and a stored model that no longer builds
+(``model_unbuildable``) - before anything is written.
 """
 
 from __future__ import annotations
@@ -58,7 +69,12 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from engineering.errors import HandEditedTaggedEntityError, InvalidArgsError, ModelDriftError
+from engineering.errors import (
+    HandEditedTaggedEntityError,
+    InvalidArgsError,
+    ModelDriftError,
+    RevisionRefusedError,
+)
 from engineering.mech import drift as D
 from engineering.mech.primitives import layer_for
 
@@ -325,20 +341,30 @@ def keyed(entries) -> dict[tuple, tuple[int, Any]]:
 
 
 def _refuse_layouts_not_revised(part_id: str, records: list[dict]) -> None:
+    """Refuse, by name and before anything is written, the layouts this release
+    does not revise: a ``RevisionRefusedError`` (kind ``refused``), never a
+    plain ``ValueError`` - that reaches the client as ``failed`` ("attempted
+    and broke"), which this is not."""
     tags = [D.record_view_tag(r) for r in records]
     details = [D.record_view_tag(r) for r in records if r.get("kind") == "detail"]
     if details:
-        raise ValueError(
+        raise RevisionRefusedError(
             f"{part_id}: a part with a detail view ({', '.join(details)}) is not revised in "
             "this release (1.8.1); nothing was changed. Draw the revised part with "
-            "mech_part_draw and add the detail again."
+            "mech_part_draw and add the detail again.",
+            part_id=part_id,
+            reason="detail_view",
+            views=details,
         )
     twice = sorted({t for t in tags if tags.count(t) > 1})
     if twice:
-        raise ValueError(
+        raise RevisionRefusedError(
             f"{part_id}: views {twice} are drawn more than once (a left and a right end view "
             "carry the same tag), so their entities cannot be told apart; a revision of such a "
-            "part is 1.8.1. Nothing was changed."
+            "part is 1.8.1. Nothing was changed.",
+            part_id=part_id,
+            reason="repeated_view_tag",
+            views=twice,
         )
 
 
@@ -356,8 +382,13 @@ class Plan:
     dimensions: list[str] = field(default_factory=list)
     hole_table: list[str] = field(default_factory=list)
     redimension: list[int] = field(default_factory=list)
-    untouched_dims: list[int] = field(default_factory=list)
     balloons: list[tuple[str, dict]] = field(default_factory=list)
+    #: a part drawn before 1.8.0: its untagged dimensions and hole-table pieces
+    #: found by the old model's own geometry, and the untagged dimensions on a
+    #: dimensioned view that matched none of them (left on the sheet, named)
+    legacy_dims: list[str] = field(default_factory=list)
+    legacy_table: list[str] = field(default_factory=list)
+    legacy_left: list[str] = field(default_factory=list)
 
     def counts(self) -> dict[str, int]:
         return {
@@ -375,7 +406,148 @@ class Plan:
         return list(dict.fromkeys(handles + self.dimensions + self.hole_table))
 
 
-def make_plan(report, layout: Layout, payload: dict, records, stamped: bool) -> Plan:
+#: The display properties a revision carries from an entity it redraws onto
+#: the new one when they were set by hand: what ``draw_prims`` writes is the
+#: role layer, and ByLayer for the rest.
+_BYLAYER = {"color": 256, "linetype": "BYLAYER", "lineweight": -1}
+
+
+def hand_properties(rec, role_layer: str) -> dict:
+    """The layer / colour / linetype / lineweight of an entity that are not
+    what the model draws (a hand edit, which is not geometry and is kept)."""
+    out: dict = {}
+    if str(rec.layer) != str(role_layer):
+        out["layer"] = str(rec.layer)
+    color = int(getattr(rec, "color", 256))
+    if color != _BYLAYER["color"]:
+        out["color"] = color
+    linetype = str(getattr(rec, "linetype", "BYLAYER") or "BYLAYER")
+    if linetype.upper() != _BYLAYER["linetype"]:
+        out["linetype"] = linetype
+    lineweight = int(getattr(rec, "lineweight", -1))
+    if lineweight != _BYLAYER["lineweight"]:
+        out["lineweight"] = lineweight
+    return out
+
+
+def _untagged(rec) -> bool:
+    payload = D._payload_of(rec)
+    return payload is None or payload.get("kind") != "feature"
+
+
+def _measured_points(part, payload: dict, record: dict, thresholds) -> list[tuple]:
+    """Every ``(p1, p2)`` in WCS a dimension of this stored view measures,
+    under each style and hole-table threshold ``dimension_part`` could have
+    used - the points a DIMENSION keeps as its definition points."""
+    from engineering.mech.dimension import DIM_STYLES, dimension_intents, layout_dimensions
+    from engineering.mech.draw import _placement, _turn, _view_from_record
+
+    origin, rotation = _placement(payload)
+    offset = record["offset"]
+    view = _view_from_record(part, payload, record)
+    pairs: list[tuple] = []
+    for style in DIM_STYLES:
+        for threshold in thresholds:
+            try:
+                intents = dimension_intents(
+                    part, view, style=style, hole_table_threshold=int(threshold)
+                )
+                placed = layout_dimensions(view, intents)
+            except ValueError:
+                continue
+            for intent in placed:
+                pairs.append(
+                    tuple(
+                        _turn((p[0] + offset[0], p[1] + offset[1]), origin, rotation)
+                        for p in (intent.p1, intent.p2)
+                    )
+                )
+    return pairs
+
+
+def _inside(point, box, eps: float) -> bool:
+    return box[0] - eps <= point[0] <= box[2] + eps and box[1] - eps <= point[1] <= box[3] + eps
+
+
+def legacy_dimensions(part, payload: dict, records, dimensioned: dict, eps: float):
+    """``(found, left)`` on a part drawn before 1.8.0, whose dimensions carry
+    no tag: ``found`` the untagged DIMENSIONs whose definition points are the
+    two points a dimension of the OLD model's view measures (what
+    ``dimension_part`` drew there), ``left`` the other untagged DIMENSIONs
+    with a definition point inside a dimensioned view - not ours to delete,
+    so they stay and are named."""
+    stored = list(payload.get("views") or [])
+    pairs: list[tuple] = []
+    boxes: list = []
+    for number in dimensioned.values():
+        record = stored[number]
+        thresholds = {8, int((record.get("dim") or {}).get("hole_table_threshold", 8))}
+        pairs.extend(_measured_points(part, payload, record, sorted(thresholds)))
+        boxes.append(record.get("bbox"))
+    found: list[str] = []
+    left: list[str] = []
+    for rec in records:
+        if rec.type != "DIMENSION" or not _untagged(rec) or rec.dimension is None:
+            continue
+        defpoints = [p for p in rec.dimension[1] if p is not None]
+        hit = any(all(any(D._near(p, q, eps) for q in defpoints) for p in pair) for pair in pairs)
+        if hit:
+            found.append(str(rec.handle))
+        elif any(box and _inside(p, box, eps) for p in defpoints for box in boxes):
+            left.append(str(rec.handle))
+    return found, left
+
+
+def legacy_table_pieces(part, payload: dict, records, dimensioned: dict, eps: float) -> list[str]:
+    """The pieces of a hole table drawn before 1.8.0: the headless engine
+    draws a table as lines and texts and stored the first of them as
+    ``hole_table``; the rest are the untagged lines and texts on its layer
+    inside the box the OLD model's rows lay out from that line's corner.
+    A live TABLE is one entity, the stored handle alone."""
+    from engineering.annotation import prepare_table_layout
+    from engineering.mech.dimension import hole_table_rows
+    from engineering.mech.draw import _view_from_record
+
+    stored = str(payload.get("hole_table") or "")
+    first = next((rec for rec in records if str(rec.handle) == stored), None)
+    if first is None or first.type != "LINE" or len(first.points or ()) != 2:
+        return []
+    views = list(payload.get("views") or [])
+    rows = []
+    for number in sorted(dimensioned.values()):
+        record = views[number]
+        threshold = int((record.get("dim") or {}).get("hole_table_threshold", 8))
+        rows = hole_table_rows(
+            part, _view_from_record(part, payload, record), hole_table_threshold=threshold
+        )
+        if rows:
+            break
+    if not rows:
+        return []
+    layout = prepare_table_layout(
+        [[r["tag"], f"{r['d']:g}", str(r["qty"]), r["note"]] for r in rows],
+        ["TAG", "DIA", "QTY", "NOTE"],
+        None,
+        7.0,
+        2.5,
+        "HOLE TABLE",
+    )
+    x0 = min(p[0] for p in first.points)
+    y0 = max(p[1] for p in first.points)
+    box = (x0, y0 - layout.height, x0 + layout.width, y0)
+    return [
+        str(rec.handle)
+        for rec in records
+        if str(rec.handle) != stored
+        and rec.type in ("LINE", "MTEXT", "TEXT")
+        and str(rec.layer) == str(first.layer)
+        and _untagged(rec)
+        and rec.points
+        and all(_inside(p, box, eps) for p in rec.points)
+    ]
+
+
+def make_plan(report, layout: Layout, payload: dict, records, stamped: bool, old_part=None) -> Plan:
     plan = Plan(part_id=report.part_id)
     old_entries = [(e.view, e.index, e.prim) for e in report.expected if not e.marker]
     old = keyed(old_entries)
@@ -401,12 +573,16 @@ def make_plan(report, layout: Layout, payload: dict, records, stamped: bool) -> 
         old_prim = found[1]
         row.update(handle=entity.handle, old_prim=old_prim, entity=entity)
         row["retag"] = entity.index != new_index
-        row["relayer"] = layer_for(new_prim) if layer_for(old_prim) != layer_for(new_prim) else None
+        # what was set by hand is not geometry: a redrawn entity gets it back,
+        # and a role change moves only an entity still on its old role layer
+        row["kept"] = hand_properties(entity.record, layer_for(old_prim))
+        role_moved = layer_for(old_prim) != layer_for(new_prim)
+        row["relayer"] = layer_for(new_prim) if role_moved and "layer" not in row["kept"] else None
         in_place = D.prim_type(new_prim) in ("LINE", "CIRCLE", "ARC")
         fits = D.matches(entity.record, new_prim, eps, hatch_eps=hatch_eps)
         if in_place:
             (plan.keep if fits else plan.edit).append(row)
-        elif fits and D.same_prim(old_prim, new_prim, eps) and row["relayer"] is None:
+        elif fits and D.same_prim(old_prim, new_prim, eps) and not role_moved:
             plan.keep.append(row)
         else:
             plan.recreate.append(row)
@@ -429,16 +605,21 @@ def make_plan(report, layout: Layout, payload: dict, records, stamped: bool) -> 
         for n, r in enumerate(payload.get("views") or [])
         if r.get("dimensioned")
     }
-    found_views: set[str] = set()
     for rec, tag in D.annotations_of(records, report.part_id, "dim"):
         if str(tag.get("view", "")) in dimensioned:
             plan.dimensions.append(str(rec.handle))
-            found_views.add(str(tag.get("view", "")))
-    for view, number in sorted(dimensioned.items(), key=lambda item: item[1]):
-        if stamped or view in found_views:
-            plan.redimension.append(number)
-        else:
-            plan.untouched_dims.append(number)
+    if not stamped and old_part is not None and dimensioned:
+        # drawn before 1.8.0 (reached only with overwrite=True): the dimensions
+        # and the hole table carry no tag, so they are found by the old model's
+        # own geometry - the points each dimension measures, the box the table
+        # lays out in - and replaced like tagged ones; anything else is named
+        plan.legacy_dims, plan.legacy_left = legacy_dimensions(
+            old_part, payload, records, dimensioned, eps
+        )
+        plan.legacy_table = legacy_table_pieces(old_part, payload, records, dimensioned, eps)
+        plan.dimensions.extend(h for h in plan.legacy_dims if h not in plan.dimensions)
+    # every dimensioned view is dimensioned again: its old dimensions are gone
+    plan.redimension = sorted(dimensioned.values())
     alive = {str(rec.handle) for rec in records}
     table = [
         str(rec.handle) for rec, _tag in D.annotations_of(records, report.part_id, "hole_table")
@@ -446,6 +627,7 @@ def make_plan(report, layout: Layout, payload: dict, records, stamped: bool) -> 
     stored = payload.get("hole_table")
     if stored and str(stored) in alive and str(stored) not in table:
         table.append(str(stored))
+    table.extend(h for h in plan.legacy_table if h not in table)
     plan.hole_table = table
 
     replaced = {row["handle"] for row in plan.recreate} | {row["handle"] for row in plan.delete}
@@ -589,8 +771,10 @@ async def revise_part(
 
     See the module docstring for the steps; refusals: ``invalid_args`` (a path,
     a value the part refuses), ``model_drift``, ``hand_edited_tagged_entity``,
-    ``stale_revision`` (``expected_revision`` / ``preconditions``), and the
-    layouts this release does not revise (a detail view, a repeated view tag).
+    ``stale_revision`` (``expected_revision`` / ``preconditions``), and
+    ``refused`` (``RevisionRefusedError``) for the layouts this release does
+    not revise (a detail view, a repeated view tag), a payload with no view and
+    a stored model that does not build.
     """
     from backends.operations import CURRENT_OPERATION
     from engineering.changes.preview import (
@@ -616,17 +800,27 @@ async def revise_part(
         raise InvalidArgsError(
             f"invalid_args: part_id: expected the part's anchor handle, got {part_id!r}"
         )
-    payload = await read_part(backend, part_id.strip())
+    try:
+        payload = await read_part(backend, part_id.strip())
+    except ValueError as exc:
+        # a handle that carries no part payload: the argument names no part
+        raise InvalidArgsError(f"invalid_args: part_id: {exc}") from exc
     pid = str(payload["part_id"])
     stored_views = list(payload.get("views") or [])
     if not stored_views:
-        raise ValueError(f"{pid}: the payload carries no view to revise.")
+        raise RevisionRefusedError(
+            f"{pid}: the payload carries no view to revise; nothing was changed.",
+            part_id=pid,
+            reason="no_views",
+        )
     _refuse_layouts_not_revised(pid, stored_views)
     try:
         old_part = build_part(payload.get("part") or {})
     except ValueError as exc:
-        raise ValueError(
-            f"{pid}: the stored part model does not build ({exc}); nothing was changed."
+        raise RevisionRefusedError(
+            f"{pid}: the stored part model does not build ({exc}); nothing was changed.",
+            part_id=pid,
+            reason="model_unbuildable",
         ) from exc
     old_dict = part_to_dict(old_part)
     new_dict, diff = apply_changes(old_dict, changes)
@@ -652,7 +846,7 @@ async def revise_part(
         refuse_drift(report)
 
     changed = part_to_dict(new_part) != old_dict
-    plan = make_plan(report, layout, payload, snap.records, report.stamped)
+    plan = make_plan(report, layout, payload, snap.records, report.stamped, old_part)
     counts = plan.counts() if changed or overwritten else dict.fromkeys(plan.counts(), 0)
 
     if dry_run:
@@ -715,13 +909,17 @@ async def revise_part(
         # 3. what is new, and what had to be drawn again
         created = await _create_rows(backend, pid, plan.create + plan.recreate)
         for row in plan.recreate:
-            handle_map.append(
-                {
-                    "old": row["handle"],
-                    "new": created[row["key"]],
-                    "reason": f"recreated:{D.prim_type(row['prim'])}",
-                }
-            )
+            moved = {
+                "old": row["handle"],
+                "new": created[row["key"]],
+                "reason": f"recreated:{D.prim_type(row['prim'])}",
+            }
+            if row.get("kept"):
+                # the hand-set layer / colour / linetype / lineweight survives
+                # the redraw, as it does on an entity edited in place
+                await backend.entity_set_properties(created[row["key"]], **row["kept"])
+                moved["kept"] = dict(row["kept"])
+            handle_map.append(moved)
         for row in plan.create:
             handle_map.append({"old": None, "new": created[row["key"]], "reason": "added"})
         # 4. the payload: the new model, the gen stamp, each view's digest
@@ -799,7 +997,11 @@ async def revise_part(
             "deleted": len(plan.dimensions),
             "created": outcome["dims_created"],
             "views": sorted(redim),
-            "untouched_views": plan.untouched_dims,
+            "legacy": {
+                "dimensions": len(plan.legacy_dims),
+                "hole_table_pieces": len(plan.legacy_table),
+                "left": list(plan.legacy_left),
+            },
             "dropped_fits": outcome["dropped_fits"],
             "note": "dimension handles change: each is deleted and placed again",
         },

@@ -26,6 +26,7 @@ from engineering.errors import (
     HandEditedTaggedEntityError,
     InvalidArgsError,
     ModelDriftError,
+    RevisionRefusedError,
     classify,
 )
 from engineering.mech import drift as D
@@ -357,8 +358,168 @@ async def test_a_detail_view_is_refused_by_name(flange):
         "detail",
         detail={"center": [20.0, 40.0], "radius": 8.0, "scale": 2.0, "of": "front"},
     )
-    with pytest.raises(ValueError, match="detail view"):
+    before = await _all_fingerprints(b)
+    with pytest.raises(RevisionRefusedError, match="detail view") as caught:
         await revise_part(b, pid, {"features.bore.diameter": 24.0})
+    # refused before anything was written - not "failed" (attempted and broke)
+    envelope = classify(caught.value)
+    assert envelope["kind"] == "refused" and envelope["reason"] == "detail_view"
+    assert await _all_fingerprints(b) == before
+
+
+async def test_a_repeated_view_tag_is_refused_by_name():
+    b = await _mm_backend()
+    drawn = await draw_part(b, build_part(FLANGE), views=("front", "side"))
+    await add_view(b, drawn["part_id"], "side", side="left")
+    with pytest.raises(RevisionRefusedError, match="more than once") as caught:
+        await revise_part(b, drawn["part_id"], {"features.bore.diameter": 24.0})
+    envelope = classify(caught.value)
+    assert envelope["kind"] == "refused" and envelope["reason"] == "repeated_view_tag"
+
+
+async def test_a_payload_that_does_not_build_or_has_no_view_is_refused(flange):
+    b, pid = flange
+    payload = await read_part(b, pid)
+    stored = {k: v for k, v in payload.items() if k != "part_id"}
+
+    broken = copy.deepcopy(stored)
+    broken["part"]["segments"][0]["length"] = -1.0
+    await b.entity_set_xdata(pid, APP_ID, to_values(broken))
+    with pytest.raises(RevisionRefusedError, match="does not build") as caught:
+        await revise_part(b, pid, {"features.bore.diameter": 24.0})
+    assert classify(caught.value)["kind"] == "refused"
+
+    await b.entity_set_xdata(pid, APP_ID, to_values({**stored, "views": []}))
+    with pytest.raises(RevisionRefusedError, match="no view") as caught:
+        await revise_part(b, pid, {"features.bore.diameter": 24.0})
+    assert classify(caught.value)["kind"] == "refused"
+
+
+async def test_a_handle_with_no_part_is_invalid_args(flange):
+    b, _pid = flange
+    line = await b.entity_create_line(0.0, 0.0, 1.0, 0.0)
+    with pytest.raises(InvalidArgsError, match="part payload") as caught:
+        await revise_part(b, line.handle, {"features.bore.diameter": 24.0})
+    assert classify(caught.value)["kind"] == "invalid_args"
+
+
+# -- hand-set properties on a redrawn entity -------------------------------------------
+
+
+async def test_a_layer_and_colour_set_by_hand_on_a_redrawn_hatch_are_kept(flange):
+    b, pid = flange
+    await b.layer_create("MYLAYER", color=3)
+    snap = await take_snapshot(b)
+    hatch = next(t for t in D.tagged_entities(snap.records, pid) if t.type == "HATCH")
+    line = next(t for t in D.tagged_entities(snap.records, pid) if t.type == "LINE")
+    for handle in (hatch.handle, line.handle):
+        await b.entity_set_properties(handle, layer="MYLAYER", color=5, linetype="HIDDEN")
+
+    result = await revise_part(b, pid, {"features.bore.diameter": 24.0, "segments[1].length": 50.0})
+    row = next(r for r in result["handle_map"] if r["old"] == hatch.handle)
+    assert row["reason"] == "recreated:HATCH" and row["new"]
+    redrawn = await b.entity_get(row["new"])
+    assert (redrawn.layer, redrawn.color, redrawn.linetype) == ("MYLAYER", 5, "HIDDEN")
+    assert row["kept"] == {"layer": "MYLAYER", "color": 5, "linetype": "HIDDEN"}
+    # the in-place LINE keeps them too, untouched
+    kept = await b.entity_get(line.handle)
+    assert (kept.layer, kept.color) == ("MYLAYER", 5)
+    assert result["model_is_current"] is True
+
+
+# -- a part drawn by 1.7.0: untagged dimensions and hole table ---------------------------
+
+
+def _make_1_7(b, pid: str) -> None:
+    """Make the drawing what 1.7.0 drew: feature tags without ``i``, the
+    dimensions and the hole table untagged, no gen / sha / dim on the payload."""
+    import json
+
+    doc = b._require_doc()
+    for entity in doc.modelspace():
+        if not entity.has_xdata(APP_ID):
+            continue
+        text = "".join(str(t.value) for t in entity.get_xdata(APP_ID) if t.code == 1000)
+        try:
+            tag = json.loads(text)
+        except ValueError:
+            continue
+        if tag.get("kind") != "feature":
+            continue
+        if tag.get("role"):
+            entity.discard_xdata(APP_ID)
+        else:
+            tag.pop("i", None)
+            entity.set_xdata(APP_ID, [(1000, chunk) for chunk in to_values(tag)])
+
+
+async def _legacy_sheet(spec) -> tuple[EzdxfBackend, str]:
+    b = await _mm_backend()
+    drawn = await draw_part(b, build_part(spec), views=("front", "side"))
+    pid = drawn["part_id"]
+    payload = await read_part(b, pid)
+    legacy = {k: v for k, v in payload.items() if k not in ("part_id", "gen")}
+    legacy["views"] = [
+        {k: v for k, v in r.items() if k not in ("sha", "dim")} for r in legacy["views"]
+    ]
+    await b.entity_set_xdata(pid, APP_ID, to_values(legacy))
+    _make_1_7(b, pid)
+    assert not D.annotations_of((await take_snapshot(b)).records, pid)
+    return b, pid
+
+
+def _dimension_texts(snap) -> list[str]:
+    return sorted(rec.rendered_text or "" for rec in snap.records if rec.type == "DIMENSION")
+
+
+async def test_overwrite_on_a_1_7_part_replaces_its_untagged_dimensions():
+    b, pid = await _legacy_sheet(FLANGE)
+    old_dims = {rec.handle for rec in (await take_snapshot(b)).records if rec.type == "DIMENSION"}
+    with pytest.raises(ModelDriftError):
+        await revise_part(b, pid, {"features.bore.diameter": 24.0})
+
+    changes = {"features.bore.diameter": 24.0, "segments[1].length": 50.0}
+    result = await revise_part(b, pid, changes, overwrite=True)
+    assert result["dimensions"]["legacy"]["dimensions"] == len(old_dims)
+    assert result["dimensions"]["legacy"]["left"] == []
+    assert result["dimensions"]["views"] == [0, 1]
+    snap = await take_snapshot(b)
+    assert not old_dims & {rec.handle for rec in snap.records}
+    texts = _dimension_texts(snap)
+    assert "⌀20" not in texts and any("24" in t for t in texts), texts
+
+    # exactly what a fresh draw of the revised part draws, dimensions included
+    spec = copy.deepcopy(FLANGE)
+    spec["features"][0]["diameter"] = 24.0
+    spec["segments"][1]["length"] = 50.0
+    fresh = await _mm_backend()
+    await draw_part(fresh, build_part(spec), views=("front", "side"))
+    fresh_snap = await take_snapshot(fresh)
+    assert texts == _dimension_texts(fresh_snap)
+    assert _signatures(snap) == _signatures(fresh_snap)
+    payload = await read_part(b, pid)
+    assert [v["dimensioned"] for v in payload["views"]] == [True, True]
+    assert result["model_is_current"] is True
+
+
+async def test_overwrite_on_a_1_7_part_replaces_its_whole_untagged_hole_table():
+    b, pid = await _legacy_sheet(PLATE)
+    before = await take_snapshot(b)
+    assert sum(rec.text == "HOLE TABLE" for rec in before.records) == 1
+
+    result = await revise_part(b, pid, {"features.h4.diameter": 12.0}, overwrite=True)
+    assert result["dimensions"]["legacy"]["hole_table_pieces"] > 1
+    assert result["hole_table"]
+    snap = await take_snapshot(b)
+    assert sum(rec.text == "HOLE TABLE" for rec in snap.records) == 1
+    assert "12" in {rec.text for rec in snap.records}
+    assert (await read_part(b, pid))["hole_table"] == result["hole_table"]
+
+    spec = copy.deepcopy(PLATE)
+    spec["features"][4]["diameter"] = 12.0
+    fresh = await _mm_backend()
+    await draw_part(fresh, build_part(spec), views=("front", "side"))
+    assert _signatures(snap) == _signatures(await take_snapshot(fresh))
 
 
 # -- layouts, the hole table and balloons (added when the item was resumed) ---------------
@@ -523,6 +684,26 @@ async def test_the_tool_revises_and_types_its_refusals(monkeypatch):
         assert payload["kind"] == "hand_edited_tagged_entity"
         assert payload["handles"] == [handle]
         assert payload["category"] == "geometry" and payload["retryable"] is False
+
+
+async def test_the_tool_types_a_layout_refusal_as_refused_not_failed(monkeypatch):
+    monkeypatch.setenv("AUTOCAD_MCP_BACKEND", "ezdxf")
+    async with Client(server.mcp) as client:
+        await client.call_tool("drawing_new", {})
+        drawn = (
+            await client.call_tool("mech_part_draw", {"spec": FLANGE, "views": ["front", "side"]})
+        ).structured_content
+        pid = drawn["part_id"]
+        await client.call_tool("mech_view_add", {"part_id": pid, "kind": "side", "side": "left"})
+        refused = await client.call_tool(
+            "mech_part_revise",
+            {"part_id": pid, "changes": {"features.bore.diameter": 22}},
+            raise_on_error=False,
+        )
+        assert refused.is_error
+        payload = refused.structured_content
+        assert payload["kind"] == "refused" and payload["reason"] == "repeated_view_tag"
+        assert payload["category"] == "policy"
 
 
 async def test_the_tool_is_registered_in_the_mech_pack():
