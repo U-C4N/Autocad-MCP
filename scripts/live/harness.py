@@ -250,11 +250,15 @@ class LiveHarness:
     def error(self, exc: BaseException) -> None:
         """Record an exception that ended the run as a check that raised."""
         lines = traceback.format_exception_only(type(exc), exc)
+        trace = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        print(trace, file=sys.stderr)
         self.checks.append(
             {
                 "name": f"{self._stage or self.smoke}: ran without raising",
                 "status": "error",
                 "error": "".join(lines).strip(),
+                # The frames, so a live failure can be diagnosed from the JSON alone.
+                "traceback": trace.rstrip().splitlines(),
                 "stage": self._stage,
             }
         )

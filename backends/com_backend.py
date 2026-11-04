@@ -1037,10 +1037,36 @@ def _ensure_linetype_loaded(name: str) -> None:
     _load_linetype(doc, name, _default_lin_file(doc))
 
 
+def _assign_layer(entity, layer: str) -> None:
+    """``entity.Layer = layer``, creating the layer first when it is missing.
+
+    MEASURED on AutoCAD 2026 (live smoke ``edit``, 2026-11-04): ActiveX will not
+    create a layer on assignment - ``entity.Layer = "TEXT"`` in a document
+    without TEXT raises DISP_E_EXCEPTION ``Key not found`` - while the headless
+    engine accepts any name. ``entity_create_table`` defaults to ``"TEXT"``,
+    which a document made by ``Documents.Add`` (no bootstrap) does not have.
+    The hot path stays one call: the table is consulted only after the
+    assignment failed, and an error on a layer that does exist is re-raised.
+    """
+    try:
+        entity.Layer = layer
+        return
+    except Exception:
+        layers = _acad_doc().Layers
+        try:
+            layers.Item(layer)
+        except Exception:
+            pass
+        else:
+            raise
+    layers.Add(layer)
+    entity.Layer = layer
+
+
 def _apply_entity_attrs(entity, layer: str | None, color: int | None, linetype: str | None):
     """Apply common entity attributes after creation."""
     if layer is not None:
-        entity.Layer = layer
+        _assign_layer(entity, layer)
     if color is not None:
         entity.color = int(color)
     if linetype is not None:
@@ -2338,7 +2364,12 @@ def _entity_info(entity) -> EntityInfo:
             props["height"] = entity.Height
             props["rotation"] = rad2deg(entity.Rotation)  # N5 parity with ezdxf
         elif obj_name == "AcDbMText":
-            props["text"] = entity.Contents
+            # MEASURED on AutoCAD 2026 (live smoke ``edit``, 2026-11-04):
+            # IAcadMText has no ``Contents`` (that is the ObjectARX name) - the
+            # read raised AttributeError and the except below dropped every
+            # MTEXT property, ``insertion`` included. ActiveX's member is
+            # ``TextString``, as on TEXT.
+            props["text"] = entity.TextString
             ins = entity.InsertionPoint
             props["insertion"] = [ins[0], ins[1]]
             # N5 parity with ezdxf: MTEXT char_height + rotation.
@@ -3522,9 +3553,13 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
             if hr in (-2147221246, -2147221005, -2147417842):
                 _drop_app()
                 self._connected = False
-            raise RuntimeError(
-                f"AutoCAD COM error ({hr:#010x}): {e.args[1] if len(e.args) > 1 else e}"
-            ) from e
+            message = f"AutoCAD COM error ({hr:#010x}): {e.args[1] if len(e.args) > 1 else e}"
+            # DISP_E_EXCEPTION carries AutoCAD's own words in the excepinfo
+            # (``Key not found``); the localised args[1] alone hides them.
+            info = e.args[2] if len(e.args) > 2 else None
+            if isinstance(info, tuple) and len(info) > 2 and info[2]:
+                message += f" ({info[2]})"
+            raise RuntimeError(message) from e
 
     def _record_breakdown(
         self, submitted: float, began: float, ended: float, ran_ms: float, clock: dict
