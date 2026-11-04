@@ -71,7 +71,9 @@ def test_the_hook_is_installed():
     assert getattr(dynamic.CDispatch.__getattr__, "_acadmcp_rejection_aware", False) is True
 
 
-def test_a_refused_lookup_raises_a_rejection_the_retry_handlers_see():
+def test_a_refused_lookup_raises_a_rejection_the_retry_handlers_see(monkeypatch):
+    """Once its patience is spent (here none) a refusal reaches the caller."""
+    monkeypatch.setattr(cb, "_LOOKUP_PATIENCE_S", 0.0)
     proxy = _proxy(RPC_E_CALL_REJECTED)
     with pytest.raises(cb.RejectedLookupError) as raised:
         proxy.Count  # noqa: B018 - the read is the test
@@ -89,6 +91,17 @@ def test_a_lookup_refused_once_then_answered_reads_the_value():
     proxy = _proxy(RPC_E_CALL_REJECTED, None)
     assert proxy.Count == 3
     assert proxy.__dict__["_oleobj_"].lookups == ["Count", "Count", "Count"]
+
+
+def test_a_lookup_refused_for_a_while_is_waited_out(monkeypatch):
+    """``benchmarks/perf_com.py`` (AutoCAD 2026): the ``SendCommand`` lookup of
+    one ``entity_fillet`` was refused right after the previous FILLET. A lookup
+    changes nothing, so the hook repeats it while it answers busy."""
+    sleeps: list[float] = []
+    monkeypatch.setattr(cb.time, "sleep", sleeps.append)
+    proxy = _proxy(RPC_E_CALL_REJECTED, RPC_E_CALL_REJECTED, RPC_E_CALL_REJECTED, None)
+    assert proxy.SendCommand == 3
+    assert sleeps == [0.05, 0.1], "two pauses for the hook's two refused lookups"
 
 
 def test_a_missing_member_stays_an_attribute_error():

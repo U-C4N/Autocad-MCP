@@ -130,6 +130,13 @@ _RPC_E_CALL_REJECTED = -2147418111
 #: message filter that asks the caller to retry.
 _RPC_E_SERVERCALL_RETRYLATER = -2147417846
 
+#: How long a refused member lookup is waited out before it is raised as
+#: ``RejectedLookupError``. MEASURED on AutoCAD 2026 (``benchmarks/perf_com.py``,
+#: 2026-11-04): in a 5,000-line drawing the ``SendCommand`` lookup of one
+#: ``entity_fillet`` was refused right after the previous FILLET, and that call
+#: failed. Well inside ``COM_CALL_TIMEOUT``.
+_LOOKUP_PATIENCE_S = 10.0
+
 
 if _COM_IMPORTS_OK:
 
@@ -156,9 +163,11 @@ if _COM_IMPORTS_OK:
     def _surface_rejected_lookups() -> None:
         """Wrap ``CDispatch.__getattr__`` so a refused lookup raises ``RejectedLookupError``.
 
-        Only a lookup that already failed costs one more call
-        (``GetIDsOfNames``), and only its busy answers change the outcome;
-        a member that does not exist stays the ``AttributeError`` it was.
+        Only a lookup that already failed costs more calls: ``GetIDsOfNames``
+        again, while it answers busy for up to ``_LOOKUP_PATIENCE_S`` (a
+        lookup changes nothing, so repeating it is always safe), then the
+        read itself. A member that does not exist stays the
+        ``AttributeError`` it was.
         """
         from win32com.client import dynamic
 
@@ -173,15 +182,25 @@ if _COM_IMPORTS_OK:
                 oleobj = None if attr.startswith("_") else self.__dict__.get("_oleobj_")
                 if oleobj is None:
                     raise
-                try:
-                    oleobj.GetIDsOfNames(0, attr)  # (lcid, name), as pywin32 calls it
-                except pywintypes.com_error as exc:
-                    hr = exc.args[0] if exc.args else 0
-                    if hr in (_RPC_E_CALL_REJECTED, _RPC_E_SERVERCALL_RETRYLATER):
-                        raise RejectedLookupError(hr, attr) from None
-                    raise AttributeError(f"{self._username_}.{attr}") from None
-                except Exception:  # the classification is best effort
-                    raise AttributeError(f"{self._username_}.{attr}") from None
+                # A lookup changes nothing on the seat, so a refused one is
+                # waited out here (it is the one COM call that is always safe
+                # to repeat); only its budget running out reaches the caller.
+                deadline = time.monotonic() + _LOOKUP_PATIENCE_S
+                pause = 0.05
+                while True:
+                    try:
+                        oleobj.GetIDsOfNames(0, attr)  # (lcid, name), as pywin32 calls it
+                        break
+                    except pywintypes.com_error as exc:
+                        hr = exc.args[0] if exc.args else 0
+                        if hr not in (_RPC_E_CALL_REJECTED, _RPC_E_SERVERCALL_RETRYLATER):
+                            raise AttributeError(f"{self._username_}.{attr}") from None
+                        if time.monotonic() + pause > deadline:
+                            raise RejectedLookupError(hr, attr) from None
+                        time.sleep(pause)
+                        pause = min(pause * 2.0, 1.0)
+                    except Exception:  # the classification is best effort
+                        raise AttributeError(f"{self._username_}.{attr}") from None
             # The name resolves now: the failed lookup was a transient refusal
             # (pywin32 raises AttributeError only when GetIDsOfNames failed).
             # Measured live: the first lookup after Close was refused and the
