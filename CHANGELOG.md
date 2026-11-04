@@ -7,6 +7,218 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+1.8.0: the server remembers, finishes a job in one call and measures itself
+honestly. Nine tools are added (248 -> 257) and two resources (11 -> 13); the
+5 prompt templates are unchanged, and `system_about` is the authority for the
+counts. This head is the release summary; the three phase blocks below (W1,
+W2, W3) keep what each phase shipped, with its own migration notes or Breaking
+table. Spec: `docs/superpowers/specs/2026-11-03-v1.8.0-design.md`.
+
+### Breaking at a glance
+
+One line per default that changed, and what restores the 1.7.0 behaviour (the
+W1 *Migration notes* and the W2 / W3 *Breaking* tables carry the detail):
+
+- **Server discovery:** `DISCOVERY_MODE` defaults to `search`: a client lists
+  `search_tools`, `describe_tool`, `call_tool` and the `DISCOVERY_PINNED` tools
+  (`cad_batch`, `drawing_info`, `entity_list`), and every tool stays callable
+  by name. Restore: `DISCOVERY_MODE=off`; `DISCOVERY_PINNED=""` pins nothing.
+- **Plugin discovery:** `plugin/.mcp.json` passes
+  `DISCOVERY_MODE=${AUTOCAD_MCP_DISCOVERY:-search}`. Restore:
+  `AUTOCAD_MCP_DISCOVERY=off`.
+- **Long descriptions on the wire:** a description over 800 characters is
+  listed as its leading paragraphs plus `Details: describe_tool.` (47 of 257
+  tools), and `DISCOVERY_MODE=off` lists `describe_tool` too (253 tools). No
+  switch: the registered tool and `describe_tool` keep the whole docstring.
+- **`meta["cad"]`** carries `summary` and `cost` only. The AutoCAD names and
+  synonyms are in `describe_tool` and `docs/tool-inventory.json`.
+- **`cad_batch(on_error=)`** defaults to `auto`: a batch that writes is all or
+  nothing, and a literal handle that names no entity refuses the whole batch
+  (`unknown_handle`) under every mode. Restore: `on_error="stop"` (the handle
+  pre-check stays).
+- **`entity_delete_many`** deletes all of its handles or none and answers
+  `ok: false` whenever it reports an error. No switch: send live handles,
+  read `ok`.
+- **`system_status.operations`** is a summary, `{count, last,
+  unknown_commit}`. Restore: `system_status(detail="operations")` (this
+  release only), or `drawing_history`.
+- **`strict_critique=True`** (opt-in on `drawing_finalize`, the default of
+  `drawing_deliver`) also fails on every `not_checked` lane except
+  `domain_absent`, so a default live delivery is `failed_validation`.
+  Restore: `strict_critique=False`.
+- **Headless `dimstyle_modify`** redraws the dimensions that use the style.
+  Restore: `rerender=False`.
+- **`LISP_POLICY`** defaults to `read` (the read tier, with the denylist as a
+  second pass). Restore: `LISP_POLICY=denylist`.
+- **`drawing_topology_check(limit=)`** defaults to `None`: 200 rows per list
+  without `summary`, 5 with it. Restore: `limit=200`.
+- **A writer's output path** takes only the tool's own extensions and never a
+  name AutoCAD or Windows loads (`path_refused`). No switch: name the file
+  with the tool's extension.
+- **HTTP:** an unknown Origin is 403, a foreign Host 421, a body over 8 MiB
+  413. Restore: `HTTP_ALLOWED_ORIGINS` / `HTTP_ALLOWED_HOSTS` (or `*`),
+  `MAX_HTTP_BODY_BYTES=0`. A non-loopback bind also needs `ALLOWED_PATHS`
+  now, with no switch.
+- **Lineweights:** -3 reads as Default, never ByLayer, and a layer refuses
+  ByLayer / ByBlock by name. No switch: the old answer was a mislabel.
+- **Errors:** every route returns one typed envelope, and a missing handle,
+  path, command or file has its own kind. The text content is unchanged.
+- **Durable journal:** on by default in `ACADMCP_STATE_DIR`, so a reopened
+  file continues its `document_id` and revision, and headless `drawing_undo`
+  without `EZDXF_UNDO_DEPTH` steps back to the newest checkpoint, also after a
+  restart. Restore: `JOURNAL_DURABLE=off`.
+- **COM target space:** a live seat draws in model space until
+  `layout_set_current` names a sheet; the tab the operator clicks no longer
+  moves it. Restore: `layout_set_current`.
+- **COM commands and undo:** `system_run_command` and live undo / redo wait
+  for the command and can fail `command_incomplete`. `COMMAND_DEADLINE_S`
+  bounds the wait; there is no fire-and-forget mode.
+- **COM refresh and bulk jobs:** one display refresh per COM job (`Update()`
+  of the entity for a single create, one Regen otherwise), and
+  `entity_batch_create` / `entity_delete_many` run as STA jobs sliced at a
+  quarter of `COM_CALL_TIMEOUT`, cancellable only between jobs. Restore:
+  `COM_REFRESH_MODE=regen` (one Regen per job; there is no per-entity mode);
+  no switch for the slicing.
+- **Headless `.dwg` open (`dwg_read`):** converted through the ODA File
+  Converter, then `accoreconsole`; with neither, a typed `dwg_read` refusal.
+  Restore: `ACCORECONSOLE_PATH=off` (and no ODA).
+- **`drawing_critique(focus=None)`** reports one `model_drift` `unstamped`
+  info issue per part drawn before 1.8.0. Restore: redraw it with
+  `mech_part_revise(..., overwrite=True)`.
+- **Screenshots:** the image is still `content[0]`; the report is `content[1]`
+  and the structured content.
+
+### Gate numbers
+
+Measured on the release tree (`release/1.8.0`, headless), each with its
+command:
+
+- **A/B:** `python benchmarks/compare_versions.py v1.7.0 --json ...` - 61 / 83
+  (73.5 %) on v1.7.0 against 83 / 83, 22 fixed, 0 regressed
+  (`benchmarks/results/published/ab-v1.7.0-vs-v1.8.0.json`, taken at
+  `ab07c47`, whose `correctness_suite.py` is the release tree's; the current
+  side alone re-run on `78b9b1e`: 83 / 83).
+- **Tokens:** `python -m benchmarks.token_suite --budget
+  benchmarks/token_budget.json --release` exits 0. Idle, prompt payload / wire
+  (ratio/v1 estimates): the 1.8.0 default surface (`search_pinned`, six tools)
+  1,026 / 1,300 (ceiling 1,500); `search` 220 / 230 (250; 1.7.0 455 / 503);
+  `DISCOVERY_MODE=off` 253 tools 59,138 / 78,391 (65,594; 1.7.0 62,471 /
+  89,350); `lean` 16,182 / 21,189 (18,842); `packs_core` 40,722 / 55,169
+  (43,997); instructions 199 (250; 1.7.0 461). Result cells: `system_status`
+  +18 bytes at 1,000 journal rows (300), a 500-issue critique summary 735
+  characters (2,500), finalize's `qa_coverage` 226 tokens (300), the error
+  envelope 58 tokens per error (60), `drawing_history(limit=10)` 344 tokens
+  (400). Task cells (calls): sketch 1, foreign inspection 1, layer clean-up 2
+  (1.7.0 124, the rival 11), plate dimensions 2 (1.7.0 89, the rival 10),
+  round-2 value 2. `benchmarks/results/published/token-cost.json` is this run.
+  `real_model.plugin_eval` is not checked by `--budget`; its
+  `dimension-budget` case was over its 6 calls in 1.8-11's runs (9 and 12).
+- **Matrix v9:** `python -m benchmarks.run_competitors --server autocad-mcp-pro
+  --backend ezdxf --matrix v9 --no-fetch` - 49 tasks, 47 / 47 attempted pass
+  (score 100.0); `lisp_read_tier` `environment_blocked` (AutoLISP runs only in
+  AutoCAD), `std_tables_b40` `not_run` (no B40 row); `dwg_headless_roundtrip`
+  passed through `accoreconsole` on the run machine. The AgentCAD lane
+  (`lizaixi01-agentcad`, no adapter) is `not_run` on all 49.
+  `benchmarks/results/published/lanes-v9/`.
+- **Full suite:** `AUTOCAD_MCP_BACKEND=ezdxf pytest -q -p no:cacheprovider`
+  with no deselection - 7,502 collected, `7501 passed, 1 xfailed` (432 s) at
+  `683ba21`, the tree of this release before its version commit.
+- **Headless performance:** `perf_compare.py --base v1.7.0 --aa` is measured
+  by the coordinator on an idle machine. The W1 gate numbers below are kept as
+  history; their A/A spread was 12.3 %, so their bound was 1.25.
+
+### Live evidence
+
+No smoke has a 1.8.0 pass row today: this release's live matrix,
+`benchmarks/results/live/1.8.0/matrix.json`, is written by
+`scripts/live/run_all.py` on the seat run, and the coordinator fills this
+section after it. Until then no document pins a claim to the release (`(AutoCAD
+2026, 1.8.0)`, which `scripts/check_doc_numbers.py` would refuse with no
+matrix), and the existing claims keep the result files that back them.
+
+**Ran.** `scripts/smoke_accore.py` against the installed
+`C:\Program Files\Autodesk\AutoCAD 2026\accoreconsole.exe`, with no AutoCAD
+window open: 8 / 8 checks in 3.2 s on 2026-11-04 at `4e98c10` (`dirty`
+false), committed as `benchmarks/results/live/accore.json` (the file records
+server 1.7.0: the version had not moved yet). It converts the bundled
+`templates/iso_a3_mech.dwt` under a `.dwg` name (no DWG can be produced
+headlessly without ODA) and compares it with `templates/iso_a3_mech.dxf`;
+that template's model space is empty, so the entity gate covers its 34
+paper-space entities and the block gate is trivially equal. The ODA route ran
+only under monkeypatched tests (ODA is not installed here).
+
+**Written, not run** (AutoCAD 2026 was not running for any of them):
+`scripts/smoke_space_com.py`, `scripts/smoke_edit_com.py` and
+`scripts/smoke_render_com.py` (W1) with spikes S4 and S5;
+`scripts/smoke_settings_com.py`'s `set edits`, `dimension truth` and
+`dimension auto` stages, `scripts/smoke_lisp_com.py` and
+`scripts/smoke_durability_com.py` (W2); the revise stage and the B40 stage of
+`scripts/smoke_mech_com.py`, the `avoid` and `project` stages of
+`scripts/smoke_pid_com.py` (the active document plus two DXF sheets; the live
+`.dwg` sheet route is covered by a fake-COM test only), and
+`benchmarks/perf_com.py` (W3). The 1.8-23 gate also needs
+`scripts/smoke_operator_edits_com.py` passing live and `view_screenshot`
+showing a new entity after `Update()`. Every COM path of 1.8.0 not named in
+`accore.json` is covered by fake-COM tests only.
+
+### Not in 1.8.0
+
+- **No B40 row is transcribed.** The licensed copies of DIN 471/472:2011-04,
+  DIN 509, DIN 332-1:1986-04 and ISO 3601-2:2016 were not at hand, so all
+  eight tables (DIN 471, DIN 472, DIN 509-E, DIN 509-F, DIN 332-A,
+  DIN 332-B, ISO 3601-2, ISO 3601-2-axial) ship empty, refuse every size by
+  name and are deferred to 1.8.1 by name - each waiting on its copy (DIN
+  471/472 Table 1, DIN 509 Table 1 forms E and F, DIN 332-1 Table 1 forms A
+  and B, ISO 3601-2 radial static and axial). Nothing is filled from memory
+  or a secondary catalogue; before the first DIN 509 row ships,
+  `profile_from_dims` is confirmed against the standard's figure. The v9
+  `std_tables_b40` task is `not_run` and the smoke's B40 stage only prints
+  its skip.
+- **The native .NET worker is deferred to 1.9.0, by a rule fixed before any
+  measurement** (`docs/adr/0001-native-worker.md`). 1.9.0 builds it only if
+  it is at least 3× faster than the 1.8-23 COM bulk job on the same 1,000
+  lines, or if atomic rollback cannot be made reliable with UNDO marks.
+  Otherwise it stays deferred: a build and signature per AutoCAD release, the
+  SECURELOAD route (`NETLOAD` is on our own denylist), no CI coverage, and a
+  second language for one maintainer. The one-day spike was not run, and no
+  timing is claimed.
+- **1.8.1, from the phases:** batch lease, `confirm_large` and batch budgets;
+  `cad_batch` step coalescing; the AutoLISP write tier (`command`, `entmod`,
+  `setvar`, `vla-put-*`); `mech_part_revise`'s spec-reconciliation and
+  keep-the-hand-edit modes (a part with a detail view, or with two views
+  sharing a view tag, is refused by name); `pid_project`'s write side (a
+  project-wide tag sequence and a refusal of a tag another sheet holds,
+  through `project=`); DWG export and AUDIT through accoreconsole (the
+  console runs without `/isolate`, so AutoCAD's own support-path
+  `acaddoc.lsp` still loads - noted for 1.8.1); redrawing a dimension after
+  move / rotate / mirror / copy / array and inside block definitions, and the
+  headless reflex-angle redraw (`dim_render_stale`, `reflex_render`).
+- **1.8.1, from the plan:** the headless creation speed lost against v1.4.0
+  (B10; 1.8.0 only gates against regressing from 1.7.0); the XDATA chunk /
+  case / budget rework (B08); `modified` summaries; a checkpoint per
+  operation and a create-only inverse layer; the `ACADMCP_IDENTITY` XRECORD
+  stamp; `operation_reconcile`; a COM undo group per operation;
+  `history_purge`; `RESULT_VERBOSITY=terse` and dropping `bounding_box` from
+  the default `entity_list` row; a run-time batch hint; highlighting,
+  `cad_batch(render=True)` and a live viewer; semantic tag replay
+  (`if_tag_exists`); inline symbol cutting and symbol move-and-reroute on a
+  P&ID; editing an `arch` element; constraint enforcement; the
+  `plot_readability` and `text_hygiene` focuses; an `autocad_live` bridge and
+  a multi-document `cad_batch`; an `inspect_image` equivalent and a CLI;
+  STRETCH / BREAK / JOIN / OVERKILL / draw order and the ISO 273 hole table; a
+  jump mark where P&ID lines cross (1.8.1 or later).
+- **1.9.0:** IEC 60617 electrical schematics, reusing the P&ID symbol, port
+  and graph machinery; extracting a spec from a document; the .NET worker if
+  ADR 0001's rule fires.
+- **Not planned:** Plant 3D, `run_script`, an HTTP REST `/v1` beside MCP's
+  own HTTP transport, and 3D beyond the opt-in live solids.
+- **Built narrower than planned:** `_command_context` (1.8-23 point 4) is not
+  built, because the 1.8-05 smoke that would justify it never ran; a per-line
+  `route="avoid"` inside `pid_from_spec` is refused (only `sheet.routing`),
+  its dry run reports no `label_hits`, and `pid_line_draw` does not expose
+  the node budget; a lost connection in the middle of a live bulk job loses
+  the per-item rows of the jobs already done.
+
 1.8.0, first phase (W1, "the trust foundation"). 1.7.0 made what the server
 draws provable; W1 makes what it **says** true. A lineweight of -3 is called
 *Default* - never ByLayer - and the critique sees an entity that overrides its
@@ -1039,7 +1251,7 @@ before the numbers pass retakes the tree:
   handle") was not re-evaluated. `describe_tool` refusals carry no typed kind
   (more than 25 names is a raw validation error), and `system_about` does not
   report `discovery_mode` or the pins. The `Details:` split of long
-  docstrings is 1.8.1.
+  docstrings was planned for 1.8.1; W3 did it (see *W3: Changed*).
 
 **W2 live evidence pending.** AutoCAD 2026 was not running on 2026-11-03.
 Written, not run: the `scripts/smoke_settings_com.py` stages `set edits`
@@ -1074,8 +1286,9 @@ allows. The B40 feature tables get their double-entry pipeline but no row,
 and the native .NET worker is deferred by a measured rule. Two tools are
 added (`mech_part_revise`, `pid_project`) and one resource
 (`autocad://pid/project/last`); `system_about` is the authority for the
-counts. The correctness suite has 83 checks and matrix v9 44 tasks
-(`DEFAULT_MATRIX` stays `v8` until 1.8-25).
+counts. The correctness suite has 83 checks and matrix v9 had 44 tasks at the
+end of W3; 1.8-25 added the last five section-8 rows (49) and made v9 the
+default (see *Gate numbers* above).
 
 ### W3: Added
 
@@ -1285,6 +1498,16 @@ counts. The correctness suite has 83 checks and matrix v9 44 tasks
   with the drawing; a paper-layout target also reads model space's tail, so
   an entity written there is still `created_outside_target_space`.
   `system_run_command` reads each layout block from its end.
+- **Long descriptions are listed short, the whole text one call away (W3
+  token ceiling).** `discovery/descriptions.py` lists a tool description over
+  800 characters as its leading whole paragraphs plus `Details:
+  describe_tool.` (47 of 257 tools) on the full catalog, `TOOL_PROFILE=lean`
+  and every `TOOL_PACKS` surface; the registered tool keeps its docstring and
+  `describe_tool` returns it whole. `DISCOVERY_MODE=off` now lists
+  `describe_tool` as well (`DetailsTransform`), so the pointer leads somewhere
+  on every surface; search mode is byte-identical and is indexed on the full
+  text. `lean` (16,182 prompt tokens) and `packs_core` (40,722) meet their
+  ceilings and flip to `ci`; the default `off` surface is 59,138.
 - **`drawing_finalize`'s docstring and the P&ID prompt template name
   `pid_line_through_symbol` (1.8-20);** the prompt's step 5 routes with
   `route="avoid"` and expects `obstacle_hits` empty.
@@ -1297,72 +1520,6 @@ counts. The correctness suite has 83 checks and matrix v9 44 tasks
 | Live display refresh (1.8-23) | a Regen after each created entity | one refresh per COM job: `Update()` of the entity for a single create, one `Regen` for anything more | `COM_REFRESH_MODE=regen` (one Regen per job); there is no per-entity mode |
 | Live `entity_batch_create` / `entity_delete_many` (1.8-23) | one STA job and one revision step per item, each item its own `COM_CALL_TIMEOUT` | jobs sliced at a quarter of `COM_CALL_TIMEOUT`, one revision step per call, cancellable only between jobs | — |
 | `drawing_critique(focus=None)` on a part drawn before 1.8.0 (1.8-19) | no such focus | one `model_drift` info issue (`unstamped`) per part, so "zero issues" needs the part revised | `mech_part_revise(part_id, changes, overwrite=True)` redraws it with the 1.8.0 stamp (`changes` may not be empty; restating a current value is accepted and recorded as a no-op pair) |
-
-### Not in 1.8.0
-
-- **No B40 row is transcribed.** The licensed copies of DIN 471/472:2011-04,
-  DIN 509, DIN 332-1:1986-04 and ISO 3601-2:2016 were not at hand, so all
-  eight tables (DIN 471, DIN 472, DIN 509-E, DIN 509-F, DIN 332-A,
-  DIN 332-B, ISO 3601-2, ISO 3601-2-axial) ship empty, refuse every size by
-  name and are deferred to 1.8.1 by name - each waiting on its copy (DIN
-  471/472 Table 1, DIN 509 Table 1 forms E and F, DIN 332-1 Table 1 forms A
-  and B, ISO 3601-2 radial static and axial). Nothing is filled from memory
-  or a secondary catalogue; before the first DIN 509 row ships,
-  `profile_from_dims` is confirmed against the standard's figure. The v9
-  `std_tables_b40` task is `not_run` and the smoke's B40 stage only prints
-  its skip.
-- **The native .NET worker is deferred to 1.9.0, by a rule fixed before any
-  measurement** (`docs/adr/0001-native-worker.md`). 1.9.0 builds it only if
-  it is at least 3× faster than the 1.8-23 COM bulk job on the same 1,000
-  lines, or if atomic rollback cannot be made reliable with UNDO marks.
-  Otherwise it stays deferred: a build and signature per AutoCAD release, the
-  SECURELOAD route (`NETLOAD` is on our own denylist), no CI coverage, and a
-  second language for one maintainer. The one-day spike was not run, and no
-  timing is claimed.
-- **1.8.1:** batch lease, `confirm_large` and batch budgets; `cad_batch`
-  step coalescing; the AutoLISP write tier (`command`, `entmod`, `setvar`,
-  `vla-put-*`); `mech_part_revise`'s spec-reconciliation and
-  keep-the-hand-edit modes (a part with a detail view, or with two views
-  sharing a view tag, is refused by name); `pid_project`'s write side (a
-  project-wide tag sequence and a refusal of a tag another sheet holds,
-  through `project=`); DWG export and AUDIT through accoreconsole (the
-  console runs without `/isolate`, so AutoCAD's own support-path
-  `acaddoc.lsp` still loads - noted for 1.8.1); the `Details:` split of long
-  docstrings; redrawing a dimension after move / rotate / mirror / copy /
-  array and inside block definitions.
-- **Built narrower than planned:** `_command_context` (1.8-23 point 4) is not
-  built, because the 1.8-05 smoke that would justify it never ran; a per-line
-  `route="avoid"` inside `pid_from_spec` is refused (only `sheet.routing`),
-  its dry run reports no `label_hits`, and `pid_line_draw` does not expose
-  the node budget; a lost connection in the middle of a live bulk job loses
-  the per-item rows of the jobs already done.
-
-### Live evidence (1.8.0)
-
-**Ran.** `scripts/smoke_accore.py` against the installed
-`C:\Program Files\Autodesk\AutoCAD 2026\accoreconsole.exe`, with no AutoCAD
-window open: 8 / 8 checks in 3.2 s on 2026-11-04 at `4e98c10` (`dirty`
-false), committed as `benchmarks/results/live/accore.json`. It converts the
-bundled `templates/iso_a3_mech.dwt` under a `.dwg` name (no DWG can be
-produced headlessly without ODA) and compares it with
-`templates/iso_a3_mech.dxf`; that template's model space is empty, so the
-entity gate covers its 34 paper-space entities and the block gate is
-trivially equal. The ODA route ran only under monkeypatched tests (ODA is not
-installed here).
-
-**Written, not run** (AutoCAD 2026 was not running for any of them):
-`scripts/smoke_space_com.py`, `scripts/smoke_edit_com.py` and
-`scripts/smoke_render_com.py` (W1) with spikes S4 and S5;
-`scripts/smoke_settings_com.py`'s `set edits`, `dimension truth` and
-`dimension auto` stages, `scripts/smoke_lisp_com.py` and
-`scripts/smoke_durability_com.py` (W2); the revise stage and the B40 stage of
-`scripts/smoke_mech_com.py`, the `avoid` and `project` stages of
-`scripts/smoke_pid_com.py` (the active document plus two DXF sheets; the live
-`.dwg` sheet route is covered by a fake-COM test only), and
-`benchmarks/perf_com.py` (W3). The 1.8-23 gate also needs
-`scripts/smoke_operator_edits_com.py` passing live and `view_screenshot`
-showing a new entity after `Update()`. Every COM path of 1.8.0 not named in
-`accore.json` is covered by fake-COM tests only.
 
 ## [1.7.0] — 2026-10-26
 
