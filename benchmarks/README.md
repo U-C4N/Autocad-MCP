@@ -165,12 +165,12 @@ The v8 tasks stage their inputs inside the headless engine; on the live engine t
 
 **Run manifest.** Every report carries `manifest`: the server's commit and whether tracked files were modified (`dirty`), the sha256 of the files that generate the fixtures (`FIXTURE_SOURCES`), `EVALUATOR_VERSION` and the installed versions of ezdxf, fastmcp, mcp, numpy, openpyxl, matplotlib and pywin32.
 
-### Matrix v9 (v1.8.0, in progress) — call economy, dimension truth, security
+### Matrix v9 (v1.8.0) — call economy, dimension truth, security, durability, the named promises
 
 `tasks_v9.py` keeps the v8 thirty-one unchanged and appends the 1.8.0 tasks per
 plan item, into the same `MATRICES` registry `run_competitors` imports
 (`--matrix v9`). `DEFAULT_MATRIX` stays `v8` until the release item 1.8-25 moves
-it. On the W2 branch so far, five tasks:
+it. v9 holds 44 tasks, v8's 31 plus these 13:
 
 | Task | Category | Verified against |
 |---|---|---|
@@ -179,10 +179,28 @@ it. On the W2 branch so far, five tasks:
 | `lisp_read_tier` | security | three AutoLISP reads (`vla-get-Area`, `getvar`, a `mapcar` over a `lambda`) answer on the first try and `(command "_ERASE" ...)` is refused with its symbol, line and typed alternatives; live engine only (headless: `environment_blocked`) |
 | `layer_cleanup_budget` | ergonomics | six misnamed layers and 300 overridden entities reach ISO names, ByLayer and no empty layer in at most 3 calls, with the `iso128` / `layer_color` / `property_override` critique empty; a stale `expect_count` is refused `stale_revision` with nothing changed |
 | `call_count_dimension_part` | ergonomics | a plate (outline, six holes, two arcs) dimensioned in at most 2 calls, every dimension bound with no `dimension_mismatch` and no duplicate, a second run drawing nothing; an ELLIPSE and a SPLINE in the selection are `omitted` with their reasons |
+| `undo_across_restart` | durability | draw, save, move, save, kill the server; a new process opens the file and one `drawing_undo` puts the line back before the move. Unsaved twin: the file is untouched and `lost_since_save.count` is 1 |
+| `atomic_batch_default` | durability | a line moved and a handle that does not exist deleted in one batch with no `on_error`: refused `unknown_handle`, nothing executed, the line unchanged. Run-time twin: the default rolls the move back, verified |
+| `history_value_lookup` | durability | three rounds of a plate (hole 10, 12 labelled `round 2`, 16), saved, the server killed; a new process finds the round-2 diameter 12 in at most two calls (`drawing_open` + `drawing_history`). Twins: a label nobody gave is refused by name; an unlabelled round is read from the checkpoint diff |
+| `parametric_revise_keeps_handles` | parametric | a dimensioned three-view flange revised in one `mech_part_revise` (bore 20 → 24, length 60 → 70, + chamfer, - radius): in-place handles kept, signatures equal to a fresh draw, the dimensions read 24 and 70, the bore requirement passes. Twin `revise_hand_edit_refused`: a hand-moved tagged line is refused `hand_edited_tagged_entity` with the fingerprints unchanged |
+| `pid_routing_obstacles` | pid | a sheet whose `auto` lines cross two vessels, routed with `sheet.routing: "avoid"`: zero `pid_line_through_symbol`, zero dangling ends, crossings within the dry run's; a walled-in pump refused `no_route` naming the four vessels' tags |
+| `pid_project_offpage` | pid | three P&ID sheet files checked by `pid_project`: one orphan link, one direction mismatch, one cross-sheet duplicate tag and one line-number mismatch, each once with sheet and handle; a missing sheet file and 51 sheets refused by name |
+| `std_tables_b40` | standards | one size from every filled DIN 471/472, DIN 509, DIN 332-1 and ISO 3601-2 table drawn with the double entry's own dimensions, a size between two rows refused by name with nothing drawn. With no table filled - the 1.8.0 state, every table deferred to 1.8.1 - it is `not_run` naming the deferred tables, never a pass |
+| `dwg_headless_roundtrip` | reliability | a DWG opened on the headless engine through a converter (ODA, then `accoreconsole`) and saved as DXF with the layers, blocks and entity counts of its DXF twin; with no converter on the machine the open is refused `dwg_read` and the task is `environment_blocked` |
 
-`dimension_lie_detect`, `layer_cleanup_budget` and `call_count_dimension_part`
-stage their inputs in the headless engine and are `not_run` on the live lane.
-The 1.8-08 / 1.8-09 / 1.8-10 tasks join when those items merge.
+`dimension_lie_detect`, `layer_cleanup_budget`, `call_count_dimension_part`,
+`undo_across_restart`, `atomic_batch_default`, `history_value_lookup`,
+`parametric_revise_keeps_handles`, `pid_routing_obstacles`,
+`pid_project_offpage` and `dwg_headless_roundtrip` stage their inputs in the
+headless engine and are `not_run` on the live lane (`HEADLESS_ONLY_V9`).
+`pid_roundtrip` (v4) is pinned to `sheet.routing: "auto"`, so v9 does not
+change what v4 measured.
+
+**Search mode is not vacuous.** Under the 1.8.0 default (`DISCOVERY_MODE=search`)
+the reference adapter's in-process MCP-client tasks reach every non-synthetic
+tool through `call_tool`, and the adapter reports `discovery_mode` and
+`proxied_calls` in its metadata. On the 1.8-11 branch, v8 passed 31 / 31
+(`proxied_calls` 9) and v9 33 / 33 (`proxied_calls` 41) under the new default.
 
 ## Live competitor lane (v1.4)
 
@@ -360,6 +378,32 @@ pr.disable()
 print(pstats.Stats(pr).total_calls)
 ```
 
+## Live COM performance lane (1.8-23) - written, not yet run
+
+`perf_com.py` measures the live engine against a v1.7.0 checkout on a running
+AutoCAD, never in CI. Each side runs in its own child process with its own
+backends and server first on `sys.path`, through an in-process fastmcp client,
+on a document seeded with 5,000 lines; every repeated workload gets one untimed
+warm-up, and what a workload created is removed untimed so each runs at about
+5,000 entities. The workloads: `create_circle_singles`, `batch_create_200`,
+`delete_singles_200`, `delete_many_200`, `cad_batch_50`, `fillet_50_n5000` and
+`fillet_50_n10000`. Its targets were fixed before any run: the bulk tools at
+least 5× faster than v1.7.0's 200 single calls, the single
+`entity_create_circle` median at least 30 % lower, and `entity_fillet` at
+10,000 lines at most 1.2× its time at 5,000. The bulk-delete target is measured
+on the tool as 1.8.0 ships it, pre-check and transaction included.
+
+```bash
+python -m benchmarks.perf_com --base <a v1.7.0 checkout>   # writes results/live/perf_com.json
+python -m benchmarks.perf_com --pending   # the skeleton; no AutoCAD
+```
+
+AutoCAD was not open when 1.8-23 was written, so
+[`results/live/perf_com.json`](results/live/perf_com.json) is the `--pending`
+skeleton: `status: "pending"`, the targets, every verdict `pass: null`. No live
+number is claimed. ADR 0001 (`docs/adr/0001-native-worker.md`) names a recorded
+live `perf_com.json` as what would trigger its one-day worker spike.
+
 ## Token and call budgets (1.8.0)
 
 `token_suite.py` measures what the server costs a model in tokens, offline (a
@@ -399,7 +443,28 @@ oracles measured so far: `sketch_20_entities` 1 call (naive 20),
 then `drawing_critique`; naive 311; 1.7.0 took 124, the rival 11),
 `dimension_plate` 2 (`dimension_auto(selector=...)` + `drawing_critique`; naive
 23; 1.7.0 89, the rival 10), `inspect_foreign` 1 (`drawing_understand`; naive
-5); `history_value_lookup` is `pending_tool` until `drawing_history` (1.8-10).
+5), and since 1.8-10 `history_value_lookup` 2 (`drawing_open` +
+`drawing_history(handle=..., detail="args")`; 1.7.0 could not answer it). The
+history oracle counts its two calls in one in-process client; the restart half
+is proven by the v9 task and the `history_round2_value` check, which kill real
+server processes.
+
+The cells' gates as `token_budget.json` holds them now:
+
+| Lane | Cell | Ceiling | Gate | State |
+|---|---|---:|---|---|
+| idle | `default` | 65,594 tokens | `ci` | owner 1.8-14 |
+| idle | `lean` | 18,842 | `release` | over its ceiling at W2 start (18,961); owner W3, the `Details:` split, which is 1.8.1 |
+| idle | `packs_core` | 43,997 | `release` | over its ceiling at W2 start (44,235); same owner |
+| idle | `search` | 250 | `ci` | measured by 1.8-11: 220 prompt / 230 wire |
+| idle | `search_pinned` | 1,500 | `ci` | measured by 1.8-11: 1,003 prompt / 1,277 wire, six tools |
+| idle | `instructions` | 250 | `ci` | measured by 1.8-11: 199 tokens |
+| result | `system_status_1000_rows`, `critique_500_summary`, `finalize_qa_coverage`, `error_envelope`, `history_row` | see the file | `release` | the result-lane rows are not yet measured by `token_suite`; tests hold `system_status` (+300 bytes at 1,000 rows), the 500-issue summary, finalize's `qa_coverage` and `drawing_history(limit=10)` (under 400 tokens) |
+| task | `sketch_20_entities`, `inspect_foreign`, `layer_cleanup_300`, `dimension_plate`, `history_value_lookup` | 1, 1, 3, 2, 2 calls | `ci` | measured |
+| real model | `plugin_eval` | 6 calls per case | `release` | 1.8-11's runs: `layer-cleanup-budget` 3 and 6 (pass), `dimension-budget` 9 and 12 (over); `history-round2` written, not yet run |
+
+The measured token values above are the items' own; the numbers pass retakes
+every cell on the release tree.
 
 ## Correctness A/B suite
 
@@ -425,10 +490,10 @@ baseline inside its function, and a check the baseline cannot pass records
 function placed just before `CHECKS` (the file ends in `main()`) and an entry at
 the end of `CHECKS`.
 
-**On the 1.8.0 branch, after W2's first merges** the suite holds 74 checks: the
-67 below plus seven, each failing or missing on v1.7.0 and passing on the
-branch. The published report is still the W1 run and is regenerated over all
-of them at the W2 integration.
+**On the 1.8.0 branch, with W2 and W3 merged,** the suite holds 83 checks: the
+67 below plus twelve W2 and four W3 checks, each passing on the branch. The
+published report is still the W1 run over 67 and is regenerated over all 83
+by the numbers pass (`benchmarks/results/published/ab-v1.7.0-vs-v1.8.0.json`).
 
 | Check | Category | Item | Verified against |
 |---|---|---|---|
@@ -439,6 +504,15 @@ of them at the W2 integration.
 | `write_path_autoload_refused` | Security | 1.8-17 | `data_extract` → `acaddoc.lsp` and `drawing_save_as` → `acad.lsp` are `path_refused`, nothing written |
 | `dimension_auto_one_call_part` | Dimensions | 1.8-13 | one `dimension_auto(selector=...)` dimensions a plate (4 edges, six Ø11, two R8, sizes read off the DIMENSIONs), omits the ellipse, and a rerun draws nothing |
 | `property_override_focus` | Quality gate | 1.8-01 (the plan's section-8 check W1 did not add) | through the server: a clean GEOMETRY line yields nothing; one given colour 1 and lineweight 30 is named by exactly `lineweight_not_bylayer` (error) and `color_not_bylayer` (warning) with only its handle; `drawing_refine` applies both repairs and leaves it at colour 256 and ByLayer |
+| `search_default_lists_pins_and_batch_first` | Discovery | 1.8-11 | with nothing set, a client lists exactly `search_tools`, `call_tool`, `describe_tool`, `cad_batch`, `drawing_info` and `entity_list`; an unlisted `entity_create_line` still runs on a direct call; `describe_tool(names=[...])` answers two cards in one call; the instructions name `cad_batch`, nothing unlisted and no `titleblock_apply_iso_a3` |
+| `undo_after_restart` | Durability | 1.8-08 | a real `python server.py` draws, saves, moves, saves and is killed; a new process opens the file and one `drawing_undo` puts the line back with `granularity: "save"`; a killed unsaved session leaves the file as saved and the next open reports `lost_since_save.count == 1` |
+| `atomic_batch_default` | Durability | 1.8-09 | `[entity_move(L), entity_delete("DEAD")]` with no `on_error` is refused `unknown_handle` with L unchanged; the run-time twin is rolled back by the default with `atomicity.verified` true |
+| `delete_many_all_or_nothing` | Durability | 1.8-09 | `entity_delete_many([A, "DEAD"])` keeps A and does not answer `ok: true`; a delete made to fail mid-call answers `ok: false` with A, B and C all still in the drawing |
+| `history_round2_value` | Durability | 1.8-10 | the round-2 hole diameter (12) of a three-round plate is read back after a killed server in two calls (`drawing_open` + `drawing_history(label="round 2", detail="args")`); an unknown label is refused `invalid_args` naming the labels; an unlabelled round is read from the checkpoint diff |
+| `pid_project_links` | P&ID | 1.8-21 | two sheet files: a matched link whose line numbers disagree, an orphan, a direction mismatch and a pump on both sheets, each reported once with sheet and handle; 51 sheets refused by name |
+| `pid_avoid_no_symbol_crossing` | P&ID | 1.8-20 | a pump discharging into a far vessel with another between them: with `sheet.routing: "avoid"` the polyline enters no symbol's box but its two ends (each INSERT's own ezdxf bounding box, not the server's focus) and the graph read back holds no dangling end |
+| `b40_between_rows_refused` | Mechanical | 1.8-22 | every empty B40 table refuses a lookup naming itself; on a synthetic double entry (round numbers, not DIN values) a listed size draws its row, a size between two rows is refused with both neighbours named and nothing drawn, and an entry B one value off entry A is refused by path |
+| `mech_revise_keeps_handles` | Mechanical | 1.8-19 | a Ø60 × 30 bushing revised to a Ø24 bore and length 40: every LINE / CIRCLE / ARC edited in place keeps its handle, the end view's bore circle is r = 12, the signatures equal a fresh draw of the revised part; a tagged line moved 1 mm by hand refuses the revision `hand_edited_tagged_entity` with nothing changed |
 
 ### Result — v1.8.0 vs v1.7.0 (release gate, W1 state)
 

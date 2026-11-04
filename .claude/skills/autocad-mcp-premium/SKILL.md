@@ -17,8 +17,8 @@ Each row names the references to read before the first call.
 | You were given | Read first | Core tools |
 |---|---|---|
 | A dimensioned sketch, PDF or image of a part | [dimensioned-reconstruction](references/dimensioned-reconstruction.md), [requirement-binding](references/requirement-binding.md) | `drawing_preflight`, `mech_part_draw`, `drawing_verify_requirements` |
-| A drawing to change (ours or the operator's) | [mechanical-editing](references/mechanical-editing.md), [recovery-and-transactions](references/recovery-and-transactions.md) | `cad_batch(dry_run=True)`, then apply with `expected_revision=` |
-| A P&ID to draw or read | [pid-projects](references/pid-projects.md) | `pid_from_spec`, `pid_graph`, `pid_instrument_index` |
+| A drawing to change (ours or the operator's) | [mechanical-editing](references/mechanical-editing.md), [recovery-and-transactions](references/recovery-and-transactions.md) | `cad_batch(dry_run=True)`, `mech_part_revise`, `drawing_history` |
+| A P&ID to draw or read | [pid-projects](references/pid-projects.md) | `pid_from_spec`, `pid_graph`, `pid_project` |
 | Somebody else's DWG/DXF | [foreign-drawing](references/foreign-drawing.md) | `drawing_understand`, `drawing_topology_check`, `drawing_diff` |
 | A floor plan | [architecture](references/architecture.md) | `arch_plan_from_spec`, `arch_rooms_detect`, `arch_schedule` |
 | Quantities (pipe, cable) | [takeoff-evidence](references/takeoff-evidence.md) | `drawing_scale_check`, `pipe_takeoff`, `cable_takeoff` |
@@ -84,6 +84,7 @@ More than 3 consecutive calls to the same tool = a missed batch tool.
 | Dimension a part | `dimension_auto(selector=...)` |
 | Part, P&ID, plan | `mech_part_from_spec`, `pid_from_spec`, `arch_plan_from_spec` |
 | Read a foreign drawing | `drawing_understand` |
+| A value from an earlier round | `drawing_history(label=...)` |
 | Check the result | its own `created`/`omitted`, one `drawing_critique`; never `entity_get` per handle |
 
 ## 5. Reporting
@@ -100,10 +101,9 @@ item. Say "draft" when anything is open.
 - [stale-revision](examples/stale-revision.md) - an edit refused because the drawing moved.
 - [accepted-delivery-report](examples/accepted-delivery-report.md) - reading a delivery and its manifest.
 
-## Not yet (1.8.0 and later)
+## Not yet (after 1.8.0)
 
-Do not promise these; they do not exist in this release: parametric edit and
-rebuild of a drawn part, obstacle-aware P&ID routing and multi-file P&ID
-projects, a native .NET worker, transcribed DIN 471/472, DIN 509, DIN 332 and
-ISO 3601-2 rows (the tables refuse every size today), and electrical
-schematics (1.9.0).
+Do not promise these: transcribed DIN 471/472, DIN 509, DIN 332 and ISO 3601-2
+rows (every size is refused), a revision that keeps a hand edit, a
+project-wide P&ID tag sequence, the AutoLISP write tier, a native .NET worker
+and electrical schematics (1.9.0).
