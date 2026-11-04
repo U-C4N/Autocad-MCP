@@ -618,6 +618,7 @@ async def test_tool_group_sizes_are_unchanged():
 
     v1.8.0's 1.8-12 adds `entity_modify_where` to `entity_modification` (16 ->
     17) and `layer_rename` / `layer_merge` to `layers` (14 -> 16): 251 tools.
+    Its 1.8-19 adds `mech_part_revise` to `mechanical` (14 -> 15): 252 tools.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
@@ -635,7 +636,7 @@ async def test_tool_group_sizes_are_unchanged():
         "environment": 22,
         "layers": 16,  # + layer_rename, layer_merge (1.8-12)
         "layouts": 12,
-        "mechanical": 14,
+        "mechanical": 15,  # + mech_part_revise (1.8-19)
         "page_setup": 6,
         "pid": 9,
         "plant": 2,
@@ -650,4 +651,4 @@ async def test_tool_group_sizes_are_unchanged():
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 251
+    assert sum(sizes.values()) == 252

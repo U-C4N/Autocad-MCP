@@ -1697,6 +1697,7 @@ PACK_TOOL_NAMES: dict[str, frozenset[str]] = {
             "mech_hole_pattern",
             "mech_part_from_spec",
             "mech_part_inspect",
+            "mech_part_revise",
             "std_part_list",
             "std_part_insert",
             "std_feature_draw",
@@ -10706,23 +10707,112 @@ async def mech_part_inspect(
             description="Anchor handle from mech_part_draw; omit if the drawing holds one part",
         ),
     ] = None,
+    drift: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="Also compare every tagged entity with the model: drift rows, "
+            "model_is_current",
+        ),
+    ] = False,
+    history: Annotated[
+        bool,
+        Field(default=False, description="Also return the model history (mech_part_revise)"),
+    ] = False,
+    param: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="A change path, e.g. 'features.bore.diameter': its value per revision",
+        ),
+    ] = None,
     ctx: Context = None,
 ) -> dict:
     """The `ACADMCP_MECH` payload a drawn part carries, decoded.
 
     Never modifies the drawing. Returns the part model exactly as
     `mech_part_draw` accepts it (`part`), the views drawn so far with their
-    placements, and the payload version.
+    placements, and the payload version. `drift=True` adds `drift` (each
+    tagged entity that no longer matches the model: feature, view, expected,
+    measured, status) and `model_is_current`; `history=True` / `param` add
+    the revisions `mech_part_revise` stored in the drawing.
 
     Refused by name: an unknown part_id, a handle that carries no
     `ACADMCP_MECH` payload, a corrupt or foreign payload, and `part_id=None` on
     a drawing that holds no part or more than one (the message lists the
     handles).
     """
-    from engineering.mech.draw import read_part
+    from engineering.mech.revise import inspect
 
     try:
-        return await read_part(_backend(ctx), part_id)
+        return await inspect(_backend(ctx), part_id, drift=drift, history=history, param=param)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@cad_tool(
+    summary="Change a drawn part's parameters and rebuild its views in place, keeping handles.",
+    cost="destructive",
+)
+@mcp.tool(
+    annotations={"title": "Mechanical: Revise Part", "destructiveHint": True},
+    tags={"mech", "modify"},
+)
+async def mech_part_revise(
+    part_id: Annotated[str, Field(description="Anchor handle from mech_part_draw")],
+    changes: Annotated[
+        dict,
+        Field(
+            description="Path edits: {'segments[1].length': 50, 'features.bore.diameter': 24, "
+            "'features.r1': null, 'features+': {kind, id, ...}}"
+        ),
+    ],
+    overwrite: Annotated[
+        bool,
+        Field(default=False, description="Replace hand edits; redraw a part drawn before 1.8.0"),
+    ] = False,
+    dry_run: Annotated[
+        bool, Field(default=False, description="Counts and a `preview`; change nothing")
+    ] = False,
+    expected_revision: Annotated[
+        int | None,
+        Field(default=None, description="Apply only at this revision (a dry run's preview)"),
+    ] = None,
+    preconditions: Annotated[
+        list[dict] | None,
+        Field(default=None, description="A dry run's `preview.preconditions`"),
+    ] = None,
+    verify: Annotated[
+        bool,
+        Field(default=True, description="Measure the stored requirements afterwards"),
+    ] = True,
+    ctx: Context = None,
+) -> dict:
+    """Edit a drawn part's model by path and rebuild its views in place, in one transaction.
+
+    LINE/CIRCLE/ARC keep their handles; other changed entities are redrawn
+    (`handle_map`); dimensions are redrawn, so their handles change. Each
+    revision joins the part's model history.
+
+    Refused, nothing written: a bad path or a value the part refuses
+    (invalid_args); a tagged entity edited by hand (hand_edited_tagged_entity)
+    or a part drawn before 1.8.0 (model_drift) unless overwrite=True; a moved
+    preview (stale_revision); a detail view or a repeated view tag.
+    """
+    from engineering.mech.revise import revise_part
+
+    await ctx.info(f"mech_part_revise: {part_id} ({len(changes or {})} change(s))")
+    try:
+        return await revise_part(
+            _backend(ctx),
+            part_id,
+            changes,
+            overwrite=overwrite,
+            dry_run=dry_run,
+            expected_revision=expected_revision,
+            preconditions=preconditions,
+            verify=verify,
+        )
     except ValueError as exc:
         raise ToolError(str(exc)) from exc
 

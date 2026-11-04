@@ -575,6 +575,11 @@ from .mech.critique import MECH_DISPATCH  # noqa: E402  (same reason: after the 
 
 _FOCUS_DISPATCH.update(MECH_DISPATCH)
 
+from .mech.drift import FOCUS as _MODEL_DRIFT  # noqa: E402  (1.8-19, mechanical domain)
+from .mech.drift import check_model_drift  # noqa: E402
+
+_FOCUS_DISPATCH[_MODEL_DRIFT] = check_model_drift
+
 from .arch.critique import ARCH_DISPATCH  # noqa: E402  (same reason: after the base focuses)
 
 _FOCUS_DISPATCH.update(ARCH_DISPATCH)

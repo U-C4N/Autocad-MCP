@@ -10,6 +10,7 @@ path. The whole track goes through the same code the tools call:
       -> insert_std_part (ISO 4014 block + ACADMCP_MECH xdata)
       -> weld_symbol_prims -> extract_records -> rows_from_records
       -> draw_bom_table -> add_balloon
+      -> revise_part (1.8-19: in place; a hand-moved line refused; overwrite)
       -> xref_attach / xref_manage("list") / xref_manage("detach")
       -> run_critique(focus=None) -> drawing_export_dwg
 
@@ -114,14 +115,41 @@ def assess(h: LiveHarness, report: dict) -> None:
         expected=0,
         observed=report["critique"],
     )
+    revise = report["revise"]
+    h.check(
+        "mech_part_revise kept every in-place handle and left the part current",
+        revise["changed"]
+        and revise["in_place"] > 0
+        and revise["in_place_alive"] == revise["in_place"]
+        and revise["model_is_current"],
+        observed=revise,
+    )
+    h.check(
+        "a hand-moved tagged line refused the revision, nothing changed",
+        revise["refused_handles"] == [revise["moved_handle"]] and revise["fingerprints_unchanged"],
+        expected=[revise["moved_handle"]],
+        observed={
+            "handles": revise["refused_handles"],
+            "unchanged": revise["fingerprints_unchanged"],
+        },
+    )
+    h.check(
+        "overwrite=True put the line back",
+        revise["overwritten"] == [revise["moved_handle"]] and revise["restored_current"],
+        observed=revise["overwritten"],
+    )
 
 
 async def body(h: LiveHarness) -> dict:
+    from engineering.changes.preview import entity_fingerprints
     from engineering.critique import run_critique
+    from engineering.errors import HandEditedTaggedEntityError
     from engineering.layers import apply_layer_set
     from engineering.mech.annotate import weld_symbol_prims
     from engineering.mech.draw import add_view, dimension_part, draw_part, draw_prims
+    from engineering.mech.drift import inspect_drift, tagged_entities
     from engineering.mech.part import build_part
+    from engineering.mech.revise import revise_part
     from engineering.mech.stdparts import insert_std_part
     from engineering.sheet.bom import (
         add_balloon,
@@ -135,6 +163,7 @@ async def body(h: LiveHarness) -> dict:
         apply_titleblock,
         titleblock_origin,
     )
+    from engineering.understand.snapshot import take_snapshot
 
     workspace = Path(tempfile.mkdtemp(prefix="mech_smoke_"))
     h.stage("xref source")
@@ -191,6 +220,30 @@ async def body(h: LiveHarness) -> dict:
         targets=[str(handle) for handle in rows[0]["handles"]],
     )
 
+    h.stage("revise")
+    # 1.8-19: one parameter revision in place, then the hand-edit refusal and
+    # its overwrite, so the sheet ends as the model draws it (the critique
+    # below runs model_drift too).
+    pid = drawn["part_id"]
+    revised = await revise_part(
+        backend, pid, {"segments[0].length": 38.0, "segments[1].d_inner": 22.0}
+    )
+    snap = await take_snapshot(backend)
+    alive = {rec.handle for rec in snap.records}
+    current = (await inspect_drift(backend, pid)).model_is_current
+    line = next(t for t in tagged_entities(snap.records, pid) if t.type == "LINE")
+    await backend.entity_move(line.handle, 1.0, 0.0)
+    handles = [rec.handle for rec in (await take_snapshot(backend)).records]
+    before = await entity_fingerprints(backend, handles)
+    refusal: dict = {}
+    try:
+        await revise_part(backend, pid, {"segments[0].length": 36.0})
+    except HandEditedTaggedEntityError as exc:
+        refusal = exc.fields()
+    unchanged = before == await entity_fingerprints(backend, handles)
+    restored = await revise_part(backend, pid, {"segments[0].length": 38.0}, overwrite=True)
+    restored_current = (await inspect_drift(backend, pid)).model_is_current
+
     h.stage("xref")
     attached = await backend.xref_attach(str(xref_path), (30.0, 30.0), 1.0, 0.0, "attach")
     listed = await backend.xref_manage(attached["name"], "list", None)
@@ -225,6 +278,18 @@ async def body(h: LiveHarness) -> dict:
         },
         "critique_issues": len(issues),
         "critique": [issue.to_dict() for issue in issues],
+        "revise": {
+            "changed": revised.get("changed"),
+            "in_place": len(revised.get("in_place") or []),
+            "in_place_alive": len(set(revised.get("in_place") or []) & alive),
+            "handle_map": revised.get("handle_map"),
+            "model_is_current": current,
+            "refused_handles": refusal.get("handles"),
+            "moved_handle": line.handle,
+            "fingerprints_unchanged": unchanged,
+            "overwritten": [row.get("handle") for row in restored.get("overwritten") or []],
+            "restored_current": restored_current,
+        },
     }
     h.stage("checks")
     assess(h, report)

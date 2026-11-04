@@ -41,6 +41,7 @@ from engineering.mech.primitives import (
     Poly,
     Text,
     layer_for,
+    prims_digest,
     rotate,
     translate,
 )
@@ -62,6 +63,14 @@ log = logging.getLogger(__name__)
 ANCHOR_LAYER = "MECH"
 
 DEFAULT_GAP = 20.0
+
+#: The view-engine generation a part payload was drawn by (v1.8.0, plan item
+#: 1.8-19). A payload carrying it also carries, per view record, ``sha`` - the
+#: digest of the WCS primitives that view was drawn from - so
+#: ``mech_part_revise`` can tell a hand edit from an engine that now draws the
+#: same model differently. A payload without it (drawn by 1.7.0) is
+#: ``model_drift`` to the revision: refused unless ``overwrite=True``.
+GEN_STAMP = 1
 
 #: How far a standalone hole pattern's ISO 128-23 centre mark reaches past the
 #: hole it marks, in drawing units. DECLARED, not standard: ISO 128-23 fixes
@@ -198,6 +207,7 @@ async def draw_prims(
     layer_prefix: str = "",
     role_layer: Mapping[str, str] | None = None,
     feature_tag: Mapping[str, str] | None = None,
+    indices: tuple[int, ...] | list[int] | None = None,
 ) -> dict:
     """Draw primitive descriptions, turned by ``rotation`` about their origin, then placed at ``at``.
 
@@ -212,9 +222,15 @@ async def draw_prims(
     entity in its create call: no extra round trip per entity. A copy of the
     entity carries the tag, which is how a binder sees two candidates for one
     feature. Since v1.8.0 the record also carries ``i``, the primitive's
-    ordinal in this call.
+    ordinal in this call - or, when ``indices`` is given (one per primitive),
+    that ordinal: ``mech_part_revise`` draws one primitive of a view at a time
+    and tags it with its place in the whole view.
     """
     placed = tuple(prims)
+    if indices is not None and len(indices) != len(placed):
+        raise ValueError(
+            f"draw_prims: {len(indices)} indices for {len(placed)} primitives; give one each."
+        )
     _refuse_islands_without_edge_paths(backend, placed)
     targets = [f"{layer_prefix}{_layer_of(p, role_layer)}" for p in placed]
     for prim in placed:
@@ -230,7 +246,9 @@ async def draw_prims(
     counts: dict[str, int] = {}
 
     for index, (prim, layer) in enumerate(zip(placed, targets, strict=True)):
-        tag = _feature_xdata(prim, feature_tag, index)
+        tag = _feature_xdata(
+            prim, feature_tag, int(indices[index]) if indices is not None else index
+        )
         extra = {"xdata": tag} if tag else {}
         if isinstance(prim, Line):
             info = await backend.entity_create_line(
@@ -572,10 +590,13 @@ def _view_record(
     kw: dict,
     at: tuple[float, float] = (0.0, 0.0),
     rotation: float = 0.0,
+    prims=None,
 ) -> dict:
     x0, y0, x1, y1 = view.bbox
     frame = [x0 + offset[0], y0 + offset[1], x1 + offset[0], y1 + offset[1]]
+    stamp = {} if prims is None else {"sha": prims_digest(prims)}
     return {
+        **stamp,
         "kind": view.kind,
         "label": view.label,
         "scale": view.scale,
@@ -685,14 +706,15 @@ async def draw_part(
                     child=view,
                 )
                 offset = _offset_for(view, lower_left)
+            wcs = _to_wcs(view.prims, offset, origin, turn)
             drawn = await draw_prims(
                 backend,
-                _to_wcs(view.prims, offset, origin, turn),
+                wcs,
                 feature_tag={"part": anchor.handle, "view": _view_tag(view)},
             )
             handles.extend(drawn["handles"])
             omitted.extend(view.omitted)
-            records.append(_view_record(view, offset, {"scale": scale}, origin, turn))
+            records.append(_view_record(view, offset, {"scale": scale}, origin, turn, prims=wcs))
             if index == 0:
                 parent, parent_offset = view, offset
     except Exception:
@@ -711,6 +733,7 @@ async def draw_part(
             "projection": projection,
         },
         "views": records,
+        "gen": GEN_STAMP,
     }
     await backend.entity_set_xdata(anchor.handle, APP_ID, to_values(payload))
 
@@ -853,9 +876,10 @@ async def add_view(backend, part_id: str, kind: str, **kw) -> dict:
     )
     offset = _offset_for(view, lower_left)
 
+    wcs = _to_wcs(view.prims, offset, origin, rotation)
     drawn = await draw_prims(
         backend,
-        _to_wcs(view.prims, offset, origin, rotation),
+        wcs,
         feature_tag={"part": part_id, "view": _view_tag(view)},
     )
     marker_handles: list[str] = []
@@ -878,9 +902,13 @@ async def add_view(backend, part_id: str, kind: str, **kw) -> dict:
                 "scale": scale,
                 "plane": _plane_to_json(plane),
                 "detail": detail,
+                # v1.8.0: the gap the view was laid out with, so a revision
+                # lays it out again exactly as this call did
+                "gap": gap,
             },
             origin,
             rotation,
+            prims=wcs,
         )
     )
     payload["views"] = records
@@ -1002,10 +1030,12 @@ async def dimension_part(
     # drawn: a fit no target view claims must not leave half a view dimensioned
     # and unflagged behind it.
     planned: list[tuple[int, View, list]] = []
+    claimed: dict[int, dict] = {}
     unclaimed = set(fits)
     for index in targets:
         view = _view_from_record(part, payload, records[index])
         mine = _fits_for_view(part, view, fits, style=style, threshold=threshold)
+        claimed[index] = dict(mine)
         unclaimed -= set(mine)
         intents = dimension_intents(
             part, view, style=style, hole_table_threshold=threshold, fits=mine or None
@@ -1075,6 +1105,13 @@ async def dimension_part(
             handles.append(info.handle)
         if placed or rows:
             record["dimensioned"] = True
+            # v1.8.0 (1.8-19): how the view was dimensioned, so a revision
+            # re-dimensions it the same way (the fits this view claimed).
+            record["dim"] = {
+                "style": style,
+                "hole_table_threshold": threshold,
+                **({"fits": claimed[index]} if claimed.get(index) else {}),
+            }
         else:
             # Said, not silently counted as done: the view stays unflagged, so a
             # later call can dimension it once the dimension layer covers it.
@@ -1197,6 +1234,49 @@ async def draw_hole_pattern(
 # -- the whole sheet ---------------------------------------------------------
 
 
+async def guarded_transaction(backend, job, *, what: str, done: str = "changed"):
+    """``await job()`` inside one transaction, rolled back under a shield on any failure.
+
+    The guard ``mech_part_from_spec`` has always used, shared since v1.8.0 with
+    ``mech_part_revise`` (plan item 1.8-19): a transaction that cannot be opened
+    is a refusal with nothing ``done``; a failure or a cancellation rolls the
+    whole job back - shielded, because the MCP SDK cancels a request by
+    cancelling an anyio scope and a bare ``await`` would itself be cancelled
+    before the rollback ran.
+    """
+    begun = await backend.transaction_begin()
+    if not isinstance(begun, dict) or not begun.get("ok"):
+        # a refusal, not a crash: ValueError is what the tool layer turns into
+        # a ToolError, and nothing has been written yet
+        detail = begun.get("error") if isinstance(begun, dict) else begun
+        raise ValueError(
+            f"{what}: could not open a transaction ({detail}); nothing was {done}. "
+            "If one is already open, close it with transaction_commit or "
+            "transaction_rollback and retry."
+        )
+    try:
+        result = await job()
+    except BaseException as exc:
+        cancelled = isinstance(exc, anyio.get_cancelled_exc_class())
+        with anyio.CancelScope(shield=True):
+            try:
+                await backend.transaction_rollback()
+            except Exception as rollback_exc:
+                if not cancelled:
+                    raise
+                log.error(
+                    "%s: rollback after a cancelled request failed (%s: %s); "
+                    "the sheet may be half-drawn - check system_status and "
+                    "transaction_rollback before retrying",
+                    what,
+                    type(rollback_exc).__name__,
+                    rollback_exc,
+                )
+        raise
+    await backend.transaction_commit()
+    return result
+
+
 async def draw_from_spec(backend, spec: dict) -> dict:
     """A whole mechanical sheet from one declarative spec, inside one transaction.
 
@@ -1252,19 +1332,8 @@ async def draw_from_spec(backend, spec: dict) -> dict:
             sheet.get("layer_set", "mech"),
         )
 
-    begun = await backend.transaction_begin()
-    if not isinstance(begun, dict) or not begun.get("ok"):
-        # a refusal, not a crash: ValueError is what the tool layer turns into
-        # a ToolError, and nothing has been drawn yet
-        detail = begun.get("error") if isinstance(begun, dict) else begun
-        raise ValueError(
-            f"mech_part_from_spec: could not open a transaction ({detail}); nothing was drawn. "
-            "If one is already open, close it with transaction_commit or "
-            "transaction_rollback and retry."
-        )
-
-    drawn: list[dict] = []
-    try:
+    async def draw_all() -> list[dict]:
+        drawn: list[dict] = []
         for index, job in enumerate(jobs):
             try:
                 drawn.append(
@@ -1281,23 +1350,9 @@ async def draw_from_spec(backend, spec: dict) -> dict:
                 )
             except ValueError as exc:
                 raise ValueError(f"parts[{index}]: {exc}") from exc
-    except BaseException as exc:
-        cancelled = isinstance(exc, anyio.get_cancelled_exc_class())
-        with anyio.CancelScope(shield=True):
-            try:
-                await backend.transaction_rollback()
-            except Exception as rollback_exc:
-                if not cancelled:
-                    raise
-                log.error(
-                    "mech_part_from_spec: rollback after a cancelled request failed (%s: %s); "
-                    "the sheet may be half-drawn - check system_status and "
-                    "transaction_rollback before retrying",
-                    type(rollback_exc).__name__,
-                    rollback_exc,
-                )
-        raise
-    await backend.transaction_commit()
+        return drawn
+
+    drawn = await guarded_transaction(backend, draw_all, what="mech_part_from_spec", done="drawn")
 
     return {
         "parts": drawn,

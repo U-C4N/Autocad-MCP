@@ -29,6 +29,9 @@ which reaches 66 (56 with TOOL_PACKS=core).
 
 v1.8.0 (1.8-12) adds `entity_modify_where` (core) to lean: 67 (57 with
 TOOL_PACKS=core).
+
+v1.8.0 (1.8-19) adds `mech_part_revise` to the `mech` pack (15 tools); it is
+not a lean tool, so lean is unchanged.
 """
 
 from __future__ import annotations
@@ -107,6 +110,7 @@ MECH_TOOLS = {
     "mech_hole_pattern",
     "mech_part_from_spec",
     "mech_part_inspect",
+    "mech_part_revise",
     "std_part_list",
     "std_part_insert",
     "std_feature_draw",
@@ -205,7 +209,7 @@ def test_pack_registry_names_real_tools_and_only_them():
     assert server.PACK_TOOL_NAMES["arch"] == frozenset(ARCH_TOOLS)
     assert server.PACK_TOOL_NAMES["plant"] == frozenset(PLANT_TOOLS)
     assert len(SETTINGS_TOOLS) == 22
-    assert len(MECH_TOOLS) == 14
+    assert len(MECH_TOOLS) == 15  # + mech_part_revise (1.8-19)
     assert len(ARCH_TOOLS) == 12
     assert len(PLANT_TOOLS) == 2
     assert not (server.PACK_TOOL_NAMES["settings"] & server.PACK_TOOL_NAMES["pid"])

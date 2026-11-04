@@ -1,0 +1,418 @@
+"""``mech_part_revise``: change a parameter, rebuild in place (plan item 1.8-19, B24-B28).
+
+The gate: a dimensioned flange drawn in three views (front, end, section A-A)
+with a bolt circle; the bore goes 20 -> 24, the length 60 -> 70, a chamfer is
+added and the step radius removed. Every tagged LINE / CIRCLE / ARC whose key
+survives keeps its handle and carries the new geometry; the drawing's entity
+signatures (``drawing_diff``'s, handles excluded) equal a fresh
+``mech_part_draw`` of the revised part; the dimensions read 24 and 70; the
+stored bore requirement passes. A tagged line moved by hand refuses the
+revision (``hand_edited_tagged_entity``) with every fingerprint unchanged.
+"""
+
+from __future__ import annotations
+
+import copy
+from collections import Counter
+
+import pytest
+import pytest_asyncio
+from fastmcp import Client
+
+import server
+from backends.ezdxf_backend import EzdxfBackend
+from engineering.changes.preview import StaleRevisionError, entity_fingerprints
+from engineering.errors import (
+    HandEditedTaggedEntityError,
+    InvalidArgsError,
+    ModelDriftError,
+    classify,
+)
+from engineering.mech import drift as D
+from engineering.mech.draw import add_view, draw_part, read_part
+from engineering.mech.part import build_part
+from engineering.mech.revise import apply_changes, keyed, relayout, revise_part
+from engineering.mech.xdata import APP_ID, to_values
+from engineering.understand.diff import signature
+from engineering.understand.snapshot import take_snapshot
+from engineering.verification.requirements import parse_requirements, store_requirements
+
+pytestmark = pytest.mark.asyncio
+
+FLANGE = {
+    "kind": "revolved",
+    "name": "flange",
+    "material": "steel",
+    "segments": [
+        {"length": 20.0, "d_outer": 120.0},
+        {"length": 40.0, "d_outer": 60.0},
+    ],
+    "features": [
+        {"kind": "axial_bore", "id": "bore", "diameter": 20.0},
+        {"kind": "hole_circle", "id": "hc", "x": 10.0, "pcd": 90.0, "count": 4, "diameter": 11.0},
+        {"kind": "fillet", "id": "r1", "at": "step:0", "radius": 3.0},
+    ],
+}
+PLANE = {"p1": [-5.0, 0.0], "p2": [80.0, 0.0], "label": "A"}
+CHAMFER = {"kind": "chamfer", "id": "c2", "at": "end", "size": 1.5}
+CHANGES = {
+    "features.bore.diameter": 24.0,
+    "segments[1].length": 50.0,
+    "features+": CHAMFER,
+    "features.r1": None,
+}
+
+
+def revised_spec() -> dict:
+    spec = copy.deepcopy(FLANGE)
+    spec["features"][0]["diameter"] = 24.0
+    spec["segments"][1]["length"] = 50.0
+    spec["features"] = [f for f in spec["features"] if f["id"] != "r1"] + [dict(CHAMFER)]
+    return spec
+
+
+async def _mm_backend() -> EzdxfBackend:
+    b = EzdxfBackend()
+    await b.connect()
+    await b.drawing_new()
+    await b.system_set_variable("INSUNITS", 4)
+    return b
+
+
+async def draw_sheet(b, spec) -> str:
+    drawn = await draw_part(b, build_part(spec), at=(0.0, 0.0), views=("front", "side"))
+    await add_view(b, drawn["part_id"], "section", plane=PLANE)
+    return drawn["part_id"]
+
+
+@pytest_asyncio.fixture
+async def flange():
+    b = await _mm_backend()
+    pid = await draw_sheet(b, FLANGE)
+    yield b, pid
+    await b.disconnect()
+
+
+def _signatures(snap) -> Counter:
+    return Counter(signature(rec) for rec in snap.records)
+
+
+async def _all_fingerprints(b) -> dict:
+    snap = await take_snapshot(b)
+    return await entity_fingerprints(b, [rec.handle for rec in snap.records])
+
+
+BORE_REQUIREMENT = {
+    "units": "mm",
+    "items": [
+        {
+            "id": "BORE",
+            "quantity": "diameter",
+            "target": {"nominal": 24.0},
+            "provenance": "explicit",
+            # the only GEOMETRY circle between R8 and R15 is the bore, in the end view
+            "features": [
+                {
+                    "kind": "predicate",
+                    "type": "circle",
+                    "layer": "GEOMETRY",
+                    "radius_min": 8.0,
+                    "radius_max": 15.0,
+                }
+            ],
+        }
+    ],
+}
+
+
+# -- the gate ---------------------------------------------------------------------------
+
+
+async def test_a_revision_keeps_handles_and_draws_what_a_fresh_draw_draws(flange):
+    b, pid = flange
+    await store_requirements(b, parse_requirements(BORE_REQUIREMENT))
+
+    payload = await read_part(b, pid)
+    old = D.compare(pid, build_part(payload["part"]), payload, (await take_snapshot(b)).records)
+    assert old.model_is_current and old.counts()["ok"] == len(old.expected)
+    old_keys = keyed([(e.view, e.index, e.prim) for e in old.expected if not e.marker])
+    handle_of = {
+        key: old.matched[(key[0], index, False)].handle for key, (index, _p) in old_keys.items()
+    }
+
+    result = await revise_part(b, pid, CHANGES)
+    assert result["changed"] is True and result["rev"] == 1
+
+    # 100 % of the tagged LINE / CIRCLE / ARC handles whose key survives stand,
+    # carrying the new geometry
+    new_part = build_part(revised_spec())
+    layout = relayout(new_part, await read_part(b, pid))
+    new_keys = keyed(
+        (D.record_view_tag(r), i, p)
+        for r, prims in zip(layout.records, layout.prims, strict=True)
+        for i, p in enumerate(prims)
+    )
+    survivors = [k for k in old_keys if k in new_keys and k[2] in ("LINE", "CIRCLE", "ARC")]
+    assert len(survivors) >= 40
+    snap = await take_snapshot(b)
+    by_handle = {rec.handle: rec for rec in snap.records}
+    eps = D.epsilon_for([p for _i, p in new_keys.values()])
+    for key in survivors:
+        rec = by_handle.get(handle_of[key])
+        assert rec is not None, f"{key}: handle {handle_of[key]} did not survive"
+        assert D.matches(rec, new_keys[key][1], eps), f"{key}: not the new geometry"
+    assert set(result["in_place"]) >= {handle_of[k] for k in survivors}
+    assert any(row["reason"] == "removed" for row in result["handle_map"])  # the fillet arcs
+
+    # the drawing is exactly a fresh draw of the revised part
+    fresh = await _mm_backend()
+    await draw_sheet(fresh, revised_spec())
+    assert _signatures(snap) == _signatures(await take_snapshot(fresh))
+
+    texts = [rec.rendered_text or "" for rec in snap.records if rec.type == "DIMENSION"]
+    assert any("24" in t and "⌀" in t for t in texts), texts
+    assert any("70" in t for t in texts), texts
+    assert not any("20" == t.strip("⌀Ø") for t in texts if t.startswith(("⌀", "Ø")))
+    assert result["dimensions"]["deleted"] == len(result["dimensions"]["created"]) == 10
+
+    assert result["verify"]["status"] == "pass"
+    assert result["verify"]["counts"]["pass"] == 1
+    after = await D.inspect_drift(b, pid)
+    assert after.model_is_current
+
+
+async def test_the_bore_requirement_failed_before_the_revision(flange):
+    from engineering.verification.report import verify_requirements
+
+    b, _pid = flange
+    report = await verify_requirements(b, parse_requirements(BORE_REQUIREMENT))
+    assert report["status"] == "fail"
+
+
+async def test_a_hand_moved_tagged_line_is_refused_with_every_fingerprint_unchanged(flange):
+    b, pid = flange
+    snap = await take_snapshot(b)
+    line = next(t for t in D.tagged_entities(snap.records, pid) if t.type == "LINE")
+    await b.entity_move(line.handle, 1.0, 0.0)
+    before = await _all_fingerprints(b)
+    revision = b.document_identity()["revision"]
+
+    with pytest.raises(HandEditedTaggedEntityError) as caught:
+        await revise_part(b, pid, CHANGES)
+    fields = caught.value.fields()
+    assert fields["handles"] == [line.handle]
+    assert fields["drift"][0]["status"] == "moved"
+    envelope = classify(caught.value)
+    assert envelope["kind"] == "hand_edited_tagged_entity"
+    assert envelope["handles"] == [line.handle]
+
+    assert await _all_fingerprints(b) == before
+    assert b.document_identity()["revision"] == revision
+
+    # the same edit in a dry run is refused the same way
+    with pytest.raises(HandEditedTaggedEntityError):
+        await revise_part(b, pid, CHANGES, dry_run=True)
+
+    # overwrite=True replaces the hand edit with the model
+    done = await revise_part(b, pid, CHANGES, overwrite=True)
+    assert [row["handle"] for row in done["overwritten"]] == [line.handle]
+    assert (await D.inspect_drift(b, pid)).model_is_current
+
+
+async def test_a_layer_and_colour_edit_is_not_drift_and_is_kept(flange):
+    b, pid = flange
+    snap = await take_snapshot(b)
+    circle = next(
+        t for t in D.tagged_entities(snap.records, pid) if t.type == "CIRCLE" and t.feature == "hc"
+    )
+    await b.entity_set_properties(circle.handle, color=1)
+    await revise_part(b, pid, {"features.bore.diameter": 24.0})
+    entity = await b.entity_get(circle.handle)
+    assert entity.color == 1
+
+
+async def test_a_part_drawn_before_1_8_is_model_drift_until_overwrite(flange):
+    b, pid = flange
+    payload = await read_part(b, pid)
+    legacy = {k: v for k, v in payload.items() if k not in ("part_id", "gen")}
+    legacy["views"] = [{k: v for k, v in r.items() if k != "sha"} for r in legacy["views"]]
+    await b.entity_set_xdata(pid, APP_ID, to_values(legacy))
+    before = await _all_fingerprints(b)
+
+    with pytest.raises(ModelDriftError) as caught:
+        await revise_part(b, pid, {"segments[1].length": 50.0})
+    assert caught.value.fields()["reason"] == "unstamped"
+    assert classify(caught.value)["kind"] == "model_drift"
+    assert await _all_fingerprints(b) == before
+
+    await revise_part(b, pid, {"segments[1].length": 50.0}, overwrite=True)
+    assert (await D.inspect_drift(b, pid)).model_is_current
+
+
+@pytest.mark.parametrize(
+    ("changes", "needle"),
+    [
+        ({"features.h9.diameter": 10}, "no feature 'h9'"),
+        ({"segments[5].length": 10}, "index 5 is out of range"),
+        ({"kind": "prismatic"}, "cannot change kind"),
+        ({"colour": "red"}, "the part has no 'colour'"),
+        ({"features.bore.diameter": 70.0}, "features.bore.diameter"),
+        ({}, "non-empty object"),
+        ({"segments[1].length": -5}, "segments[1].length"),
+    ],
+)
+async def test_a_refused_path_names_itself_and_changes_nothing(flange, changes, needle):
+    b, pid = flange
+    before = await _all_fingerprints(b)
+    with pytest.raises(InvalidArgsError) as caught:
+        await revise_part(b, pid, changes)
+    assert needle in str(caught.value) or needle in str(caught.value.__cause__)
+    assert classify(caught.value)["kind"] == "invalid_args"
+    assert await _all_fingerprints(b) == before
+
+
+async def test_the_dry_run_previews_and_a_stale_apply_is_refused(flange):
+    b, pid = flange
+    dry = await revise_part(b, pid, CHANGES, dry_run=True)
+    assert dry["dry_run"] is True and dry["counts"]["edited_in_place"] > 0
+    preview = dry["preview"]
+    assert preview["revision"] == b.document_identity()["revision"]
+    assert len(preview["preconditions"]) > 1
+
+    # an unrelated edit moves the revision: the preview is stale
+    await b.entity_create_line(500.0, 500.0, 510.0, 500.0)
+    before = await _all_fingerprints(b)
+    with pytest.raises(StaleRevisionError):
+        await revise_part(b, pid, CHANGES, expected_revision=preview["revision"])
+    assert await _all_fingerprints(b) == before
+
+    fresh = await revise_part(b, pid, CHANGES, dry_run=True)
+    done = await revise_part(
+        b,
+        pid,
+        CHANGES,
+        expected_revision=fresh["preview"]["revision"],
+        preconditions=fresh["preview"]["preconditions"],
+    )
+    assert done["changed"] is True
+
+
+async def test_a_failure_part_way_rolls_the_whole_revision_back(flange, monkeypatch):
+    b, pid = flange
+    before = await _all_fingerprints(b)
+    calls = {"n": 0}
+    real = b.entity_edit_geometry
+
+    async def breaking(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 5:
+            raise RuntimeError("the fifth edit broke")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(b, "entity_edit_geometry", breaking)
+    signatures = _signatures(await take_snapshot(b))
+    with pytest.raises(RuntimeError, match="fifth edit"):
+        await revise_part(b, pid, CHANGES)
+    monkeypatch.undo()
+    after = await _all_fingerprints(b)
+    assert set(after) == set(before), "the same handles, none added or lost"
+    # The headless rollback reloads the transaction's DXF snapshot; a HATCH's
+    # exported tags do not survive that round trip bit for bit (measured: the
+    # two section hatches), every other entity does.
+    hatches = {r.handle for r in (await take_snapshot(b)).records if r.type == "HATCH"}
+    assert {h: v for h, v in after.items() if h not in hatches} == {
+        h: v for h, v in before.items() if h not in hatches
+    }
+    assert _signatures(await take_snapshot(b)) == signatures
+    assert (await D.inspect_drift(b, pid)).model_is_current
+    assert (await read_part(b, pid))["part"]["segments"][1]["length"] == 40.0
+
+
+async def test_an_unchanged_model_changes_nothing(flange):
+    b, pid = flange
+    before = await _all_fingerprints(b)
+    result = await revise_part(b, pid, {"features.bore.diameter": 20.0})
+    assert result["changed"] is False and result["handle_map"] == []
+    assert await _all_fingerprints(b) == before
+
+
+async def test_path_edits_record_old_and_new():
+    old = build_part(FLANGE)
+    from engineering.mech.part import part_to_dict
+
+    new, diff = apply_changes(part_to_dict(old), CHANGES)
+    assert diff["features.bore.diameter"] == [20.0, 24.0]
+    assert diff["segments[1].length"] == [40.0, 50.0]
+    assert diff["features.c2"] == [None, CHAMFER]
+    assert diff["features.r1"][0]["kind"] == "fillet" and diff["features.r1"][1] is None
+    assert build_part(new)  # builds
+
+
+async def test_a_detail_view_is_refused_by_name(flange):
+    b, pid = flange
+    await add_view(
+        b,
+        pid,
+        "detail",
+        detail={"center": [20.0, 40.0], "radius": 8.0, "scale": 2.0, "of": "front"},
+    )
+    with pytest.raises(ValueError, match="detail view"):
+        await revise_part(b, pid, {"features.bore.diameter": 24.0})
+
+
+# -- through the server -------------------------------------------------------------------
+
+
+async def test_the_tool_revises_and_types_its_refusals(monkeypatch):
+    monkeypatch.setenv("AUTOCAD_MCP_BACKEND", "ezdxf")
+    async with Client(server.mcp) as client:
+        status = (await client.call_tool("system_status", {})).structured_content or {}
+        assert status.get("backend") == "ezdxf"
+        await client.call_tool("drawing_new", {})
+        drawn = (
+            await client.call_tool("mech_part_draw", {"spec": FLANGE, "views": ["front", "side"]})
+        ).structured_content
+        pid = drawn["part_id"]
+        done = (
+            await client.call_tool(
+                "mech_part_revise", {"part_id": pid, "changes": {"features.bore.diameter": 24}}
+            )
+        ).structured_content
+        assert done["changed"] is True and done["rev"] == 1
+        inspected = (
+            await client.call_tool(
+                "mech_part_inspect",
+                {"part_id": pid, "drift": True, "param": "features.bore.diameter"},
+            )
+        ).structured_content
+        assert inspected["model_is_current"] is True and inspected["drift"] == []
+        assert [v["new"] for v in inspected["param"]["values"]] == [24]
+
+        lines = (
+            await client.call_tool(
+                "entity_list", {"type_filter": "LINE", "layer_filter": "GEOMETRY"}
+            )
+        ).structured_content
+        rows = lines.get("result", lines) if isinstance(lines, dict) else lines
+        handle = rows[0]["handle"]
+        await client.call_tool("entity_move", {"handle": handle, "dx": 2.0, "dy": 0.0})
+        refused = await client.call_tool(
+            "mech_part_revise",
+            {"part_id": pid, "changes": {"features.bore.diameter": 22}},
+            raise_on_error=False,
+        )
+        assert refused.is_error
+        payload = refused.structured_content
+        assert payload["kind"] == "hand_edited_tagged_entity"
+        assert payload["handles"] == [handle]
+        assert payload["category"] == "geometry" and payload["retryable"] is False
+
+
+async def test_the_tool_is_registered_in_the_mech_pack():
+    tools = {t.name: t for t in await server.mcp.list_tools()}
+    assert tools["mech_part_revise"].meta["cad"]["cost"] == "destructive"
+    assert server._tool_pack("mech_part_revise") == "mech"
+    assert "mech_part_revise" not in server.LEAN_TOOL_NAMES
+    from discovery.aliases import aliases_for
+
+    assert aliases_for("mech_part_revise") is not None

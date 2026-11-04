@@ -2576,6 +2576,87 @@ async def property_override_focus():
     )
 
 
+async def mech_revise_keeps_handles():
+    """A parameter change rebuilds a drawn part in place, and refuses over a hand edit (1.8-19).
+
+    A Ø60 x 30 bushing with a Ø20 bore, drawn in front and end views and
+    dimensioned. ``mech_part_revise`` takes the bore to Ø24 and the length to
+    40: every LINE / CIRCLE / ARC it reports as edited in place must still be
+    in the drawing under its handle, the end view's bore circle (found by its
+    feature tag) must be r = 12 - the size fixed here - and the drawing's
+    entity signatures must equal a fresh draw of the hand-written revised
+    part. On a second sheet a tagged line moved 1 mm by hand must refuse the
+    same revision ``hand_edited_tagged_entity`` with nothing changed. v1.7.0
+    has no ``mech_part_revise``.
+    """
+    from collections import Counter
+
+    try:
+        from engineering.mech.revise import revise_part
+    except ImportError:  # 1.7.0
+        return False
+    from engineering.changes.preview import entity_fingerprints
+    from engineering.errors import HandEditedTaggedEntityError
+    from engineering.mech.draw import draw_part
+    from engineering.mech.drift import tagged_entities
+    from engineering.mech.part import build_part
+    from engineering.understand.diff import signature
+    from engineering.understand.snapshot import take_snapshot
+
+    def bushing(length, bore):
+        return build_part(
+            {
+                "kind": "revolved",
+                "name": "bushing",
+                "material": "steel",
+                "segments": [{"length": length, "d_outer": 60.0}],
+                "features": [{"kind": "axial_bore", "id": "bore", "diameter": bore}],
+            }
+        )
+
+    changes = {"features.bore.diameter": 24.0, "segments[0].length": 40.0}
+    b = await _b()
+    pid = (await draw_part(b, bushing(30.0, 20.0), views=("front", "side")))["part_id"]
+    result = await revise_part(b, pid, changes)
+    snap = await take_snapshot(b)
+    alive = {rec.handle for rec in snap.records}
+    bore_circles = [
+        t.record.radius
+        for t in tagged_entities(snap.records, pid)
+        if t.type == "CIRCLE" and t.view == "side" and abs((t.record.radius or 0) - 12.0) < 1e-9
+    ]
+    fresh = await _b()
+    await draw_part(fresh, bushing(40.0, 24.0), views=("front", "side"))
+    same = Counter(signature(r) for r in snap.records) == Counter(
+        signature(r) for r in (await take_snapshot(fresh)).records
+    )
+
+    twin = await _b()
+    twin_pid = (await draw_part(twin, bushing(30.0, 20.0), views=("front", "side")))["part_id"]
+    line = next(
+        t
+        for t in tagged_entities((await take_snapshot(twin)).records, twin_pid)
+        if t.type == "LINE"
+    )
+    await twin.entity_move(line.handle, 1.0, 0.0)
+    handles = [rec.handle for rec in (await take_snapshot(twin)).records]
+    before = await entity_fingerprints(twin, handles)
+    refused = False
+    try:
+        await revise_part(twin, twin_pid, changes)
+    except HandEditedTaggedEntityError as exc:
+        refused = exc.fields().get("handles") == [line.handle]
+    after = await entity_fingerprints(twin, handles)
+    return (
+        len(result["in_place"]) > 0
+        and set(result["in_place"]) <= alive
+        and len(bore_circles) == 1
+        and same
+        and refused
+        and before == after
+    )
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -2666,6 +2747,7 @@ CHECKS = {
     "write_path_autoload_refused": (write_path_autoload_refused, "Security"),
     "dimension_auto_one_call_part": (dimension_auto_one_call_part, "Dimensions"),
     "property_override_focus": (property_override_focus, "Quality gate"),
+    "mech_revise_keeps_handles": (mech_revise_keeps_handles, "Mechanical"),
 }
 
 
