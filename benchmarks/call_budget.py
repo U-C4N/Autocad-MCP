@@ -491,6 +491,29 @@ async def _history_naive(rec: Recorder, ctx: dict[str, Any]) -> Any:
     return 2.0 * circles[0]["properties"]["radius"] if circles else None
 
 
+async def _history_batched(rec: Recorder, ctx: dict[str, Any]) -> Any:
+    """The oracle (1.8-10): reopen the latest round, read the hole's history once.
+
+    ``drawing_open`` is the call a restarted server needs before anything else
+    (the journal is filtered to the open document's lineage; a reopened file
+    continues it), so the same two calls answer after a restart -
+    ``tests/test_drawing_history.py`` and the v9 ``history_value_lookup`` task
+    run them across a real one. The rounds carry no label here: the hole's
+    rows are found by its handle (named in the edits' arguments, and in the
+    create's change summary), oldest first - round 1 created it, round N is
+    edit N - 1.
+    """
+    await rec.call("drawing_open", {"path": ctx["rounds"][-1]})
+    found = await rec.call(
+        "drawing_history", {"handle": ctx["handle"], "detail": "args", "limit": 10}
+    )
+    rows = sorted((found or {}).get("rows") or [], key=lambda row: row["seq"])
+    if len(rows) < HISTORY_ROUND:
+        raise ArmError(f"drawing_history returned {len(rows)} rows for the hole: {found!r}"[:300])
+    args = rows[HISTORY_ROUND - 1].get("args") or {}
+    return 2.0 * float(args["radius"]) if "radius" in args else None
+
+
 async def _history_verify(client: Any, ctx: dict[str, Any], answer: Any) -> tuple[bool, str]:
     info = await _quiet(client, "drawing_info", {})
     back = str(info.get("full_path") or "")
@@ -554,8 +577,12 @@ SCENARIOS: tuple[Scenario, ...] = (
         _setup_history,
         _history_naive,
         _history_verify,
+        batched=_history_batched,
         requires=("drawing_history",),
-        batched_label="drawing_history(limit=...) and its value (1.8-10)",
+        batched_label=(
+            "drawing_open (what a restarted server needs first) + "
+            "drawing_history(handle=..., detail='args') (1.8-10)"
+        ),
         owner="1.8-10",
         naive_note=(
             "assumes the agent saved one file per round and reopens round 2's; without "

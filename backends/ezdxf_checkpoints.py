@@ -69,6 +69,13 @@ class EzdxfCheckpoints:
             return None
         return self._state.latest_cp
 
+    def active_lineage(self) -> str | None:
+        """The active document's lineage (1.8-04), what a journal row and
+        ``drawing_history`` (1.8-10) key on; None before it has one."""
+        if self._active_key is None:
+            return None
+        return self._state.lineage_id or None
+
     @staticmethod
     def _cp_effective(state) -> int:
         """The revision an undo steps back from (see the module docstring)."""

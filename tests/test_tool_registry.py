@@ -122,6 +122,7 @@ async def test_tool_groups_unaffected_by_a_transform(truncating_transform):
         "checkpoint_create",
         "checkpoint_list",
         "checkpoint_restore",
+        "drawing_history",
         "transaction_begin",
         "transaction_commit",
         "transaction_rollback",
@@ -621,7 +622,9 @@ async def test_tool_group_sizes_are_unchanged():
 
     `transactions` moved 3 -> 6 when 1.8.0's durable checkpoints
     (`checkpoint_create` / `checkpoint_list` / `checkpoint_restore`, 1.8-08)
-    joined SECTION 10, tagged `transaction` beside the rollback tools.
+    joined SECTION 10, tagged `transaction` beside the rollback tools, and 6 -> 7
+    when `drawing_history` (1.8-10, the journal read as a value history) joined
+    them, tagged `transaction` too.
     """
     sizes = {label: len(names) for label, names in (await server._tool_groups()).items()}
     assert sizes == {
@@ -649,9 +652,9 @@ async def test_tool_group_sizes_are_unchanged():
         "styles": 10,
         "system": 7,
         "templates": 2,
-        "transactions": 6,
+        "transactions": 7,
         "understanding": 5,
         "validation": 1,
         "view": 4,
     }
-    assert sum(sizes.values()) == 251
+    assert sum(sizes.values()) == 252

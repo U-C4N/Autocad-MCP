@@ -306,7 +306,9 @@ async def test_journal_rows_carry_the_checkpoint_before_and_after(tmp_path):
             "entity_move", {"handle": line.structured_content["handle"], "dx": 1, "dy": 0}
         )
         again = await client.call_tool("drawing_save", {})
-        status = (await client.call_tool("system_status", {})).structured_content
+        status = (
+            await client.call_tool("system_status", {"detail": "operations"})
+        ).structured_content
     first_save = [r for r in status["operations"] if r["tool"] == "drawing_save_as"][-1]
     # Before the first save the S0 is still pending (nothing written): no row
     # may name a checkpoint that does not exist yet.
@@ -323,7 +325,9 @@ async def test_without_a_store_no_journal_row_names_a_checkpoint(tmp_path, monke
     async with Client(server.mcp) as client:
         await client.call_tool("drawing_new", {"bootstrap": False})
         await client.call_tool("entity_create_line", {"x1": 0, "y1": 0, "x2": 5, "y2": 0})
-        status = (await client.call_tool("system_status", {})).structured_content
+        status = (
+            await client.call_tool("system_status", {"detail": "operations"})
+        ).structured_content
         listed = await client.call_tool("checkpoint_list", {}, raise_on_error=False)
     row = [r for r in status["operations"] if r["tool"] == "entity_create_line"][-1]
     assert "checkpoint_before" not in row and "checkpoint_after" not in row, row

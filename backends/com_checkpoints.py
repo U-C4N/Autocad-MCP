@@ -53,6 +53,14 @@ class ComCheckpoints:
         entry = self._bound_entry()
         return entry.get("latest_cp") if entry else None
 
+    def active_lineage(self) -> str | None:
+        """The bound document's lineage (1.8-04's record for a saved file, else
+        the one a checkpoint minted), what a journal row and ``drawing_history``
+        (1.8-10) key on: the live ``document_id`` is per bind, the lineage
+        survives a restart. None before one is known; no COM call."""
+        entry = self._bound_entry()
+        return (entry.get("lineage_id") or None) if entry else None
+
     def _cp_lineage(self) -> tuple[dict, str]:
         """The bound document's entry and lineage id (minted for an unsaved document)."""
         from backends import lineage

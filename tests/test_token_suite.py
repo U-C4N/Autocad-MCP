@@ -404,7 +404,6 @@ def test_a_missing_verb_is_pending_never_a_pass(report):
     for name, verbs in (
         ("layer_cleanup_300", {"entity_modify_where", "layer_merge"}),
         ("dimension_plate", {"dimension_auto_v2"}),
-        ("history_value_lookup", {"drawing_history"}),
     ):
         batched = rows[name]["arms"]["batched"]
         assert batched["status"] == "pending_tool"
@@ -413,11 +412,19 @@ def test_a_missing_verb_is_pending_never_a_pass(report):
         assert batched["session"] is None
     checked = ts.check_budget(report, BUDGET)
     pending = {item["cell"] for item in checked["pending"]}
-    assert {"task.layer_cleanup_300", "task.dimension_plate", "task.history_value_lookup"} <= (
-        pending
-    )
+    assert {"task.layer_cleanup_300", "task.dimension_plate"} <= pending
     passed = {item["cell"] for item in checked["checked"]}
     assert not any(cell.startswith("task.") for cell in passed)
+
+
+def test_the_history_oracle_finds_round_2_in_two_calls(report):
+    """1.8-10: drawing_open (what a restarted server needs) + one drawing_history."""
+    batched = _scenarios(report)["history_value_lookup"]["arms"]["batched"]
+    assert batched["status"] == "measured", batched["detail"]
+    assert batched["verified"] is True
+    assert batched["by_tool"] == {"drawing_history": 1, "drawing_open": 1}
+    assert batched["calls"] <= BUDGET["task"]["history_value_lookup"]["ceiling"] == 2
+    assert BUDGET["task"]["history_value_lookup"]["gate"] == "ci", "the owner flipped it"
 
 
 def test_every_measured_arm_is_priced_as_a_session(report):

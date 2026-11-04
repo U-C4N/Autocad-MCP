@@ -65,7 +65,7 @@ async def _step_error(client, tool: str, args: dict) -> dict:
 
 
 async def _record(client, operation_id: str) -> dict:
-    status = (await client.call_tool("system_status", {})).structured_content
+    status = (await client.call_tool("system_status", {"detail": "operations"})).structured_content
     (row,) = [r for r in status["operations"] if r["operation_id"] == operation_id]
     return row
 
@@ -371,7 +371,9 @@ async def _routes_agree(client, tool: str, args: dict, kind: str) -> dict:
     assert step["retryable"] is payload["retryable"]
     (step_record,) = [
         r
-        for r in (await client.call_tool("system_status", {})).structured_content["operations"]
+        for r in (
+            await client.call_tool("system_status", {"detail": "operations"})
+        ).structured_content["operations"]
         if r["operation_id"] == step["operation_id"]
     ]
     assert (step_record["state"], step_record["error_kind"]) == (record["state"], kind)

@@ -40,7 +40,9 @@ async def _status(client) -> dict:
 
 
 async def _operations(client) -> list[dict]:
-    return (await _status(client))["operations"]
+    return (await client.call_tool("system_status", {"detail": "operations"})).structured_content[
+        "operations"
+    ]
 
 
 async def _entities(client) -> int:
@@ -246,7 +248,9 @@ async def test_the_search_proxy_reuses_the_operation_it_runs_under(monkeypatch):
             await client.call_tool("call_tool", {"name": "drawing_new", "arguments": {}})
             await client.call_tool("call_tool", {"name": "entity_create_line", "arguments": _LINE})
             status = (
-                await client.call_tool("call_tool", {"name": "system_status", "arguments": {}})
+                await client.call_tool(
+                    "call_tool", {"name": "system_status", "arguments": {"detail": "operations"}}
+                )
             ).structured_content
     finally:
         server._apply_discovery_mode("off")

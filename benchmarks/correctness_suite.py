@@ -2433,6 +2433,146 @@ async def delete_many_all_or_nothing():
     return missing_ok is not True and a_kept and midway_ok is False and all(all_kept)
 
 
+#: 1.8-10 (H1): the plate of every round; only the hole's diameter changes.
+_HISTORY_PLATE = {
+    "kind": "prismatic",
+    "name": "plate",
+    "material": "aluminium",
+    "thickness": 8.0,
+    "outline": [[0.0, 0.0], [80.0, 0.0], [80.0, 50.0], [0.0, 50.0]],
+    "features": [{"kind": "hole", "id": "h1", "x": 40.0, "y": 25.0, "diameter": 10.0}],
+}
+
+
+def _history_rounds(script: str, env: dict, folder: str, log_path: str) -> dict:
+    """The H1 probe across a real restart (shared by the v9 ``history_value_lookup``).
+
+    Server A: rounds 1-3 of a plate drawn with ``mech_part_draw`` (hole 10, 12,
+    16; round 2's call labelled ``"round 2"`` through ``_meta.label``), saved
+    after each round; then the unlabelled twin - one circle edited 5 -> 6 -> 8
+    with ``entity_edit_geometry``, saved after each round. Killed. Server B
+    answers with ``drawing_open`` + ``drawing_history``: the labelled value, a
+    label nobody gave, and the unlabelled round from the checkpoint diff.
+    """
+    import copy
+
+    labelled = os.path.join(folder, "rounds.dxf")
+    plain = os.path.join(folder, "plain.dxf")
+
+    def spec(diameter: float) -> dict:
+        part = copy.deepcopy(_HISTORY_PLATE)
+        part["features"][0]["diameter"] = diameter
+        return part
+
+    first = _StdioServer(script, env, folder, log_path, timeout=60.0)
+    try:
+        first.call("drawing_new")
+        for index, diameter in enumerate((10.0, 12.0, 16.0), start=1):
+            params = {
+                "name": "mech_part_draw",
+                "arguments": {"spec": spec(diameter), "at_x": 200.0 * index, "dimension": False},
+            }
+            if index == 2:
+                params["_meta"] = {"label": "round 2"}
+            first.request("tools/call", params, 60.0)
+            if index == 1:
+                first.call("drawing_save_as", {"path": labelled})
+            else:
+                first.call("drawing_save", {})
+        first.call("drawing_new")
+        hole = first.call(
+            "entity_create_circle", {"cx": 50.0, "cy": 50.0, "radius": 5.0, "layer": "GEOMETRY"}
+        ).get("handle")
+        first.call("drawing_save_as", {"path": plain})
+        for radius in (6.0, 8.0):
+            first.call("entity_edit_geometry", {"handle": hole, "radius": radius})
+            first.call("drawing_save", {})
+    finally:
+        first.kill()
+
+    second = _StdioServer(script, env, folder, log_path, timeout=60.0)
+    try:
+        calls = 0
+        second.call("drawing_open", {"path": labelled})
+        calls += 1
+        found = second.call("drawing_history", {"label": "round 2", "detail": "args"})
+        calls += 1
+        wrong = second.call("drawing_history", {"label": "round 9"})
+        second.call("drawing_open", {"path": plain})
+        edits = second.call(
+            "drawing_history", {"tool": "entity_edit_geometry", "detail": "changes", "limit": 5}
+        )
+    finally:
+        second.kill()
+
+    labelled_value = None
+    rows = found.get("rows") or []
+    if rows:
+        features = ((rows[0].get("args") or {}).get("spec") or {}).get("features") or [{}]
+        labelled_value = features[0].get("diameter")
+    unlabelled_value = None
+    ordered = sorted(edits.get("rows") or [], key=lambda row: row.get("seq") or 0)
+    if ordered:
+        diff = ordered[0].get("diff") or {}
+        for row in diff.get("changed") or []:
+            radius = (row.get("changes") or {}).get("radius") or {}
+            if radius.get("to") is not None:
+                unlabelled_value = 2.0 * float(radius["to"])
+    return {
+        "calls": calls,
+        "labelled": {
+            "value": labelled_value,
+            "is_error": found.get("is_error"),
+            "label": rows[0].get("label") if rows else None,
+        },
+        "missing_label": {
+            "is_error": wrong.get("is_error"),
+            "kind": wrong.get("kind"),
+            "names_the_labels": "'round 2'" in str(wrong.get("message") or ""),
+        },
+        "unlabelled": {"value": unlabelled_value, "rows": len(ordered)},
+    }
+
+
+def _history_rounds_pass(seen: dict) -> bool:
+    return (
+        seen["calls"] <= 2
+        and seen["labelled"]["is_error"] is False
+        and seen["labelled"]["value"] == 12.0
+        and seen["labelled"]["label"] == "round 2"
+        and seen["missing_label"]["is_error"] is True
+        and seen["missing_label"]["kind"] == "invalid_args"
+        and seen["missing_label"]["names_the_labels"]
+        and seen["unlabelled"]["value"] == 12.0
+    )
+
+
+def _history_round2_value() -> bool:
+    script = os.path.join(os.getcwd(), "server.py")
+    if not os.path.isfile(script):
+        return False
+    env = _server_env(_scratch_dir("acadmcp_state_"))
+    drawings = _scratch_dir()
+    seen = _history_rounds(script, env, drawings, os.path.join(drawings, "server.log"))
+    return _history_rounds_pass(seen)
+
+
+async def history_round2_value():
+    """The value of round 2, read back after a restart in two calls (1.8-10, H1).
+
+    A real ``python server.py`` draws three rounds of a plate with
+    ``mech_part_draw`` - hole 10, 12, 16, round 2's call labelled ``round 2``
+    with ``_meta.label`` - saving after each, then is killed. A new process
+    answers with ``drawing_open`` + ``drawing_history(label="round 2",
+    detail="args")``: 12. A label nobody gave is refused ``invalid_args``
+    naming the labels there are (never guessed), and an unlabelled round (one
+    circle edited 5 -> 6 -> 8) is read from the checkpoint diff of
+    ``detail="changes"``: 12 again. 1.7.0 kept no history across a restart and
+    has no ``drawing_history`` - the rival measured us at 0/3.
+    """
+    return await asyncio.to_thread(_history_round2_value)
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -2519,6 +2659,7 @@ CHECKS = {
     "undo_after_restart": (undo_after_restart, "Durability"),
     "atomic_batch_default": (atomic_batch_default, "Durability"),
     "delete_many_all_or_nothing": (delete_many_all_or_nothing, "Durability"),
+    "history_round2_value": (history_round2_value, "Durability"),
 }
 
 

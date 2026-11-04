@@ -17,6 +17,13 @@ the end of ``NEW_TASKS_V9``.
   refused ``unknown_handle`` with ``executed: 0`` and L's summary unchanged.
   Its run-time twin (the second step fails while it runs) is rolled back by
   the default ``on_error="auto"``, headless ``atomicity.verified: true``.
+* ``history_value_lookup`` (1.8-10, the rival's H1): a real server draws three
+  rounds of a plate with ``mech_part_draw`` (hole 10, 12 - its call labelled
+  ``round 2`` - and 16), saving each, and is killed; a new process answers
+  "the diameter in round 2" with ``drawing_open`` + ``drawing_history``: 12,
+  in at most two calls. Twins: a label nobody gave is refused ``invalid_args``
+  naming the labels there are, never guessed; an unlabelled round (one circle
+  edited 5 -> 6 -> 8) is read from ``detail="changes"``'s checkpoint diff.
 """
 
 from __future__ import annotations
@@ -41,12 +48,23 @@ NEW_TASKS_V9: tuple[TaskSpec, ...] = (
         "default rolls the move back, verified",
         1.0,
     ),
+    TaskSpec(
+        "history_value_lookup",
+        "durability",
+        "Three rounds of a plate (hole 10, 12 labelled 'round 2', 16), saved, server killed; "
+        "a new process finds the round-2 diameter 12 in at most two calls (drawing_open + "
+        "drawing_history). Twins: a label nobody gave is refused by name; an unlabelled "
+        "round is read from the checkpoint diff",
+        1.0,
+    ),
 )
 
 TASKS_V9: tuple[TaskSpec, ...] = TASKS_V8 + NEW_TASKS_V9
 
 #: v9 tasks that drive the headless engine (or a headless server process) by
 #: construction; on the live lane they are ``not_run``, never a zero.
-HEADLESS_ONLY_V9: frozenset[str] = frozenset({"undo_across_restart", "atomic_batch_default"})
+HEADLESS_ONLY_V9: frozenset[str] = frozenset(
+    {"undo_across_restart", "atomic_batch_default", "history_value_lookup"}
+)
 
 MATRICES["v9"] = TASKS_V9

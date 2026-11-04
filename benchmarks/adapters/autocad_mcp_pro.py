@@ -2086,6 +2086,47 @@ class AutoCADMCPProAdapter(BenchmarkAdapter):
             [],
         )
 
+    async def _task_history_value_lookup(self):
+        """v9 (1.8-10, H1): the round-2 value, after a restart, in at most two calls.
+
+        A real ``python server.py`` (headless, a private state folder) draws
+        three rounds of a plate with ``mech_part_draw`` - hole 10, 12 (the call
+        labelled ``round 2`` through ``_meta.label``), 16 - saving after each
+        round, plus the unlabelled twin (one circle edited 5 -> 6 -> 8), and is
+        killed with ``Popen.kill()``. A new process: ``drawing_open`` +
+        ``drawing_history(label="round 2", detail="args")`` must answer 12 in
+        at most two calls; ``label="round 9"`` must be refused ``invalid_args``
+        naming the labels there are; the unlabelled round's checkpoint diff
+        (``detail="changes"``) must say radius 5 -> 6, a 12 diameter. The
+        oracle is the values the script itself drew, never the server's word.
+        """
+        import shutil
+        import tempfile
+
+        from benchmarks.correctness_suite import (
+            _history_rounds,
+            _history_rounds_pass,
+            _server_env,
+        )
+
+        root = Path(__file__).resolve().parents[2]
+        script = str(root / "server.py")
+        state = tempfile.mkdtemp(prefix="acadmcp-v9-state-")
+        env = {**_server_env(state), "PYTHONPATH": str(root)}
+        folder = self.artifact_dir / "history_value_lookup"
+        folder.mkdir(parents=True, exist_ok=True)
+        try:
+            seen = await asyncio.to_thread(
+                _history_rounds, script, env, str(folder), str(folder / "server.log")
+            )
+        finally:
+            shutil.rmtree(state, ignore_errors=True)
+        return (
+            _history_rounds_pass(seen),
+            seen,
+            [str(folder / "rounds.dxf"), str(folder / "plain.dxf")],
+        )
+
 
 #: v9 (1.8.0): its headless-only tasks start their own headless server.
 from benchmarks.tasks_v9 import HEADLESS_ONLY_V9  # noqa: E402

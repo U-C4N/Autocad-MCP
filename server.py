@@ -19,7 +19,7 @@ import re
 import sys
 import time
 from dataclasses import asdict
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import anyio
 from fastmcp import Context, FastMCP
@@ -293,9 +293,15 @@ class AuditMiddleware(Middleware):
         arguments = dict(getattr(context.message, "arguments", None) or {})
         effective = _effective_tool(tool_name, arguments)
         try:
-            supplied = _client_operation_id(tool_name, arguments, _request_meta(context))
+            meta = _request_meta(context)
+            supplied = _client_operation_id(tool_name, arguments, meta)
+            label = _client_label(tool_name, arguments, meta)
             record, replay = journal.begin(
-                tool_name, arguments, operation_id=supplied, document=_identity_of(backend)
+                tool_name,
+                arguments,
+                operation_id=supplied,
+                document=_identity_of(backend),
+                label=label,
             )
         except (OperationConflictError, RequiresReconcileError) as exc:
             elapsed = (time.monotonic() - start) * 1000
@@ -308,6 +314,9 @@ class AuditMiddleware(Middleware):
         if replay is not None:
             log.info("TOOL REPLAY %-37s %s", tool_name, record.operation_id)
             return _replayed_result(replay, record.operation_id)
+        # 1.8-10: what a mutating call added and deleted, for its journal row
+        # (cad_batch sums its steps' own; backends/change_sets.py).
+        mark = _change_mark(backend, effective)
         token = CURRENT_OPERATION.set(record.operation_id)
         try:
             result = await self._logged(context, call_next, tool_name, start)
@@ -323,7 +332,12 @@ class AuditMiddleware(Middleware):
             state, kind = _exception_outcome(backend, record.operation_id, effective, exc)
             kept = None if retryable_for(kind, state) else exc
             journal.finish(
-                record, state, result=kept, error_kind=kind, document=_identity_of(backend)
+                record,
+                state,
+                result=kept,
+                error_kind=kind,
+                document=_identity_of(backend),
+                changes=_change_summary(backend, effective, mark, None),
             )
             raise
         finally:
@@ -335,6 +349,7 @@ class AuditMiddleware(Middleware):
             result=None if _retryable_result(result) else result,
             error_kind=kind,
             document=_identity_of(backend),
+            changes=_change_summary(backend, effective, mark, result),
         )
         return result
 
@@ -485,6 +500,14 @@ def _request_meta(context):
         return None
 
 
+def _request_meta_of(ctx):
+    """A tool's view of the request's ``_meta`` (1.8-10: ``_meta.label``), or None."""
+    try:
+        return ctx.request_context.meta
+    except Exception:  # no request context: a direct call
+        return None
+
+
 def _effective_tool(tool: str, arguments: dict) -> str:
     """The tool a call really runs: the search proxy's ``call_tool`` names it."""
     if tool == "call_tool" and isinstance(arguments.get("name"), str):
@@ -509,6 +532,77 @@ def _client_operation_id(tool: str, arguments: dict, meta) -> str | None:
     return from_meta if from_meta is not None else from_args
 
 
+#: 1.8-10: the tools whose own ``label`` argument labels their journal row.
+_LABELLED_TOOLS = frozenset({"cad_batch", "checkpoint_create"})
+
+
+def _client_label(tool: str, arguments: dict, meta) -> str | None:
+    """A call's label (1.8-10): ``_meta.label`` on any request, else the
+    ``label`` argument of ``cad_batch`` / ``checkpoint_create`` (also through the
+    search proxy's ``call_tool``). Refused (``ValueError``) when not 1-200
+    printable characters."""
+    from backends.operations import validate_label
+
+    from_meta = getattr(meta, "label", None) if meta is not None else None
+    if from_meta is not None:
+        return validate_label(from_meta, source="_meta.label")
+    name, args = tool, arguments
+    if tool == "call_tool" and isinstance(arguments.get("arguments"), dict):
+        name, args = arguments.get("name"), arguments["arguments"]
+    if name in _LABELLED_TOOLS:
+        return validate_label(args.get("label"), source=f"{name}.label")
+    return None
+
+
+#: tool -> is it mutating (not readOnlyHint); the registry walk is not per call.
+_MUTATING_CACHE: dict[str, bool] = {}
+
+
+def _mutating_tool(tool: str) -> bool:
+    known = _MUTATING_CACHE.get(tool)
+    if known is None:
+        known = not _read_only_tool(tool)
+        _MUTATING_CACHE[tool] = known
+    return known
+
+
+def _change_mark(backend, tool: str):
+    """1.8-10: the backend's change mark before a mutating call (None otherwise).
+
+    ``cad_batch`` is marked step by step inside it, so not here. A backend
+    without ``change_mark`` (the live engine) is summarised from the handles
+    its result returns - ``"result"`` is the mark that says so.
+    """
+    if tool == "cad_batch" or backend is None or not _mutating_tool(tool):
+        return None
+    marker = getattr(backend, "change_mark", None)
+    if not callable(marker):
+        return "result"
+    try:
+        return marker()
+    except Exception:  # a summary is evidence, never a reason to fail a call
+        return None
+
+
+def _change_summary(backend, tool: str, mark, result) -> dict | None:
+    """``{added, deleted, counts, complete}`` of a call marked by ``_change_mark``."""
+    from backends.change_sets import summary_from_result
+
+    try:
+        if tool == "cad_batch":
+            payload = getattr(result, "structured_content", None)
+            if isinstance(payload, dict):
+                return payload.get("changes") or payload.get("partial_changes")
+            return None
+        if mark is None:
+            return None
+        if mark == "result":
+            return summary_from_result(result) if result is not None else None
+        return backend.change_summary(mark)
+    except Exception:  # evidence only
+        return None
+
+
 def _identity_of(backend) -> dict | None:
     reader = getattr(backend, "document_identity", None)
     if reader is None:
@@ -526,6 +620,15 @@ def _identity_of(backend) -> dict | None:
             checkpoint = None
         if checkpoint:
             identity = {**identity, "checkpoint": checkpoint}
+    # 1.8-10: the row's lineage, which drawing_history filters by.
+    lineage = getattr(backend, "active_lineage", None)
+    if isinstance(identity, dict) and callable(lineage):
+        try:
+            found = lineage()
+        except Exception:  # evidence only
+            found = None
+        if found:
+            identity = {**identity, "lineage_id": found}
     return identity
 
 
@@ -5497,6 +5600,15 @@ async def cad_batch(
             )
         ),
     ] = None,
+    label: Annotated[
+        str | None,
+        Field(
+            description=(
+                "A name for this batch and its steps in the history "
+                "(drawing_history(label=...)), e.g. 'round 2'. 1-200 characters."
+            )
+        ),
+    ] = None,
     ctx: Context = None,
 ) -> dict:
     """Execute an ordered list of tool calls in ONE round trip.
@@ -5546,7 +5658,7 @@ async def cad_batch(
     included).
 
     OPERATIONS: the batch and each step are operations with their own ids
-    (system_status lists the recent ones). Pass `operation_id` (or the
+    (drawing_history lists them). Pass `operation_id` (or the
     request's `_meta.operation_id`) to make a retry safe: the same id with the
     same steps replays the recorded result instead of drawing twice. The
     journal is in memory: a server restart forgets it (durable in 1.8.0, B13).
@@ -5564,6 +5676,9 @@ async def cad_batch(
     keep the steps that ran before a failure. Under an explicit
     on_error="rollback", a checkpoint a step opens with transaction_begin is
     closed with the batch's (`unwound`).
+
+    CHANGES: `changes` {added, deleted, counts, complete} sums the steps (a
+    failed batch: `partial_changes`, what landed before it stopped).
 
     NOT CALLABLE from a batch: the raw command/LISP escape hatches, and
     cad_batch itself. Call those directly.
@@ -5887,6 +6002,17 @@ async def cad_batch(
     results: list[dict] = []
     succeeded = failed = executed = 0
     total = len(plans)
+    # 1.8-10: the batch's label goes on every step's row; each mutating step's
+    # change summary is kept, summed into `changes` / `partial_changes`.
+    from backends.operations import validate_label
+
+    try:
+        step_label = validate_label(label, source="cad_batch.label") or _client_label(
+            "", {}, _request_meta_of(ctx)
+        )
+    except ValueError:
+        step_label = None
+    step_changes: list = []
 
     try:
         # Inside the try: from here on an open checkpoint is closed by the
@@ -5917,10 +6043,11 @@ async def cad_batch(
             # B12: a step is an operation of its own. Steps skip the middleware,
             # so the id is minted here and set for the step's backend calls,
             # whose call_outcomes rows then carry it.
-            step, _ = journal.begin(name, args, document=_identity_of(backend))
+            step, _ = journal.begin(name, args, document=_identity_of(backend), label=step_label)
             step_token = CURRENT_OPERATION.set(step.operation_id)
             if watch is not None:
                 await watch.before(f"step {plan['i']} ({name})")
+            step_mark = _change_mark(backend, name)
             try:
                 # run_middleware=False: the cad_batch call itself is already through
                 # the audit/timing chain, and skipping it keeps the error one wrap
@@ -5950,11 +6077,15 @@ async def cad_batch(
                 step_state = _STATE_OF_KIND.get(kind, "refused")
                 # 1.8-02: the direct envelope's category / retryable / hint.
                 annotate(row["error"], step_state)
+                changed = _change_summary(backend, name, step_mark, None)
+                if step_mark is not None:
+                    step_changes.append(changed)
                 journal.finish(
                     step,
                     step_state,
                     error_kind=kind,
                     document=_identity_of(backend),
+                    changes=changed,
                 )
                 log.warning("BATCH %d/%d %-38s %s", position + 1, total, name, kind)
                 results.append(row)
@@ -5996,11 +6127,15 @@ async def cad_batch(
                     "operation_id": step.operation_id,
                 }
                 annotate(row["error"], "refused")
+                changed = _change_summary(backend, name, step_mark, None)
+                if step_mark is not None:
+                    step_changes.append(changed)
                 journal.finish(
                     step,
                     "refused",
                     error_kind=row["error"]["kind"],
                     document=_identity_of(backend),
+                    changes=changed,
                 )
                 log.warning("BATCH %d/%d %-38s %s", position + 1, total, name, row["error"]["kind"])
                 results.append(row)
@@ -6010,7 +6145,10 @@ async def cad_batch(
                     break
                 continue
             succeeded += 1
-            journal.finish(step, "committed", document=_identity_of(backend))
+            changed = _change_summary(backend, name, step_mark, outcome)
+            if step_mark is not None:
+                step_changes.append(changed)
+            journal.finish(step, "committed", document=_identity_of(backend), changes=changed)
             if plan["_bind"]:
                 bindings[plan["_bind"]] = structured
                 row["bind"] = plan["_bind"]
@@ -6142,6 +6280,18 @@ async def cad_batch(
     }
     if watch is not None:
         payload["revision"] = watch.report()
+    from backends.change_sets import empty_changes, merge_changes
+
+    summed = merge_changes(step_changes)
+    if summed is not None:
+        if rolled_back:
+            # What ran was undone; partial_changes says what the rollback undid.
+            payload["changes"] = empty_changes(complete=verified is True, rolled_back=True)
+            payload["partial_changes"] = summed
+        elif failed:
+            payload["partial_changes"] = summed
+        else:
+            payload["changes"] = summed
     if declined:
         payload["atomicity"]["note"] = (
             f"BACKEND DECLINED THE {'ROLLBACK' if failed else 'COMMIT'} ({declined}). "
@@ -6846,9 +6996,74 @@ async def checkpoint_restore(
     return await backend.checkpoint_restore(checkpoint, mode=mode)
 
 
+@cad_tool(
+    summary="What was done to this drawing, and with which values - across restarts.",
+    cost="read",
+)
+@mcp.tool(
+    annotations={"title": "Drawing History", "readOnlyHint": True},
+    tags={"transaction"},
+)
+async def drawing_history(
+    limit: Annotated[int, Field(description="Rows, newest first (1-100).", ge=1, le=100)] = 10,
+    since_seq: Annotated[int | None, "Only rows after this seq."] = None,
+    tool: Annotated[str | None, "Only this tool's rows."] = None,
+    query: Annotated[
+        str | None, "Case-insensitive text in the tool name, label or arguments."
+    ] = None,
+    handle: Annotated[str | None, "Only calls naming, adding or deleting this handle."] = None,
+    label: Annotated[
+        str | None, "Only calls with this label (_meta.label, cad_batch / checkpoint_create)."
+    ] = None,
+    detail: Annotated[
+        Literal["row", "args", "changes"],
+        "row; args: + the call's stored arguments; changes: + its change summary and, "
+        "for the first 3 rows, the checkpoint diff around it.",
+    ] = "row",
+    ctx: Context = None,
+) -> dict:
+    """The active drawing's operations, newest first, read from the durable
+    journal - also those of a server that has since restarted (reopen the file).
+
+    Each row is {seq, op, tool, state, rev, cp, label, t}; read-only calls are
+    left out unless `tool` names one. To find a value from an earlier round:
+    label the round's call (`_meta.label`, cad_batch(label=)), then
+    drawing_history(label=..., detail="args"); without a label,
+    detail="changes" diffs the checkpoints around each call (values of
+    ACADMCP_* features and dimension measurements included).
+
+    Refused: a `label` no row carries (invalid_args, naming the labels), no
+    open document.
+    """
+    from engineering.history import history
+
+    return await history(
+        ctx.lifespan_context.get("backend"),
+        _operations_journal(ctx.lifespan_context),
+        limit=limit,
+        since_seq=since_seq,
+        tool=tool,
+        query=query,
+        handle=handle,
+        label=label,
+        detail=detail,
+        read_only=lambda name: not _mutating_tool(name),
+    )
+
+
 # ---------------------------------------------------------------------------
 # ── SECTION 11: System (8 tools) ────────────────────────────────────────────
 # ---------------------------------------------------------------------------
+
+
+def _operations_view(journal, detail: str):
+    """``system_status.operations`` (1.8-10): the summary, or the 1.7 list."""
+    if detail == "operations":
+        return journal.recent()
+    reader = getattr(journal, "summary", None)
+    if not callable(reader):
+        return {"count": len(journal), "last": None, "unknown_commit": 0}
+    return reader(exclude=CURRENT_OPERATION.get())
 
 
 @cad_tool(
@@ -6865,6 +7080,12 @@ async def system_status(
         "Add `metrics`: this connection's calls, by_tool, result_bytes, errors_by_kind, "
         "p50/p95 ms (live: the per-job queue/guard/work/refresh/counter ms too).",
     ] = False,
+    detail: Annotated[
+        Literal["summary", "operations"],
+        "summary (default): `operations` is {count, last, unknown_commit}. operations: "
+        "the 1.7 list of the last 20 records (kept for one release; drawing_history reads "
+        "the history).",
+    ] = "summary",
     ctx: Context = None,
 ) -> dict:
     """Get full status of the AutoCAD MCP Pro server and backend connection.
@@ -6875,12 +7096,10 @@ async def system_status(
     `active_document_changed`). Live, the revision counts this server's own
     writes; edits the operator makes in AutoCAD are not counted.
 
-    `operations` lists the last 20 operation records, newest last: one per
-    tool call (and per cad_batch step), with `operation_id`, `tool`,
-    `request_hash`, `state` (committed / partial / failed / refused /
-    quarantined / cancelled / unknown_commit / running), the document id and
-    the revision before and after - this run's first, preceded by earlier runs'
-    when there are fewer than 20.
+    `operations` (1.8.0) is `{count, last: {op, tool, state, rev},
+    unknown_commit}` - every recorded call, the newest other than this one,
+    and how many ended unknown_commit. drawing_history lists them; with
+    detail="operations" it is the 1.7 list of the last 20 records instead.
 
     `state_store` describes the durable journal (B13): `mode` (`durable`, or
     `off` with JOURNAL_DURABLE=off), `path` (<ACADMCP_STATE_DIR>/journal.sqlite3),
@@ -6916,7 +7135,7 @@ async def system_status(
         }
         if tool_count is not None:
             out["tool_count"] = tool_count
-        out["operations"] = journal.recent()
+        out["operations"] = _operations_view(journal, detail)
         out["state_store"] = state_store_status(journal)
         if ctx.lifespan_context.get("save_recovery"):
             out["save_recovery"] = ctx.lifespan_context["save_recovery"]
@@ -6932,7 +7151,7 @@ async def system_status(
         status["unsafe_mode_warning"] = (
             "DANGEROUS_COMMANDS_ENABLED=true — command/LISP sanitization disabled."
         )
-    status["operations"] = journal.recent()
+    status["operations"] = _operations_view(journal, detail)
     status["state_store"] = state_store_status(journal)
     if ctx.lifespan_context.get("save_recovery"):
         status["save_recovery"] = ctx.lifespan_context["save_recovery"]
@@ -12996,12 +13215,13 @@ async def _diff_markup(backend, result: dict, new_snap, *, rev: str, description
 )
 async def drawing_diff(
     old_path: Annotated[
-        str,
+        str | None,
         Field(
+            default=None,
             description="The OLDER revision: a DXF path (a DWG only on the live engine, which "
-            "exports it read-only)."
+            "exports it read-only). Or give old_checkpoint.",
         ),
-    ],
+    ] = None,
     new_path: Annotated[
         str | None,
         Field(
@@ -13052,6 +13272,18 @@ async def drawing_diff(
         str,
         Field(default="", description="Revision-row text for markup=True; default: the counts."),
     ] = "",
+    old_checkpoint: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="The OLDER revision as one of the active drawing's checkpoints: its id "
+            "('cp-3'), seq ('3') or label.",
+        ),
+    ] = None,
+    new_checkpoint: Annotated[
+        str | None,
+        Field(default=None, description="The NEWER revision as a checkpoint (as old_checkpoint)."),
+    ] = None,
     ctx: Context = None,
 ) -> dict:
     """Compare two revisions of one drawing by geometric signature (spec §10).
@@ -13074,15 +13306,27 @@ async def drawing_diff(
     on an engine without the revcloud capability (the live engine -
     `capability: "revcloud"`), a path that does not exist, a DXF over
     MAX_DXF_BYTES (the size and the variable named), a file that is not a
-    readable DXF, and a non-positive `tol` or `move_tol`.
+    readable DXF, and a non-positive `tol` or `move_tol`. A checkpoint
+    (old_checkpoint / new_checkpoint, 1.8-10) is refused by kind -
+    checkpoint_not_found / checkpoint_evicted; giving both a path and a
+    checkpoint for one side, or neither for the older one, is invalid_args.
     """
     from backends.base import UnsupportedCapabilityError
+    from engineering.errors import InvalidArgsError
     from engineering.sheet.revision import REV_RE
     from engineering.understand.diff import block_changes, cap_report, diff_snapshots
 
     backend = _backend(ctx)
+    if (old_path is None) == (old_checkpoint is None):
+        raise InvalidArgsError(
+            "invalid_args: give the older revision as exactly one of old_path or old_checkpoint"
+        )
+    if new_path is not None and new_checkpoint is not None:
+        raise InvalidArgsError(
+            "invalid_args: give the newer revision as new_path or new_checkpoint, not both"
+        )
     if markup:
-        if new_path:
+        if new_path or new_checkpoint:
             raise ToolError(
                 "markup draws revision clouds on the current document, which must be the newer "
                 "revision: open it with drawing_open and call again without new_path"
@@ -13100,9 +13344,24 @@ async def drawing_diff(
                 "clouds (no ActiveX member; REVCLOUD is command-line only). Run the diff "
                 "without markup, or on the ezdxf engine.",
             )
-    await ctx.info(f"drawing_diff: {old_path} -> {new_path or 'the current document'}")
-    old_snap, old_blocks = await _diff_revision(backend, old_path, tol=tol, role="old_path")
-    new_snap, new_blocks = await _diff_revision(backend, new_path, tol=tol, role="new_path")
+    from engineering.history import checkpoint_revision
+
+    await ctx.info(
+        f"drawing_diff: {old_path or old_checkpoint} -> "
+        f"{new_path or new_checkpoint or 'the current document'}"
+    )
+    if old_checkpoint is not None:
+        old_snap, old_blocks = await checkpoint_revision(
+            backend, old_checkpoint, tol=tol, role="old_checkpoint"
+        )
+    else:
+        old_snap, old_blocks = await _diff_revision(backend, old_path, tol=tol, role="old_path")
+    if new_checkpoint is not None:
+        new_snap, new_blocks = await checkpoint_revision(
+            backend, new_checkpoint, tol=tol, role="new_checkpoint"
+        )
+    else:
+        new_snap, new_blocks = await _diff_revision(backend, new_path, tol=tol, role="new_path")
     try:
         result = diff_snapshots(old_snap, new_snap, tol=tol, move_tol=move_tol)
     except ValueError as exc:

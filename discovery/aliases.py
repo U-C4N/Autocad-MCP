@@ -1649,6 +1649,17 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "recover an earlier state",
         ),
     ),
+    "drawing_history": ToolAliases(
+        synonyms=(
+            "drawing history",
+            "what did i change earlier",
+            "value in an earlier round",
+            "operation log",
+            "audit trail",
+            "previous value of a parameter",
+            "what was the diameter before",
+        ),
+    ),
     "transaction_begin": ToolAliases(
         synonyms=(
             "start a transaction",

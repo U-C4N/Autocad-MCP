@@ -616,8 +616,9 @@ REQUIRED_SCENARIOS = {
     "prompt-injection",
 }
 #: Spec §6 Task 22: "20 cases" - the named scenarios above and the rest of the
-#: suite's negative scenarios - plus 1.8-02's ``lisp-refused-routes-typed``.
-SUITE_SIZE = 21
+#: suite's negative scenarios - plus 1.8-02's ``lisp-refused-routes-typed`` and
+#: 1.8-10's ``history-round2``.
+SUITE_SIZE = 22
 #: The grader types spec §6 Task 22 names; the suite uses each at least once.
 SPEC_GRADER_TYPES = {"tool_used", "tool_order", "regex", "file_exists", "llm"}
 

@@ -119,7 +119,7 @@ async def test_detail_is_validated_and_typed_invalid_args(client, tmp_path, tool
     assert result.content[0].text == (
         "Internal error: invalid_args: detail must be one of ('summary', 'full'), got 'everything'"
     )
-    status = (await client.call_tool("system_status", {})).structured_content
+    status = (await client.call_tool("system_status", {"detail": "operations"})).structured_content
     (record,) = [r for r in status["operations"] if r["operation_id"] == payload["operation_id"]]
     assert (record["state"], record["error_kind"]) == ("refused", "invalid_args")
 

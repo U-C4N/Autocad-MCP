@@ -171,10 +171,11 @@
     "history_value_lookup": {
       "metric": "batched_calls",
       "ceiling": 2,
-      "gate": "release",
+      "gate": "ci",
       "owner": "1.8-10 (drawing_history)",
       "source": "plan section 4: H1 the value in round 2 <= 2 calls",
-      "v1_7_0": "unsolved (0/3)"
+      "v1_7_0": "unsolved (0/3)",
+      "measured": "1.8-10: 2 calls (drawing_open + drawing_history(handle=..., detail='args')), the oracle in benchmarks/call_budget.py; flipped to ci by its owner"
     }
   },
   "real_model": {

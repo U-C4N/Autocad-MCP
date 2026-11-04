@@ -47,6 +47,7 @@ from .base import (
     parse_lineweight,
     shoelace_area,
 )
+from .change_sets import EzdxfChangeSets
 from .contracts.entity_modification import TEXT_SEARCH_SCOPE
 from .contracts.settings import (
     SUMMARY_FIELDS,
@@ -1599,7 +1600,7 @@ class _DirtyField(_ActiveField):
 # ---------------------------------------------------------------------------
 
 
-class EzdxfBackend(EzdxfCheckpoints, AutoCADBackend):
+class EzdxfBackend(EzdxfCheckpoints, EzdxfChangeSets, AutoCADBackend):
     """File-based ezdxf backend – no live AutoCAD needed."""
 
     # Old per-backend attributes, now routed to the active document (v1.6).

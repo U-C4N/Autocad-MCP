@@ -78,7 +78,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from backends.operations import OperationJournal, OperationRecord
+from backends.operations import OperationJournal, OperationRecord, history_row_matches
 
 __all__ = [
     "ARGS_CAP_BYTES",
@@ -170,6 +170,8 @@ _COLUMNS = (
     "result_json",
     "result_sha256",
     "checkpoint_before",
+    "label",
+    "lineage_id",
 )
 #: A server id's row.
 _INSERT = (
@@ -183,7 +185,8 @@ _UPSERT = (
 )
 _SET_FINAL = (
     "UPDATE operations SET state = ?, error_kind = ?, ended = ?, revision_after = ?, "
-    "document_id = ?, result_json = ?, result_sha256 = ?, checkpoint_after = ? "
+    "document_id = ?, result_json = ?, result_sha256 = ?, checkpoint_after = ?, "
+    "changes_json = ?, lineage_id = ? "
 )
 _FINISH_SEQ = _SET_FINAL + "WHERE seq = ? AND server_instance = ?"
 _FINISH_CLIENT = (
@@ -482,6 +485,17 @@ def _canonical(value: Any) -> str:
 
 def _sha(text: str) -> str:
     return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _changes_text(changes: dict | None) -> str | None:
+    """A change summary as stored (1.8-10): handles and counts only, never a
+    text of the call, so it is kept whatever ``JOURNAL_ARGS`` says."""
+    if changes is None:
+        return None
+    try:
+        return json.dumps(changes, sort_keys=True, separators=(",", ":"), default=str)
+    except (TypeError, ValueError):  # a journal never fails the call it records
+        return None
 
 
 def _record_of(row: sqlite3.Row | tuple) -> OperationRecord:
@@ -862,6 +876,8 @@ class DurableJournal(OperationJournal):
                 result[0],
                 result[1],
                 record.checkpoint_before,
+                record.label,
+                record.lineage_id,
             ),
         )
 
@@ -875,6 +891,8 @@ class DurableJournal(OperationJournal):
             stored[0],
             stored[1],
             record.checkpoint_after,
+            _changes_text(record.changes),
+            record.lineage_id,
         )
         if record.client_supplied:
             return _FINISH_CLIENT, (*final, record.operation_id, self.server_instance)
@@ -970,9 +988,12 @@ class DurableJournal(OperationJournal):
         *,
         operation_id: str | None = None,
         document: dict | None = None,
+        label: str | None = None,
     ) -> tuple[OperationRecord, Any | None]:
         if self._connection is None:
-            return super().begin(tool, arguments, operation_id=operation_id, document=document)
+            return super().begin(
+                tool, arguments, operation_id=operation_id, document=document, label=label
+            )
         client = operation_id is not None
         eager = client or not self._read_only(tool)
         with self._lock:
@@ -982,11 +1003,11 @@ class DurableJournal(OperationJournal):
                 except sqlite3.Error as exc:
                     self._failed(exc, "begin")
                     return super().begin(
-                        tool, arguments, operation_id=operation_id, document=document
+                        tool, arguments, operation_id=operation_id, document=document, label=label
                     )
             try:
                 record, replay = super().begin(
-                    tool, arguments, operation_id=operation_id, document=document
+                    tool, arguments, operation_id=operation_id, document=document, label=label
                 )
             except BaseException:
                 # A refusal (conflict, reconcile): the transaction holds at most
@@ -1027,8 +1048,11 @@ class DurableJournal(OperationJournal):
         result: Any = None,
         error_kind: str | None = None,
         document: dict | None = None,
+        changes: dict | None = None,
     ) -> None:
-        super().finish(record, state, result=result, error_kind=error_kind, document=document)
+        super().finish(
+            record, state, result=result, error_kind=error_kind, document=document, changes=changes
+        )
         with self._lock:
             deferred = record.operation_id in self._deferred
             args_text = self._deferred.pop(record.operation_id, None)
@@ -1166,6 +1190,146 @@ class DurableJournal(OperationJournal):
         return _lost_summary(
             [row for row in found.values() if _lost(row, document_id, saved_revision, saved_at)]
         )
+
+    # ── 1.8-10: history and the thin status summary ──
+
+    def _history_query(self, sql: str, params: tuple) -> list | None:
+        """Flush, then ``sql``; None when the file is unusable (memory answers)."""
+        if self._connection is None:
+            return None
+        with self._lock:
+            self._commit([], "flush")
+            try:
+                if self._connection is None:
+                    return None
+                return self._connection.execute(sql, params).fetchall()
+            except sqlite3.Error as exc:
+                self._failed(exc, "read")
+                return None
+
+    def history(
+        self,
+        document_id: str,
+        *,
+        limit: int = 10,
+        since_seq: int | None = None,
+        tool: str | None = None,
+        label: str | None = None,
+        query: str | None = None,
+        handle: str | None = None,
+        skip: Any = None,
+        lineage_id: str | None = None,
+    ) -> list[dict]:
+        """``OperationJournal.history`` over every run's rows of the document.
+
+        A reopened file continues its lineage (1.8-04) - and, headless, its
+        ``document_id`` - so the rows of a server that has since died, or was
+        restarted, are found. ``tool`` / ``label`` / ``since_seq`` filter in
+        SQL; ``query``, ``handle`` and ``skip`` on the rows read, newest first,
+        until ``limit`` matched.
+        """
+        if lineage_id:
+            clauses = ["(document_id = ? OR lineage_id = ?)", "state != 'running'"]
+            params: list[Any] = [document_id, lineage_id]
+        else:
+            clauses = ["document_id = ?", "state != 'running'"]
+            params = [document_id]
+        if since_seq is not None:
+            clauses.append("seq > ?")
+            params.append(int(since_seq))
+        if tool is not None:
+            clauses.append("tool = ?")
+            params.append(tool)
+        if label is not None:
+            clauses.append("label = ?")
+            params.append(label)
+        rows = self._history_query(
+            "SELECT seq, operation_id, document_id, tool, state, revision_before, "
+            "revision_after, checkpoint_before, checkpoint_after, label, started, args_json, "
+            f"changes_json FROM operations WHERE {' AND '.join(clauses)} ORDER BY seq DESC",
+            tuple(params),
+        )
+        if rows is None:
+            return super().history(
+                document_id,
+                limit=limit,
+                since_seq=since_seq,
+                tool=tool,
+                label=label,
+                query=query,
+                handle=handle,
+                skip=skip,
+                lineage_id=lineage_id,
+            )
+        keys = (
+            "seq",
+            "operation_id",
+            "document_id",
+            "tool",
+            "state",
+            "revision_before",
+            "revision_after",
+            "checkpoint_before",
+            "checkpoint_after",
+            "label",
+            "started",
+            "args_json",
+            "changes_json",
+        )
+        out = []
+        for values in rows:
+            row = dict(zip(keys, values, strict=True))
+            if skip is not None and tool is None and skip(row["tool"]):
+                continue
+            if not history_row_matches(row, query=query, handle=handle):
+                continue
+            out.append(row)
+            if len(out) >= limit:
+                break
+        return out
+
+    def next_revision(self, document_id: str, seq: int) -> int | None:
+        rows = self._history_query(
+            "SELECT MIN(revision_before) FROM operations WHERE document_id = ? AND seq > ? "
+            "AND revision_before IS NOT NULL",
+            (document_id, int(seq)),
+        )
+        if rows is None:
+            return super().next_revision(document_id, seq)
+        value = rows[0][0]
+        return None if value is None else int(value)
+
+    def labels(self, document_id: str, lineage_id: str | None = None) -> list[str]:
+        rows = self._history_query(
+            "SELECT label FROM operations WHERE (document_id = ? OR lineage_id = ?) "
+            "AND label IS NOT NULL GROUP BY label ORDER BY MIN(seq)",
+            (document_id, lineage_id or ""),
+        )
+        if rows is None:
+            return super().labels(document_id, lineage_id)
+        return [str(row[0]) for row in rows]
+
+    def summary(self, *, exclude: str | None = None) -> dict:
+        """``{count, last, unknown_commit}`` over every run's rows."""
+        rows = self._history_query(
+            "SELECT COUNT(*), SUM(state = 'unknown_commit') FROM operations", ()
+        )
+        if rows is None:
+            return super().summary(exclude=exclude)
+        count, unknown = rows[0]
+        mine = super().summary(exclude=exclude)
+        last = mine["last"]
+        if last is None:
+            found = self._history_query(
+                "SELECT operation_id, tool, state, revision_before, revision_after "
+                "FROM operations WHERE operation_id != ? ORDER BY seq DESC LIMIT 1",
+                (exclude or "",),
+            )
+            if found:
+                op, tool, state, before, after = found[0]
+                rev = after if after is not None else before
+                last = {"op": op, "tool": tool, "state": state, "rev": rev}
+        return {"count": int(count or 0), "last": last, "unknown_commit": int(unknown or 0)}
 
     # ── status and shutdown ──
 

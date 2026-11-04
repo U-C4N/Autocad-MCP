@@ -3,7 +3,7 @@
   "schema_version": 2,
   "package_version": "1.7.0",
   "totals": {
-    "tools": 251,
+    "tools": 252,
     "resources": 11,
     "prompts": 5,
     "groups": 28
@@ -33,7 +33,7 @@
     "styles": 10,
     "system": 7,
     "templates": 2,
-    "transactions": 6,
+    "transactions": 7,
     "understanding": 5,
     "validation": 1,
     "view": 4
@@ -1829,6 +1829,29 @@
       "annotations": {
         "title": "Drawing: Finalize (validate + save + screenshot)",
         "destructiveHint": true
+      }
+    },
+    {
+      "name": "drawing_history",
+      "group": "transactions",
+      "cost": "read",
+      "summary": "What was done to this drawing, and with which values - across restarts.",
+      "acad": [],
+      "synonyms": [
+        "drawing history",
+        "what did i change earlier",
+        "value in an earlier round",
+        "operation log",
+        "audit trail",
+        "previous value of a parameter",
+        "what was the diameter before"
+      ],
+      "tags": [
+        "transaction"
+      ],
+      "annotations": {
+        "title": "Drawing History",
+        "readOnlyHint": true
       }
     },
     {

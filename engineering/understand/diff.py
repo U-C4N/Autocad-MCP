@@ -47,6 +47,15 @@ from -> to; ``text``, ``attribs`` (by tag), ``radius``, ``angles``,
 ``height``, ``rotation``, ``scale``, ``block``, ``layer``, ``space``,
 ``bulges``, ``closed`` from -> to.
 
+Values as well as geometry (1.8-10): a pair whose ``ACADMCP_MECH`` /
+``ACADMCP_ARCH`` / ``ACADMCP_PID`` payloads differ reports ``feature``, a
+JSON-path diff of the payloads (``{"features[2].d": {"from": 12, "to": 16}}``,
+paths sorted, numbers equal within half a ``tol`` and floats reported on the
+``tol`` grid; prefixed ``APP:`` only when the entity carries more than one of
+those payloads), and a DIMENSION pair whose measured value differs reports
+``measurement`` from -> to. An exact geometric match is such an edit too when
+its payload or its measurement moved - matched ``exact``, counted as changed.
+
 The changes are grouped into clusters for the revision clouds: every changed,
 added and removed record contributes its box (a changed one its old box and
 its new box), boxes within ``move_tol`` of each other join one cluster, and a
@@ -67,6 +76,7 @@ from __future__ import annotations
 
 import hashlib
 import heapq
+import json
 import math
 import os
 from collections import defaultdict
@@ -79,6 +89,7 @@ __all__ = [
     "CATEGORIES",
     "DEFAULT_LIMIT",
     "DEFAULT_TOL",
+    "FEATURE_APPS",
     "MOVE_FRACTION",
     "PAD_FRACTION",
     "ROBUST_QUANTILE",
@@ -88,6 +99,7 @@ __all__ = [
     "cap_report",
     "default_move_tol",
     "diff_snapshots",
+    "feature_diff",
     "read_revision",
     "robust_box",
     "signature",
@@ -392,6 +404,103 @@ def _changes(o: EntityRecord, n: EntityRecord, tol: float) -> dict:
         out["rotation"] = {"from": o.rotation, "to": n.rotation}
     if any(_number_changed(a, b, tol) for a, b in zip(o.scale, n.scale, strict=True)):
         out["scale"] = {"from": list(o.scale), "to": list(n.scale)}
+    out.update(_value_changes(o, n, tol))
+    return out
+
+
+# -- feature payloads and dimension values (1.8-10) ------------------------------------
+
+#: The applications whose payload is a feature model a diff reads value by value.
+FEATURE_APPS = ("ACADMCP_MECH", "ACADMCP_ARCH", "ACADMCP_PID")
+#: Paths reported per entity before ``feature`` says how many more there were.
+FEATURE_PATH_CAP = 50
+_MISSING = object()
+
+
+def _quantised(value, tol: float):
+    """A float on the ``tol`` grid (the same grid the signature uses); ints stay ints."""
+    if isinstance(value, bool) or not isinstance(value, float):
+        return value
+    if not math.isfinite(value):
+        return repr(value)
+    return round(round(value / tol) * tol, 12)
+
+
+def _walk(old, new, path: str, out: dict, tol: float) -> None:
+    if isinstance(old, dict) and isinstance(new, dict):
+        for key in sorted(set(old) | set(new), key=str):
+            child = f"{path}.{key}" if path else str(key)
+            _walk(old.get(key, _MISSING), new.get(key, _MISSING), child, out, tol)
+        return
+    if isinstance(old, list) and isinstance(new, list):
+        for index in range(max(len(old), len(new))):
+            _walk(
+                old[index] if index < len(old) else _MISSING,
+                new[index] if index < len(new) else _MISSING,
+                f"{path}[{index}]",
+                out,
+                tol,
+            )
+        return
+    numeric = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (old, new))
+    if numeric:
+        if not _number_changed(old, new, tol):
+            return
+    elif old == new:
+        return
+    out[path or "$"] = {
+        "from": None if old is _MISSING else _quantised(old, tol),
+        "to": None if new is _MISSING else _quantised(new, tol),
+    }
+
+
+def feature_diff(old, new, tol: float = DEFAULT_TOL) -> dict:
+    """JSON-path differences between two feature payloads, sorted by path.
+
+    ``{"features[2].d": {"from": 12, "to": 16}}``: dicts by key (sorted),
+    lists by index, numbers equal within half a ``tol`` (the move test) and
+    floats reported on the ``tol`` grid; a key on one side only has ``None``
+    on the other.
+    """
+    tol = _positive("tol", tol)
+    out: dict = {}
+    _walk(old, new, "", out, tol)
+    return dict(sorted(out.items()))
+
+
+def _payloads(rec: EntityRecord) -> dict:
+    found = {}
+    for app, text in rec.xdata:
+        if app in FEATURE_APPS:
+            try:
+                found[app] = json.loads(text)
+            except ValueError:
+                found[app] = text
+    return found
+
+
+def _value_changes(o: EntityRecord, n: EntityRecord, tol: float) -> dict:
+    """``feature`` (the ACADMCP_* payloads, path by path) and a DIMENSION's
+    ``measurement`` from -> to: what a change of value looks like when the
+    geometry alone does not say it."""
+    out: dict = {}
+    before, after = _payloads(o), _payloads(n)
+    apps = sorted(set(before) | set(after))
+    paths: dict = {}
+    for app in apps:
+        rows = feature_diff(before.get(app, {}), after.get(app, {}), tol)
+        for path, row in rows.items():
+            paths[path if len(apps) == 1 else f"{app}:{path}"] = row
+    if paths:
+        keys = sorted(paths)
+        out["feature"] = {key: paths[key] for key in keys[:FEATURE_PATH_CAP]}
+        if len(keys) > FEATURE_PATH_CAP:
+            out["feature_truncated"] = len(keys) - FEATURE_PATH_CAP
+    if o.type == "DIMENSION" and n.type == "DIMENSION":
+        a = o.dimension[2] if o.dimension else None
+        b = n.dimension[2] if n.dimension else None
+        if _number_changed(a, b, tol):
+            out["measurement"] = {"from": a, "to": b}
     return out
 
 
@@ -489,6 +598,9 @@ def diff_snapshots(
     used_old: set[int] = set()
     left_new: list[int] = []
     exact = kept_handle = 0
+    # 1.8-10: an exact geometric match whose feature payload or dimension value
+    # moved (a part's model re-stamped, a DIMENSION re-measured) is an edit.
+    edited: list[tuple[int, int, str]] = []
     for j, rec in enumerate(news):
         pool = pools.get(signature(rec, tol))
         if not pool:
@@ -499,6 +611,10 @@ def diff_snapshots(
         used_old.add(i)
         exact += 1
         kept_handle += int(olds[i].handle == rec.handle)
+        if (olds[i].xdata or rec.xdata or rec.type == "DIMENSION") and _value_changes(
+            olds[i], rec, tol
+        ):
+            edited.append((i, j, "exact"))
     left_old = [i for i in range(len(olds)) if i not in used_old]
     # No exact match is no evidence: strangers from two fresh files share
     # handles, and so do the entities of a drawing that moved as a whole.
@@ -524,6 +640,7 @@ def diff_snapshots(
     pairs.extend(
         (i, j, "position") for i, j in _nearest_pairs(olds, news, left_old, left_new, move_tol)
     )
+    pairs.extend(edited)
     taken_old = {i for i, _j, _how in pairs}
     taken_new = {j for _i, j, _how in pairs}
 
@@ -575,7 +692,7 @@ def diff_snapshots(
         "summary": {
             "old_entities": len(olds),
             "new_entities": len(news),
-            "unchanged": exact + same,
+            "unchanged": exact - len(edited) + same,
             "changed": len(changed),
             "added": len(added),
             "removed": len(removed),
