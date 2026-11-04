@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-11-04
+
 1.8.0: the server remembers, finishes a job in one call and measures itself
 honestly. Nine tools are added (248 -> 257) and two resources (11 -> 13); the
 5 prompt templates are unchanged, and `system_about` is the authority for the

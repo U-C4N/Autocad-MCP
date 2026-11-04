@@ -836,7 +836,7 @@
     "fastmcp": "3.4.5",
     "implementation": "CPython",
     "machine": "AMD64",
-    "package_version": "1.7.0",
+    "package_version": "1.8.0",
     "platform": "Windows-11-10.0.26300-SP0",
     "python": "3.12.16"
   },
