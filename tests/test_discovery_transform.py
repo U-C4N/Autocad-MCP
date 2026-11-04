@@ -179,15 +179,15 @@ async def test_stock_bm25_answers_a_counting_question_with_destructive_tools(sto
     """Guard the guard: the destructive-hit problem is measured, not assumed.
 
     This asserted the top hit was ``entity_delete_many`` until
-    ``analysis_measure_entity`` was added and displaced it to second. The
-    ranking order is incidental; what the risk ceiling exists to prevent is a
-    read-only question being answered with tools that destroy geometry, and that
-    is still exactly what stock BM25 does here.
+    ``analysis_measure_entity`` was added and displaced it to second, and that
+    it was still among the hits until 1.8.0's ``entity_modify_where`` (1.8-12)
+    took its slot. The ranking order and the name are incidental; what the risk
+    ceiling exists to prevent is a read-only question being answered with tools
+    that destroy geometry, and that is still exactly what stock BM25 does here.
     """
     hits = await stock._search(catalog, COUNTING_QUERY)
     risky = [t.name for t in hits if tool_risk(t) == "destructive"]
     assert risky, f"expected destructive hits among {_names(hits)}"
-    assert "entity_delete_many" in risky
 
 
 @pytest.mark.parametrize(
@@ -232,9 +232,17 @@ async def test_the_filter_frees_slots_rather_than_shrinking_the_answer(transform
     assert set(_names(filtered.hits)) - set(_names(unfiltered.hits))
 
 
+def _destructive_hits(transform, catalog, query: str) -> list[str]:
+    """The destructive tools the unfiltered top-5 surfaces for ``query``."""
+    unfiltered = transform.rank(catalog, query, limit=5)
+    return [t.name for t in unfiltered.hits if tool_risk(t) == "destructive"]
+
+
 async def test_the_filter_records_exactly_what_it_hid(transform, catalog):
+    destructive = _destructive_hits(transform, catalog, COUNTING_QUERY)
+    assert destructive, "the counting query must still surface a destructive tool unfiltered"
     outcome = transform.rank(catalog, COUNTING_QUERY, limit=5, risk="read")
-    assert "entity_delete_many" in _names(outcome.hidden)
+    assert set(destructive) <= set(_names(outcome.hidden))
     # Only tools the caller would otherwise have seen — not the whole catalog.
     assert len(outcome.hidden) <= 5
 
@@ -270,7 +278,8 @@ async def test_the_payload_says_when_the_risk_filter_removed_hits(transform, cat
     payload = await _search_payload(transform, catalog, COUNTING_QUERY, risk="read")
     notice = [line for line in payload.splitlines() if line.startswith("Risk filter:")]
     assert len(notice) == 1
-    assert "entity_delete_many" in notice[0]
+    for name in _destructive_hits(transform, catalog, COUNTING_QUERY):
+        assert name in notice[0]
     assert 'risk="any"' in notice[0]
 
 
@@ -294,7 +303,8 @@ async def test_a_structured_serializer_gets_the_notice_as_a_sibling_key(catalog)
     structured = CadSearchTransform(search_result_serializer=serialize_tools_for_output_json)
     payload = await _search_payload(structured, catalog, COUNTING_QUERY, risk="read")
     assert isinstance(payload["results"], list)
-    assert "entity_delete_many" in payload["notice"]
+    for name in _destructive_hits(structured, catalog, COUNTING_QUERY):
+        assert name in payload["notice"]
 
 
 async def test_a_structured_serializer_returns_bare_results_when_nothing_was_hidden(catalog):
@@ -576,12 +586,20 @@ async def test_a_counting_question_never_answers_with_a_destructive_tool(transfo
 
 
 async def test_the_risk_ceiling_is_what_removes_the_delete_tool(transform, catalog):
-    """Not the ranking — the ranking still surfaces it, and says that it did."""
+    """Not the ranking — the ranking still surfaces it, and says that it did.
+
+    Which destructive tool the corpus ranks for a counting question moves with
+    the catalog (``entity_delete_many`` until 1.8.0, ``entity_modify_where``
+    since 1.8-12); the property is that the ceiling, not the ranking, removes
+    it and that the notice names it.
+    """
     query = "how many entities are on the GEOMETRY layer"
-    assert "entity_delete_many" in _names(transform.rank(catalog, query, limit=5).hits)
+    destructive = _destructive_hits(transform, catalog, query)
+    assert destructive
     filtered = transform.rank(catalog, query, limit=5, risk="read")
-    assert "entity_delete_many" not in _names(filtered.hits)
-    assert "entity_delete_many" in filtered.notice()
+    assert not set(destructive) & set(_names(filtered.hits))
+    for name in destructive:
+        assert name in filtered.notice()
 
 
 # ── DISCOVERY_MODE ──────────────────────────────────────────────────────────

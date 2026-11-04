@@ -5819,11 +5819,10 @@ async def cad_batch(
         str,
         Field(
             description=(
-                "auto (default): all or nothing - a batch with a mutating step runs as "
-                "rollback, a read-only one as stop. stop: halt at the first failure, keep "
-                "what already ran. continue: run every step. rollback: open a checkpoint "
-                "first and undo on failure - the returned `atomicity` block says what that "
-                "is worth on this backend."
+                "auto (default) = all or nothing: rollback when a step mutates, stop when "
+                "every step reads. 'stop' halts at the first failure and keeps what ran; "
+                "'continue' runs every step; 'rollback' opens a checkpoint and undoes on "
+                "failure (the returned `atomicity` block says what that is worth here)."
             )
         ),
     ] = "auto",
