@@ -1107,6 +1107,76 @@ def _ensure_linetype_loaded(name: str) -> None:
     _load_linetype(doc, name, _default_lin_file(doc))
 
 
+#: The TRIM / EXTEND scripts answer the Standard mode's prompts: cutting edges
+#: (the handent), an empty Enter, then the WCS pick. MEASURED on AutoCAD 2026
+#: (live smoke ``space``, 2026-11-04): the seat's default ``TRIMEXTENDMODE`` 1
+#: (Quick, since AutoCAD 2021) took the cutter's handent as the object to trim,
+#: erased the cutter and left the target untouched. Set for the command only,
+#: restored after; a seat without the variable (before 2021) is Standard.
+_STANDARD_TRIM_MODE = {"TRIMEXTENDMODE": 0}
+
+
+def _line_ends(entity):
+    """``((x, y, z), (x, y, z))`` of an AcDbLine (WCS), None for anything else."""
+    try:
+        if str(entity.ObjectName) != "AcDbLine":
+            return None
+        start, end = entity.StartPoint, entity.EndPoint
+    except Exception:
+        return None
+    return tuple(float(v) for v in start[:3]), tuple(float(v) for v in end[:3])
+
+
+def _line_corner(target, other, ref: tuple[float, float], mode: str) -> EntityInfo:
+    """Trim or extend LINE ``target`` to ``other``'s infinite line, in place.
+
+    The headless engine's rule, computed the same way: the intersection of
+    the two lines taken as infinite; ``trim`` moves the end of the target
+    farther from ``ref`` (the segment holding ``ref`` is kept, the contract's
+    wording), ``extend`` moves the end nearer ``ref``. The handle is kept.
+
+    MEASURED on AutoCAD 2026 (live smoke ``space``, 2026-11-04) - why not the
+    ``_TRIM`` / ``_EXTEND`` command for two lines: the command picks the
+    target by a screen point, so a pick outside the current view selected
+    nothing and opened a crossing window (``Specify opposite corner``) that
+    left ``SendCommand`` blocked until a real ESC; and TRIM removes the picked
+    side where the contract keeps it. Other entity pairs still go through the
+    command (the headless engine refuses them).
+    """
+    (x1, y1, z1), (x2, y2, z2) = _line_ends(target)
+    (x3, y3, _), (x4, y4, _) = _line_ends(other)
+    det = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    if abs(det) < 1e-12:
+        what = "cutter" if mode == "trim" else "boundary"
+        raise RuntimeError(f"entity_{mode}: target and {what} are parallel or do not intersect.")
+    t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / det
+    point = _apoint(x1 + t * (x2 - x1), y1 + t * (y2 - y1), z1 + t * (z2 - z1))
+    near_start = (x1 - ref[0]) ** 2 + (y1 - ref[1]) ** 2 <= (x2 - ref[0]) ** 2 + (y2 - ref[1]) ** 2
+    if (mode == "trim") == near_start:
+        target.EndPoint = point
+    else:
+        target.StartPoint = point
+    _regen(target)
+    return _entity_info(target)
+
+
+def _set_variable(doc, name: str, value) -> None:
+    """``doc.SetVariable(name, value)``, an integer retried as a 16-bit VARIANT.
+
+    MEASURED on AutoCAD 2026 (2026-11-04): ``SetVariable("TRIMEXTENDMODE", 0)``
+    raises ``Error setting system variable`` - pywin32 marshals a Python int as
+    VT_I4 and AutoCAD wants that short as VT_I2 - while OSMODE, SNAPMODE and
+    CMDECHO take the VT_I4. The plain call stays first (it is what every other
+    variable has always been set with).
+    """
+    try:
+        doc.SetVariable(name, value)
+    except Exception:
+        if isinstance(value, bool) or not isinstance(value, int) or not -32768 <= value <= 32767:
+            raise
+        doc.SetVariable(name, win32com.client.VARIANT(pythoncom.VT_I2, value))
+
+
 def _assign_layer(entity, layer: str) -> None:
     """``entity.Layer = layer``, creating the layer first when it is missing.
 
@@ -10171,11 +10241,14 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         deadline_s: float | None = None,
         target_space: str | None = None,
         owner: str | None = None,
+        sysvars: dict[str, Any] | None = None,
     ) -> CommandOutcome:
         """Send `cmd`, polling CMDACTIVE until the command finishes.
 
         Snap/grid/echo are temporarily zeroed to avoid OSNAP-driven misclicks
-        and chatty echoes; everything is restored in the finally block.
+        and chatty echoes; ``sysvars`` (a command script's own modes, e.g.
+        ``TRIMEXTENDMODE``) are set the same way; everything is restored in the
+        finally block. A variable the seat does not have is skipped.
 
         1.8-05 - what the command did, not only that it was sent:
 
@@ -10213,10 +10286,12 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         command = cmd.rstrip("\n")
         saved: dict[str, Any] = {}
         try:
-            for var in ("OSMODE", "SNAPMODE", "CMDECHO"):
+            wanted = {"OSMODE": 0, "SNAPMODE": 0, "CMDECHO": 0, **(sysvars or {})}
+            for var, value in wanted.items():
                 try:
-                    saved[var] = doc.GetVariable(var)
-                    doc.SetVariable(var, 0)
+                    current = doc.GetVariable(var)
+                    _set_variable(doc, var, value)
+                    saved[var] = current
                 except Exception:
                     pass
             snapshot = None if owner is not None else _space_snapshot(doc)
@@ -10295,19 +10370,29 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         finally:
             for var, val in saved.items():
                 try:
-                    doc.SetVariable(var, val)
+                    _set_variable(doc, var, val)
                 except Exception:
                     pass
 
     async def entity_trim(self, target_handle, cutter_handle, keep_x, keep_y) -> EntityInfo:
         def _sync():
             doc = _acad_doc()
+            target = _handle_to_object(doc, target_handle)
+            cutter = _handle_to_object(doc, cutter_handle)
+            if _line_ends(target) is not None and _line_ends(cutter) is not None:
+                # LINE + LINE: the contract's own geometry, as on the headless
+                # engine - no command, no pick, no tab switch (_line_corner).
+                if target_handle == cutter_handle:
+                    raise RuntimeError("entity_trim: target and cutter cannot be the same entity.")
+                return _line_corner(target, cutter, (float(keep_x), float(keep_y)), "trim")
             # 1.8-05: ``*x,y`` is a WCS point whatever UCS is current, so a
             # ucs_set cannot shift the pick (tool coordinates are WCS).
             cmd = f'_TRIM\n(handent "{cutter_handle}")\n\n*{float(keep_x)},{float(keep_y)}\n\n'
             with _target_tab(doc):
                 # 1.8-23: only the target space's block is read, O(new)
-                self._safe_send_command(doc, cmd, owner=_target_space_name())
+                self._safe_send_command(
+                    doc, cmd, owner=_target_space_name(), sysvars=_STANDARD_TRIM_MODE
+                )
             ent = doc.HandleToObject(target_handle)
             return _entity_info(ent)
 
@@ -10324,6 +10409,19 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
             doc = _acad_doc()
             target = _handle_to_object(doc, target_handle)
             boundary = _handle_to_object(doc, boundary_handle)
+            bounds = _line_ends(boundary)
+            if _line_ends(target) is not None and bounds is not None:
+                # LINE + LINE: the headless engine's geometry (_line_corner).
+                if target_handle == boundary_handle:
+                    raise RuntimeError(
+                        "entity_extend: target and boundary cannot be the same entity."
+                    )
+                if end_x is None or end_y is None:
+                    (bx1, by1, _z1), (bx2, by2, _z2) = bounds
+                    ref = ((bx1 + bx2) / 2.0, (by1 + by2) / 2.0)
+                else:
+                    ref = (float(end_x), float(end_y))
+                return _line_corner(target, boundary, ref, "extend")
             if end_x is None or end_y is None:
                 # Auto: pick the target endpoint nearest the boundary midpoint.
                 try:
@@ -10343,7 +10441,9 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
             cmd = f'_EXTEND\n(handent "{boundary_handle}")\n\n*{ex},{ey}\n\n'  # WCS pick
             with _target_tab(doc):
                 # 1.8-23: only the target space's block is read, O(new)
-                self._safe_send_command(doc, cmd, owner=_target_space_name())
+                self._safe_send_command(
+                    doc, cmd, owner=_target_space_name(), sysvars=_STANDARD_TRIM_MODE
+                )
             return _entity_info(doc.HandleToObject(target_handle))
 
         return await self._run(_sync)
