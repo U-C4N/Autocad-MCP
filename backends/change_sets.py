@@ -35,6 +35,13 @@ layout and named block definition (``"block:NAME"``). Anonymous blocks
 (``*D`` dimension renderings, ``*U``, ``*X``) are left out: their names are
 not stable and they are a rendering of the entity that owns them.
 
+``features`` (only when there are some) lists the ``key=value`` tokens of the
+``ACADMCP_MECH`` / ``_ARCH`` / ``_PID`` payloads on the added entities
+(``part``, ``feature``, ``id``, ``kind``, ``tag``, ``element``, ``role``; at
+most ``FEATURE_CAP``): what ``drawing_history(query=)`` matches a feature id
+or kind against when the journal kept no arguments (``JOURNAL_ARGS=off`` /
+``digest``, or a spec over the 4 KB cap).
+
 Live (``summary_from_result``): from the handles the call returned -
 ``handle``, ``handles``, ``created`` - with ``complete: false``: ActiveX
 offers no handle seed to diff, and a deletion or a side effect (a dimension's
@@ -48,16 +55,55 @@ a call - every reader here returns None on any error.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterable, Mapping
 from typing import Any
 
 log = logging.getLogger("autocad_mcp.changes")
 
-__all__ = ["LIST_CAP", "EzdxfChangeSets", "empty_changes", "merge_changes", "summary_from_result"]
+__all__ = [
+    "FEATURE_CAP",
+    "LIST_CAP",
+    "EzdxfChangeSets",
+    "empty_changes",
+    "feature_tokens",
+    "merge_changes",
+    "summary_from_result",
+]
 
 #: Handles listed per side; ``truncated`` counts what a list leaves out.
 LIST_CAP = 50
+#: Feature tokens listed per summary (module docstring).
+FEATURE_CAP = 20
+#: The payloads whose identifying keys a summary lists.
+_FEATURE_APPS = ("ACADMCP_MECH", "ACADMCP_ARCH", "ACADMCP_PID")
+_FEATURE_KEYS = ("part", "feature", "id", "kind", "tag", "element", "role")
+
+
+def feature_tokens(entity, into: dict) -> None:
+    """Add the ``key=value`` tokens of ``entity``'s feature payloads to ``into``
+    (an ordered set), up to ``FEATURE_CAP``. An untagged entity costs one
+    attribute read."""
+    if getattr(entity, "xdata", None) is None or len(into) >= FEATURE_CAP:
+        return
+    from backends.entity_fields import acadmcp_xdata
+
+    for app, text in acadmcp_xdata(entity):
+        if app not in _FEATURE_APPS:
+            continue
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for key in _FEATURE_KEYS:
+            value = payload.get(key)
+            if isinstance(value, (str, int)) and not isinstance(value, bool) and str(value):
+                if len(into) >= FEATURE_CAP:
+                    return
+                into.setdefault(f"{key}={value}", None)
 
 
 def empty_changes(*, complete: bool = True, **extra: Any) -> dict:
@@ -107,8 +153,12 @@ def merge_changes(parts: Iterable[dict | None]) -> dict | None:
     added: dict[str, None] = {}
     deleted: dict[str, None] = {}
     counts: dict[str, dict] = {}
+    features: dict[str, None] = {}
     truncated = False
     for part in seen:
+        for token in part.get("features") or ():
+            if len(features) < FEATURE_CAP:
+                features.setdefault(token, None)
         for handle in part.get("deleted") or ():
             if handle in added:
                 del added[handle]
@@ -122,7 +172,8 @@ def merge_changes(parts: Iterable[dict | None]) -> dict | None:
                     _bump(counts, owner, side, int(row[side]))
         truncated = truncated or bool(part.get("truncated"))
     complete = len(seen) == len(parts) and all(p.get("complete") for p in seen) and not truncated
-    return _finish(list(added), list(deleted), counts, complete)
+    extra = {"features": list(features)} if features else {}
+    return _finish(list(added), list(deleted), counts, complete, **extra)
 
 
 def summary_from_result(result: Any) -> dict | None:
@@ -174,6 +225,12 @@ def _owner_name(db, owner_handle: str | None, names: dict) -> str | None:
 
 def _is_layout(name: str) -> bool:
     return not name.startswith("block:")
+
+
+def _seed(doc) -> int:
+    """The next handle the entity database will issue (``HandleGenerator``'s
+    ``str`` is it, in hex)."""
+    return int(str(doc.entitydb.handles), 16)
 
 
 class EzdxfChangeSets:
@@ -228,7 +285,7 @@ class EzdxfChangeSets:
             return {
                 "doc": doc,
                 "key": self._active_key,
-                "seed": int(doc.entitydb.handles._handle),
+                "seed": _seed(doc),
                 "total": self._change_total(doc, cache),
             }
         except Exception as exc:  # a summary is evidence, never a reason to fail a call
@@ -263,7 +320,8 @@ class EzdxfChangeSets:
         names: dict = cache["names"]
         counts: dict[str, dict] = {}
         added: list[str] = []
-        seed_after = int(db.handles._handle)
+        features: dict[str, None] = {}
+        seed_after = _seed(doc)
         for value in range(int(mark["seed"]), seed_after):
             handle = f"{value:X}"
             entity = db.get(handle)
@@ -276,6 +334,7 @@ class EzdxfChangeSets:
             _bump(counts, owner, "added")
             if _is_layout(owner):
                 added.append(handle)
+                feature_tokens(entity, features)
         deleted: list[str] = []
         new_total = sum(row["added"] for row in counts.values())
         if int(mark["total"]) + new_total - self._change_total(doc, cache) > 0:
@@ -287,7 +346,8 @@ class EzdxfChangeSets:
                     if _is_layout(owner):
                         deleted.append(handle)
         cache["rev"] = state.revision
-        return _finish(added, deleted, counts, True)
+        extra = {"features": list(features)} if features else {}
+        return _finish(added, deleted, counts, True, **extra)
 
     def _change_replaced(self, doc, cache: dict, state) -> dict:
         """The document object was replaced in place (undo, restore, rollback)."""

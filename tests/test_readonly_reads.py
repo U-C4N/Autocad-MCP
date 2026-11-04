@@ -30,6 +30,7 @@ pytestmark = pytest.mark.asyncio
 #: headless engine refuses by capability. Each is a reason, not a convenience.
 NO_DOCUMENT_READ = {
     "system_status": "process state, answered without the lock on purpose",
+    "drawing_history": "the durable journal (detail='row'); only detail='changes' reads a drawing",
     "system_capabilities": "the engine's capability map",
     "system_about": "the server's own surface",
     "system_variable_describe": "the static SYSVAR_CATALOG",

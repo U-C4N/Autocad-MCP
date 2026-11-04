@@ -539,8 +539,8 @@ _LABELLED_TOOLS = frozenset({"cad_batch", "checkpoint_create"})
 def _client_label(tool: str, arguments: dict, meta) -> str | None:
     """A call's label (1.8-10): ``_meta.label`` on any request, else the
     ``label`` argument of ``cad_batch`` / ``checkpoint_create`` (also through the
-    search proxy's ``call_tool``). Refused (``ValueError``) when not 1-200
-    printable characters."""
+    search proxy's ``call_tool``). ``ValueError`` when not 1-200 printable
+    characters - the middleware answers it ``invalid_args``."""
     from backends.operations import validate_label
 
     from_meta = getattr(meta, "label", None) if meta is not None else None
@@ -5602,12 +5602,7 @@ async def cad_batch(
     ] = None,
     label: Annotated[
         str | None,
-        Field(
-            description=(
-                "A name for this batch and its steps in the history "
-                "(drawing_history(label=...)), e.g. 'round 2'. 1-200 characters."
-            )
-        ),
+        Field(description="Labels the batch's history rows, e.g. 'round 2' (1-200 chars)."),
     ] = None,
     ctx: Context = None,
 ) -> dict:
@@ -5660,8 +5655,8 @@ async def cad_batch(
     OPERATIONS: the batch and each step are operations with their own ids
     (drawing_history lists them). Pass `operation_id` (or the
     request's `_meta.operation_id`) to make a retry safe: the same id with the
-    same steps replays the recorded result instead of drawing twice. The
-    journal is in memory: a server restart forgets it (durable in 1.8.0, B13).
+    same steps replays the recorded result instead of drawing twice, also
+    after a restart (the journal is durable since 1.8.0).
 
     ATOMICITY is reported, not assumed. The default on_error="auto" (since
     1.8.0; 1.7 defaulted to "stop") makes a batch with at least one mutating
@@ -5677,8 +5672,8 @@ async def cad_batch(
     on_error="rollback", a checkpoint a step opens with transaction_begin is
     closed with the batch's (`unwound`).
 
-    CHANGES: `changes` {added, deleted, counts, complete} sums the steps (a
-    failed batch: `partial_changes`, what landed before it stopped).
+    CHANGES: `changes` {added, deleted, counts, complete} sums the steps; a
+    failed batch reports `partial_changes`.
 
     NOT CALLABLE from a batch: the raw command/LISP escape hatches, and
     cad_batch itself. Call those directly.
@@ -5698,6 +5693,14 @@ async def cad_batch(
             f"cad_batch: {len(steps)} steps exceeds the {MAX_BATCH_STEPS}-step ceiling. "
             "Steps run sequentially inside one uncancellable call - split the work."
         )
+    # 1.8-10: the label every step's row carries - the same one the batch's own
+    # row got in the middleware (_meta.label first); refused before anything ran.
+    try:
+        step_label = _client_label("cad_batch", {"label": label}, _request_meta_of(ctx))
+    except ValueError as exc:
+        from engineering.errors import InvalidArgsError
+
+        raise InvalidArgsError(f"invalid_args: {exc}") from exc
 
     denied = _batch_denied_tools()
     read_only = _batch_read_only_tools()
@@ -6002,16 +6005,8 @@ async def cad_batch(
     results: list[dict] = []
     succeeded = failed = executed = 0
     total = len(plans)
-    # 1.8-10: the batch's label goes on every step's row; each mutating step's
-    # change summary is kept, summed into `changes` / `partial_changes`.
-    from backends.operations import validate_label
-
-    try:
-        step_label = validate_label(label, source="cad_batch.label") or _client_label(
-            "", {}, _request_meta_of(ctx)
-        )
-    except ValueError:
-        step_label = None
+    # 1.8-10: each mutating step's change summary is kept, summed into
+    # `changes` / `partial_changes`.
     step_changes: list = []
 
     try:
@@ -6834,7 +6829,7 @@ async def view_zoom_and_screenshot(
 
 
 # ---------------------------------------------------------------------------
-# ── SECTION 10: Transactions (6 tools) ──────────────────────────────────────
+# ── SECTION 10: Transactions (7 tools) ──────────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
@@ -7005,35 +7000,26 @@ async def checkpoint_restore(
     tags={"transaction"},
 )
 async def drawing_history(
-    limit: Annotated[int, Field(description="Rows, newest first (1-100).", ge=1, le=100)] = 10,
-    since_seq: Annotated[int | None, "Only rows after this seq."] = None,
-    tool: Annotated[str | None, "Only this tool's rows."] = None,
-    query: Annotated[
-        str | None, "Case-insensitive text in the tool name, label or arguments."
-    ] = None,
-    handle: Annotated[str | None, "Only calls naming, adding or deleting this handle."] = None,
-    label: Annotated[
-        str | None, "Only calls with this label (_meta.label, cad_batch / checkpoint_create)."
-    ] = None,
+    limit: Annotated[int, Field(ge=1, le=100)] = 10,
+    since_seq: int | None = None,
+    tool: str | None = None,
+    query: Annotated[str | None, "Text in tool, label, arguments or feature ids."] = None,
+    handle: str | None = None,
+    label: str | None = None,
     detail: Annotated[
         Literal["row", "args", "changes"],
-        "row; args: + the call's stored arguments; changes: + its change summary and, "
-        "for the first 3 rows, the checkpoint diff around it.",
+        "args: + stored arguments; changes: + change summary, checkpoint diff (3 rows).",
     ] = "row",
     ctx: Context = None,
 ) -> dict:
-    """The active drawing's operations, newest first, read from the durable
-    journal - also those of a server that has since restarted (reopen the file).
+    """The active drawing's mutating calls, newest first, from the durable
+    journal - across restarts (reopen the file first).
 
-    Each row is {seq, op, tool, state, rev, cp, label, t}; read-only calls are
-    left out unless `tool` names one. To find a value from an earlier round:
-    label the round's call (`_meta.label`, cad_batch(label=)), then
-    drawing_history(label=..., detail="args"); without a label,
-    detail="changes" diffs the checkpoints around each call (values of
-    ACADMCP_* features and dimension measurements included).
-
-    Refused: a `label` no row carries (invalid_args, naming the labels), no
-    open document.
+    Rows: {seq, op, tool, state, rev, cp, label, t}. A value from an earlier
+    round: label its call (_meta.label, cad_batch(label=)), then
+    drawing_history(label=..., detail="args"); unlabelled, detail="changes"
+    diffs the checkpoints around it (feature values, dimension measurements).
+    Refused: an unknown label (invalid_args, naming the labels); no document.
     """
     from engineering.history import history
 
@@ -7082,9 +7068,7 @@ async def system_status(
     ] = False,
     detail: Annotated[
         Literal["summary", "operations"],
-        "summary (default): `operations` is {count, last, unknown_commit}. operations: "
-        "the 1.7 list of the last 20 records (kept for one release; drawing_history reads "
-        "the history).",
+        "operations: the 1.7 list of the last 20 records (this release only).",
     ] = "summary",
     ctx: Context = None,
 ) -> dict:
@@ -7096,10 +7080,8 @@ async def system_status(
     `active_document_changed`). Live, the revision counts this server's own
     writes; edits the operator makes in AutoCAD are not counted.
 
-    `operations` (1.8.0) is `{count, last: {op, tool, state, rev},
-    unknown_commit}` - every recorded call, the newest other than this one,
-    and how many ended unknown_commit. drawing_history lists them; with
-    detail="operations" it is the 1.7 list of the last 20 records instead.
+    `operations` is `{count, last: {op, tool, state, rev}, unknown_commit}`;
+    drawing_history lists the calls.
 
     `state_store` describes the durable journal (B13): `mode` (`durable`, or
     `off` with JOURNAL_DURABLE=off), `path` (<ACADMCP_STATE_DIR>/journal.sqlite3),
@@ -13219,7 +13201,7 @@ async def drawing_diff(
         Field(
             default=None,
             description="The OLDER revision: a DXF path (a DWG only on the live engine, which "
-            "exports it read-only). Or give old_checkpoint.",
+            "exports it read-only).",
         ),
     ] = None,
     new_path: Annotated[
@@ -13274,16 +13256,9 @@ async def drawing_diff(
     ] = "",
     old_checkpoint: Annotated[
         str | None,
-        Field(
-            default=None,
-            description="The OLDER revision as one of the active drawing's checkpoints: its id "
-            "('cp-3'), seq ('3') or label.",
-        ),
+        Field(default=None, description="Instead of old_path: a checkpoint id, seq or label."),
     ] = None,
-    new_checkpoint: Annotated[
-        str | None,
-        Field(default=None, description="The NEWER revision as a checkpoint (as old_checkpoint)."),
-    ] = None,
+    new_checkpoint: str | None = None,
     ctx: Context = None,
 ) -> dict:
     """Compare two revisions of one drawing by geometric signature (spec §10).
@@ -13306,10 +13281,9 @@ async def drawing_diff(
     on an engine without the revcloud capability (the live engine -
     `capability: "revcloud"`), a path that does not exist, a DXF over
     MAX_DXF_BYTES (the size and the variable named), a file that is not a
-    readable DXF, and a non-positive `tol` or `move_tol`. A checkpoint
-    (old_checkpoint / new_checkpoint, 1.8-10) is refused by kind -
-    checkpoint_not_found / checkpoint_evicted; giving both a path and a
-    checkpoint for one side, or neither for the older one, is invalid_args.
+    readable DXF, and a non-positive `tol` or `move_tol`; an unknown or evicted
+    checkpoint (checkpoint_not_found / checkpoint_evicted); a path and a
+    checkpoint for one side (invalid_args).
     """
     from backends.base import UnsupportedCapabilityError
     from engineering.errors import InvalidArgsError

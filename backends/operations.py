@@ -179,10 +179,13 @@ def history_row_matches(
     """Whether one history row (``tool``, ``label``, ``args_json``,
     ``changes_json`` keys) passes ``drawing_history``'s filters.
 
-    ``query`` is case-insensitive over the tool name, the label and the stored
+    ``query`` is case-insensitive over the tool name, the label, the stored
     argument text (keys and values - a part spec's feature ``id`` and ``kind``
-    among them); ``handle`` matches a handle named in the arguments or in the
-    change summary (added / deleted), case-insensitively.
+    among them) and the change summary, whose ``features`` name the
+    ``ACADMCP_*`` feature ids / kinds the call drew (so a query still finds
+    them when the journal kept no arguments); ``handle`` matches a handle named
+    in the arguments or in the change summary (added / deleted),
+    case-insensitively.
     """
     if tool is not None and row.get("tool") != tool:
         return False
@@ -191,7 +194,7 @@ def history_row_matches(
     if query:
         needle = query.casefold()
         haystack = " ".join(
-            str(row.get(key) or "") for key in ("tool", "label", "args_json")
+            str(row.get(key) or "") for key in ("tool", "label", "args_json", "changes_json")
         ).casefold()
         if needle not in haystack:
             return False

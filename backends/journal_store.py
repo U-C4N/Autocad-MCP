@@ -1243,50 +1243,69 @@ class DurableJournal(OperationJournal):
         if label is not None:
             clauses.append("label = ?")
             params.append(label)
-        rows = self._history_query(
+        sql = (
             "SELECT seq, operation_id, document_id, tool, state, revision_before, "
             "revision_after, checkpoint_before, checkpoint_after, label, started, args_json, "
-            f"changes_json FROM operations WHERE {' AND '.join(clauses)} ORDER BY seq DESC",
-            tuple(params),
+            f"changes_json FROM operations WHERE {' AND '.join(clauses)} AND seq < ? "
+            "ORDER BY seq DESC LIMIT ?"
         )
-        if rows is None:
-            return super().history(
-                document_id,
-                limit=limit,
-                since_seq=since_seq,
-                tool=tool,
-                label=label,
-                query=query,
-                handle=handle,
-                skip=skip,
-                lineage_id=lineage_id,
+        # Newest first, a page at a time (keyset on the primary key): a long
+        # lineage is never read whole for ten rows.
+        page = max(50, 5 * int(limit))
+        before: int | None = None
+        out: list[dict] = []
+        while len(out) < limit:
+            cursor = (1 << 62) if before is None else before
+            rows = self._history_query(sql, (*params, cursor, page))
+            if rows is None:
+                if before is not None:
+                    break  # the file failed mid-read: what was read stands
+                return super().history(
+                    document_id,
+                    limit=limit,
+                    since_seq=since_seq,
+                    tool=tool,
+                    label=label,
+                    query=query,
+                    handle=handle,
+                    skip=skip,
+                    lineage_id=lineage_id,
+                )
+            self._history_rows(
+                rows, out, limit=limit, tool=tool, query=query, handle=handle, skip=skip
             )
-        keys = (
-            "seq",
-            "operation_id",
-            "document_id",
-            "tool",
-            "state",
-            "revision_before",
-            "revision_after",
-            "checkpoint_before",
-            "checkpoint_after",
-            "label",
-            "started",
-            "args_json",
-            "changes_json",
-        )
-        out = []
+            if len(rows) < page:
+                break
+            before = int(rows[-1][0])
+        return out
+
+    _HISTORY_KEYS = (
+        "seq",
+        "operation_id",
+        "document_id",
+        "tool",
+        "state",
+        "revision_before",
+        "revision_after",
+        "checkpoint_before",
+        "checkpoint_after",
+        "label",
+        "started",
+        "args_json",
+        "changes_json",
+    )
+
+    def _history_rows(self, rows, out: list, *, limit, tool, query, handle, skip) -> None:
+        """Append the rows that pass the in-Python filters to ``out``, up to ``limit``."""
         for values in rows:
-            row = dict(zip(keys, values, strict=True))
+            row = dict(zip(self._HISTORY_KEYS, values, strict=True))
             if skip is not None and tool is None and skip(row["tool"]):
                 continue
             if not history_row_matches(row, query=query, handle=handle):
                 continue
             out.append(row)
             if len(out) >= limit:
-                break
-        return out
+                return
 
     def next_revision(self, document_id: str, seq: int) -> int | None:
         rows = self._history_query(

@@ -283,6 +283,47 @@ async def test_query_and_handle_filters(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_match_older_than_one_page_of_rows_is_still_found():
+    """The durable journal is read newest first a page at a time (50 rows at
+    limit 10): a filter whose match lies beyond the first page reads on."""
+    async with Client(server.mcp) as client:
+        await client.call_tool("drawing_new", {"bootstrap": False})
+        first = await _call(client, "entity_create_line", {"x1": 0, "y1": 0, "x2": 5, "y2": 0})
+        for index in range(1, 70):
+            await client.call_tool(
+                "entity_create_line", {"x1": 0, "y1": index, "x2": 5, "y2": index}
+            )
+        found = await _call(client, "drawing_history", {"handle": first["handle"]})
+        newest = await _call(client, "drawing_history", {"limit": 3})
+    assert [r["tool"] for r in found["rows"]] == ["entity_create_line"] and not found["more"]
+    assert found["rows"][0]["seq"] < newest["rows"][-1]["seq"] - 60
+    assert len(newest["rows"]) == 3 and newest["more"] is True
+
+
+@pytest.mark.asyncio
+async def test_query_finds_a_feature_id_the_journal_kept_no_arguments_for(monkeypatch):
+    """``JOURNAL_ARGS=off`` (or a spec over the 4 KB cap): the arguments are
+    gone, but the change summary names the ACADMCP_* features the call drew,
+    so a query by feature id still finds the call."""
+    monkeypatch.setenv("JOURNAL_ARGS", "off")
+    async with Client(server.mcp) as client:
+        await client.call_tool("drawing_new", {})
+        await client.call_tool(
+            "mech_part_draw", {"spec": _plate(10.0), "at_x": 0.0, "dimension": False}
+        )
+        await client.call_tool("entity_create_line", {"x1": 0, "y1": 0, "x2": 5, "y2": 0})
+        found = await _call(client, "drawing_history", {"query": "H1", "detail": "args"})
+        rows = (await _call(client, "system_status", {"detail": "operations"}))["operations"]
+    (row,) = found["rows"]
+    assert row["tool"] == "mech_part_draw" and row["args"] is None
+    assert found["args_kept"] == "off"
+    drawn = [r for r in rows if r["tool"] == "mech_part_draw"][-1]
+    assert "feature=h1" in drawn["changes"]["features"]
+    line = [r for r in rows if r["tool"] == "entity_create_line"][-1]
+    assert "features" not in line["changes"], "an untagged entity names no feature"
+
+
+@pytest.mark.asyncio
 async def test_cad_batch_and_checkpoint_labels_reach_the_rows():
     async with Client(server.mcp) as client:
         await client.call_tool("drawing_new", {})
@@ -304,9 +345,19 @@ async def test_cad_batch_and_checkpoint_labels_reach_the_rows():
             meta={"label": "x" * 201},
             raise_on_error=False,
         )
+        step = {"tool": "entity_create_line", "args": {"x1": 0, "y1": 0, "x2": 1, "y2": 1}}
+        bad_batch = await client.call_tool(
+            "cad_batch", {"steps": [step], "label": "x" * 201}, raise_on_error=False
+        )
     assert {r["tool"] for r in sketch["rows"]} == {"cad_batch", "entity_create_line"}
     assert [r["tool"] for r in marked["rows"]] == ["checkpoint_create"]
     assert bad.is_error and _data(bad)["kind"] == "invalid_args"
+    assert bad_batch.is_error and _data(bad_batch)["kind"] == "invalid_args"
+    # a direct call (no middleware) is refused by the tool itself, before any step
+    from engineering.errors import InvalidArgsError
+
+    with pytest.raises(InvalidArgsError, match="invalid_args: cad_batch.label"):
+        await server.cad_batch(steps=[step], label="x" * 201, ctx=None)
 
 
 @pytest.mark.asyncio
