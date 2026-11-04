@@ -31,6 +31,9 @@ class _Fn:
         self.name, self._seat, self._doc = name, seat, doc
 
     def funcall(self, arg):
+        if getattr(self._doc, "closed", False):
+            # Live (AutoCAD 2026) this call corrupted the heap; here it is counted.
+            self._seat.dead_calls += 1
         if self.name == "read":
             return arg  # the "parsed" form is the source text itself
         self._seat.evals += 1
@@ -89,6 +92,7 @@ class _VLSeat(_Seat):
         self.Documents._docs[:] = [self.first, self.second]
         self.ActiveDocument = self.first
         self.evals = 0
+        self.dead_calls = 0
         self.vl_progids: list[str] = []
 
     def GetInterfaceObject(self, progid):
@@ -169,6 +173,40 @@ async def test_an_edit_in_another_document_does_not_move_the_bound_revision(com,
     await com.system_get_variable("LTSCALE")
     assert com.document_identity()["revision"] == 0
     assert "f" * 32 not in seat.first.lisp.get("ids", ())
+
+
+@pytest.mark.asyncio
+async def test_a_reopened_file_never_calls_into_the_closed_namespace(com, seat):
+    """Live smoke ``space`` (AutoCAD 2026, 2026-11-04): a file closed and opened
+    again has the same name, path and document id, and the counter's cached
+    function objects - keyed by the id alone - belonged to the closed namespace;
+    the funcall on them corrupted AutoCAD's heap (the seat crashed three times).
+    The cache is keyed by the document window too, new for every open."""
+    seat.first.HWND = 199134
+    await com.system_set_variable("LTSCALE", 2.0)
+    await com.system_get_variable("LTSCALE")  # the cached forms are in use
+    before = com.document_identity()
+
+    seat.first.closed = True  # Close(False), then Documents.Open of the same file
+    again = _EditDoc(seat, "First.dwg", "C:\\work\\First.dwg")
+    again.HWND = 461152
+    seat.Documents._docs[0] = again
+    seat.ActiveDocument = again
+    await com.system_get_variable("LTSCALE")
+    await com.system_get_variable("LTSCALE")
+
+    assert seat.dead_calls == 0, "nothing reached the closed namespace"
+    assert again.lisp.get("reactor") is True, "the counter is installed in the new one"
+    after = com.document_identity()
+    assert after["document_id"] == before["document_id"]
+    assert after["revision"] == before["revision"] + 1, "the unwatched reopen counts once"
+
+
+@pytest.mark.asyncio
+async def test_without_a_document_window_nothing_is_cached(com, seat):
+    await com.system_get_variable("LTSCALE")
+    await com.system_get_variable("LTSCALE")
+    assert cb._COM_STATE.get("vl_docs") == {}
 
 
 @pytest.mark.asyncio

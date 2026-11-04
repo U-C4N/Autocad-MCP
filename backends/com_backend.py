@@ -560,23 +560,46 @@ def _vl_application(app):
     return vl
 
 
-def _vl_document_forms(app, document_id: str, *, fresh: bool):
+def _doc_window(doc) -> int | None:
+    """``doc.HWND`` - the document window, new for every open of a file - or None."""
+    try:
+        return int(doc.HWND)
+    except Exception:  # noqa: BLE001 - without it nothing is cached
+        return None
+
+
+def _vl_document_forms(app, document_id: str, *, fresh: bool, window: int | None = None):
     """``(eval, parsed read form)`` for the namespace of the document active NOW.
 
-    Cached per document id: fetching ``ActiveDocument.Functions`` and the two
-    function objects cost ~6.6 ms live, one ``eval`` of a parsed form ~1 ms.
-    ``fresh`` re-fetches - the cached objects may belong to a closed namespace.
+    Cached per ``(document id, document window)``: fetching
+    ``ActiveDocument.Functions`` and the two function objects cost ~6.6 ms
+    live, one ``eval`` of a parsed form ~1 ms. ``fresh`` re-fetches.
+
+    MEASURED on AutoCAD 2026 (live smoke ``space`` and a reopen probe,
+    2026-11-04): keyed by the document id alone, a file closed and opened again
+    in one session - same name, same path, the same id read back from the
+    file - got the closed namespace's function objects, and the ``funcall`` on
+    them corrupted AutoCAD's heap: an access violation in OLEAUT32 on the next
+    call after the reopened document was closed, and three crashes of the seat
+    (heap corruption 0xC0000374) in the smokes that followed. The document
+    window is new for every open (HWND 199134, then 461152 for the same file),
+    so a reopened document misses the cache; without a readable window
+    nothing is cached. The previous open's objects are dropped, never called.
     """
     vl = _vl_application(app)
     docs = _COM_STATE.setdefault("vl_docs", {})
-    if not fresh and document_id in docs:
-        return docs[document_id]
+    key = (document_id, window)
+    if window is not None and not fresh and key in docs:
+        return docs[key]
     functions = _vl_get(_vl_get(vl, "ActiveDocument"), "Functions")
     reader = _vl_call(functions, "Item", "read")
     evaluator = _vl_call(functions, "Item", "eval")
     source = _EDIT_COUNTER_READ.format(document_id=document_id)
     forms = (reader, evaluator, _vl_call(reader, "funcall", source))
-    docs[document_id] = forms
+    for stale in [k for k in docs if k[0] == document_id and k != key]:
+        docs.pop(stale)  # another open of this file: never called again
+    if window is not None:
+        docs[key] = forms
     return forms
 
 
@@ -3298,6 +3321,7 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
                     "No drawing is open in AutoCAD. Open or create a .dwg file first."
                 )
             self._bind_key(key, application)
+            self._counter_window = _doc_window(doc)
             self._timed_counter_start(app)
             return doc
         restarted = self._bound["app"] != application
@@ -3307,6 +3331,7 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
                 self._view_of(key, application),
                 application_changed=restarted,
             )
+        self._counter_window = _doc_window(doc)
         self._timed_counter_start(app)
         return doc
 
@@ -3350,12 +3375,15 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         if entry is None:
             return
         document_id = entry["document_id"]
+        # The bound document's window this job, set by _guard: the cache key
+        # that keeps a reopened file off the closed namespace (_vl_document_forms).
+        window = entry["window"] = getattr(self, "_counter_window", None)
         try:
-            count = self._read_edit_count(app, document_id)
+            count = self._read_edit_count(app, document_id, window=window)
             gap = False
             if count is None:
                 gap = "edits" in entry  # it was watching; something removed it
-                count = self._install_edit_counter(app, document_id)
+                count = self._install_edit_counter(app, document_id, window)
         except Exception as exc:  # noqa: BLE001 - the counter is evidence, never a failure
             self._edit_counter = {
                 "counted": False,
@@ -3389,18 +3417,27 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         if entry is None or entry.get("edits") is None:
             return
         try:
-            count = self._read_edit_count(app, entry["document_id"], refetch=False)
+            count = self._read_edit_count(
+                app, entry["document_id"], refetch=False, window=entry.get("window")
+            )
         except Exception as exc:  # noqa: BLE001
             log.debug("operator-edit counter: end-of-job read failed: %s", exc)
             return
         if count is not None:
             entry["edits"] = count
 
-    def _read_edit_count(self, app, document_id: str, *, refetch: bool = True) -> int | None:
-        """The bound namespace's count, or None when no reactor of ours answers there."""
+    def _read_edit_count(
+        self, app, document_id: str, *, refetch: bool = True, window: int | None = None
+    ) -> int | None:
+        """The bound namespace's count, or None when no reactor of ours answers there.
+
+        ``window`` is the bound document's HWND this job (``_doc_window``): the
+        cache key that keeps a reopened file off a closed namespace."""
 
         def _once(fresh: bool):
-            _reader, evaluator, form = _vl_document_forms(app, document_id, fresh=fresh)
+            _reader, evaluator, form = _vl_document_forms(
+                app, document_id, fresh=fresh, window=window
+            )
             value = self._wait_out_rejected_call(lambda: _vl_call(evaluator, "funcall", form))
             return _parse_edit_count(value, document_id)
 
@@ -3414,8 +3451,8 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
             count = _once(True)  # the cached objects may belong to a closed namespace
         return count
 
-    def _install_edit_counter(self, app, document_id: str) -> int:
-        reader, evaluator, _form = _vl_document_forms(app, document_id, fresh=True)
+    def _install_edit_counter(self, app, document_id: str, window: int | None = None) -> int:
+        reader, evaluator, _form = _vl_document_forms(app, document_id, fresh=True, window=window)
         source = _EDIT_COUNTER_INSTALL.format(document_id=document_id)
         value = self._wait_out_rejected_call(
             lambda: _vl_call(evaluator, "funcall", _vl_call(reader, "funcall", source))
@@ -6760,7 +6797,7 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         if edits_before is not None and entry.get("document_id"):
             try:
                 edits_after = self._read_edit_count(
-                    _acad_app(), entry["document_id"], refetch=False
+                    _acad_app(), entry["document_id"], refetch=False, window=entry.get("window")
                 )
             except Exception as exc:  # evidence only
                 log.debug("edit counter unreadable after %s: %s", command, exc)
