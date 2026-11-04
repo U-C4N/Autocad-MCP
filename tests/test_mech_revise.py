@@ -142,6 +142,7 @@ async def test_a_revision_keeps_handles_and_draws_what_a_fresh_draw_draws(flange
 
     result = await revise_part(b, pid, CHANGES)
     assert result["changed"] is True and result["rev"] == 1
+    assert result["model_is_current"] is True  # read back, not claimed
 
     # 100 % of the tagged LINE / CIRCLE / ARC handles whose key survives stand,
     # carrying the new geometry
@@ -358,6 +359,122 @@ async def test_a_detail_view_is_refused_by_name(flange):
     )
     with pytest.raises(ValueError, match="detail view"):
         await revise_part(b, pid, {"features.bore.diameter": 24.0})
+
+
+# -- layouts, the hole table and balloons (added when the item was resumed) ---------------
+
+SHAFT = {
+    "kind": "revolved",
+    "name": "shaft",
+    "material": "steel",
+    "segments": [{"length": 30.0, "d_outer": 40.0}, {"length": 25.0, "d_outer": 28.0}],
+    "features": [{"kind": "chamfer", "id": "c1", "at": "start", "size": 1.0}],
+}
+
+
+async def _rotated_sheet(b, spec) -> str:
+    """A part placed off the origin and turned 30 deg, with a view added by
+    ``mech_view_add`` on the far side and its own gap - the layout path a
+    revision must reproduce besides ``mech_part_draw``'s."""
+    drawn = await draw_part(b, build_part(spec), at=(15.0, -40.0), rotation=30.0, views=("front",))
+    await add_view(b, drawn["part_id"], "side", side="left", gap=35.0)
+    await add_view(
+        b, drawn["part_id"], "section", plane={"p1": [-5.0, 0.0], "p2": [70.0, 0.0]}, gap=12.0
+    )
+    return drawn["part_id"]
+
+
+async def test_a_rotated_part_with_placed_views_revises_to_a_fresh_draw():
+    b = await _mm_backend()
+    pid = await _rotated_sheet(b, SHAFT)
+    result = await revise_part(
+        b, pid, {"segments[0].d_outer": 46.0, "segments[1].length": 32.0, "features.c1": None}
+    )
+    assert result["changed"] is True and result["in_place"]
+    assert (await D.inspect_drift(b, pid)).model_is_current
+
+    spec = copy.deepcopy(SHAFT)
+    spec["segments"][0]["d_outer"] = 46.0
+    spec["segments"][1]["length"] = 32.0
+    spec["features"] = []
+    fresh = await _mm_backend()
+    await _rotated_sheet(fresh, spec)
+    assert _signatures(await take_snapshot(b)) == _signatures(await take_snapshot(fresh))
+
+
+PLATE = {
+    "kind": "prismatic",
+    "name": "plate",
+    "material": "steel",
+    "thickness": 10.0,
+    "outline": [[0.0, 0.0], [120.0, 0.0], [120.0, 90.0], [0.0, 90.0]],
+    "features": [
+        {
+            "kind": "hole",
+            "id": f"h{n}",
+            "x": 20.0 + 40.0 * (n % 3),
+            "y": 20.0 + 25.0 * (n // 3),
+            "diameter": 8.0,
+        }
+        for n in range(9)
+    ],
+}
+
+
+async def test_the_hole_table_is_rewritten_with_the_new_sizes():
+    b = await _mm_backend()
+    drawn = await draw_part(b, build_part(PLATE), views=("front", "side"))
+    pid = drawn["part_id"]
+    old_table = (await read_part(b, pid))["hole_table"]
+    # headless, a table is drawn as tagged lines and texts (the handle is the
+    # first of them); live it is one TABLE - either way every tagged piece goes
+    old_pieces = {
+        rec.handle
+        for rec, _tag in D.annotations_of((await take_snapshot(b)).records, pid, "hole_table")
+    }
+    assert old_table in old_pieces
+
+    changes = {
+        "features.h4.diameter": 12.0,
+        "outline[1]": [130.0, 0.0],
+        "outline[2]": [130.0, 90.0],
+    }
+    result = await revise_part(b, pid, changes)
+    snap = await take_snapshot(b)
+    alive = {rec.handle for rec in snap.records}
+    new_pieces = {rec.handle for rec, _tag in D.annotations_of(snap.records, pid, "hole_table")}
+    assert not old_pieces & alive
+    assert result["hole_table"] in new_pieces and len(new_pieces) == len(old_pieces)
+    assert (await read_part(b, pid))["hole_table"] == result["hole_table"]
+    table_texts = {rec.text for rec in snap.records if rec.handle in new_pieces and rec.text}
+    assert "12" in table_texts and "8" in table_texts
+
+    spec = copy.deepcopy(PLATE)
+    spec["features"][4]["diameter"] = 12.0
+    spec["outline"][1] = [130.0, 0.0]
+    spec["outline"][2] = [130.0, 90.0]
+    fresh = await _mm_backend()
+    await draw_part(fresh, build_part(spec), views=("front", "side"))
+    assert _signatures(snap) == _signatures(await take_snapshot(fresh))
+    assert (await D.inspect_drift(b, pid)).model_is_current
+
+
+async def test_a_balloon_on_a_redrawn_entity_follows_it(flange):
+    from engineering.sheet.bom import add_balloon, read_balloons
+
+    b, pid = flange
+    snap = await take_snapshot(b)
+    hatch = next(t for t in D.tagged_entities(snap.records, pid) if t.type == "HATCH")
+    await add_balloon(
+        b, item=1, at=(200.0, 150.0), leader_to=(150.0, 100.0), targets=[hatch.handle]
+    )
+
+    result = await revise_part(b, pid, {"features.bore.diameter": 24.0})
+    moved = {row["old"]: row["new"] for row in result["handle_map"] if row["old"]}
+    assert hatch.handle in moved and moved[hatch.handle]
+    (balloon,) = await read_balloons(b)
+    assert balloon["targets"] == [moved[hatch.handle]]
+    assert result["balloons_relinked"][0]["was"] == [hatch.handle]
 
 
 # -- through the server -------------------------------------------------------------------

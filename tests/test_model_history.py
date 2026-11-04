@@ -60,6 +60,8 @@ async def test_five_rounds_and_the_round_two_value_by_param(outside_repo_dir):
     full = await inspect(b, pid, drift=False, history=True, param=None)
     assert [e["rev"] for e in full["history"]] == [1, 2, 3, 4, 5]
     assert full["history"][0]["changes"] == {"features.bore.diameter": [20.0, 21.0]}
+    both = await inspect(b, pid, drift=False, history=True, param="features.bore")
+    assert len(both["history"]) == 5 and len(both["param"]["values"]) == 5
 
     # the record travels with the file
     path = outside_repo_dir / "history.dxf"

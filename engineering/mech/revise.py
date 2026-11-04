@@ -777,6 +777,8 @@ async def revise_part(
 
     await guarded_transaction(backend, job, what="mech_part_revise", done="changed")
 
+    # measured, not claimed: the rebuilt drawing read back against the new model
+    current = (await D.inspect_drift(backend, pid)).model_is_current
     summary = None
     if verify:
         from engineering.verification.report import summarize, verify_requirements
@@ -805,7 +807,7 @@ async def revise_part(
         "balloons_relinked": outcome["relinked"],
         "overwritten": overwritten,
         "omitted": layout.omitted,
-        "model_is_current": True,
+        "model_is_current": current,
         "verify": summary,
         "revision": {"checked": start, "after": await current_revision(backend)},
         "backend": backend.name,
@@ -834,7 +836,8 @@ async def inspect(backend, part_id: str | None, *, drift: bool, history: bool, p
         out["engine_drift"] = list(report.engine_drift)
     if history or param is not None:
         stored = await load_history(backend, pid)
-        out["history"] = stored["entries"] if param is None else None
+        if history:
+            out["history"] = stored["entries"]
         out["history_dropped"] = stored["dropped"]
         if param is not None:
             out["param"] = {"path": str(param), "values": param_values(stored, param)}
