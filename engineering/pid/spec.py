@@ -19,11 +19,20 @@ from engineering.changes.preview import (
 from engineering.plan_spec import LayerSetId, SheetSize
 from engineering.validation import SpecError, finite, non_negative, positive, within_budget
 
-from .critique import PID_FOCUSES, issues_for
-from .drawlines import draw_line, existing_pid_lines
+from .critique import PID_FOCUSES, issues_for, strip_geometry
+from .drawlines import (
+    DEFAULT_CLEARANCE,
+    draw_line,
+    line_obstacles,
+    obstacle_rows,
+    plan_route,
+    scan_sheet,
+    symbol_tag,
+)
 from .graph import build_graph
 from .insert import FAIL_POSITIONS, place_symbol
-from .lines import AXIS, LINE_CLASSES, aim_points, count_crossings, route, snap_axis
+from .lines import AXIS, LINE_CLASSES, aim_points, count_crossings, snap_axis
+from .router import NoRouteError, Obstacle, RoutingError, obstacle_hits
 from .symbols import resolve, transform_port
 
 if TYPE_CHECKING:
@@ -134,7 +143,10 @@ _ITEM_OPTIONS = {
         "number",
     },
 }
-_SHEET_KEYS = ("layer_set", "sheet_size", "scale", "intent")
+_SHEET_KEYS = ("layer_set", "sheet_size", "scale", "intent", "routing")
+#: ``sheet.routing``: how a line without its own ``route`` is routed (1.8-20).
+#: ``auto`` (the default, unchanged geometry) or ``avoid`` (around every symbol).
+SHEET_ROUTINGS = ("auto", "avoid")
 _LAYER_SETS = get_args(LayerSetId)
 _SHEET_SIZES = get_args(SheetSize)
 #: Optional item keys that are text when present (``None`` = absent).
@@ -188,6 +200,11 @@ def _validate_sheet(sheet: dict) -> None:
     if "scale" in sheet:
         sheet["scale"] = positive(sheet["scale"], "sheet.scale")
     _text(sheet.get("intent"), "sheet.intent")
+    if "routing" in sheet and sheet["routing"] not in SHEET_ROUTINGS:
+        raise SpecError(
+            f"sheet.routing: {sheet['routing']!r} is not a routing; "
+            f"routings are {', '.join(SHEET_ROUTINGS)}"
+        )
 
 
 def _validate_item_options(section: str, item: dict, where: str) -> None:
@@ -357,8 +374,63 @@ def _all_lines(norm: dict) -> list[tuple[str, dict]]:
     return [(f"lines[{i}]", line) for i, line in enumerate(norm["lines"])] + _connector_lines(norm)
 
 
-def _plan_lines(norm: dict) -> list[dict]:
-    """Route every line in memory from catalogue ports — the dry run."""
+def _line_mode(line: dict, routing: str):
+    """A line's own ``route`` wins; without one the sheet's routing applies."""
+    if "route" in line:
+        return line["route"]
+    return "avoid" if routing == "avoid" else "auto"
+
+
+def _item_box(section: str, item: dict) -> tuple[float, float, float, float]:
+    """The item's catalogue box (``SymbolSpec.bbox``) placed at its insertion
+    point, rotation and scale, as the axis-aligned box of its four corners."""
+    x0, y0, x1, y1 = _spec_for(section, item).bbox
+    angle = math.radians(float(item.get("rotation", 0.0)))
+    cos_a, sin_a = math.cos(angle), math.sin(angle)
+    scale = float(item.get("scale", 1.0))
+    xs, ys = [], []
+    for px, py in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)):
+        xs.append(item["x"] + scale * (px * cos_a - py * sin_a))
+        ys.append(item["y"] + scale * (px * sin_a + py * cos_a))
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _spec_obstacles(norm: dict, handles: dict | None = None) -> list[Obstacle]:
+    """Every spec item as a routing obstacle: its catalogue box, its id, its
+    tag and - once placed - its handle. The dry run and the apply route
+    around these same boxes, so their vertices agree (1.8-20)."""
+    out = []
+    for section in _SECTIONS:
+        for item in norm[section]:
+            ref = {
+                "handle": (handles or {}).get(item["id"]),
+                "id": item["id"],
+                "tag": item.get("tag"),
+            }
+            out.append(Obstacle(_item_box(section, item), ref))
+    return out
+
+
+async def _sheet_state(backend: AutoCADBackend) -> tuple[list[dict], list[Obstacle]]:
+    """The P&ID lines and catalogue symbols already on the current layout."""
+    lines, symbols = await scan_sheet(backend)
+    return lines, [Obstacle(tuple(s["box"]), {"handle": s["handle"]}) for s in symbols]
+
+
+def _plan_lines(
+    norm: dict, drawn: list[dict] | None = None, sheet_symbols: list[Obstacle] | None = None
+) -> list[dict]:
+    """Route every line in memory from catalogue ports — the dry run.
+
+    ``drawn`` are the P&ID lines already on the layout (crossings are counted
+    against them and the spec's earlier lines, ``CROSSINGS_SCOPE``) and
+    ``sheet_symbols`` the symbols already there; both, with the spec's own
+    catalogue boxes, are what an ``avoid`` route keeps clear of and what
+    ``obstacle_hits`` names - through ``drawlines.plan_route``, the function
+    the apply calls."""
+    drawn = list(drawn or [])
+    obstacles = list(sheet_symbols or []) + _spec_obstacles(norm)
+    routing = norm["sheet"].get("routing", "auto")
     placed: dict[str, dict] = {}
     for section in _SECTIONS:
         for i, item in enumerate(norm[section]):
@@ -397,27 +469,73 @@ def _plan_lines(norm: dict) -> list[dict]:
 
     planned: list[dict] = []
     for index, (where, line) in enumerate(_all_lines(norm)):
+        mode = _line_mode(line, routing)
+        ends = (line["from"].partition(".")[0], line["to"].partition(".")[0])
+        existing = drawn + [{"vertices": p["vertices"], "bulges": []} for p in planned]
         try:
             start, end = endpoint(line["from"]), endpoint(line["to"])
-            mode = line.get("route", "auto")
             s_aim, e_aim = aim_points((start["x"], start["y"]), (end["x"], end["y"]), mode)
             s, sd = anchor(start, s_aim)
             e, ed = anchor(end, e_aim)
-            vertices = route(s, sd, e, ed, stub=float(line.get("stub", 5.0)), mode=mode)
+            around = line_obstacles(obstacles, ends, (s, e), DEFAULT_CLEARANCE)
+            vertices, summary = plan_route(
+                s,
+                sd,
+                e,
+                ed,
+                mode,
+                float(line.get("stub", 5.0)),
+                around,
+                existing,
+                DEFAULT_CLEARANCE,
+                "refuse",
+            )
+        except RoutingError as exc:
+            raise exc.prefixed(where) from exc
         except ValueError as exc:
             raise ValueError(f"{where}: {exc}") from exc
-        crossings = count_crossings(vertices, [p["vertices"] for p in planned])
-        planned.append(
-            {
-                "index": index,
-                "where": where,
-                "from": line["from"],
-                "to": line["to"],
-                "class": line["class"],
-                "vertices": [[x, y] for x, y in vertices],
-                "crossings": crossings,
-            }
+        crossings = count_crossings(
+            vertices,
+            [ln["vertices"] for ln in existing],
+            bulges=[ln.get("bulges") or [] for ln in existing],
         )
+        row = {
+            "index": index,
+            "where": where,
+            "from": line["from"],
+            "to": line["to"],
+            "class": line["class"],
+            "route": mode if isinstance(mode, str) else "waypoints",
+            "vertices": [[x, y] for x, y in vertices],
+            "crossings": crossings,
+            "obstacle_hits": [
+                {
+                    "handle": r.get("handle"),
+                    "tag": r.get("tag"),
+                    **({"id": r["id"]} if "id" in r else {}),
+                }
+                for r in obstacle_hits(vertices, around)
+            ],
+        }
+        if summary is not None:
+            row["routing"] = summary
+        planned.append(row)
+    return planned
+
+
+async def _plan(backend: AutoCADBackend, norm: dict) -> list[dict]:
+    """``_plan_lines`` against what is on the layout now; a drawn symbol a
+    route names gets its tag read from the drawing."""
+    drawn, symbols = await _sheet_state(backend)
+    try:
+        planned = _plan_lines(norm, drawn, symbols)
+    except NoRouteError as exc:
+        named = exc.relabel(await obstacle_rows(backend, exc.obstacles))
+        raise (named.prefixed(exc.where) if exc.where else named) from exc
+    for row in planned:
+        for hit in row["obstacle_hits"]:
+            if "id" not in hit and hit.get("handle"):
+                hit["tag"] = await symbol_tag(backend, hit["handle"])
     return planned
 
 
@@ -430,18 +548,6 @@ def _plan_lines(norm: dict) -> list[dict]:
 CROSSINGS_SCOPE = "spec_lines+current_space_pid_lines"
 
 
-async def _add_drawing_crossings(backend: AutoCADBackend, planned: list[dict]) -> None:
-    """Add each planned line's crossings with the P&ID lines already drawn."""
-    existing = await existing_pid_lines(backend)
-    if not existing:
-        return
-    others = [line["vertices"] for line in existing]
-    bulges = [line["bulges"] for line in existing]
-    for line in planned:
-        vertices = [(float(x), float(y)) for x, y in line["vertices"]]
-        line["crossings"] += count_crossings(vertices, others, bulges=bulges)
-
-
 def routing_region(norm: dict, planned: list[dict]) -> tuple[float, float, float, float] | None:
     """The WCS box a spec draws in: every item's catalogue box (``SymbolSpec.bbox``)
     placed at its insertion point, rotation and scale, and every planned line
@@ -451,13 +557,9 @@ def routing_region(norm: dict, planned: list[dict]) -> tuple[float, float, float
     ys: list[float] = []
     for section in _SECTIONS:
         for item in norm[section]:
-            x0, y0, x1, y1 = _spec_for(section, item).bbox
-            angle = math.radians(float(item.get("rotation", 0.0)))
-            cos_a, sin_a = math.cos(angle), math.sin(angle)
-            scale = float(item.get("scale", 1.0))
-            for px, py in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)):
-                xs.append(item["x"] + scale * (px * cos_a - py * sin_a))
-                ys.append(item["y"] + scale * (px * sin_a + py * cos_a))
+            x0, y0, x1, y1 = _item_box(section, item)
+            xs.extend((x0, x1))
+            ys.extend((y0, y1))
     for line in planned:
         for vx, vy in line["vertices"]:
             xs.append(float(vx))
@@ -465,6 +567,11 @@ def routing_region(norm: dict, planned: list[dict]) -> tuple[float, float, float
     if not xs:
         return None
     return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _flat_hits(planned: list[dict]) -> list[dict]:
+    """Every planned line's ``obstacle_hits``, each row naming its line."""
+    return [{"where": p["where"], **hit} for p in planned for hit in p["obstacle_hits"]]
 
 
 def _planned_rows(norm: dict, planned: list[dict]) -> list[dict]:
@@ -549,9 +656,9 @@ async def run_spec(
     result then carries ``revision``, the RevisionWatch report.
     """
     norm = validate_spec(spec)
+    routing = norm["sheet"].get("routing", "auto")
     if dry_run:
-        planned = _plan_lines(norm)
-        await _add_drawing_crossings(backend, planned)
+        planned = await _plan(backend, norm)
         region = routing_region(norm, planned)
         preview = await make_preview(backend, region=region, planned=_planned_rows(norm, planned))
         return {
@@ -560,6 +667,8 @@ async def run_spec(
             "lines": planned,
             "crossings_total": sum(p["crossings"] for p in planned),
             "crossings_scope": CROSSINGS_SCOPE,
+            "routing": routing,
+            "obstacle_hits": _flat_hits(planned),
             "region": None if region is None else list(region),
             "preview": preview.to_dict(),
         }
@@ -575,7 +684,7 @@ async def run_spec(
         )
     watch: RevisionWatch | None = None
     if expected_revision is not None or preconditions is not None:
-        _match_region_rows(preconditions, routing_region(norm, _plan_lines(norm)))
+        _match_region_rows(preconditions, routing_region(norm, await _plan(backend, norm)))
         await check_preconditions(
             backend, expected_revision=expected_revision, preconditions=preconditions
         )
@@ -592,6 +701,7 @@ async def run_spec(
         raise RuntimeError(f"pid_from_spec: could not open a transaction: {begun}")
     handles: dict[str, str] = {}
     crossings_total = 0
+    hits: list[dict] = []
     try:
         for section in _SECTIONS:
             for i, item in enumerate(norm[section]):
@@ -611,6 +721,11 @@ async def run_spec(
                 return {"handle": handles[item_id], "port": port}
             return {"handle": handles[item_id]}
 
+        # The spec's own symbols as the dry run saw them - catalogue boxes, by
+        # handle in place of their drawn boxes - beside every other symbol
+        # draw_line reads from the layout: the dry run's obstacles exactly, so
+        # an applied route is its preview's (1.8-20).
+        obstacles = _spec_obstacles(norm, handles)
         for where, line in _all_lines(norm):
             if watch is not None:
                 await watch.before(where)
@@ -620,7 +735,7 @@ async def run_spec(
                     ref(line["from"]),
                     ref(line["to"]),
                     line["class"],
-                    line.get("route", "auto"),
+                    _line_mode(line, routing),
                     float(line.get("stub", 5.0)),
                     line.get("number"),
                     line.get("size"),
@@ -630,12 +745,17 @@ async def run_spec(
                     None,
                     bool(line.get("label", True)),
                     line.get("arrow"),
+                    clearance=DEFAULT_CLEARANCE,
+                    obstacles=obstacles,
                 )
+            except RoutingError as exc:
+                raise exc.prefixed(where) from exc
             except ValueError as exc:
                 raise ValueError(f"{where}: {exc}") from exc
             if watch is not None:
                 await watch.after()
             crossings_total += drawn["crossings"]
+            hits.extend({"where": where, **hit} for hit in drawn["obstacle_hits"])
     except BaseException as exc:
         # ``Exception`` alone let a client cancellation (``CancelledError`` is
         # a ``BaseException``) leave the placed symbols in the drawing inside
@@ -679,14 +799,18 @@ async def run_spec(
                 )
         raise
     await backend.transaction_commit()
-    graph = await build_graph(backend)
+    # Geometry for pid_line_through_symbol (boxes and vertices), then dropped:
+    # the graph the caller reads keeps its 1.7 shape.
+    graph = await build_graph(backend, include_geometry=True, include_boxes=True)
     critique = [issue.to_dict() for focus in PID_FOCUSES for issue in issues_for(focus, graph)]
     result = {
         "handles": handles,
-        "graph": graph,
+        "graph": strip_geometry(graph),
         "critique": critique,
         "crossings_total": crossings_total,
         "crossings_scope": CROSSINGS_SCOPE,
+        "routing": routing,
+        "obstacle_hits": hits,
     }
     if watch is not None:
         result["revision"] = watch.report()

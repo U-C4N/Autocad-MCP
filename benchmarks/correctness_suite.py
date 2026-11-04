@@ -2576,6 +2576,71 @@ async def property_override_focus():
     )
 
 
+async def pid_avoid_no_symbol_crossing():
+    """A P&ID line routes round a vessel that stands between its ports (1.8-20).
+
+    A pump discharges into the far vessel V-102's nozzle N3; vessel V-101
+    stands on the straight run between them, so the fixed ``auto`` route runs
+    through it. With ``sheet.routing: "avoid"`` the drawn polyline must enter
+    no symbol's box other than its two ends - measured here on the drawing
+    itself, each INSERT's own ezdxf bounding box against the LWPOLYLINE's
+    points, never through the server's own focus - and the graph read back
+    must hold no dangling end. v1.7.0 has no ``sheet.routing`` key (the spec is
+    refused by name), so the check fails there, as it should.
+    """
+    from ezdxf import bbox
+
+    from engineering.pid.graph import build_graph
+    from engineering.pid.spec import run_spec
+
+    spec = {
+        "sheet": {"routing": "avoid"},
+        "equipment": [
+            {"id": "P-1", "symbol": "centrifugal_pump", "x": 0, "y": -20, "tag": "P-101"},
+            {"id": "V-1", "symbol": "vertical_vessel", "x": 80, "y": 0, "tag": "V-101"},
+            {"id": "V-2", "symbol": "vertical_vessel", "x": 160, "y": 0, "tag": "V-102"},
+        ],
+        "lines": [{"from": "P-1.discharge", "to": "V-2.N3", "class": "process_major"}],
+    }
+    b = await _b()
+    try:
+        result = await run_spec(b, spec)
+    except Exception:
+        return False
+    msp = b._doc.modelspace()
+    poly = [e for e in msp.query("LWPOLYLINE") if e.dxf.layer == "PROCESS-PIPING-MAIN"]
+    if len(poly) != 1:
+        return False
+    points = [(float(p[0]), float(p[1])) for p in poly[0].get_points("xy")]
+    ends = {result["handles"]["P-1"], result["handles"]["V-2"]}
+    boxes = []
+    for insert in msp.query("INSERT"):
+        if insert.dxf.handle in ends or insert.dxf.name.startswith("PID_MARKER_"):
+            continue
+        box = bbox.extents(insert.virtual_entities())
+        boxes.append((box.extmin.x, box.extmin.y, box.extmax.x, box.extmax.y))
+
+    def enters(a, b_, box) -> bool:
+        # Orthogonal segments: inside the open box on the cross axis and
+        # overlapping it along the run.
+        x0, y0, x1, y1 = box
+        if abs(a[1] - b_[1]) < 1e-9:
+            lo, hi = sorted((a[0], b_[0]))
+            return y0 < a[1] < y1 and lo < x1 and hi > x0
+        lo, hi = sorted((a[1], b_[1]))
+        return x0 < a[0] < x1 and lo < y1 and hi > y0
+
+    graph = await build_graph(b)
+    return (
+        len(boxes) == 1
+        and not any(
+            enters(a, b_, box) for a, b_ in zip(points, points[1:], strict=False) for box in boxes
+        )
+        and graph["stats"]["dangling"] == 0
+        and len(graph["edges"]) == 1
+    )
+
+
 CHECKS = {
     "core_line_length": (core_line_length, "Core"),
     "core_circle_radius": (core_circle_radius, "Core"),
@@ -2666,6 +2731,7 @@ CHECKS = {
     "write_path_autoload_refused": (write_path_autoload_refused, "Security"),
     "dimension_auto_one_call_part": (dimension_auto_one_call_part, "Dimensions"),
     "property_override_focus": (property_override_focus, "Quality gate"),
+    "pid_avoid_no_symbol_crossing": (pid_avoid_no_symbol_crossing, "P&ID"),
 }
 
 

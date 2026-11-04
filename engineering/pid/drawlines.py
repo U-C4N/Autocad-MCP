@@ -19,6 +19,7 @@ from .lines import (
     route,
     snap_axis,
 )
+from .router import NoRouteError, Obstacle, normalise_obstacles, obstacle_hits, route_avoiding
 from .symbols import Port, resolve, transform_port
 from .xdata import line_payload, marker_payload, read_payload, write_payload
 
@@ -35,6 +36,14 @@ _INSERT_TYPES = {"INSERT", "BLOCKREFERENCE"}
 _POLY_TYPES = {"LWPOLYLINE", "POLYLINE", "2DPOLYLINE"}
 _LINE_TYPES = {"LINE"}
 _PAGE = 1000
+#: ``route`` names (a waypoint list is the fourth form). ``avoid`` is 1.8-20's
+#: obstacle-aware search (``engineering/pid/router.py``); ``auto`` stays the default.
+ROUTE_MODES = ("auto", "direct", "avoid")
+#: What ``avoid`` does when no route keeps the clearance: refuse ``no_route``,
+#: or route through the fewest boxes and report them in ``obstacle_hits``.
+ON_BLOCKED = ("refuse", "cross")
+#: How far (mm) an ``avoid`` route keeps from every symbol box by default.
+DEFAULT_CLEARANCE = 2.0
 
 
 async def resolve_endpoint(backend: AutoCADBackend, ref: dict, name: str = "endpoint") -> dict:
@@ -189,18 +198,47 @@ async def existing_pid_lines(backend: AutoCADBackend) -> list[dict]:
     vertices; ``bulges`` (one per vertex, DXF convention) let the crossing test
     follow an arc instead of its chord.
     """
-    out = []
+    lines, _symbols = await scan_sheet(backend)
+    return lines
+
+
+def _is_symbol_block(info) -> bool:
+    """A catalogue symbol INSERT (``PID_*``), not a line marker or arrow."""
+    if info.type not in _INSERT_TYPES:
+        return False
+    name = str(info.properties.get("block_name", ""))
+    return name.startswith("PID_") and not name.startswith("PID_MARKER_")
+
+
+async def scan_sheet(backend: AutoCADBackend) -> tuple[list[dict], list[dict]]:
+    """One read of the current space: its P&ID lines (``existing_pid_lines``)
+    and its catalogue symbols as routing obstacles ``{handle, box}`` (1.8-20).
+
+    A symbol is an INSERT of a ``PID_*`` block other than a marker; its box is
+    the drawn geometry the graph reader uses (``graph._bbox``: attributes
+    excluded). Tags are not read here - only a route that reports a symbol
+    reads its attributes (``obstacle_rows``).
+    """
+    from .graph import _bbox
+
+    lines: list[dict] = []
+    symbols: list[dict] = []
     offset = 0
     while True:
         page = await backend.entity_list(limit=_PAGE, offset=offset)
         for info in page:
+            if _is_symbol_block(info):
+                box = _bbox(info)
+                if box is not None:
+                    symbols.append({"handle": info.handle, "box": box})
+                continue
             if info.type not in _POLY_TYPES | _LINE_TYPES:
                 continue
             if info.layer.upper() not in PID_LINE_LAYERS:
                 continue
             payload = await read_payload(backend, info.handle) if info.type in _POLY_TYPES else None
             vertices = _vertices(info)
-            out.append(
+            lines.append(
                 {
                     "handle": info.handle,
                     "vertices": vertices,
@@ -211,7 +249,126 @@ async def existing_pid_lines(backend: AutoCADBackend) -> list[dict]:
         if len(page) < _PAGE:
             break
         offset += _PAGE
+    return lines, symbols
+
+
+async def symbol_tag(backend: AutoCADBackend, handle: str) -> str | None:
+    """The tag a symbol states: ``FUNC-LOOP`` on an instrument, else ``TAG``."""
+    attributes = await backend.block_get_attributes(handle)
+    if attributes.get("FUNC"):
+        return f"{attributes['FUNC']}-{str(attributes.get('LOOP') or '').strip()}".rstrip("-")
+    tag = str(attributes.get("TAG") or "").strip()
+    return tag or None
+
+
+async def obstacle_rows(backend: AutoCADBackend, refs: list[dict]) -> list[dict]:
+    """``{handle, tag}`` rows for the obstacles a route reports, the tag read
+    from the drawing where the ref does not carry one already."""
+    rows = []
+    for ref in refs:
+        row = {"handle": ref.get("handle"), "tag": ref.get("tag")}
+        if "tag" not in ref and ref.get("handle"):
+            row["tag"] = await symbol_tag(backend, str(ref["handle"]))
+        for key in ("id", "keep_out"):
+            if key in ref:
+                row[key] = ref[key]
+        rows.append(row)
+    return rows
+
+
+def keep_out_obstacles(keep_out) -> list[Obstacle]:
+    """The caller's ``keep_out`` boxes ``[[xmin, ymin, xmax, ymax], ...]``."""
+    if keep_out is None:
+        return []
+    if isinstance(keep_out, (str, bytes)) or not isinstance(keep_out, (list, tuple)):
+        raise ValueError("keep_out must be a list of [xmin, ymin, xmax, ymax] boxes")
+    return [
+        Obstacle(o.box, {"handle": None, "tag": None, "keep_out": i})
+        for i, o in enumerate(normalise_obstacles(keep_out, "keep_out"))
+    ]
+
+
+def line_obstacles(
+    obstacles: list[Obstacle],
+    ends: tuple[str | None, str | None],
+    anchors: tuple[tuple[float, float], tuple[float, float]],
+    clearance: float,
+) -> list[Obstacle]:
+    """The obstacles one line routes around: never its own end symbols (by
+    handle or spec id), and never a box whose inflated outline holds a free
+    ``{x, y}`` end (``ends`` entry None) - the line is meant to end there."""
+    out = []
+    for obstacle in obstacles:
+        ref = obstacle.ref
+        if any(end and end in (ref.get("handle"), ref.get("id")) for end in ends):
+            continue
+        x0, y0, x1, y1 = obstacle.box
+        if any(
+            end is None
+            and x0 - clearance < px < x1 + clearance
+            and y0 - clearance < py < y1 + clearance
+            for end, (px, py) in zip(ends, anchors, strict=True)
+        ):
+            continue
+        out.append(obstacle)
     return out
+
+
+def plan_route(
+    s_point,
+    s_dir,
+    e_point,
+    e_dir,
+    route_mode,
+    stub: float,
+    obstacles: list[Obstacle],
+    existing: list[dict],
+    clearance: float,
+    on_blocked: str,
+) -> tuple[list[tuple[float, float]], dict | None]:
+    """The route of one line and, for ``avoid``, its search summary. The one
+    function ``draw_line`` and ``pid_from_spec``'s dry run both call, so the
+    preview's vertices are the applied ones."""
+    if route_mode == "avoid":
+        found = route_avoiding(
+            s_point,
+            s_dir,
+            e_point,
+            e_dir,
+            obstacles,
+            existing,
+            clearance=clearance,
+            stub=stub,
+            on_blocked=on_blocked,
+        )
+        summary = {
+            "clearance": clearance,
+            "cost": round(found.cost, 6),
+            "bends": found.bends,
+            "expanded": found.expanded,
+        }
+        return found.vertices, summary
+    return route(s_point, s_dir, e_point, e_dir, stub=stub, mode=route_mode), None
+
+
+def check_routing_options(route_mode, clearance, on_blocked) -> float:
+    """Refuse a bad ``clearance`` / ``on_blocked`` before anything is read."""
+    if isinstance(clearance, bool):
+        raise ValueError(f"clearance must be a finite length >= 0, not {clearance!r}")
+    try:
+        value = float(clearance)
+    except (TypeError, ValueError):
+        raise ValueError(f"clearance must be a finite length >= 0, not {clearance!r}") from None
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"clearance must be a finite length >= 0, not {value}")
+    if on_blocked not in ON_BLOCKED:
+        raise ValueError(f"on_blocked must be one of {', '.join(ON_BLOCKED)}, got {on_blocked!r}")
+    if isinstance(route_mode, str) and route_mode not in ROUTE_MODES:
+        raise ValueError(
+            f"route must be one of {', '.join(ROUTE_MODES)} or a list of waypoints, "
+            f"got {route_mode!r}"
+        )
+    return value
 
 
 def _anchor(endpoint: dict, aim: tuple[float, float]) -> tuple[tuple[float, float], float | None]:
@@ -253,9 +410,18 @@ async def draw_line(
     number_format: str | None = None,
     label: bool = True,
     arrow: bool | None = None,
+    clearance: float = 2.0,
+    keep_out=None,
+    on_blocked: str = "refuse",
+    obstacles: list[Obstacle] | None = None,
 ) -> dict:
+    """``obstacles`` (``pid_from_spec`` only) are boxes that stand in for the
+    drawn symbols with the same handle - the catalogue boxes its dry run
+    routed around - so preview == apply; every other symbol is read here."""
     if line_class not in LINE_CLASSES:
         raise ValueError(f"line_class must be one of {', '.join(LINE_CLASSES)}, got {line_class!r}")
+    clearance = check_routing_options(route_mode, clearance, on_blocked)
+    keep = keep_out_obstacles(keep_out)
     cls = LINE_CLASSES[line_class]
     start = await resolve_endpoint(backend, from_, "from_")
     end = await resolve_endpoint(backend, to, "to")
@@ -264,9 +430,36 @@ async def draw_line(
     s_aim, e_aim = aim_points((start["x"], start["y"]), (end["x"], end["y"]), route_mode)
     s_point, s_dir = _anchor(start, s_aim)
     e_point, e_dir = _anchor(end, e_aim)
-    path = route(s_point, s_dir, e_point, e_dir, stub=stub, mode=route_mode)
 
-    existing = await existing_pid_lines(backend)
+    existing, symbols = await scan_sheet(backend)
+    given = list(obstacles or [])
+    replaced = {o.ref.get("handle") for o in given if o.ref.get("handle")}
+    sheet = [
+        Obstacle(tuple(sym["box"]), {"handle": sym["handle"]})
+        for sym in symbols
+        if sym["handle"] not in replaced
+    ] + given
+    around = line_obstacles(
+        sheet + keep, (start["handle"], end["handle"]), (s_point, e_point), clearance
+    )
+    try:
+        path, routing = plan_route(
+            s_point,
+            s_dir,
+            e_point,
+            e_dir,
+            route_mode,
+            stub,
+            around,
+            existing,
+            clearance,
+            on_blocked,
+        )
+    except NoRouteError as exc:
+        raise exc.relabel(await obstacle_rows(backend, exc.obstacles)) from exc
+    # Read before anything is written: a failed attribute read leaves no line.
+    hits = await obstacle_rows(backend, obstacle_hits(path, around))
+
     crossings = count_crossings(
         path,
         [ln["vertices"] for ln in existing],
@@ -365,7 +558,7 @@ async def draw_line(
             )
             marker_handles.append(placed["handle"])
 
-    return {
+    result = {
         "handle": poly.handle,
         "vertices": [[x, y] for x, y in path],
         "line_class": line_class,
@@ -380,8 +573,12 @@ async def draw_line(
         "to": {"handle": end["handle"], "port": end["port"], "x": e_point[0], "y": e_point[1]},
         "port_reuse": port_reuse,
         "crossings": crossings,
+        "obstacle_hits": hits,
         "label_handle": label_handle,
         "arrow_handle": arrow_handle,
         "marker_handles": marker_handles,
         "backend": backend.name,
     }
+    if routing is not None:
+        result["routing"] = routing
+    return result

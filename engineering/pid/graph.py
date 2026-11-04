@@ -91,11 +91,11 @@ class _Node:
     tag_source: str | None = None
     notes: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> dict:
+    def to_dict(self, include_box: bool = False) -> dict:
         parsed = None
         if self.tag:
             parsed = parse_tag(self.tag, kind="instrument" if self.kind == "instrument" else "auto")
-        return {
+        out = {
             "id": self.id,
             "kind": self.kind,
             "block_name": self.block_name,
@@ -118,6 +118,11 @@ class _Node:
             "confidence": self.confidence,
             "notes": list(self.notes),
         }
+        if include_box:
+            # The drawn box (attributes excluded) pid_line_through_symbol reads;
+            # internal to a critique run, never in pid_graph's answer.
+            out["bbox"] = None if self.bbox is None else list(self.bbox)
+        return out
 
 
 @dataclass
@@ -391,7 +396,11 @@ async def build_graph(
     scope: str = "current_space",
     include_foreign: bool = True,
     include_geometry: bool = False,
+    *,
+    include_boxes: bool = False,
 ) -> dict:
+    """``include_boxes`` (1.8-20, critique-internal) adds each node's drawn
+    ``bbox`` for ``pid_line_through_symbol``; ``pid_graph`` never asks for it."""
     if tolerance <= 0:
         raise ValueError("tolerance must be > 0")
     if scope not in ("current_space", "all"):
@@ -775,7 +784,7 @@ async def build_graph(
     offpage_links = [{"link": k, "nodes": sorted(v)} for k, v in sorted(links.items())]
 
     # 7 — assemble
-    node_rows = [n.to_dict() for n in nodes.values()]
+    node_rows = [n.to_dict(include_boxes) for n in nodes.values()]
     edge_rows = [e.to_dict(include_geometry) for e in edges.values()]
     by_kind: dict[str, int] = {}
     for n in node_rows:

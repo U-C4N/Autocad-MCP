@@ -42,6 +42,13 @@ until plan item 1.8-25 publishes the v9 matrix, so a run without
   ``mech_duplicate_dimension`` clean, and a second run draws nothing. Its
   broken-input twin: an ELLIPSE and a SPLINE in the selection come back in
   ``omitted`` with their reasons, never silently dropped.
+* ``pid_routing_obstacles`` (1.8-20, P&ID) - a sheet whose fixed ``auto``
+  routes run through two vessels, drawn with ``sheet.routing: "avoid"``: zero
+  ``pid_line_through_symbol`` findings, zero dangling ends, every route's
+  ``obstacle_hits`` empty, the drawn vertices equal to the dry run's and the
+  crossings no more than the dry run declared. Its broken-input twin: a pump
+  walled in by four vessels is refused ``no_route`` naming exactly those
+  vessels' tags, with nothing drawn.
 """
 
 from __future__ import annotations
@@ -107,6 +114,14 @@ NEW_TASKS_V9: tuple[TaskSpec, ...] = (
         "ELLIPSE and a SPLINE in the selection are omitted with their reasons",
         1.0,
     ),
+    TaskSpec(
+        "pid_routing_obstacles",
+        "pid",
+        "Route a sheet whose auto lines cross two vessels with sheet.routing avoid: zero "
+        "pid_line_through_symbol, zero dangling ends, crossings within the dry run's; a "
+        "walled-in pump is refused no_route naming the four vessels' tags",
+        1.0,
+    ),
 )
 
 TASKS_V9: tuple[TaskSpec, ...] = TASKS_V8 + NEW_TASKS_V9
@@ -117,7 +132,12 @@ TASKS_V9: tuple[TaskSpec, ...] = TASKS_V8 + NEW_TASKS_V9
 #: runs on both lanes and ``lisp_read_tier`` is the live lane's own task
 #: (headless: ``environment_blocked``), so neither is listed here.
 HEADLESS_ONLY_V9: frozenset[str] = frozenset(
-    {"dimension_lie_detect", "layer_cleanup_budget", "call_count_dimension_part"}
+    {
+        "dimension_lie_detect",
+        "layer_cleanup_budget",
+        "call_count_dimension_part",
+        "pid_routing_obstacles",
+    }
 )
 
 #: Runner-selectable task sets: every earlier matrix plus v9. One registry: v9
