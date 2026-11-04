@@ -21,6 +21,12 @@ anything. It returns, each with its evidence and a confidence:
 
 Quote those fields; do not restate them as certainties.
 
+A `.dwg` on the headless engine: `drawing_open(path)` converts it to DXF
+through the ODA File Converter, else AutoCAD's `accoreconsole` (the result's
+`dwg_read` names the route); with neither it is refused with capability
+`dwg_read`, and every route failing is `dwg_conversion_failed`. Save the
+result with `drawing_save_as` to a `.dxf` - never onto the `.dwg`.
+
 ## 2. Checks that never write
 
 - `drawing_topology_check` - dangling ends, near misses, interior crossings.
@@ -28,7 +34,8 @@ Quote those fields; do not restate them as certainties.
   against another (`to_scale` / `partly` / `schematic` / `insufficient`)?
 - `drawing_diff(old_path=..., new_path=...)` - what changed between two
   revisions; `markup=True` is its only write (revision clouds on the current,
-  newer document).
+  newer document). `drawing_diff(old_checkpoint=..., new_checkpoint=...)`
+  compares two checkpoints of the open drawing instead of two files.
 - `drawing_critique(focus=None)` reads every entity of every space with no
   cap. A drawing over `MAX_QA_ENTITIES` is not read in part: the issue says
   `scan_incomplete`. A check that crashed says `check_failed`. Neither is a

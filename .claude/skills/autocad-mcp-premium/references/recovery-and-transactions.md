@@ -25,6 +25,25 @@ report a write you cannot prove happened.
   (`pid_from_spec`, `arch_plan_from_spec`, `mech_part_draw`) already run in
   one transaction and roll back on any bad item or a cancellation.
 
+## Checkpoints, undo after a restart, history
+
+- Every save, open, new drawing and rollback batch keeps a durable checkpoint;
+  `checkpoint_create(label=...)` adds one before a risky step. They survive a
+  restart: `checkpoint_list` names them, `checkpoint_restore(checkpoint,
+  expected_revision=..., mode="in_place"|"new_document")` brings one back (live
+  AutoCAD restores only as a new document). A reference to a checkpoint that
+  does not exist, or that the disk budget evicted, is refused: pick a kept one
+  from `checkpoint_list`.
+- The headless `drawing_undo` steps back to the newest checkpoint, also after a
+  restart - to the last save, batch or label, not one call (`granularity`). Redo
+  across a restart is not kept.
+- `drawing_open` reports `lost_since_save`: calls the server committed but never
+  saved before it ended. Report them; they are not in the file.
+- `drawing_history(label=..., handle=..., query=..., detail="args")` reads what
+  was done to the drawing, with which arguments, across restarts. Label a round
+  with `cad_batch(label=...)` or `_meta.label`; `drawing_diff(old_checkpoint=...,
+  new_checkpoint=...)` compares two checkpoints, model payloads included.
+
 ## Preview, then apply
 
 `cad_batch(dry_run=True)`, `drawing_refine(dry_run=True)`,
@@ -72,16 +91,20 @@ refusal is not replayed by its `operation_id`, so the same request runs again.
 | `stale_revision` | the drawing moved since the preview | new preview, explain, re-decide |
 | `active_document_changed` | live: the operator switched drawings | stop; ask |
 | `operation_conflict` | the id was used for another request | new id, or find the first result |
-| `unknown_commit` | a write outran its deadline while its worker ran | do not repeat blindly: inspect the drawing (`system_status` operations, `entity_get`), then reconcile |
+| `unknown_commit` | a write outran its deadline while its worker ran | do not repeat blindly: inspect the drawing (`drawing_history`, `entity_get`), then reconcile |
 | `requires_reconcile` | a retry of an `unknown_commit` operation | same as above |
 | `timed_out`, `cancelled` | the call ended without a result | check the operation's state before retrying |
 | `quarantined` | the document is untrusted after an abandoned write | reopen the last saved file |
 | `busy` | a long read still holds the document | wait, then retry the same call |
 | `scan_incomplete`, `check_failed` | a QA read or check did not complete | the drawing is not "clean"; report it |
+| `hand_edited_tagged_entity`, `model_drift` | `mech_part_revise`: a tagged entity was edited by hand, or the views are not the model's | report the handles; `overwrite=True` only if the person accepts losing the hand edit |
+| `no_route`, `routing_budget_exceeded` | `route="avoid"` found no way round the named symbols | move a named symbol, lower `clearance`, pass waypoints, or `on_blocked="cross"` |
+| `dwg_conversion_failed` | every headless DWG converter failed (`attempts`) | report it; open the DWG on a live seat |
 
-`system_status` lists the last operations with `state` (committed, partial,
-failed, refused, quarantined, cancelled, unknown_commit, running) and the
-revision before and after each.
+`system_status.operations` is a summary (count, the last operation, any
+`unknown_commit`); `drawing_history` lists the calls with their `state`
+(committed, partial, failed, refused, quarantined, cancelled, unknown_commit,
+running) and revision.
 
 ## Damaged files
 

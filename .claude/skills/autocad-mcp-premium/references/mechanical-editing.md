@@ -28,11 +28,23 @@ not the XDATA. So:
   selector, or `entity_get` on the tagged handle - never by reading the model;
 - when the two disagree, report both and say the stored model is stale.
 
-There is no parametric rebuild in this release. To change a drawn part:
-either delete its entities and draw the corrected spec again, or edit the
-geometry in place (`entity_edit_geometry` keeps the handle, `entity_move`,
-`entity_set_properties`) and accept that the stored model now lags - then
-verify the geometry.
+`mech_part_inspect(part_id, drift=True)` says whether the drawing still
+matches its model (`model_is_current`, `drift` per feature and view);
+`history=True, param="features.bore.diameter"` reads the part's revisions.
+
+## Revise a drawn part
+
+A change to a drawn part is one call, never delete-and-redraw:
+`mech_part_revise(part_id, changes={"features.bore.diameter": 24,
+"segments[1].length": 50})`, with `dry_run=True` first and the same
+`expected_revision=` / `preconditions=` guard. Tagged lines, circles and arcs
+keep their handles; a redrawn entity is listed in `handle_map`; dimensions are
+placed again, so their handles change. A hand-edited tagged entity refuses the
+call (`hand_edited_tagged_entity`, the handles named) and so does a part drawn
+before 1.8.0 (`model_drift`); `overwrite=True` replaces the hand edit with the
+model - ask before passing it. A part with a detail view, or two views sharing
+a view tag, is refused by name. The `model_drift` critique focus names a part
+whose drawing no longer matches its model.
 
 In-place edits keep the handle, layer and XDATA (feature tags included):
 `entity_edit_geometry` takes `points` / `bulges` for a polyline (the vertex
@@ -94,4 +106,5 @@ and `point_intersection` / `point_tangent`; never compute them in your head.
 `surface_texture` (ISO 21920-1), `weld_symbol` (ISO 2553), `centre_marks`,
 `gd_frame` / `datum_feature` (ISO 1101), `balloon_add` linked to `bom_table`
 (a rerun renumbers instead of duplicating). The six `mech_*` critique focuses
-run inside `drawing_critique(focus=None)` and `drawing_finalize`.
+and `model_drift` run inside `drawing_critique(focus=None)` and
+`drawing_finalize`.
