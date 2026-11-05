@@ -36,6 +36,17 @@ is listed as its leading paragraphs and ``Details: describe_tool.``
 (``discovery/descriptions.py``) on every surface, so :class:`DetailsTransform`
 lists the whole catalog unchanged plus the same ``describe_tool`` - the
 pointer leads somewhere in both modes.
+
+**Built once.** The base class builds its synthetic tools on every listing
+(``Tool.from_function``: a pydantic schema each). A listing is not rare: the
+low-level MCP server lists again whenever a call names a tool its definition
+cache has not seen, and under the search default that is every tool but the
+pinned ones (``server._install_tool_definition_cache`` says what it does
+about that). MEASURED 2026-11-05 (``benchmarks/perf_compare.py``, release
+tree 19ada05): 2,000 direct ``entity_create_line`` calls took 8.5 x their
+v1.7.0 time, six listings a call, three ``Tool.from_function`` per listing.
+So the three synthetic tools and each pinned card are built once per
+transform and handed out again (``tests/test_discovery_perf.py``).
 """
 
 from __future__ import annotations
@@ -276,6 +287,10 @@ class CadSearchTransform(BM25SearchTransform):
         pack_of: Callable[[str], str | None] | None = None,
         search_result_serializer: SearchResultSerializer | None = None,
     ) -> None:
+        #: The synthetic tools by name, and each pinned card with what it was
+        #: made from - both built once (module docstring, "Built once").
+        self._synthetic_cache: dict[str, Tool] = {}
+        self._pinned_cards: dict[str, tuple[Any, str | None, Tool]] = {}
         super().__init__(
             max_results=max_results,
             always_visible=always_visible,
@@ -309,7 +324,7 @@ class CadSearchTransform(BM25SearchTransform):
         tools - so a client's prompt-cache prefix never moves between sessions.
         """
         listed = [
-            pinned_card(tool) if tool.name in self._always_visible else tool
+            self._pinned_card(tool) if tool.name in self._always_visible else tool
             for tool in await super().transform_tools(tools)
         ]
         return [*listed, self._make_describe_tool()]
@@ -321,6 +336,30 @@ class CadSearchTransform(BM25SearchTransform):
         if name == self._describe_tool_name:
             return self._make_describe_tool()
         return await super().get_tool(name, call_next, version=version)
+
+    # ------------------------------------------------------------------
+    # Built once
+    # ------------------------------------------------------------------
+
+    def _synthetic(self, name: str, build: Callable[[], Tool]) -> Tool:
+        """``build()`` on the first listing; the same object on every later one."""
+        tool = self._synthetic_cache.get(name)
+        if tool is None:
+            tool = build()
+            self._synthetic_cache[name] = tool
+        return tool
+
+    def _pinned_card(self, tool: Tool) -> Tool:
+        """:func:`pinned_card` of ``tool``, kept while the tool is what it was made
+        from. A listing hands over the registered ``Tool`` or a shallow copy of
+        it, so its schema dict is the same object either way; a tool registered
+        again with another schema or text gets a new card."""
+        hit = self._pinned_cards.get(tool.name)
+        if hit is not None and hit[0] is tool.parameters and hit[1] == tool.description:
+            return hit[2]
+        card = pinned_card(tool)
+        self._pinned_cards[tool.name] = (tool.parameters, tool.description, card)
+        return card
 
     # ------------------------------------------------------------------
     # Indexed document
@@ -448,6 +487,9 @@ class CadSearchTransform(BM25SearchTransform):
         return {"results": rendered, "notice": notice}
 
     def _make_search_tool(self) -> Tool:
+        return self._synthetic(self._search_tool_name, self._build_search_tool)
+
+    def _build_search_tool(self) -> Tool:
         transform = self
         default_limit = self._max_results
 
@@ -480,6 +522,9 @@ class CadSearchTransform(BM25SearchTransform):
     # ------------------------------------------------------------------
 
     def _make_call_tool(self) -> Tool:
+        return self._synthetic(self._call_tool_name, self._build_call_tool)
+
+    def _build_call_tool(self) -> Tool:
         """The stock ``call_tool`` proxy, refusing ``describe_tool`` as well.
 
         Upstream's proxy refuses only the two names it knows about. The body is
@@ -508,7 +553,7 @@ class CadSearchTransform(BM25SearchTransform):
     # ------------------------------------------------------------------
 
     def _make_describe_tool(self) -> Tool:
-        return _describe_tool_for(self)
+        return self._synthetic(self._describe_tool_name, lambda: _describe_tool_for(self))
 
 
 def _describe_tool_for(transform: Any) -> Tool:
@@ -593,6 +638,7 @@ class DetailsTransform(CatalogTransform):
         super().__init__()
         self._describe_tool_name = describe_tool_name
         self._pack_of = pack_of
+        self._describe_cache: Tool | None = None
 
     @property
     def synthetic_names(self) -> frozenset[str]:
@@ -614,7 +660,10 @@ class DetailsTransform(CatalogTransform):
         return await call_next(name, version=version)
 
     def _make_describe_tool(self) -> Tool:
-        return _describe_tool_for(self)
+        """Built once (module docstring); the same object on every listing."""
+        if self._describe_cache is None:
+            self._describe_cache = _describe_tool_for(self)
+        return self._describe_cache
 
 
 def _points_to_details(tool: Tool) -> bool:

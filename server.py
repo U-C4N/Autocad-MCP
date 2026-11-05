@@ -1177,6 +1177,65 @@ def _warn_unknown_pins() -> list[str]:
 _apply_discovery_mode()
 
 
+def _install_tool_definition_cache() -> bool:
+    """A call of a tool the catalog does not list resolves that tool, not the catalog.
+
+    The low-level MCP server keeps the definition of every *listed* tool
+    (``_tool_cache``) for the schema checks of a call, and on a miss it runs the
+    whole ``tools/list`` handler again. Under ``DISCOVERY_MODE=search`` every
+    tool but the pinned ones is such a miss, so every direct call of a hidden
+    tool listed the catalog first. MEASURED 2026-11-05
+    (``benchmarks/perf_compare.py --base v1.7.0 --aa --rounds 20``, release
+    tree 19ada05): ``server_create_lines_2k`` - 2,000 direct
+    ``entity_create_line`` calls through an in-memory client - 8.5 x its
+    v1.7.0 time, 0.96 x with ``DISCOVERY_MODE=off``; the profile showed six
+    listings a call. Here a miss resolves the one tool by name
+    (``FastMCP.get_tool``: the provider chain and every transform, no listing)
+    and keeps its definition, so the check runs as it does for a listed tool;
+    a name no tool has, or one the server disabled, takes the stock path (one
+    listing, the SDK's own warning). The client's own listing - ``mcp``'s
+    session lists again for a tool it has not seen - is the client's and stays.
+
+    ``_mcp_server``, ``_tool_cache`` and ``_get_cached_tool_definition`` are
+    private to ``mcp`` 1.x / fastmcp 3.4; ``tests/test_discovery_perf.py`` holds
+    them, so an upgrade that moves them fails there, and here the cache is
+    simply not installed (False, logged): a hidden tool's call then lists the
+    catalog as before, which is slower, never wrong.
+    """
+    low = getattr(mcp, "_mcp_server", None)
+    stock = getattr(low, "_get_cached_tool_definition", None)
+    cache = getattr(low, "_tool_cache", None)
+    resolve = getattr(mcp, "get_tool", None)
+    if low is None or not callable(stock) or not isinstance(cache, dict) or not callable(resolve):
+        log.warning(
+            "tool definition cache not installed (the MCP server layout changed): a call of "
+            "a tool the catalog does not list lists the catalog first"
+        )
+        return False
+
+    async def cached_definition(tool_name: str):
+        found = cache.get(tool_name)
+        if found is not None:
+            return found
+        try:
+            tool = await resolve(tool_name)
+        except Exception as exc:  # NotFoundError or a transform's error: the stock path
+            log.debug("tool definition of %r not resolved by name: %s", tool_name, exc)
+            tool = None
+        if tool is None:
+            return await stock(tool_name)
+        definition = tool.to_mcp_tool(name=tool.name)
+        cache[tool_name] = definition
+        return definition
+
+    cached_definition._acadmcp_by_name = True  # type: ignore[attr-defined]
+    low._get_cached_tool_definition = cached_definition
+    return True
+
+
+_install_tool_definition_cache()
+
+
 # ---------------------------------------------------------------------------
 # Backend access helper
 # ---------------------------------------------------------------------------

@@ -25,6 +25,19 @@ spread is taken as 0 and the bound is 1.05; the phase gate runs with ``--aa``.
 ``--base auto`` (the default since 1.8-14; it was a hard-coded ``v1.6.0``)
 resolves to the newest tag reachable from HEAD, or from HEAD's parent when HEAD
 is itself the tag being released.
+
+**The same catalog on both sides.** Every measurement runs with
+``DISCOVERY_MODE=off``, the 1.7.0 catalog. The in-memory client is ``mcp``'s
+own session, and that session lists the catalog again on every call of a tool
+it was not shown (``ClientSession._validate_tool_result``); under the search
+default (1.8-11) every tool but the pinned ones is such a tool, so the server
+workload would measure the client's listings, not the server's call path.
+MEASURED 2026-11-05 (release tree 19ada05, 20 rounds): 8.5 x v1.7.0 under
+the search default - six listings a call, three of them the server's own
+definition-cache refreshes - against 0.96 x with ``DISCOVERY_MODE=off``.
+The server's share is fixed (``server._install_tool_definition_cache``,
+``discovery/transform.py`` "Built once"); the client's listings are the
+client's, and the gate compares the call path under one catalog shape.
 """
 
 from __future__ import annotations
@@ -162,7 +175,13 @@ async def measure(workloads: list[str], scratch: Path) -> dict[str, float]:
 
 def run_in_tree(tree: Path, workloads: list[str], scratch: Path) -> dict[str, float]:
     """One measurement of ``workloads`` with ``tree``'s packages, in a subprocess."""
-    env = {**os.environ, "PYTHONPATH": str(tree), "AUTOCAD_MCP_BACKEND": "ezdxf"}
+    # DISCOVERY_MODE=off on both sides: the module docstring says why.
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(tree),
+        "AUTOCAD_MCP_BACKEND": "ezdxf",
+        "DISCOVERY_MODE": "off",
+    }
     done = subprocess.run(
         [
             sys.executable,
