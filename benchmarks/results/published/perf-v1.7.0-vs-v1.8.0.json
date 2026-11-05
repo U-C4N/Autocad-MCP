@@ -1,0 +1,38 @@
+{
+  "aa": true,
+  "aa_spread": 0.0711,
+  "base": "v1.7.0",
+  "bound": 1.1422,
+  "head": "f3523db",
+  "ok": true,
+  "rounds": 20,
+  "schema_version": 1,
+  "warmup": 5,
+  "workloads": {
+    "create_lines_2k": {
+      "base_ms": 272.1,
+      "head_ms": 286.2,
+      "ratio": 1.0241
+    },
+    "premium_pass": {
+      "base_ms": 46.9,
+      "head_ms": 41.2,
+      "ratio": 0.962
+    },
+    "region_query_10k": {
+      "base_ms": 249.3,
+      "head_ms": 224.45,
+      "ratio": 0.9719
+    },
+    "roundtrip_10k": {
+      "base_ms": 1682.8,
+      "head_ms": 1721.25,
+      "ratio": 1.0289
+    },
+    "server_create_lines_2k": {
+      "base_ms": 3496.312,
+      "head_ms": 3636.005,
+      "ratio": 1.0594
+    }
+  }
+}

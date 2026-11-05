@@ -19,7 +19,7 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 
 </div>
 
-> **v1.8 release snapshot:** 257 tools · 13 resources · 5 prompt templates · 7540 collected tests.
+> **v1.8 release snapshot:** 257 tools · 13 resources · 5 prompt templates · 7541 collected tests.
 > 257 is the **registered** count. Since 1.8.0 a default install lists six over `tools/list`
 > (`DISCOVERY_MODE=search`: `search_tools`, `describe_tool`, `call_tool` and the three
 > `DISCOVERY_PINNED` tools), and every tool the profile and packs allow stays callable by name;
@@ -41,7 +41,7 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 | **DWG opens headlessly** | `drawing_open` on a `.dwg` converts it through the ODA File Converter, then AutoCAD's `accoreconsole`. With neither it is a typed capability refusal (`dwg_read`); when every route fails it is `dwg_conversion_failed` with its `attempts[]`. A save onto the `.dwg` is still refused (`dwg`): save it as `.dxf` |
 | **Narrowed on request** | `READ_ONLY`, `TOOL_ALLOWLIST` / `TOOL_DENYLIST` and `MAX_TOOL_COST` refuse a call before anything runs (`policy_refused`). A writer takes only its own extensions and never a name AutoCAD or Windows loads (`path_refused`). The HTTP transport refuses an unknown Origin (403), a foreign Host (421) and a body over 8 MiB (413). `system_run_lisp` runs an AutoLISP read tier under `LISP_POLICY=read` (COM only: the headless engine has no LISP) |
 | **The live engine draws where it means to** | A live seat draws in model space until `layout_set_current` names a sheet; the tab the operator clicks no longer moves it. `system_run_command` and live undo / redo wait for the command and can fail `command_incomplete`. One display refresh per COM job, and `entity_batch_create` / `entity_delete_many` run as STA jobs sliced at a quarter of `COM_CALL_TIMEOUT`. All fourteen live smokes passed for this release (AutoCAD 2026, 1.8.0): see *Live evidence* in the [changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md) |
-| **Evidence** | Correctness suite 83 / 83 against v1.7.0's 61 / 83, 22 fixed and 0 regressed (`ab-v1.7.0-vs-v1.8.0.json`). Matrix v9: 47 / 47 attempted tasks of 49 (`lisp_read_tier` `environment_blocked`, `std_tables_b40` `not_run`). The full headless suite: `7501 passed, 1 xfailed`. The token budget gate exits 0 ([evidence](#evidence)) |
+| **Evidence** | Correctness suite 83 / 83 against v1.7.0's 61 / 83, 22 fixed and 0 regressed (`ab-v1.7.0-vs-v1.8.0.json`). Matrix v9: 47 / 47 attempted tasks of 49 (`lisp_read_tier` `environment_blocked`, `std_tables_b40` `not_run`). The full headless suite: `7501 passed, 1 xfailed`. The headless performance gate against v1.7.0: `ok: true`, ratios 0.96 to 1.06 ([`perf-v1.7.0-vs-v1.8.0.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/perf-v1.7.0-vs-v1.8.0.json); the 1.06 is the durable journal, [measured](#headless-performance)). The token budget gate exits 0 ([evidence](#evidence)) |
 
 ### One call where 1.7 needed hundreds
 
@@ -447,6 +447,18 @@ The tasks added in 1.5 and 1.6, with what each is verified against:
 
 The workloads call the same backend methods the MCP tools call, so server-side overhead is included. Numbers move with hardware; the report records the machine fingerprint. **Read the next section before quoting them.** Entity creation is still slower than in v1.4.0.
 
+**1.8.0 against 1.7.0: not slower beyond the noise, with one row to watch.** The same gate, run on 2026-11-05 at `f3523db` against a v1.7.0 worktree: 20 rounds after 5 warm-ups, CPython 3.12.16, every measurement in a fresh state folder of its own ([`perf-v1.7.0-vs-v1.8.0.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/perf-v1.7.0-vs-v1.8.0.json)):
+
+| Workload | v1.7.0 | 1.8.0 | ratio |
+|---|---:|---:|---:|
+| 2,000 lines, one call each | 272.1 ms | 286.2 ms | 1.02 |
+| 10,000 lines: build, DXF export, reopen | 1,682.8 ms | 1,721.3 ms | 1.03 |
+| Region query over 10,000 entities | 249.3 ms | 224.5 ms | 0.97 |
+| Premium quality pass | 46.9 ms | 41.2 ms | 0.96 |
+| 2,000 `entity_create_line` calls through the MCP server | 3,496.3 ms | 3,636.0 ms | 1.06 |
+
+The machine was in use during this run: the A/A spread was 7.1 %, so the bound was 1.14, and every row is inside it. The row to watch is the last one. Its 1.06 is the durable journal (on by default): one `sqlite` commit per mutating call, for the `running` row that lets a restart report an interrupted call as `unknown_commit`, measured at about 50 µs of a 1.7 ms call, with the change summary, the session metrics and the tool policy at about 50 µs more together (`JOURNAL_DURABLE=off` puts the row at 1.03). On a quiet machine the A/A spread was 1.4 % earlier that day, the bound is then the 1.05 floor, and that row misses it by about 1 %; the four others pass either way. It is recorded here, not re-run until it passed. The 1.8.1 item that closes it without changing what a restart reports is an append-only running log: one write per call, the rows written in batches, reconciled at open. The first run of the gate that day measured 1.15 on that row and 1.09 on the roundtrip, because its workers had written into this machine's default state folder, which held a 213 MB journal and 656 checkpoint lineages left by earlier runs; the gate now gives each measurement an empty state folder. The roundtrip's 1.03 is the atomic save (a tmp file fsynced and verified before it replaces the target) and the S0 checkpoint of a reopened file.
+
 **1.7.0 against 1.6.0: not slower beyond the noise.** `benchmarks/perf_compare.py` builds a v1.6.0 worktree and measures both trees in alternating rounds, base, head, head, base, with one interpreter. The A/A calibration measures the base against itself in every round. Values are medians of 20 rounds after 5 warm-ups, and each ratio is the median of the paired per-round ratios ([`perf-v1.6.0-vs-v1.7.0.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/perf-v1.6.0-vs-v1.7.0.json)):
 
 | Workload | v1.6.0 | v1.7.0 | ratio |
@@ -463,7 +475,7 @@ The gate holds every ratio at or below 1 + max(0.05, 2 × the A/A spread). This 
 
 A page that only lists strengths is a page that has not been measured.
 
-**Headless entity creation is slower than v1.4.0, and neither 1.6 nor 1.7 won it back.** 1.7.0 is not slower than 1.6.0 ([above](#headless-performance)); the loss is 1.6's against v1.4.0, and winning it back is 1.7.1's first item. These are medians of five alternating runs on one machine, with one interpreter (CPython 3.11.15) and one ezdxf, v1.4.0's code against 1.6.0's ([`perf-v1.4.0-vs-v1.6.0.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/perf-v1.4.0-vs-v1.6.0.json)):
+**Headless entity creation is slower than v1.4.0, and neither 1.6, 1.7 nor 1.8 won it back.** 1.8.0 is not slower than 1.7.0 beyond the gate's noise, and 1.7.0 not slower than 1.6.0 ([above](#headless-performance)); the loss is 1.6's against v1.4.0, and winning it back is B10, 1.8.1. 1.8.0 adds two measured costs of its own on that path, both named above: the durable journal's commit on every mutating call, and the atomic save's fsync and verification. These are medians of five alternating runs on one machine, with one interpreter (CPython 3.11.15) and one ezdxf, v1.4.0's code against 1.6.0's ([`perf-v1.4.0-vs-v1.6.0.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/perf-v1.4.0-vs-v1.6.0.json)):
 
 | Workload | v1.4.0 | v1.6.0 | v1.6.0, `EZDXF_CALL_TIMEOUT=0` |
 |---|---:|---:|---:|

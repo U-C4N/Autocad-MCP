@@ -125,8 +125,19 @@ command:
 - **Full suite:** `AUTOCAD_MCP_BACKEND=ezdxf pytest -q -p no:cacheprovider`
   with no deselection - 7,502 collected, `7501 passed, 1 xfailed` (432 s) at
   `683ba21`, the tree of this release before its version commit.
-- **Headless performance:** `perf_compare.py --base v1.7.0 --aa` is measured
-  by the coordinator on an idle machine. The W1 gate numbers below are kept as
+- **Headless performance:** `python -m benchmarks.perf_compare --base v1.7.0
+  --aa --rounds 20` at `f3523db` on 2026-11-05 - `ok: true`, A/A spread
+  7.1 % (bound 1.14): `create_lines_2k` 1.02, `roundtrip_10k` 1.03,
+  `region_query_10k` 0.97, `premium_pass` 0.96, `server_create_lines_2k`
+  1.06 (`benchmarks/results/published/perf-v1.7.0-vs-v1.8.0.json`). The
+  server row is the durable journal's commit per mutating call (about 50 µs
+  of a 1.7 ms call; 1.03 with `JOURNAL_DURABLE=off`): on a quiet machine the
+  bound is the 1.05 floor and that row misses it by about 1 %, said in the
+  README's *Headless performance* and in *Not in 1.8.0* below. A first run
+  that day gave 1.15 and 1.09 on those two rows: the workers had written into
+  the machine's default state folder (a 213 MB journal and 656 checkpoint
+  lineages left by earlier runs), which `f3523db` ends - every measurement
+  now runs in a fresh state folder of its own. The W1 gate numbers below are
   history; their A/A spread was 12.3 %, so their bound was 1.25.
 
 ### Live-seat fixes (2026-11-04)
@@ -382,6 +393,15 @@ HATCH loop deletion (spike S4) stay unmeasured.
   SECURELOAD route (`NETLOAD` is on our own denylist), no CI coverage, and a
   second language for one maintainer. The one-day spike was not run, and no
   timing is claimed.
+- **The journal's commit per mutating call stays, and the checkpoint budget
+  scan is per checkpoint.** The `running` row is committed before a mutating
+  call runs (B13): about 50 µs of a 1.7 ms headless create through the
+  server, the one perf-gate row above the 1.05 floor (1.06). An append-only
+  running log - one write per call, the rows written in batches, reconciled
+  at open - keeps what a restart reports and takes that row to about 1.04;
+  it is 1.8.1. `CheckpointStore._evict_budget` scans every lineage folder at
+  every checkpoint: 0.2 ms in a fresh store, 41 ms at 656 lineages (measured
+  on the maintainer's machine); a cached total is 1.8.1 as well.
 - **1.8.1, from the phases:** batch lease, `confirm_large` and batch budgets;
   `cad_batch` step coalescing; the AutoLISP write tier (`command`, `entmod`,
   `setvar`, `vla-put-*`); `mech_part_revise`'s spec-reconciliation and

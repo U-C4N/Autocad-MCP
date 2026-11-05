@@ -304,6 +304,47 @@ python -m benchmarks.perf_suite --out benchmarks/results/published/perf-ezdxf.js
 python -m benchmarks.render_perf_chart
 ```
 
+### v1.7.0 against v1.8.0 (the spec §8.3 gate)
+
+The same gate for 1.8.0, run on 2026-11-05 at `f3523db` against a v1.7.0
+worktree (CPython 3.12.16, ezdxf 1.4.4; 20 rounds after 5 warm-ups):
+[`results/published/perf-v1.7.0-vs-v1.8.0.json`](results/published/perf-v1.7.0-vs-v1.8.0.json),
+`ok: true`.
+
+| Workload | v1.7.0 | 1.8.0 | ratio |
+|---|---:|---:|---:|
+| 2,000 lines, one call each | 272.1 ms | 286.2 ms | 1.02 |
+| 10,000 lines: build, DXF export, reopen | 1,682.8 ms | 1,721.3 ms | 1.03 |
+| Region query over 10,000 entities | 249.3 ms | 224.5 ms | 0.97 |
+| Premium quality pass | 46.9 ms | 41.2 ms | 0.96 |
+| 2,000 `entity_create_line` calls through the MCP server | 3,496.3 ms | 3,636.0 ms | 1.06 |
+
+The A/A spread was 7.1 % on that run (the machine was in use), so the bound
+was 1.14. Two things the numbers say. The server row's 1.06 is the durable
+journal's one commit per mutating call - the `running` row a restart turns
+into `unknown_commit` - measured at about 50 µs of a 1.7 ms call through the
+in-memory client, plus about 50 µs for the change summary, the session
+metrics and the tool policy together; with `JOURNAL_DURABLE=off` the row is
+1.03. On a quiet machine (A/A spread 1.4 % earlier that day) the bound is the
+1.05 floor and that row misses it by about 1 %: recorded, not re-run until it
+passed. The 1.8.1 fix is an append-only running log (one write per call, the
+rows written in batches, reconciled at open), which keeps what a restart
+reports. The first run of the gate that day measured 1.15 on that row and
+1.09 on the roundtrip: its workers had used this machine's default state
+folder, holding a 213 MB journal of 446,254 rows and 656 checkpoint lineages
+left by earlier gate runs - the journal's size cost 0.1 ms per call, and
+`CheckpointStore._evict_budget`'s scan of the whole store 41 ms per open of a
+changed file - so since `f3523db` every measurement runs in a fresh temp
+`ACADMCP_STATE_DIR` of its own, never under `--scratch` (which may lie inside
+the checkout, where a state folder is refused and the journal would silently
+run in memory). The roundtrip's 1.03 is the atomic save (fsync and verify
+before the replace) and the S0 checkpoint of a reopened file (gzip level 1:
+2.4 ms for 1.3 MB).
+
+```bash
+python -m benchmarks.perf_compare --base v1.7.0 --aa --rounds 20 --out out/perf/compare.json
+```
+
 ### v1.6.0 against v1.7.0 (the spec §8.3 gate)
 
 1.7.0 must not be slower than 1.6.0. `perf_compare.py` builds a v1.6.0 worktree
