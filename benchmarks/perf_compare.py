@@ -38,6 +38,20 @@ definition-cache refreshes - against 0.96 x with ``DISCOVERY_MODE=off``.
 The server's share is fixed (``server._install_tool_definition_cache``,
 ``discovery/transform.py`` "Built once"); the client's listings are the
 client's, and the gate compares the call path under one catalog shape.
+
+**A fresh state folder per measurement.** Every worker runs with an
+``ACADMCP_STATE_DIR`` of its own - a temp folder made for it and removed after
+it - so the journal, the lineage records and the checkpoints it writes are the
+code's own cost, never the residue of earlier runs or of the machine's default
+state folder. MEASURED 2026-11-05 (release tree a4a0aba): that default folder
+held a 213 MB journal of 446,254 rows left by earlier gate runs, written under
+an earlier schema draft with three indexes the released schema does not
+create, and 656 checkpoint lineages; against it ``server_create_lines_2k``
+measured 1.15 x v1.7.0 (1.06-1.09 x with a fresh folder), and every open of a
+changed file paid 41 ms in ``CheckpointStore._evict_budget``'s scan of the
+whole store (0.2 ms in a fresh one). The folder is never put under
+``--scratch``: that may lie inside the checkout (its default does), where a
+state folder is refused and the journal would silently run in memory.
 """
 
 from __future__ import annotations
@@ -46,6 +60,7 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
 import statistics
 import subprocess
 import sys
@@ -174,31 +189,39 @@ async def measure(workloads: list[str], scratch: Path) -> dict[str, float]:
 
 
 def run_in_tree(tree: Path, workloads: list[str], scratch: Path) -> dict[str, float]:
-    """One measurement of ``workloads`` with ``tree``'s packages, in a subprocess."""
-    # DISCOVERY_MODE=off on both sides: the module docstring says why.
+    """One measurement of ``workloads`` with ``tree``'s packages, in a subprocess.
+
+    The worker gets ``DISCOVERY_MODE=off`` and a fresh state folder of its own,
+    removed afterwards: the module docstring says why for both.
+    """
+    state = Path(tempfile.mkdtemp(prefix="acadmcp_perf_state_"))
     env = {
         **os.environ,
         "PYTHONPATH": str(tree),
         "AUTOCAD_MCP_BACKEND": "ezdxf",
         "DISCOVERY_MODE": "off",
+        "ACADMCP_STATE_DIR": str(state),
     }
-    done = subprocess.run(
-        [
-            sys.executable,
-            "-P",
-            str(Path(__file__).resolve()),
-            "--worker",
-            "--workloads",
-            ",".join(workloads),
-            "--scratch",
-            str(scratch),
-        ],
-        cwd=str(tree),
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=1800,
-    )
+    try:
+        done = subprocess.run(
+            [
+                sys.executable,
+                "-P",
+                str(Path(__file__).resolve()),
+                "--worker",
+                "--workloads",
+                ",".join(workloads),
+                "--scratch",
+                str(scratch),
+            ],
+            cwd=str(tree),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=1800,
+        )
+    finally:
+        shutil.rmtree(state, ignore_errors=True)
     if done.returncode != 0:
         raise RuntimeError(f"measurement in {tree} failed:\n{done.stderr[-4000:]}")
     return json.loads(done.stdout.strip().splitlines()[-1])
