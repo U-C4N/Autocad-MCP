@@ -1,0 +1,147 @@
+{
+  "schema": "acadmcp-live-harness/1",
+  "smoke": "durability",
+  "status": "pass",
+  "exit_code": 0,
+  "reason": null,
+  "started_at": "2026-11-05T07:21:44+00:00",
+  "duration_s": 3.562,
+  "environment": {
+    "autocad": {
+      "name": "AutoCAD",
+      "version": "25.1s",
+      "build": "W.60.0.0 (UNICODE)",
+      "progid": "AutoCAD.Application"
+    },
+    "os": {
+      "platform": "Windows-11-10.0.26300-SP0",
+      "system": "Windows",
+      "release": "11",
+      "machine": "AMD64"
+    },
+    "python": {
+      "version": "3.12.16",
+      "implementation": "CPython"
+    },
+    "pywin32": "312",
+    "server": {
+      "version": "1.8.0",
+      "sha": "da2d7f6933a1cc153e381093a24165735ad22023",
+      "dirty": false
+    }
+  },
+  "summary": {
+    "checks": 6,
+    "passed": 6,
+    "failed": 0,
+    "errors": 0,
+    "rpc_retries": 0
+  },
+  "checks": [
+    {
+      "name": "checkpoint_create exported the document without renaming it",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "row": {
+          "cp": "cp-0",
+          "seq": 0,
+          "tool": "checkpoint_create",
+          "rev": 1,
+          "kb": 11.1,
+          "label": "smoke-1"
+        },
+        "name": "Drawing4.dwg",
+        "after": "Drawing4.dwg"
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "checkpoint_list shows it, newest first",
+      "status": "pass",
+      "expected": null,
+      "observed": [
+        "cp-0"
+      ],
+      "stage": "checks"
+    },
+    {
+      "name": "an in-place restore is refused by capability and changes nothing",
+      "status": "pass",
+      "expected": {
+        "capability": "checkpoint_restore_in_place",
+        "circles": 2
+      },
+      "observed": {
+        "capability": "checkpoint_restore_in_place",
+        "circles_before": 2,
+        "circles_after": 2
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "the transaction boundary left a checkpoint",
+      "status": "pass",
+      "expected": null,
+      "observed": "cp-1",
+      "stage": "checks"
+    },
+    {
+      "name": "the destructive tool left a checkpoint first",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "cp": "cp-2",
+        "kind": "destructive"
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "new_document opened <stem>-cp<seq>.dxf, bound it, and it holds the checkpoint",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "path_name": "Drawing4-cp0.dxf",
+        "name_ok": true,
+        "bound": true,
+        "circles": 1
+      },
+      "stage": "checks"
+    }
+  ],
+  "documents": {
+    "opened": 2,
+    "closed": 2,
+    "left_open": [],
+    "kept": false
+  },
+  "report": {
+    "name": "Drawing4.dwg",
+    "created": {
+      "cp": "cp-0",
+      "seq": 0,
+      "tool": "checkpoint_create",
+      "rev": 1,
+      "kb": 11.1,
+      "label": "smoke-1"
+    },
+    "name_after_export": "Drawing4.dwg",
+    "listed": [
+      "cp-0"
+    ],
+    "in_place": {
+      "capability": "checkpoint_restore_in_place",
+      "circles_before": 2,
+      "circles_after": 2
+    },
+    "transaction_checkpoint": "cp-1",
+    "purge_checkpoint": "cp-2",
+    "purge_kind": "destructive",
+    "new_document": {
+      "path_name": "Drawing4-cp0.dxf",
+      "name_ok": true,
+      "bound": true,
+      "circles": 1
+    }
+  }
+}

@@ -1,9 +1,9 @@
 {
   "schema": "acadmcp-perf-com/1",
   "item": "1.8-23",
-  "status": "pending",
-  "reason": "not run: AutoCAD was not open when 1.8-23 was written",
-  "generated_at": "2026-11-04T08:37:48+00:00",
+  "status": "failed",
+  "reason": null,
+  "generated_at": "2026-11-05T09:16:34+00:00",
   "targets": {
     "bulk_speedup_min": 5.0,
     "single_create_median_drop_min": 0.3,
@@ -27,29 +27,603 @@
   },
   "verdict": {
     "bulk_create_speedup": {
-      "value": null,
+      "value": 2.901,
       "target": 5.0,
-      "pass": null
+      "pass": false
     },
     "bulk_delete_speedup": {
-      "value": null,
+      "value": 3.778,
       "target": 5.0,
-      "pass": null
+      "pass": false
     },
     "single_create_median_drop": {
-      "value": null,
+      "value": 0.089,
       "target": 0.3,
-      "pass": null
+      "pass": false
     },
     "fillet_n_ratio": {
-      "value": null,
+      "value": 55.048,
       "target": 1.2,
-      "pass": null
+      "pass": false
     }
   },
   "sides": {
-    "base": null,
-    "current": null
+    "base": {
+      "code": {
+        "root": "v170-base",
+        "version": "1.7.0",
+        "sha": "58a05ddfc34a9832c626e82cd88ecdce8e16a62a",
+        "dirty": false
+      },
+      "workloads": {
+        "create_circle_singles": {
+          "n": 200,
+          "median_ms": 41.0,
+          "p95_ms": 52.648,
+          "min_ms": 31.119,
+          "max_ms": 575.214,
+          "total_ms": 8837.979,
+          "errors": 0,
+          "run_breakdown": null
+        },
+        "batch_create_200": {
+          "n": 5,
+          "median_ms": 7029.481,
+          "p95_ms": 7160.398,
+          "min_ms": 6906.771,
+          "max_ms": 7160.398,
+          "total_ms": 35156.939,
+          "errors": 0,
+          "run_breakdown": null
+        },
+        "delete_singles_200": {
+          "n": 200,
+          "median_ms": 14.582,
+          "p95_ms": 19.251,
+          "min_ms": 11.358,
+          "max_ms": 66.508,
+          "total_ms": 3113.16,
+          "errors": 0,
+          "run_breakdown": null
+        },
+        "delete_many_200": {
+          "n": 5,
+          "median_ms": 2160.133,
+          "p95_ms": 2467.416,
+          "min_ms": 1966.455,
+          "max_ms": 2467.416,
+          "total_ms": 11072.628,
+          "errors": 0,
+          "run_breakdown": null
+        },
+        "cad_batch_50": {
+          "n": 5,
+          "median_ms": 1728.622,
+          "p95_ms": 1749.483,
+          "min_ms": 502.418,
+          "max_ms": 1749.483,
+          "total_ms": 7399.877,
+          "errors": 0,
+          "run_breakdown": null
+        },
+        "fillet_50_n5000": {
+          "n": 50,
+          "median_ms": 17156.524,
+          "p95_ms": 19022.413,
+          "min_ms": 13777.78,
+          "max_ms": 107259.512,
+          "total_ms": 932984.214,
+          "errors": 0,
+          "run_breakdown": null
+        },
+        "fillet_50_n10000": {
+          "n": 50,
+          "median_ms": 384.235,
+          "p95_ms": 35888.583,
+          "min_ms": 301.184,
+          "max_ms": 60339.61,
+          "total_ms": 716312.722,
+          "errors": 30,
+          "run_breakdown": null
+        }
+      },
+      "harness": {
+        "schema": "acadmcp-live-harness/1",
+        "smoke": "perf_com",
+        "status": "fail",
+        "exit_code": 1,
+        "reason": null,
+        "started_at": "2026-11-05T08:46:15+00:00",
+        "duration_s": 1818.219,
+        "environment": {
+          "autocad": {
+            "name": "AutoCAD",
+            "version": "25.1s",
+            "build": "W.60.0.0 (UNICODE)",
+            "progid": "AutoCAD.Application"
+          },
+          "os": {
+            "platform": "Windows-11-10.0.26300-SP0",
+            "system": "Windows",
+            "release": "11",
+            "machine": "AMD64"
+          },
+          "python": {
+            "version": "3.12.16",
+            "implementation": "CPython"
+          },
+          "pywin32": "312",
+          "server": {
+            "version": "1.8.0",
+            "sha": "cc82532715e3298b558138044b8f46446b906ce8",
+            "dirty": false
+          }
+        },
+        "summary": {
+          "checks": 8,
+          "passed": 7,
+          "failed": 1,
+          "errors": 0,
+          "rpc_retries": 18
+        },
+        "checks": [
+          {
+            "name": "the document holds the seeded lines",
+            "status": "pass",
+            "expected": 5000,
+            "observed": 5000,
+            "stage": "seed"
+          },
+          {
+            "name": "create_circle_singles ran without a tool error",
+            "status": "pass",
+            "expected": 0,
+            "observed": 0,
+            "stage": "fillet_50_n10000"
+          },
+          {
+            "name": "batch_create_200 ran without a tool error",
+            "status": "pass",
+            "expected": 0,
+            "observed": 0,
+            "stage": "fillet_50_n10000"
+          },
+          {
+            "name": "delete_singles_200 ran without a tool error",
+            "status": "pass",
+            "expected": 0,
+            "observed": 0,
+            "stage": "fillet_50_n10000"
+          },
+          {
+            "name": "delete_many_200 ran without a tool error",
+            "status": "pass",
+            "expected": 0,
+            "observed": 0,
+            "stage": "fillet_50_n10000"
+          },
+          {
+            "name": "cad_batch_50 ran without a tool error",
+            "status": "pass",
+            "expected": 0,
+            "observed": 0,
+            "stage": "fillet_50_n10000"
+          },
+          {
+            "name": "fillet_50_n5000 ran without a tool error",
+            "status": "pass",
+            "expected": 0,
+            "observed": 0,
+            "stage": "fillet_50_n10000"
+          },
+          {
+            "name": "fillet_50_n10000 ran without a tool error",
+            "status": "fail",
+            "expected": 0,
+            "observed": 30,
+            "stage": "fillet_50_n10000"
+          }
+        ],
+        "documents": {
+          "opened": 1,
+          "closed": 0,
+          "left_open": [
+            "Drawing23.dwg"
+          ],
+          "kept": false,
+          "close_failed": [
+            "Drawing23.dwg"
+          ]
+        }
+      }
+    },
+    "current": {
+      "code": {
+        "root": "Autocad-MCP-v180",
+        "version": "1.8.0",
+        "sha": "cc82532715e3298b558138044b8f46446b906ce8",
+        "dirty": false
+      },
+      "workloads": {
+        "create_circle_singles": {
+          "n": 200,
+          "median_ms": 37.343,
+          "p95_ms": 44.831,
+          "min_ms": 27.724,
+          "max_ms": 83.851,
+          "total_ms": 7433.247,
+          "errors": 0,
+          "run_breakdown": {
+            "jobs": 200,
+            "ms": {
+              "queue": {
+                "p50": 0.148,
+                "p95": 0.181,
+                "total": 29.616
+              },
+              "guard": {
+                "p50": 4.384,
+                "p95": 5.506,
+                "total": 871.905
+              },
+              "work": {
+                "p50": 20.413,
+                "p95": 25.222,
+                "total": 4085.239
+              },
+              "refresh": {
+                "p50": 0.96,
+                "p95": 1.425,
+                "total": 198.35
+              },
+              "counter": {
+                "p50": 0.712,
+                "p95": 1.209,
+                "total": 172.489
+              }
+            }
+          }
+        },
+        "batch_create_200": {
+          "n": 5,
+          "median_ms": 3046.577,
+          "p95_ms": 3386.372,
+          "min_ms": 2799.975,
+          "max_ms": 3386.372,
+          "total_ms": 15402.882,
+          "errors": 0,
+          "run_breakdown": {
+            "jobs": 1,
+            "ms": {
+              "queue": {
+                "p50": 0.136,
+                "p95": 0.136,
+                "total": 0.136
+              },
+              "guard": {
+                "p50": 4.614,
+                "p95": 4.614,
+                "total": 4.614
+              },
+              "work": {
+                "p50": 3214.788,
+                "p95": 3214.788,
+                "total": 3214.788
+              },
+              "refresh": {
+                "p50": 10.849,
+                "p95": 10.849,
+                "total": 10.849
+              },
+              "counter": {
+                "p50": 32.082,
+                "p95": 32.082,
+                "total": 32.082
+              }
+            }
+          }
+        },
+        "delete_singles_200": {
+          "n": 200,
+          "median_ms": 26.086,
+          "p95_ms": 31.831,
+          "min_ms": 19.39,
+          "max_ms": 44.824,
+          "total_ms": 5272.356,
+          "errors": 0,
+          "run_breakdown": {
+            "jobs": 200,
+            "ms": {
+              "queue": {
+                "p50": 0.729,
+                "p95": 0.826,
+                "total": 143.292
+              },
+              "guard": {
+                "p50": 4.649,
+                "p95": 6.462,
+                "total": 957.034
+              },
+              "work": {
+                "p50": 8.578,
+                "p95": 11.468,
+                "total": 1768.915
+              },
+              "refresh": {
+                "p50": 0.0,
+                "p95": 0.0,
+                "total": 0.0
+              },
+              "counter": {
+                "p50": 0.709,
+                "p95": 1.111,
+                "total": 152.13
+              }
+            }
+          }
+        },
+        "delete_many_200": {
+          "n": 5,
+          "median_ms": 824.018,
+          "p95_ms": 837.191,
+          "min_ms": 687.822,
+          "max_ms": 837.191,
+          "total_ms": 3955.702,
+          "errors": 0,
+          "run_breakdown": {
+            "jobs": 5,
+            "ms": {
+              "queue": {
+                "p50": 0.153,
+                "p95": 0.747,
+                "total": 1.265
+              },
+              "guard": {
+                "p50": 4.564,
+                "p95": 9.846,
+                "total": 27.123
+              },
+              "work": {
+                "p50": 40.325,
+                "p95": 342.341,
+                "total": 498.855
+              },
+              "refresh": {
+                "p50": 0.0,
+                "p95": 0.0,
+                "total": 0.0
+              },
+              "counter": {
+                "p50": 0.84,
+                "p95": 0.894,
+                "total": 4.059
+              }
+            }
+          }
+        },
+        "cad_batch_50": {
+          "n": 5,
+          "median_ms": 1501.685,
+          "p95_ms": 1547.386,
+          "min_ms": 1417.683,
+          "max_ms": 1547.386,
+          "total_ms": 7425.466,
+          "errors": 0,
+          "run_breakdown": {
+            "jobs": 54,
+            "ms": {
+              "queue": {
+                "p50": 0.102,
+                "p95": 0.156,
+                "total": 5.699
+              },
+              "guard": {
+                "p50": 4.204,
+                "p95": 6.71,
+                "total": 228.737
+              },
+              "work": {
+                "p50": 19.414,
+                "p95": 27.495,
+                "total": 1053.027
+              },
+              "refresh": {
+                "p50": 0.832,
+                "p95": 1.18,
+                "total": 44.169
+              },
+              "counter": {
+                "p50": 0.65,
+                "p95": 0.863,
+                "total": 35.433
+              }
+            }
+          }
+        },
+        "fillet_50_n5000": {
+          "n": 50,
+          "median_ms": 80.93,
+          "p95_ms": 104.113,
+          "min_ms": 63.152,
+          "max_ms": 108.447,
+          "total_ms": 4043.193,
+          "errors": 0,
+          "run_breakdown": {
+            "jobs": 50,
+            "ms": {
+              "queue": {
+                "p50": 0.053,
+                "p95": 0.059,
+                "total": 2.572
+              },
+              "guard": {
+                "p50": 4.117,
+                "p95": 5.26,
+                "total": 203.144
+              },
+              "work": {
+                "p50": 64.528,
+                "p95": 85.02,
+                "total": 3256.464
+              },
+              "refresh": {
+                "p50": 0.0,
+                "p95": 0.0,
+                "total": 0.0
+              },
+              "counter": {
+                "p50": 0.671,
+                "p95": 1.217,
+                "total": 36.751
+              }
+            }
+          }
+        },
+        "fillet_50_n10000": {
+          "n": 50,
+          "median_ms": 4455.008,
+          "p95_ms": 5206.261,
+          "min_ms": 65.467,
+          "max_ms": 5265.768,
+          "total_ms": 214849.318,
+          "errors": 0,
+          "run_breakdown": {
+            "jobs": 50,
+            "ms": {
+              "queue": {
+                "p50": 0.056,
+                "p95": 0.077,
+                "total": 2.943
+              },
+              "guard": {
+                "p50": 4.806,
+                "p95": 10.251,
+                "total": 282.97
+              },
+              "work": {
+                "p50": 4411.697,
+                "p95": 5186.449,
+                "total": 213914.748
+              },
+              "refresh": {
+                "p50": 0.0,
+                "p95": 0.0,
+                "total": 0.0
+              },
+              "counter": {
+                "p50": 0.842,
+                "p95": 1.486,
+                "total": 46.959
+              }
+            }
+          }
+        }
+      },
+      "harness": {
+        "schema": "acadmcp-live-harness/1",
+        "smoke": "perf_com",
+        "status": "pass",
+        "exit_code": 0,
+        "reason": null,
+        "started_at": "2026-11-05T08:41:06+00:00",
+        "duration_s": 308.782,
+        "environment": {
+          "autocad": {
+            "name": "AutoCAD",
+            "version": "25.1s",
+            "build": "W.60.0.0 (UNICODE)",
+            "progid": "AutoCAD.Application"
+          },
+          "os": {
+            "platform": "Windows-11-10.0.26300-SP0",
+            "system": "Windows",
+            "release": "11",
+            "machine": "AMD64"
+          },
+          "python": {
+            "version": "3.12.16",
+            "implementation": "CPython"
+          },
+          "pywin32": "312",
+          "server": {
+            "version": "1.8.0",
+            "sha": "cc82532715e3298b558138044b8f46446b906ce8",
+            "dirty": false
+          }
+        },
+        "summary": {
+          "checks": 8,
+          "passed": 8,
+          "failed": 0,
+          "errors": 0,
+          "rpc_retries": 0
+        },
+        "checks": [
+          {
+            "name": "the document holds the seeded lines",
+            "status": "pass",
+            "expected": 5000,
+            "observed": 5000,
+            "stage": "seed"
+          },
+          {
+            "name": "create_circle_singles ran without a tool error",
+            "status": "pass",
+            "expected": 0,
+            "observed": 0,
+            "stage": "fillet_50_n10000"
+          },
+          {
+            "name": "batch_create_200 ran without a tool error",
+            "status": "pass",
+            "expected": 0,
+            "observed": 0,
+            "stage": "fillet_50_n10000"
+          },
+          {
+            "name": "delete_singles_200 ran without a tool error",
+            "status": "pass",
+            "expected": 0,
+            "observed": 0,
+            "stage": "fillet_50_n10000"
+          },
+          {
+            "name": "delete_many_200 ran without a tool error",
+            "status": "pass",
+            "expected": 0,
+            "observed": 0,
+            "stage": "fillet_50_n10000"
+          },
+          {
+            "name": "cad_batch_50 ran without a tool error",
+            "status": "pass",
+            "expected": 0,
+            "observed": 0,
+            "stage": "fillet_50_n10000"
+          },
+          {
+            "name": "fillet_50_n5000 ran without a tool error",
+            "status": "pass",
+            "expected": 0,
+            "observed": 0,
+            "stage": "fillet_50_n10000"
+          },
+          {
+            "name": "fillet_50_n10000 ran without a tool error",
+            "status": "pass",
+            "expected": 0,
+            "observed": 0,
+            "stage": "fillet_50_n10000"
+          }
+        ],
+        "documents": {
+          "opened": 1,
+          "closed": 1,
+          "left_open": [],
+          "kept": false
+        }
+      }
+    }
   },
   "result_schema": {
     "schema": "acadmcp-perf-com/1",

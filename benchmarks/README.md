@@ -195,7 +195,7 @@ set) and the manifest names `EVALUATOR_VERSION` `v9.0`. v9 holds 49 tasks, v8's
 | `interrupted_save_recover` | durability | a writer that dies half way through `atomic_write_dxf` (`os._exit` in a child, no `finally`) leaves the file byte for byte as it was and the next server reports `rolled_back`. In-call twin: a server parked at `save.before_replace` (tmp written, fsynced, verified) is killed; the next start reports `finished` and the file's sha is the one the marker named |
 | `damaged_dxf_recover` | reliability | a 50-line DXF cut before its last ENDSEC, three handles repeating an earlier entity's and four not hex: `drawing_open(recover=True)` reports the three conflicts as `fixes`, 47 entities read, every handle unique, the source's sha unchanged by the open and by the refused save onto it; the plain open is refused `damaged_drawing` naming `recover=True` |
 | `bylayer_truth` | qa | 22 lines at lineweight `"Default"` and three at `"ByLayer"` through the real server; the oracle is the saved DXF read with ezdxf (22 at -3, the rest -1). `property_override` reports one grouped `lineweight_not_bylayer` issue with those 22 handles; after `drawing_refine` the saved DXF holds -1 on every line |
-| `space_context` | reliability | a drawing saved with Layout1 active (two entities on it) is opened and a circle created: it lands in model space and the sheet still holds its two entities in the saved file. Twin: a trim under a UCS rotated 30° about a moved origin keeps the WCS endpoints a world-UCS trim keeps. The live half is `scripts/smoke_space_com.py`, not yet run on a seat for 1.8.0 |
+| `space_context` | reliability | a drawing saved with Layout1 active (two entities on it) is opened and a circle created: it lands in model space and the sheet still holds its two entities in the saved file. Twin: a trim under a UCS rotated 30° about a moved origin keeps the WCS endpoints a world-UCS trim keeps. The live half is `scripts/smoke_space_com.py`, which passed 13 / 13 on AutoCAD 2026 for 1.8.0 ([`results/live/1.8.0/space.json`](results/live/1.8.0/space.json)) |
 
 `dimension_lie_detect`, `layer_cleanup_budget`, `call_count_dimension_part`,
 `undo_across_restart`, `atomic_batch_default`, `history_value_lookup`,
@@ -413,7 +413,7 @@ pr.disable()
 print(pstats.Stats(pr).total_calls)
 ```
 
-## Live COM performance lane (1.8-23) - written, not yet run
+## Live COM performance lane (1.8-23)
 
 `perf_com.py` measures the live engine against a v1.7.0 checkout on a running
 AutoCAD, never in CI. Each side runs in its own child process with its own
@@ -433,10 +433,17 @@ python -m benchmarks.perf_com --base <a v1.7.0 checkout>   # writes results/live
 python -m benchmarks.perf_com --pending   # the skeleton; no AutoCAD
 ```
 
-AutoCAD was not open when 1.8-23 was written, so
-[`results/live/perf_com.json`](results/live/perf_com.json) is the `--pending`
-skeleton: `status: "pending"`, the targets, every verdict `pass: null`. No live
-number is claimed. ADR 0001 (`docs/adr/0001-native-worker.md`) names a recorded
+[`results/live/perf_com.json`](results/live/perf_com.json) is the 1.8.0 run on
+AutoCAD 2026 (2026-11-05, current side `cc82532`, a v1.7.0 worktree as base),
+`status: "failed"`: three of the four targets are missed. `entity_batch_create`
+is 2.90× and `entity_delete_many` 3.78× faster than v1.7.0's 200 single calls
+(target 5×), and the single `entity_create_circle` median is 8.9 % lower
+(target 30 %). The fillet ratio is 55× (target at most 1.2×): its median at
+5,000 lines was 81 ms here and 6.0 s in a run an hour earlier, so that row is
+not stable on this seat (that earlier run's ratio was 1.19×; it was not kept
+because it named its v1.7.0 side "1.8.0", the bug `cc82532` fixes). v1.7.0
+overran `COM_CALL_TIMEOUT` once at 10,000 lines and failed 30 of its 50
+fillets there. ADR 0001 (`docs/adr/0001-native-worker.md`) names a recorded
 live `perf_com.json` as what would trigger its one-day worker spike.
 
 ## Token and call budgets (1.8.0)

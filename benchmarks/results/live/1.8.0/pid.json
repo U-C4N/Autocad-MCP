@@ -1,0 +1,466 @@
+{
+  "schema": "acadmcp-live-harness/1",
+  "smoke": "pid",
+  "status": "pass",
+  "exit_code": 0,
+  "reason": null,
+  "started_at": "2026-11-05T07:22:39+00:00",
+  "duration_s": 25.359,
+  "environment": {
+    "autocad": {
+      "name": "AutoCAD",
+      "version": "25.1s",
+      "build": "W.60.0.0 (UNICODE)",
+      "progid": "AutoCAD.Application"
+    },
+    "os": {
+      "platform": "Windows-11-10.0.26300-SP0",
+      "system": "Windows",
+      "release": "11",
+      "machine": "AMD64"
+    },
+    "python": {
+      "version": "3.12.16",
+      "implementation": "CPython"
+    },
+    "pywin32": "312",
+    "server": {
+      "version": "1.8.0",
+      "sha": "da2d7f6933a1cc153e381093a24165735ad22023",
+      "dirty": false
+    }
+  },
+  "summary": {
+    "checks": 14,
+    "passed": 14,
+    "failed": 0,
+    "errors": 0,
+    "rpc_retries": 0
+  },
+  "checks": [
+    {
+      "name": "every spec item placed",
+      "status": "pass",
+      "expected": [
+        "FCV-101",
+        "FIC-101",
+        "OP-1",
+        "P-101",
+        "V-201"
+      ],
+      "observed": [
+        "FCV-101",
+        "FIC-101",
+        "OP-1",
+        "P-101",
+        "V-201"
+      ],
+      "stage": "checks"
+    },
+    {
+      "name": "every line on a port",
+      "status": "pass",
+      "expected": 0,
+      "observed": 0,
+      "stage": "checks"
+    },
+    {
+      "name": "no block unclassified",
+      "status": "pass",
+      "expected": 0,
+      "observed": 0,
+      "stage": "checks"
+    },
+    {
+      "name": "every node from the catalogue or its XDATA",
+      "status": "pass",
+      "expected": ">= 0.95",
+      "observed": 1.0,
+      "stage": "checks"
+    },
+    {
+      "name": "nodes_by_kind as on the headless engine",
+      "status": "pass",
+      "expected": {
+        "connector": 1,
+        "equipment": 2,
+        "instrument": 1,
+        "valve": 1
+      },
+      "observed": {
+        "connector": 1,
+        "equipment": 2,
+        "instrument": 1,
+        "valve": 1
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "edges_by_class as on the headless engine",
+      "status": "pass",
+      "expected": {
+        "electric": 1,
+        "process_major": 3
+      },
+      "observed": {
+        "electric": 1,
+        "process_major": 3
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "the pid_* focuses found nothing",
+      "status": "pass",
+      "expected": 0,
+      "observed": 0,
+      "stage": "checks"
+    },
+    {
+      "name": "the pump carries ACADMCP_PID XDATA",
+      "status": "pass",
+      "expected": ">= 1",
+      "observed": 2,
+      "stage": "checks"
+    },
+    {
+      "name": "auto runs through the vessel between the ports (the fixture means something)",
+      "status": "pass",
+      "expected": [
+        "V-301"
+      ],
+      "observed": [
+        "V-301"
+      ],
+      "stage": "checks"
+    },
+    {
+      "name": "route='avoid' goes round it: no obstacle hit",
+      "status": "pass",
+      "expected": [],
+      "observed": [],
+      "stage": "checks"
+    },
+    {
+      "name": "no pid_line_through_symbol on the avoid line",
+      "status": "pass",
+      "expected": [
+        "105"
+      ],
+      "observed": [
+        "105"
+      ],
+      "stage": "checks"
+    },
+    {
+      "name": "pid_project read two files and the active document",
+      "status": "pass",
+      "expected": [
+        [
+          "P-002",
+          "file"
+        ],
+        [
+          "P-003",
+          "file"
+        ],
+        [
+          "current",
+          "active_document"
+        ]
+      ],
+      "observed": [
+        [
+          "P-002",
+          "file"
+        ],
+        [
+          "P-003",
+          "file"
+        ],
+        [
+          "current",
+          "active_document"
+        ]
+      ],
+      "stage": "checks"
+    },
+    {
+      "name": "off-page links across the live sheet and the files",
+      "status": "pass",
+      "expected": {
+        "L-17": [
+          "matched",
+          [
+            [
+              "P-002",
+              "59"
+            ],
+            [
+              "current",
+              "DA"
+            ]
+          ]
+        ],
+        "L-99": [
+          "orphan",
+          [
+            [
+              "P-003",
+              "59"
+            ]
+          ]
+        ]
+      },
+      "observed": {
+        "L-17": [
+          "matched",
+          [
+            [
+              "P-002",
+              "59"
+            ],
+            [
+              "current",
+              "DA"
+            ]
+          ]
+        ],
+        "L-99": [
+          "orphan",
+          [
+            [
+              "P-003",
+              "59"
+            ]
+          ]
+        ]
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "no cross-sheet duplicate tag",
+      "status": "pass",
+      "expected": [],
+      "observed": [],
+      "stage": "checks"
+    }
+  ],
+  "documents": {
+    "opened": 1,
+    "closed": 1,
+    "left_open": [],
+    "kept": false
+  },
+  "report": {
+    "handles": {
+      "P-101": "A3",
+      "V-201": "B3",
+      "FCV-101": "C3",
+      "FIC-101": "D0",
+      "OP-1": "DA"
+    },
+    "graph_stats": {
+      "nodes_by_kind": {
+        "connector": 1,
+        "equipment": 2,
+        "instrument": 1,
+        "valve": 1
+      },
+      "edges_by_class": {
+        "electric": 1,
+        "process_major": 3
+      },
+      "dangling": 0,
+      "unclassified": 0,
+      "confidence_min": 1.0,
+      "entities_scanned": 15
+    },
+    "reference_stats": {
+      "nodes_by_kind": {
+        "connector": 1,
+        "equipment": 2,
+        "instrument": 1,
+        "valve": 1
+      },
+      "edges_by_class": {
+        "electric": 1,
+        "process_major": 3
+      },
+      "dangling": 0,
+      "unclassified": 0,
+      "confidence_min": 1.0,
+      "entities_scanned": 15
+    },
+    "crossings_total": 0,
+    "critique": [],
+    "xdata_chunks": 2,
+    "project_files": {
+      "P-002": {
+        "path": "~\\AppData\\Local\\Temp\\acadmcp_pid_project_7r7wbaih\\P-002.dxf",
+        "handles": {
+          "P-201": "4E",
+          "IN17": "59"
+        }
+      },
+      "P-003": {
+        "path": "~\\AppData\\Local\\Temp\\acadmcp_pid_project_7r7wbaih\\P-003.dxf",
+        "handles": {
+          "P-301": "4E",
+          "OUT99": "59"
+        }
+      }
+    },
+    "project": {
+      "ok": true,
+      "action": "check",
+      "project": null,
+      "sheets": [
+        {
+          "sheet": "P-002",
+          "title": null,
+          "path": "~\\AppData\\Local\\Temp\\acadmcp_pid_project_7r7wbaih\\P-002.dxf",
+          "source": "file",
+          "sha256": "0112beaa6593df19e0776fdd380e83c2f575f4f291033e8b4451a96c878f9a73",
+          "nodes": 2,
+          "edges": 1,
+          "connectors": 1,
+          "confidence_min": 1.0,
+          "cached": false
+        },
+        {
+          "sheet": "P-003",
+          "title": null,
+          "path": "~\\AppData\\Local\\Temp\\acadmcp_pid_project_7r7wbaih\\P-003.dxf",
+          "source": "file",
+          "sha256": "34f8f3045ad704cfdf057eadc9a64868d3d96624dae55d1f7d1847275899284d",
+          "nodes": 2,
+          "edges": 1,
+          "connectors": 1,
+          "confidence_min": 1.0,
+          "cached": false
+        },
+        {
+          "sheet": "current",
+          "title": "Drawing11.dwg",
+          "path": null,
+          "source": "active_document",
+          "sha256": null,
+          "nodes": 5,
+          "edges": 4,
+          "connectors": 1,
+          "confidence_min": 1.0,
+          "cached": false,
+          "document_id": "8d7cacaa2c914d0b9366c7687cb1efc0",
+          "revision": 53
+        }
+      ],
+      "backend": "com",
+      "links": [
+        {
+          "link": "L-17",
+          "status": "matched",
+          "connectors": [
+            {
+              "sheet": "P-002",
+              "handle": "59",
+              "direction": "in",
+              "tag": "FROM P&ID-001",
+              "line_number": "1",
+              "space": "Model"
+            },
+            {
+              "sheet": "current",
+              "handle": "DA",
+              "direction": "out",
+              "tag": "TO P&ID-002",
+              "line_number": "3",
+              "space": "Model"
+            }
+          ]
+        },
+        {
+          "link": "L-99",
+          "status": "orphan",
+          "connectors": [
+            {
+              "sheet": "P-003",
+              "handle": "59",
+              "direction": "out",
+              "tag": "TO P&ID-009",
+              "line_number": "1",
+              "space": "Model"
+            }
+          ]
+        }
+      ],
+      "duplicate_tags": [],
+      "line_continuity": [
+        {
+          "link": "L-17",
+          "status": "mismatch",
+          "out": {
+            "sheet": "current",
+            "handle": "DA",
+            "line_number": "3"
+          },
+          "in": {
+            "sheet": "P-002",
+            "handle": "59",
+            "line_number": "1"
+          }
+        }
+      ],
+      "summary": {
+        "links": 2,
+        "matched": 1,
+        "orphan": 1,
+        "direction_mismatch": 0,
+        "duplicate": 0,
+        "duplicate_tags": 0,
+        "line_mismatch": 1,
+        "line_unknown": 0
+      },
+      "clean": false
+    },
+    "avoid": {
+      "auto_handle": "105",
+      "auto_hits": [
+        "V-301"
+      ],
+      "avoid_hits": [],
+      "avoid_vertices": [
+        [
+          0.0,
+          -214.0
+        ],
+        [
+          0.0,
+          -209.0
+        ],
+        [
+          65.0,
+          -209.0
+        ],
+        [
+          65.0,
+          -225.0
+        ],
+        [
+          142.0,
+          -225.0
+        ],
+        [
+          142.0,
+          -192.0
+        ],
+        [
+          147.0,
+          -192.0
+        ]
+      ],
+      "through": [
+        "105"
+      ]
+    }
+  }
+}

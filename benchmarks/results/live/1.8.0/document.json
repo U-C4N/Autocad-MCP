@@ -1,0 +1,430 @@
+{
+  "schema": "acadmcp-live-harness/1",
+  "smoke": "document",
+  "status": "pass",
+  "exit_code": 0,
+  "reason": null,
+  "started_at": "2026-11-05T07:21:39+00:00",
+  "duration_s": 4.89,
+  "environment": {
+    "autocad": {
+      "name": "AutoCAD",
+      "version": "25.1s",
+      "build": "W.60.0.0 (UNICODE)",
+      "progid": "AutoCAD.Application"
+    },
+    "os": {
+      "platform": "Windows-11-10.0.26300-SP0",
+      "system": "Windows",
+      "release": "11",
+      "machine": "AMD64"
+    },
+    "python": {
+      "version": "3.12.16",
+      "implementation": "CPython"
+    },
+    "pywin32": "312",
+    "server": {
+      "version": "1.8.0",
+      "sha": "da2d7f6933a1cc153e381093a24165735ad22023",
+      "dirty": false
+    }
+  },
+  "summary": {
+    "checks": 22,
+    "passed": 22,
+    "failed": 0,
+    "errors": 0,
+    "rpc_retries": 0
+  },
+  "checks": [
+    {
+      "name": "an unsaved document's FullName is ''",
+      "status": "pass",
+      "expected": {
+        "Drawing2.dwg": "",
+        "Drawing3.dwg": ""
+      },
+      "observed": {
+        "Drawing2.dwg": "",
+        "Drawing3.dwg": ""
+      },
+      "stage": "unsaved documents"
+    },
+    {
+      "name": "its identity reports no path",
+      "status": "pass",
+      "expected": null,
+      "observed": [
+        null,
+        null
+      ],
+      "stage": "unsaved documents"
+    },
+    {
+      "name": "two unsaved documents are two keys and two ids",
+      "status": "pass",
+      "expected": "distinct",
+      "observed": {
+        "names": [
+          "Drawing2.dwg",
+          "Drawing3.dwg"
+        ],
+        "ids": [
+          "0ee6d1eff9d94a64944d5aa8a42cb09c",
+          "2544c94d8f424a55a73694b9bfa6437a"
+        ]
+      },
+      "stage": "unsaved documents"
+    },
+    {
+      "name": "a write in B moves B's revision",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "document_id": "2544c94d8f424a55a73694b9bfa6437a",
+        "revision": 1,
+        "name": "Drawing3.dwg",
+        "path": null,
+        "backend": "com"
+      },
+      "stage": "the guard"
+    },
+    {
+      "name": "the next write is refused as active_document_changed",
+      "status": "pass",
+      "expected": "active_document_changed",
+      "observed": {
+        "ok": false,
+        "kind": "active_document_changed",
+        "error": "AutoCAD's active document changed: this session is bound to 'Drawing3.dwg' but 'Drawing2.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing3.dwg', or call document_activate('Drawing2.dwg') to bind this session to it.",
+        "bound": {
+          "document_id": "2544c94d8f424a55a73694b9bfa6437a",
+          "name": "Drawing3.dwg",
+          "path": null
+        },
+        "active": {
+          "document_id": "0ee6d1eff9d94a64944d5aa8a42cb09c",
+          "name": "Drawing2.dwg",
+          "path": null
+        },
+        "application_changed": false
+      },
+      "stage": "the guard"
+    },
+    {
+      "name": "the refusal names B as bound and A, under its known id, as active",
+      "status": "pass",
+      "expected": {
+        "bound": "Drawing3.dwg",
+        "active": "Drawing2.dwg",
+        "application_changed": false
+      },
+      "observed": {
+        "ok": false,
+        "kind": "active_document_changed",
+        "error": "AutoCAD's active document changed: this session is bound to 'Drawing3.dwg' but 'Drawing2.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing3.dwg', or call document_activate('Drawing2.dwg') to bind this session to it.",
+        "bound": {
+          "document_id": "2544c94d8f424a55a73694b9bfa6437a",
+          "name": "Drawing3.dwg",
+          "path": null
+        },
+        "active": {
+          "document_id": "0ee6d1eff9d94a64944d5aa8a42cb09c",
+          "name": "Drawing2.dwg",
+          "path": null
+        },
+        "application_changed": false
+      },
+      "stage": "the guard"
+    },
+    {
+      "name": "nothing landed in either document",
+      "status": "pass",
+      "expected": {
+        "Drawing2.dwg": 0,
+        "Drawing3.dwg": 1
+      },
+      "observed": {
+        "Drawing2.dwg": 0,
+        "Drawing3.dwg": 1
+      },
+      "stage": "the guard"
+    },
+    {
+      "name": "the refused write moved no revision",
+      "status": "pass",
+      "expected": {
+        "document_id": "2544c94d8f424a55a73694b9bfa6437a",
+        "revision": 1,
+        "name": "Drawing3.dwg",
+        "path": null,
+        "backend": "com"
+      },
+      "observed": {
+        "document_id": "2544c94d8f424a55a73694b9bfa6437a",
+        "revision": 1,
+        "name": "Drawing3.dwg",
+        "path": null,
+        "backend": "com"
+      },
+      "stage": "the guard"
+    },
+    {
+      "name": "view_screenshot is refused too",
+      "status": "pass",
+      "expected": "active_document_changed",
+      "observed": "active_document_changed",
+      "stage": "the guard"
+    },
+    {
+      "name": "system_status reports the switch",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "active_document": "Drawing2.dwg",
+        "bound_document": {
+          "name": "Drawing3.dwg",
+          "path": null
+        },
+        "active_document_changed": true
+      },
+      "stage": "the guard"
+    },
+    {
+      "name": "_reactivate_bound_sync makes the bound document active again",
+      "status": "pass",
+      "expected": [
+        true,
+        "Drawing3.dwg"
+      ],
+      "observed": [
+        true,
+        "Drawing3.dwg"
+      ],
+      "stage": "reactivate the bound document"
+    },
+    {
+      "name": "it answers False once it already is",
+      "status": "pass",
+      "expected": null,
+      "observed": false,
+      "stage": "reactivate the bound document"
+    },
+    {
+      "name": "the next guarded call proceeds",
+      "status": "pass",
+      "expected": "0",
+      "observed": "0",
+      "stage": "reactivate the bound document"
+    },
+    {
+      "name": "document_activate binds A under its known id",
+      "status": "pass",
+      "expected": "0ee6d1eff9d94a64944d5aa8a42cb09c",
+      "observed": {
+        "document_id": "0ee6d1eff9d94a64944d5aa8a42cb09c",
+        "revision": 0,
+        "name": "Drawing2.dwg",
+        "path": null,
+        "backend": "com"
+      },
+      "stage": "document_activate"
+    },
+    {
+      "name": "a write in A moves A's revision by one",
+      "status": "pass",
+      "expected": null,
+      "observed": 1,
+      "stage": "document_activate"
+    },
+    {
+      "name": "B is bound again under its own id and revision",
+      "status": "pass",
+      "expected": {
+        "document_id": "2544c94d8f424a55a73694b9bfa6437a",
+        "revision": 1,
+        "name": "Drawing3.dwg",
+        "path": null,
+        "backend": "com"
+      },
+      "observed": {
+        "document_id": "2544c94d8f424a55a73694b9bfa6437a",
+        "revision": 1,
+        "name": "Drawing3.dwg",
+        "path": null,
+        "backend": "com"
+      },
+      "stage": "document_activate"
+    },
+    {
+      "name": "Application.HWND is an int, the same on a second GetActiveObject proxy",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "hwnd_type": "int",
+        "same_hwnd": true,
+        "same_identity": true
+      },
+      "stage": "application identity"
+    },
+    {
+      "name": "a re-attached session keeps the document's id and revision",
+      "status": "pass",
+      "expected": {
+        "document_id": "2544c94d8f424a55a73694b9bfa6437a",
+        "revision": 2
+      },
+      "observed": {
+        "document_id": "2544c94d8f424a55a73694b9bfa6437a",
+        "revision": 2,
+        "name": "Drawing3.dwg",
+        "path": null,
+        "backend": "com"
+      },
+      "stage": "application identity"
+    },
+    {
+      "name": "the snapshot read the copy",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "source": "live:copy.dwg",
+        "records": 2
+      },
+      "stage": "dwg snapshot hand-back"
+    },
+    {
+      "name": "the read-only copy is closed and the bound document is active again",
+      "status": "pass",
+      "expected": {
+        "documents": 2,
+        "active": "bound.dwg"
+      },
+      "observed": {
+        "documents": 2,
+        "active": "bound.dwg"
+      },
+      "stage": "dwg snapshot hand-back"
+    },
+    {
+      "name": "the next call is not refused",
+      "status": "pass",
+      "expected": null,
+      "observed": "0",
+      "stage": "dwg snapshot hand-back"
+    },
+    {
+      "name": "view_screenshot of the bound document answers",
+      "status": "pass",
+      "expected": null,
+      "observed": 60231,
+      "stage": "dwg snapshot hand-back"
+    }
+  ],
+  "documents": {
+    "opened": 2,
+    "closed": 2,
+    "left_open": [],
+    "kept": false
+  },
+  "report": {
+    "unsaved": {
+      "a": "Drawing2.dwg",
+      "b": "Drawing3.dwg",
+      "id_a": {
+        "document_id": "0ee6d1eff9d94a64944d5aa8a42cb09c",
+        "revision": 0,
+        "name": "Drawing2.dwg",
+        "path": null,
+        "backend": "com"
+      },
+      "id_b": {
+        "document_id": "2544c94d8f424a55a73694b9bfa6437a",
+        "revision": 0,
+        "name": "Drawing3.dwg",
+        "path": null,
+        "backend": "com"
+      }
+    },
+    "guard": {
+      "bound": {
+        "document_id": "2544c94d8f424a55a73694b9bfa6437a",
+        "revision": 1,
+        "name": "Drawing3.dwg",
+        "path": null,
+        "backend": "com"
+      },
+      "refusal": {
+        "ok": false,
+        "kind": "active_document_changed",
+        "error": "AutoCAD's active document changed: this session is bound to 'Drawing3.dwg' but 'Drawing2.dwg' is active, so nothing was written. Switch AutoCAD back to 'Drawing3.dwg', or call document_activate('Drawing2.dwg') to bind this session to it.",
+        "bound": {
+          "document_id": "2544c94d8f424a55a73694b9bfa6437a",
+          "name": "Drawing3.dwg",
+          "path": null
+        },
+        "active": {
+          "document_id": "0ee6d1eff9d94a64944d5aa8a42cb09c",
+          "name": "Drawing2.dwg",
+          "path": null
+        },
+        "application_changed": false
+      },
+      "counts": {
+        "Drawing2.dwg": 0,
+        "Drawing3.dwg": 1
+      }
+    },
+    "reactivate": {
+      "first": true,
+      "again": false,
+      "active": [
+        "Drawing3.dwg",
+        ""
+      ]
+    },
+    "activate": {
+      "a": {
+        "document_id": "0ee6d1eff9d94a64944d5aa8a42cb09c",
+        "revision": 0,
+        "name": "Drawing2.dwg",
+        "path": null,
+        "backend": "com"
+      },
+      "b": {
+        "document_id": "2544c94d8f424a55a73694b9bfa6437a",
+        "revision": 1,
+        "name": "Drawing3.dwg",
+        "path": null,
+        "backend": "com"
+      }
+    },
+    "application": {
+      "probe": {
+        "hwnd_type": "int",
+        "same_hwnd": true,
+        "same_identity": true
+      },
+      "before": {
+        "document_id": "2544c94d8f424a55a73694b9bfa6437a",
+        "revision": 1,
+        "name": "Drawing3.dwg",
+        "path": null,
+        "backend": "com"
+      },
+      "after": {
+        "document_id": "2544c94d8f424a55a73694b9bfa6437a",
+        "revision": 2,
+        "name": "Drawing3.dwg",
+        "path": null,
+        "backend": "com"
+      }
+    },
+    "snapshot": {
+      "source": "live:copy.dwg",
+      "records": 2,
+      "active": "bound.dwg"
+    }
+  }
+}

@@ -292,37 +292,74 @@ shown - while every listing built the three synthetic tools from scratch
 
 ### Live evidence
 
-No smoke has a 1.8.0 pass row today: this release's live matrix,
-`benchmarks/results/live/1.8.0/matrix.json`, is written by
-`scripts/live/run_all.py` on the seat run, and the coordinator fills this
-section after it. Until then no document pins a claim to the release (`(AutoCAD
-2026, 1.8.0)`, which `scripts/check_doc_numbers.py` would refuse with no
-matrix), and the existing claims keep the result files that back them.
+**The matrix.** `python scripts/live/run_all.py` ran every smoke once, each
+in its own child process, on AutoCAD 2026 (`Application.Version` 25.1s, build
+W.60.0.0) on 2026-11-05 from 07:20 to 07:27 UTC, at `da2d7f6` with a clean
+tree (`server.dirty` false): **14 pass, 0 fail, 0 `environment_blocked`, no
+COM disconnection**, no RPC retry recorded by any smoke
+(`benchmarks/results/live/1.8.0/matrix.json`, one result file per smoke
+beside it). The first run of the day was the release run; nothing had to be
+fixed for it.
 
-**Ran.** `scripts/smoke_accore.py` against the installed
-`C:\Program Files\Autodesk\AutoCAD 2026\accoreconsole.exe`, with no AutoCAD
-window open: 8 / 8 checks in 3.2 s on 2026-11-04 at `4e98c10` (`dirty`
-false), committed as `benchmarks/results/live/accore.json` (the file records
-server 1.7.0: the version had not moved yet). It converts the bundled
-`templates/iso_a3_mech.dwt` under a `.dwg` name (no DWG can be produced
-headlessly without ODA) and compares it with `templates/iso_a3_mech.dxf`;
-that template's model space is empty, so the entity gate covers its 34
-paper-space entities and the block gate is trivially equal. The ODA route ran
-only under monkeypatched tests (ODA is not installed here).
+| Smoke | Checks | Duration |
+|---|---|---|
+| `arch` | 6 / 6 | 57.3 s |
+| `document` | 22 / 22 | 5.3 s |
+| `durability` | 6 / 6 | 4.1 s |
+| `edit` | 10 / 10 | 4.7 s |
+| `lisp` | 9 / 9 | 6.8 s |
+| `mech` | 13 / 13 | 31.9 s |
+| `operator_edits` | 16 / 16 | 8.0 s |
+| `pid` | 14 / 14 | 25.8 s |
+| `render` | 4 / 4 | 4.2 s |
+| `settings` | 54 / 54 | 22.9 s |
+| `space` | 13 / 13 | 96.2 s |
+| `understand` | 7 / 7 | 75.8 s |
+| `verify` | 27 / 27 | 73.1 s |
+| `accore` | 8 / 8 | 4.0 s |
 
-**Written, not run** (AutoCAD 2026 was not running for any of them):
-`scripts/smoke_space_com.py`, `scripts/smoke_edit_com.py` and
-`scripts/smoke_render_com.py` (W1) with spikes S4 and S5;
-`scripts/smoke_settings_com.py`'s `set edits`, `dimension truth` and
-`dimension auto` stages, `scripts/smoke_lisp_com.py` and
-`scripts/smoke_durability_com.py` (W2); the revise stage and the B40 stage of
-`scripts/smoke_mech_com.py`, the `avoid` and `project` stages of
-`scripts/smoke_pid_com.py` (the active document plus two DXF sheets; the live
-`.dwg` sheet route is covered by a fake-COM test only), and
-`benchmarks/perf_com.py` (W3). The 1.8-23 gate also needs
-`scripts/smoke_operator_edits_com.py` passing live and `view_screenshot`
-showing a new entity after `Update()`. Every COM path of 1.8.0 not named in
-`accore.json` is covered by fake-COM tests only.
+This includes everything 1.8.0 had written and not run: the five new smokes
+(`space`, `edit`, `render`, `lisp`, `durability`), `operator_edits`, the
+`set edits`, `dimension truth` and `dimension auto` stages of the settings
+smoke, the revise stage of the mech smoke (in-place handles kept, a hand-moved
+tagged line refused, `overwrite=True` putting it back) and the `avoid` and
+`project` stages of the pid smoke (the active document plus two DXF sheets).
+The two failures of the 2026-11-04 run are gone: the mech smoke drew its title
+block with no `RPC_E_CALL_REJECTED` (the message filter), and the accore
+smoke's staging folder was empty after the console. Spikes S4 and S5 were
+measured on 2026-11-04 (*Live-seat fixes* above).
+
+**`benchmarks/perf_com.py`** ran against a v1.7.0 worktree on the same seat
+(2026-11-05, 08:41 to 09:16 UTC; the current side at `cc82532`, clean). Its
+targets were fixed before any run, and **three of four are missed**
+(`benchmarks/results/live/perf_com.json`, `status: "failed"`):
+
+| Target | v1.7.0 | 1.8.0 | Met |
+|---|---|---|---|
+| `entity_batch_create(200)` >= 5x 200 single creates | 8,838 ms (200 calls) | 3,047 ms: 2.90x | no |
+| `entity_delete_many(200)` >= 5x 200 single deletes | 3,113 ms (200 calls) | 824 ms: 3.78x | no |
+| single `entity_create_circle` median >= 30 % lower | 41.0 ms | 37.3 ms: 8.9 % lower | no |
+| `entity_fillet` at 10,000 lines <= 1.2x at 5,000 | 17.2 s / (30 of 50 failed) | 0.081 s / 4.46 s: 55x | no |
+
+The fillet row is not stable on this seat: the median job's work inside
+AutoCAD was 64 ms at 5,000 lines in this run and 5,978 ms in a first run of
+`da2d7f6` an hour earlier (no error in either), whose verdicts were 3.28x,
+1.74x, 7.3 % and 1.19x (the fillet target met). That first run's file named
+its v1.7.0 side "1.8.0", the bug `cc82532` fixes, so it was not committed.
+Against v1.7.0, a 1.8.0 fillet is 4x to 200x faster in both runs (v1.7.0 17 s
+to 24 s at 5,000 lines); the N-independence the target names is not shown.
+At 10,000 lines v1.7.0 overran `COM_CALL_TIMEOUT` once and then failed its
+next 30 fillets with `RPC_E_WRONG_THREAD`, and its document could not be
+closed until AutoCAD was idle again (it was closed by hand, unsaved). The
+1.8.0 side made no tool error in either run. ADR 0001's worker spike is
+decided on these numbers, not here.
+
+**Still not run.** The B40 stage of the mech smoke ran but measured nothing:
+all eight feature tables are empty, so each was skipped. The live `.dwg`
+sheet route of `pid_project` is covered by a fake-COM test only.
+`view_screenshot` showing a new entity after `Update()` (1.8-23) has no
+smoke check. UNDO steps per `mech_part_draw`, nested `StartUndoMark` and
+HATCH loop deletion (spike S4) stay unmeasured.
 
 ### Not in 1.8.0
 

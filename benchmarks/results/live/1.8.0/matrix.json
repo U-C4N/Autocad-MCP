@@ -1,0 +1,391 @@
+{
+  "schema": "acadmcp-live-matrix/1",
+  "release": "1.8.0",
+  "started_at": "2026-11-05T07:20:41+00:00",
+  "ended_at": "2026-11-05T07:27:41+00:00",
+  "server": {
+    "version": "1.8.0",
+    "sha": "da2d7f6933a1cc153e381093a24165735ad22023",
+    "dirty": false
+  },
+  "seat": {
+    "name": "AutoCAD",
+    "version": "25.1s",
+    "build": "W.60.0.0 (UNICODE)",
+    "progid": "AutoCAD.Application",
+    "year": 2026
+  },
+  "summary": {
+    "pass": 14,
+    "fail": 0,
+    "environment_blocked": 0
+  },
+  "rows": [
+    {
+      "smoke": "arch",
+      "script": "scripts/smoke_arch_com.py",
+      "status": "pass",
+      "harness_status": "pass",
+      "exit_code": 0,
+      "started_at": "2026-11-05T07:20:41+00:00",
+      "ended_at": "2026-11-05T07:21:39+00:00",
+      "duration_s": 57.313,
+      "seat": {
+        "name": "AutoCAD",
+        "version": "25.1s",
+        "build": "W.60.0.0 (UNICODE)",
+        "progid": "AutoCAD.Application",
+        "year": 2026
+      },
+      "result": "arch.json",
+      "summary": {
+        "checks": 6,
+        "passed": 6,
+        "failed": 0,
+        "errors": 0,
+        "rpc_retries": 0
+      },
+      "reason": null
+    },
+    {
+      "smoke": "document",
+      "script": "scripts/smoke_document_com.py",
+      "status": "pass",
+      "harness_status": "pass",
+      "exit_code": 0,
+      "started_at": "2026-11-05T07:21:39+00:00",
+      "ended_at": "2026-11-05T07:21:44+00:00",
+      "duration_s": 5.343,
+      "seat": {
+        "name": "AutoCAD",
+        "version": "25.1s",
+        "build": "W.60.0.0 (UNICODE)",
+        "progid": "AutoCAD.Application",
+        "year": 2026
+      },
+      "result": "document.json",
+      "summary": {
+        "checks": 22,
+        "passed": 22,
+        "failed": 0,
+        "errors": 0,
+        "rpc_retries": 0
+      },
+      "reason": null
+    },
+    {
+      "smoke": "durability",
+      "script": "scripts/smoke_durability_com.py",
+      "status": "pass",
+      "harness_status": "pass",
+      "exit_code": 0,
+      "started_at": "2026-11-05T07:21:44+00:00",
+      "ended_at": "2026-11-05T07:21:48+00:00",
+      "duration_s": 4.063,
+      "seat": {
+        "name": "AutoCAD",
+        "version": "25.1s",
+        "build": "W.60.0.0 (UNICODE)",
+        "progid": "AutoCAD.Application",
+        "year": 2026
+      },
+      "result": "durability.json",
+      "summary": {
+        "checks": 6,
+        "passed": 6,
+        "failed": 0,
+        "errors": 0,
+        "rpc_retries": 0
+      },
+      "reason": null
+    },
+    {
+      "smoke": "edit",
+      "script": "scripts/smoke_edit_com.py",
+      "status": "pass",
+      "harness_status": "pass",
+      "exit_code": 0,
+      "started_at": "2026-11-05T07:21:48+00:00",
+      "ended_at": "2026-11-05T07:21:53+00:00",
+      "duration_s": 4.703,
+      "seat": {
+        "name": "AutoCAD",
+        "version": "25.1s",
+        "build": "W.60.0.0 (UNICODE)",
+        "progid": "AutoCAD.Application",
+        "year": 2026
+      },
+      "result": "edit.json",
+      "summary": {
+        "checks": 10,
+        "passed": 10,
+        "failed": 0,
+        "errors": 0,
+        "rpc_retries": 0
+      },
+      "reason": null
+    },
+    {
+      "smoke": "lisp",
+      "script": "scripts/smoke_lisp_com.py",
+      "status": "pass",
+      "harness_status": "pass",
+      "exit_code": 0,
+      "started_at": "2026-11-05T07:21:53+00:00",
+      "ended_at": "2026-11-05T07:21:59+00:00",
+      "duration_s": 6.766,
+      "seat": {
+        "name": "AutoCAD",
+        "version": "25.1s",
+        "build": "W.60.0.0 (UNICODE)",
+        "progid": "AutoCAD.Application",
+        "year": 2026
+      },
+      "result": "lisp.json",
+      "summary": {
+        "checks": 9,
+        "passed": 9,
+        "failed": 0,
+        "errors": 0,
+        "rpc_retries": 0
+      },
+      "reason": null
+    },
+    {
+      "smoke": "mech",
+      "script": "scripts/smoke_mech_com.py",
+      "status": "pass",
+      "harness_status": "pass",
+      "exit_code": 0,
+      "started_at": "2026-11-05T07:21:59+00:00",
+      "ended_at": "2026-11-05T07:22:31+00:00",
+      "duration_s": 31.875,
+      "seat": {
+        "name": "AutoCAD",
+        "version": "25.1s",
+        "build": "W.60.0.0 (UNICODE)",
+        "progid": "AutoCAD.Application",
+        "year": 2026
+      },
+      "result": "mech.json",
+      "summary": {
+        "checks": 13,
+        "passed": 13,
+        "failed": 0,
+        "errors": 0,
+        "rpc_retries": 0
+      },
+      "reason": null
+    },
+    {
+      "smoke": "operator_edits",
+      "script": "scripts/smoke_operator_edits_com.py",
+      "status": "pass",
+      "harness_status": "pass",
+      "exit_code": 0,
+      "started_at": "2026-11-05T07:22:31+00:00",
+      "ended_at": "2026-11-05T07:22:39+00:00",
+      "duration_s": 7.953,
+      "seat": {
+        "name": "AutoCAD",
+        "version": "25.1s",
+        "build": "W.60.0.0 (UNICODE)",
+        "progid": "AutoCAD.Application",
+        "year": 2026
+      },
+      "result": "operator_edits.json",
+      "summary": {
+        "checks": 16,
+        "passed": 16,
+        "failed": 0,
+        "errors": 0,
+        "rpc_retries": 0
+      },
+      "reason": null
+    },
+    {
+      "smoke": "pid",
+      "script": "scripts/smoke_pid_com.py",
+      "status": "pass",
+      "harness_status": "pass",
+      "exit_code": 0,
+      "started_at": "2026-11-05T07:22:39+00:00",
+      "ended_at": "2026-11-05T07:23:05+00:00",
+      "duration_s": 25.797,
+      "seat": {
+        "name": "AutoCAD",
+        "version": "25.1s",
+        "build": "W.60.0.0 (UNICODE)",
+        "progid": "AutoCAD.Application",
+        "year": 2026
+      },
+      "result": "pid.json",
+      "summary": {
+        "checks": 14,
+        "passed": 14,
+        "failed": 0,
+        "errors": 0,
+        "rpc_retries": 0
+      },
+      "reason": null
+    },
+    {
+      "smoke": "render",
+      "script": "scripts/smoke_render_com.py",
+      "status": "pass",
+      "harness_status": "pass",
+      "exit_code": 0,
+      "started_at": "2026-11-05T07:23:05+00:00",
+      "ended_at": "2026-11-05T07:23:09+00:00",
+      "duration_s": 4.171,
+      "seat": {
+        "name": "AutoCAD",
+        "version": "25.1s",
+        "build": "W.60.0.0 (UNICODE)",
+        "progid": "AutoCAD.Application",
+        "year": 2026
+      },
+      "result": "render.json",
+      "summary": {
+        "checks": 4,
+        "passed": 4,
+        "failed": 0,
+        "errors": 0,
+        "rpc_retries": 0
+      },
+      "reason": null
+    },
+    {
+      "smoke": "settings",
+      "script": "scripts/smoke_settings_com.py",
+      "status": "pass",
+      "harness_status": "pass",
+      "exit_code": 0,
+      "started_at": "2026-11-05T07:23:09+00:00",
+      "ended_at": "2026-11-05T07:23:32+00:00",
+      "duration_s": 22.938,
+      "seat": {
+        "name": "AutoCAD",
+        "version": "25.1s",
+        "build": "W.60.0.0 (UNICODE)",
+        "progid": "AutoCAD.Application",
+        "year": 2026
+      },
+      "result": "settings.json",
+      "summary": {
+        "checks": 54,
+        "passed": 54,
+        "failed": 0,
+        "errors": 0,
+        "rpc_retries": 0
+      },
+      "reason": null
+    },
+    {
+      "smoke": "space",
+      "script": "scripts/smoke_space_com.py",
+      "status": "pass",
+      "harness_status": "pass",
+      "exit_code": 0,
+      "started_at": "2026-11-05T07:23:32+00:00",
+      "ended_at": "2026-11-05T07:25:08+00:00",
+      "duration_s": 96.203,
+      "seat": {
+        "name": "AutoCAD",
+        "version": "25.1s",
+        "build": "W.60.0.0 (UNICODE)",
+        "progid": "AutoCAD.Application",
+        "year": 2026
+      },
+      "result": "space.json",
+      "summary": {
+        "checks": 13,
+        "passed": 13,
+        "failed": 0,
+        "errors": 0,
+        "rpc_retries": 0
+      },
+      "reason": null
+    },
+    {
+      "smoke": "understand",
+      "script": "scripts/smoke_understand_com.py",
+      "status": "pass",
+      "harness_status": "pass",
+      "exit_code": 0,
+      "started_at": "2026-11-05T07:25:08+00:00",
+      "ended_at": "2026-11-05T07:26:24+00:00",
+      "duration_s": 75.813,
+      "seat": {
+        "name": "AutoCAD",
+        "version": "25.1s",
+        "build": "W.60.0.0 (UNICODE)",
+        "progid": "AutoCAD.Application",
+        "year": 2026
+      },
+      "result": "understand.json",
+      "summary": {
+        "checks": 7,
+        "passed": 7,
+        "failed": 0,
+        "errors": 0,
+        "rpc_retries": 0
+      },
+      "reason": null
+    },
+    {
+      "smoke": "verify",
+      "script": "scripts/smoke_verify_com.py",
+      "status": "pass",
+      "harness_status": "pass",
+      "exit_code": 0,
+      "started_at": "2026-11-05T07:26:24+00:00",
+      "ended_at": "2026-11-05T07:27:37+00:00",
+      "duration_s": 73.125,
+      "seat": {
+        "name": "AutoCAD",
+        "version": "25.1s",
+        "build": "W.60.0.0 (UNICODE)",
+        "progid": "AutoCAD.Application",
+        "year": 2026
+      },
+      "result": "verify.json",
+      "summary": {
+        "checks": 27,
+        "passed": 27,
+        "failed": 0,
+        "errors": 0,
+        "rpc_retries": 0
+      },
+      "reason": null
+    },
+    {
+      "smoke": "accore",
+      "script": "scripts/smoke_accore.py",
+      "status": "pass",
+      "harness_status": "pass",
+      "exit_code": 0,
+      "started_at": "2026-11-05T07:27:37+00:00",
+      "ended_at": "2026-11-05T07:27:41+00:00",
+      "duration_s": 4.0,
+      "seat": {
+        "name": "AutoCAD Core Console",
+        "version": "W.60.0.0 (UNICODE)",
+        "build": null,
+        "progid": null,
+        "path": "C:\\Program Files\\Autodesk\\AutoCAD 2026\\accoreconsole.exe",
+        "year": 2026
+      },
+      "result": "accore.json",
+      "summary": {
+        "checks": 8,
+        "passed": 8,
+        "failed": 0,
+        "errors": 0,
+        "rpc_retries": 0
+      },
+      "reason": null
+    }
+  ],
+  "disconnects": []
+}

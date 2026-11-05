@@ -1,0 +1,344 @@
+{
+  "schema": "acadmcp-live-harness/1",
+  "smoke": "space",
+  "status": "pass",
+  "exit_code": 0,
+  "reason": null,
+  "started_at": "2026-11-05T07:23:32+00:00",
+  "duration_s": 95.735,
+  "environment": {
+    "autocad": {
+      "name": "AutoCAD",
+      "version": "25.1s",
+      "build": "W.60.0.0 (UNICODE)",
+      "progid": "AutoCAD.Application"
+    },
+    "os": {
+      "platform": "Windows-11-10.0.26300-SP0",
+      "system": "Windows",
+      "release": "11",
+      "machine": "AMD64"
+    },
+    "python": {
+      "version": "3.12.16",
+      "implementation": "CPython"
+    },
+    "pywin32": "312",
+    "server": {
+      "version": "1.8.0",
+      "sha": "da2d7f6933a1cc153e381093a24165735ad22023",
+      "dirty": false
+    }
+  },
+  "summary": {
+    "checks": 13,
+    "passed": 13,
+    "failed": 0,
+    "errors": 0,
+    "rpc_retries": 0
+  },
+  "checks": [
+    {
+      "name": "the operator's tab was Layout1",
+      "status": "pass",
+      "expected": null,
+      "observed": "Layout1",
+      "stage": "Layout1 active"
+    },
+    {
+      "name": "no paper layout's Block.Count moved",
+      "status": "pass",
+      "expected": {
+        "Layout1": 2,
+        "Layout2": 0
+      },
+      "observed": {
+        "Layout1": 2,
+        "Layout2": 0
+      },
+      "stage": "Layout1 active"
+    },
+    {
+      "name": "every new entity is owned by ModelSpace",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "89": true,
+        "8A": true,
+        "8B": true,
+        "8C": true,
+        "8D": true,
+        "8E": true
+      },
+      "stage": "Layout1 active"
+    },
+    {
+      "name": "the trim cut the model-space line at the cutter (half of 100 is left)",
+      "status": "pass",
+      "expected": 50.0,
+      "observed": 50.0,
+      "stage": "Layout1 active"
+    },
+    {
+      "name": "the fillet drew an ARC",
+      "status": "pass",
+      "expected": null,
+      "observed": "ARC",
+      "stage": "Layout1 active"
+    },
+    {
+      "name": "Layout1 is still the operator's tab",
+      "status": "pass",
+      "expected": null,
+      "observed": "Layout1",
+      "stage": "Layout1 active"
+    },
+    {
+      "name": "a raw command on the operator's Layout1 is reported there, with the warning",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "tab": "Layout1",
+        "result": {
+          "ok": true,
+          "command": "_CIRCLE 200,0 3\n",
+          "completed": true,
+          "created": [
+            {
+              "handle": "91",
+              "type": "CIRCLE",
+              "space": "Layout1"
+            }
+          ],
+          "created_count": 1,
+          "last_prompt": "Specify radius of circle or [Diameter]: 3",
+          "target_space": "Model",
+          "warning": "created_outside_target_space",
+          "outside_target": [
+            "91"
+          ]
+        }
+      },
+      "stage": "raw command"
+    },
+    {
+      "name": "a completed raw command on the Model tab reports its circle in Model",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "ok": true,
+        "command": "_CIRCLE 200,0 3\n",
+        "completed": true,
+        "created": [
+          {
+            "handle": "92",
+            "type": "CIRCLE",
+            "space": "Model"
+          }
+        ],
+        "created_count": 1,
+        "last_prompt": "Specify radius of circle or [Diameter] <3.0000>: 3",
+        "target_space": "Model"
+      },
+      "stage": "raw command"
+    },
+    {
+      "name": "the seat is idle after it",
+      "status": "pass",
+      "expected": 0,
+      "observed": 0,
+      "stage": "raw command"
+    },
+    {
+      "name": "a DWG saved on Layout1 reopens there and still draws in model space",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "opened_on": "Layout1",
+        "before": {
+          "Layout1": 2,
+          "Layout2": 0,
+          "Model": 0
+        },
+        "after": {
+          "Layout1": 2,
+          "Layout2": 0,
+          "Model": 1
+        }
+      },
+      "stage": "DWG saved on Layout1"
+    },
+    {
+      "name": "a trim under a rotated UCS cuts exactly what the same trim cuts in WCS",
+      "status": "pass",
+      "expected": [
+        0.0,
+        50.0
+      ],
+      "observed": [
+        0.0,
+        50.0
+      ],
+      "stage": "non-world UCS trim"
+    },
+    {
+      "name": "drawing_undo after a create is verified with one entity fewer",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "ok": true,
+        "message": "Undo applied",
+        "verified": true,
+        "evidence": {
+          "entities_before": 5,
+          "entities_after": 4,
+          "edit_counter_before": 38,
+          "edit_counter_after": 43
+        },
+        "last_prompt": "UCS"
+      },
+      "stage": "verified undo"
+    },
+    {
+      "name": "drawing_redo brings it back, verified",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "ok": true,
+        "message": "Redo applied",
+        "verified": true,
+        "evidence": {
+          "entities_before": 4,
+          "entities_after": 5,
+          "edit_counter_before": 43,
+          "edit_counter_after": 51
+        },
+        "last_prompt": "Everything has been redone"
+      },
+      "stage": "verified undo"
+    }
+  ],
+  "documents": {
+    "opened": 4,
+    "closed": 4,
+    "left_open": [],
+    "kept": false
+  },
+  "report": {
+    "layout1_active": {
+      "before": {
+        "Layout1": 2,
+        "Layout2": 0,
+        "Model": 0
+      },
+      "after": {
+        "Layout1": 2,
+        "Layout2": 0,
+        "Model": 6
+      },
+      "s5_operator_tab_rule_17": "Layout1"
+    },
+    "raw_command": {
+      "on_paper": {
+        "ok": true,
+        "command": "_CIRCLE 200,0 3\n",
+        "completed": true,
+        "created": [
+          {
+            "handle": "91",
+            "type": "CIRCLE",
+            "space": "Layout1"
+          }
+        ],
+        "created_count": 1,
+        "last_prompt": "Specify radius of circle or [Diameter]: 3",
+        "target_space": "Model",
+        "warning": "created_outside_target_space",
+        "outside_target": [
+          "91"
+        ]
+      },
+      "completed": {
+        "ok": true,
+        "command": "_CIRCLE 200,0 3\n",
+        "completed": true,
+        "created": [
+          {
+            "handle": "92",
+            "type": "CIRCLE",
+            "space": "Model"
+          }
+        ],
+        "created_count": 1,
+        "last_prompt": "Specify radius of circle or [Diameter] <3.0000>: 3",
+        "target_space": "Model"
+      },
+      "prompt_limitation": {
+        "send_command": "SendCommand('_SCALE\\n') does not return until the prompt is answered",
+        "post_command": "PostCommand returns, then every COM call (CMDACTIVE, LASTPROMPT, SendCommand, Close) is RPC_E_CALL_REJECTED until a key is pressed in AutoCAD",
+        "esc_in_string": "SendCommand with ESC characters raises 'Invalid input' and runs nothing",
+        "consequence": "a raw command left at its prompt overruns COM_CALL_TIMEOUT; command_incomplete is not reachable through ActiveX on this seat"
+      }
+    },
+    "saved_on_layout1": {
+      "opened_on": "Layout1",
+      "s5_reopened_layout1_rule_17": "Layout1"
+    },
+    "ucs_trim": {
+      "wcs": [
+        0.0,
+        50.0
+      ],
+      "rotated_ucs": [
+        0.0,
+        50.0
+      ]
+    },
+    "undo": {
+      "undo": {
+        "ok": true,
+        "message": "Undo applied",
+        "verified": true,
+        "evidence": {
+          "entities_before": 5,
+          "entities_after": 4,
+          "edit_counter_before": 38,
+          "edit_counter_after": 43
+        },
+        "last_prompt": "UCS"
+      },
+      "redo": {
+        "ok": true,
+        "message": "Redo applied",
+        "verified": true,
+        "evidence": {
+          "entities_before": 4,
+          "entities_after": 5,
+          "edit_counter_before": 43,
+          "edit_counter_after": 51
+        },
+        "last_prompt": "Everything has been redone"
+      }
+    },
+    "s5": {
+      "question": "which mechanism reproduces the paper-space circle on 1.7.0",
+      "saved_layout1_then_create": {
+        "rule_1_7_draws_on": "Layout1",
+        "reproduces_on_1_7": true
+      },
+      "operator_tab_layout1_then_create": {
+        "rule_1_7_draws_on": "Layout1",
+        "reproduces_on_1_7": true
+      },
+      "scale_left_at_prompt": {
+        "measured": {
+          "send_command": "SendCommand('_SCALE\\n') does not return until the prompt is answered",
+          "post_command": "PostCommand returns, then every COM call (CMDACTIVE, LASTPROMPT, SendCommand, Close) is RPC_E_CALL_REJECTED until a key is pressed in AutoCAD",
+          "esc_in_string": "SendCommand with ESC characters raises 'Invalid input' and runs nothing",
+          "consequence": "a raw command left at its prompt overruns COM_CALL_TIMEOUT; command_incomplete is not reachable through ActiveX on this seat"
+        },
+        "note": "not sent by this smoke: on this seat a command left at its prompt blocks every COM call until a key is pressed in AutoCAD"
+      }
+    }
+  }
+}

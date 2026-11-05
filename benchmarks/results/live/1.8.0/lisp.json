@@ -1,0 +1,395 @@
+{
+  "schema": "acadmcp-live-harness/1",
+  "smoke": "lisp",
+  "status": "pass",
+  "exit_code": 0,
+  "reason": null,
+  "started_at": "2026-11-05T07:21:53+00:00",
+  "duration_s": 6.343,
+  "environment": {
+    "autocad": {
+      "name": "AutoCAD",
+      "version": "25.1s",
+      "build": "W.60.0.0 (UNICODE)",
+      "progid": "AutoCAD.Application"
+    },
+    "os": {
+      "platform": "Windows-11-10.0.26300-SP0",
+      "system": "Windows",
+      "release": "11",
+      "machine": "AMD64"
+    },
+    "python": {
+      "version": "3.12.16",
+      "implementation": "CPython"
+    },
+    "pywin32": "312",
+    "server": {
+      "version": "1.8.0",
+      "sha": "da2d7f6933a1cc153e381093a24165735ad22023",
+      "dirty": false
+    }
+  },
+  "summary": {
+    "checks": 9,
+    "passed": 9,
+    "failed": 0,
+    "errors": 0,
+    "rpc_retries": 0
+  },
+  "checks": [
+    {
+      "name": "every corpus form passes the read tier",
+      "status": "pass",
+      "expected": null,
+      "observed": [],
+      "stage": "checks"
+    },
+    {
+      "name": "every corpus form ran in AutoCAD without an error",
+      "status": "pass",
+      "expected": null,
+      "observed": [],
+      "stage": "checks"
+    },
+    {
+      "name": "no call left CMDACTIVE set",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "rows": [],
+        "end": 0
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "circle_area: the LISP read equals the typed tool's",
+      "status": "pass",
+      "expected": 78.539816,
+      "observed": "78.5398",
+      "stage": "checks"
+    },
+    {
+      "name": "pline_area: the LISP read equals the typed tool's",
+      "status": "pass",
+      "expected": 1200.0,
+      "observed": "1200.0",
+      "stage": "checks"
+    },
+    {
+      "name": "clayer: the LISP read equals the typed tool's",
+      "status": "pass",
+      "expected": "0",
+      "observed": "0",
+      "stage": "checks"
+    },
+    {
+      "name": "insunits: the LISP read equals the typed tool's",
+      "status": "pass",
+      "expected": 4,
+      "observed": "4",
+      "stage": "checks"
+    },
+    {
+      "name": "ltscale: the LISP read equals the typed tool's",
+      "status": "pass",
+      "expected": 1.0,
+      "observed": "1.0",
+      "stage": "checks"
+    },
+    {
+      "name": "the LISP erase is refused before AutoCAD, with symbol, line and column",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "refused": true,
+        "symbol": "command",
+        "line": 1,
+        "column": 2,
+        "tier_needed": "write"
+      },
+      "stage": "checks"
+    }
+  ],
+  "documents": {
+    "opened": 1,
+    "closed": 1,
+    "left_open": [],
+    "kept": false
+  },
+  "report": {
+    "handles": {
+      "circle": "7F",
+      "pline": "80",
+      "line": "81"
+    },
+    "corpus": [
+      {
+        "form": "(+ 1 2 3)",
+        "policy": "read",
+        "ok": true,
+        "result": "6",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(sqrt (+ (expt 3 2) (expt 4 2)))",
+        "policy": "read",
+        "ok": true,
+        "result": "5.0",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(angle (list 0 0) (list 10 10))",
+        "policy": "read",
+        "ok": true,
+        "result": "0.785398",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(distance (list 0 0 0) (list 3 4 0))",
+        "policy": "read",
+        "ok": true,
+        "result": "5.0",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(polar (list 0 0) (/ pi 4) 10.0)",
+        "policy": "read",
+        "ok": true,
+        "result": "(7.07107 7.07107)",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(inters '(0 0) '(10 10) '(0 10) '(10 0))",
+        "policy": "read",
+        "ok": true,
+        "result": "(5.0 5.0)",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(trans '(1 2 0) 0 1)",
+        "policy": "read",
+        "ok": true,
+        "result": "(1.0 2.0 0.0)",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(mapcar (function (lambda (x) (* x 2))) (list 1 2 3))",
+        "policy": "read",
+        "ok": true,
+        "result": "(2 4 6)",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(mapcar '+ '(1 2) '(10 20))",
+        "policy": "read",
+        "ok": true,
+        "result": "(11 22)",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(apply '+ '(1 2 3))",
+        "policy": "read",
+        "ok": true,
+        "result": "6",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(eval '(+ 1 2))",
+        "policy": "read",
+        "ok": true,
+        "result": "3",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(foreach x '(1 2 3) (setq acadmcp-smoke-total (+ (if acadmcp-smoke-total acadmcp-smoke-total 0) x)))",
+        "policy": "read",
+        "ok": true,
+        "result": "6",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(cond ((= 1 2) \"a\") (t \"b\"))",
+        "policy": "read",
+        "ok": true,
+        "result": "b",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(strcat \"A\" \"-\" \"101\")",
+        "policy": "read",
+        "ok": true,
+        "result": "A-101",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(vl-string-subst \"B\" \"A\" \"AAA\")",
+        "policy": "read",
+        "ok": true,
+        "result": "BAA",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(rtos 12.3456 2 2)",
+        "policy": "read",
+        "ok": true,
+        "result": "12.35",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(getvar \"CLAYER\")",
+        "policy": "read",
+        "ok": true,
+        "result": "0",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(tblsearch \"LAYER\" \"0\")",
+        "policy": "read",
+        "ok": true,
+        "result": "((0 . LAYER) (2 . 0) (70 . 0) (62 . 7) (6 . Continuous))",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(cdr (assoc 0 (entget (handent \"7F\"))))",
+        "policy": "read",
+        "ok": true,
+        "result": "CIRCLE",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(entget (entlast))",
+        "policy": "read",
+        "ok": true,
+        "result": "((-1 . <Entity name: 1a4942a3890>) (0 . LINE) (330 . <Entity name: 1e5c8159f00>) (5 . 81) (100 . AcDbEntity) (67 . 0) (410 . Model) (8 . 0) (100 . AcDbLine) (10 0.0 0.0 0.0) (11 30.0 40.0 0.0) (210 0.0 0.0 1.0))",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(dictsearch (namedobjdict) \"ACAD_LAYOUT\")",
+        "policy": "read",
+        "ok": true,
+        "result": "((-1 . <Entity name: 1e5c8159e20>) (0 . DICTIONARY) (5 . 62) (102 . {ACAD_REACTORS) (330 . <Entity name: 1e5c81598c0>) (102 . }) (330 . <Entity name: 1e5c81598c0>) (100 . AcDbDictionary) (280 . 0) (281 . 1) (3 . Layout1) (350 . <Entity name: 1e5c8159ef0>) (3 . Layout2) (350 . <Entity name: 1e5c8159f70>) (3 . Model) (350 . <Entity name: 1e5c8159f30>))",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(sslength (ssget \"_X\" (list (cons 0 \"CIRCLE\"))))",
+        "policy": "read",
+        "ok": true,
+        "result": "1",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(ssget \"_W\" '(-10 -10) '(10 10))",
+        "policy": "read",
+        "ok": true,
+        "result": "nil",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(ssget \"_C\" '(-1 -1) '(1 1))",
+        "policy": "read",
+        "ok": true,
+        "result": "<Selection set: 12>",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(ssget \"_CP\" '((-10 -10) (60 -10) (60 60) (-10 60)))",
+        "policy": "read",
+        "ok": true,
+        "result": "<Selection set: 15>",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(vla-get-Area (vlax-ename->vla-object (handent \"7F\")))",
+        "policy": "read",
+        "ok": true,
+        "result": "78.5398",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(vla-get-Layer (vlax-ename->vla-object (handent \"81\")))",
+        "policy": "read",
+        "ok": true,
+        "result": "0",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(vlax-get-property (vlax-ename->vla-object (handent \"81\")) 'Length)",
+        "policy": "read",
+        "ok": true,
+        "result": "50.0",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(vlax-curve-getArea (handent \"80\"))",
+        "policy": "read",
+        "ok": true,
+        "result": "1200.0",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(vlax-curve-getDistAtParam (handent \"81\") (vlax-curve-getEndParam (handent \"81\")))",
+        "policy": "read",
+        "ok": true,
+        "result": "50.0",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(vlax-safearray->list (vlax-variant-value (vla-get-Coordinates (vlax-ename->vla-object (handent \"80\")))))",
+        "policy": "read",
+        "ok": true,
+        "result": "(0.0 0.0 40.0 0.0 40.0 30.0 0.0 30.0)",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(vl-catch-all-apply 'vla-get-Area (list (vlax-ename->vla-object (handent \"7F\"))))",
+        "policy": "read",
+        "ok": true,
+        "result": "78.5398",
+        "cmdactive_after": 0
+      },
+      {
+        "form": "(progn\n  ; the area of the polyline\n  (vla-get-Area (vlax-ename->vla-object (handent \"80\")))\n)",
+        "policy": "read",
+        "ok": true,
+        "result": "1200.0",
+        "cmdactive_after": 0
+      }
+    ],
+    "cross": {
+      "circle_area": {
+        "lisp": "78.5398",
+        "tool": 78.539816,
+        "ok": true
+      },
+      "pline_area": {
+        "lisp": "1200.0",
+        "tool": 1200.0,
+        "ok": true
+      },
+      "clayer": {
+        "lisp": "0",
+        "tool": "0",
+        "ok": true
+      },
+      "insunits": {
+        "lisp": "4",
+        "tool": 4,
+        "ok": true
+      },
+      "ltscale": {
+        "lisp": "1.0",
+        "tool": 1.0,
+        "ok": true
+      }
+    },
+    "twin": {
+      "refused": true,
+      "symbol": "command",
+      "line": 1,
+      "column": 2,
+      "tier_needed": "write"
+    },
+    "cmdactive_end": 0
+  }
+}

@@ -1,0 +1,186 @@
+{
+  "schema": "acadmcp-live-harness/1",
+  "smoke": "render",
+  "status": "pass",
+  "exit_code": 0,
+  "reason": null,
+  "started_at": "2026-11-05T07:23:05+00:00",
+  "duration_s": 3.656,
+  "environment": {
+    "autocad": {
+      "name": "AutoCAD",
+      "version": "25.1s",
+      "build": "W.60.0.0 (UNICODE)",
+      "progid": "AutoCAD.Application"
+    },
+    "os": {
+      "platform": "Windows-11-10.0.26300-SP0",
+      "system": "Windows",
+      "release": "11",
+      "machine": "AMD64"
+    },
+    "python": {
+      "version": "3.12.16",
+      "implementation": "CPython"
+    },
+    "pywin32": "312",
+    "server": {
+      "version": "1.8.0",
+      "sha": "da2d7f6933a1cc153e381093a24165735ad22023",
+      "dirty": false
+    }
+  },
+  "summary": {
+    "checks": 4,
+    "passed": 4,
+    "failed": 0,
+    "errors": 0,
+    "rpc_retries": 0
+  },
+  "checks": [
+    {
+      "name": "a region renders the export snapshot",
+      "status": "pass",
+      "expected": {
+        "source": "export_snapshot",
+        "applied": true
+      },
+      "observed": {
+        "source": "export_snapshot",
+        "applied": true
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "the live region equals the headless render of the same DXF",
+      "status": "pass",
+      "expected": "identical pixels",
+      "observed": {
+        "live_px": [
+          256,
+          256
+        ],
+        "headless_px": [
+          256,
+          256
+        ]
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "region and scale agree",
+      "status": "pass",
+      "expected": {
+        "region": [
+          -10.0,
+          -10.0,
+          10.0,
+          10.0
+        ],
+        "px_per_unit": 12.8
+      },
+      "observed": {
+        "region": [
+          -10.0,
+          -10.0,
+          10.0,
+          10.0
+        ],
+        "px_per_unit": 12.8
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "without a region the window is captured within max_px",
+      "status": "pass",
+      "expected": {
+        "source": "window",
+        "max_px": 256
+      },
+      "observed": {
+        "source": "window",
+        "px": [
+          256,
+          153
+        ]
+      },
+      "stage": "checks"
+    }
+  ],
+  "documents": {
+    "opened": 1,
+    "closed": 1,
+    "left_open": [],
+    "kept": false
+  },
+  "report": {
+    "region": {
+      "applied": true,
+      "framing": "region",
+      "px": [
+        256,
+        256
+      ],
+      "region": [
+        -10.0,
+        -10.0,
+        10.0,
+        10.0
+      ],
+      "requested_region": [
+        -10.0,
+        -10.0,
+        10.0,
+        10.0
+      ],
+      "px_per_unit": 12.8,
+      "space": "Model",
+      "labels": {},
+      "labelled": 0,
+      "total": 0,
+      "truncated": false,
+      "source": "export_snapshot",
+      "snapshot": "live:Drawing12.dwg"
+    },
+    "headless": {
+      "applied": true,
+      "framing": "region",
+      "px": [
+        256,
+        256
+      ],
+      "region": [
+        -10.0,
+        -10.0,
+        10.0,
+        10.0
+      ],
+      "requested_region": [
+        -10.0,
+        -10.0,
+        10.0,
+        10.0
+      ],
+      "px_per_unit": 12.8,
+      "space": "Model",
+      "labels": {},
+      "labelled": 0,
+      "total": 0,
+      "truncated": false
+    },
+    "window": {
+      "applied": true,
+      "framing": "current_view",
+      "source": "window",
+      "px": [
+        256,
+        153
+      ],
+      "region": null,
+      "requested_region": null,
+      "px_per_unit": null,
+      "note": "a window capture includes AutoCAD's own frame, so its drawing-unit scale is unknown; pass region=[x0, y0, x1, y1] for a measured render"
+    },
+    "pixels_equal": true
+  }
+}

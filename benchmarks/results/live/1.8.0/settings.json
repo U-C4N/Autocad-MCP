@@ -1,0 +1,1695 @@
+{
+  "schema": "acadmcp-live-harness/1",
+  "smoke": "settings",
+  "status": "pass",
+  "exit_code": 0,
+  "reason": null,
+  "started_at": "2026-11-05T07:23:09+00:00",
+  "duration_s": 22.438,
+  "environment": {
+    "autocad": {
+      "name": "AutoCAD",
+      "version": "25.1s",
+      "build": "W.60.0.0 (UNICODE)",
+      "progid": "AutoCAD.Application"
+    },
+    "os": {
+      "platform": "Windows-11-10.0.26300-SP0",
+      "system": "Windows",
+      "release": "11",
+      "machine": "AMD64"
+    },
+    "python": {
+      "version": "3.12.16",
+      "implementation": "CPython"
+    },
+    "pywin32": "312",
+    "server": {
+      "version": "1.8.0",
+      "sha": "da2d7f6933a1cc153e381093a24165735ad22023",
+      "dirty": false
+    }
+  },
+  "summary": {
+    "checks": 54,
+    "passed": 54,
+    "failed": 0,
+    "errors": 0,
+    "rpc_retries": 0
+  },
+  "checks": [
+    {
+      "name": "system_launch attached",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "attached": true,
+        "launched": false
+      },
+      "stage": "attach"
+    },
+    {
+      "name": "system_launch launched nothing",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "attached": true,
+        "launched": false
+      },
+      "stage": "attach"
+    },
+    {
+      "name": "dimstyle DIMTXT 2.5",
+      "status": "pass",
+      "expected": 2.5,
+      "observed": 2.5,
+      "stage": "styles"
+    },
+    {
+      "name": "dimstyle DIMDSEP ','",
+      "status": "pass",
+      "expected": ",",
+      "observed": ",",
+      "stage": "styles"
+    },
+    {
+      "name": "dimstyle current",
+      "status": "pass",
+      "expected": null,
+      "observed": true,
+      "stage": "styles"
+    },
+    {
+      "name": "isocp.shx resolved on the seat",
+      "status": "pass",
+      "expected": null,
+      "observed": true,
+      "stage": "styles"
+    },
+    {
+      "name": "mleaderstyle created on COM",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "styles"
+    },
+    {
+      "name": "mleaderstyle listed",
+      "status": "pass",
+      "expected": null,
+      "observed": [
+        "SMOKE",
+        "Standard"
+      ],
+      "stage": "styles"
+    },
+    {
+      "name": "mleaderstyle ISO arrow 2.5",
+      "status": "pass",
+      "expected": 2.5,
+      "observed": 2.5,
+      "stage": "styles"
+    },
+    {
+      "name": "DIMDEC 2 -> 0 redrawn and confirmed by read-back",
+      "status": "pass",
+      "expected": "20",
+      "observed": {
+        "before": [
+          "19,6",
+          true
+        ],
+        "after": [
+          "20",
+          true
+        ],
+        "modify": {
+          "ok": true,
+          "name": "ISO-25-SMOKE",
+          "changed": {
+            "DIMDEC": [
+              2,
+              0
+            ]
+          },
+          "dimensions_using_style": [
+            "86",
+            "B2"
+          ],
+          "rerendered": [
+            "86"
+          ],
+          "text_kept": [],
+          "rerender_required": false,
+          "already_current": [
+            "B2"
+          ],
+          "stale": []
+        }
+      },
+      "stage": "dimension truth"
+    },
+    {
+      "name": "entity_scale redraws the number (Update + read-back)",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "ok": true,
+        "handle": "86",
+        "rerendered": [
+          "86"
+        ],
+        "stale": []
+      },
+      "stage": "dimension truth"
+    },
+    {
+      "name": "dimension_rerender verified",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "ok": true,
+        "rerendered": [],
+        "already_current": [
+          "86",
+          "B2"
+        ],
+        "stale": [],
+        "text_kept": [],
+        "verified": true
+      },
+      "stage": "dimension truth"
+    },
+    {
+      "name": "page_setup_list says 420 x 297",
+      "status": "pass",
+      "expected": [
+        420.0,
+        297.0
+      ],
+      "observed": [
+        420.0,
+        297.0
+      ],
+      "stage": "page setup"
+    },
+    {
+      "name": "PDF /MediaBox is 420 x 297 (+-0.5 mm)",
+      "status": "pass",
+      "expected": [
+        420.0,
+        297.0
+      ],
+      "observed": [
+        420.158,
+        297.039
+      ],
+      "stage": "page setup"
+    },
+    {
+      "name": "monochrome.ctb installed on the seat",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "page setup"
+    },
+    {
+      "name": "template carries the mech layers",
+      "status": "pass",
+      "expected": null,
+      "observed": [
+        "0",
+        "CENTER",
+        "CONSTRUCTION",
+        "DIM",
+        "Defpoints",
+        "GEOMETRY",
+        "HATCH",
+        "HIDDEN",
+        "PHANTOM",
+        "TEXT",
+        "TITLEBLOCK"
+      ],
+      "stage": "template"
+    },
+    {
+      "name": "template has ISO-25 current",
+      "status": "pass",
+      "expected": [
+        "ISO-25"
+      ],
+      "observed": [
+        "ISO-25"
+      ],
+      "stage": "template"
+    },
+    {
+      "name": "template has an ISO_A3 page setup",
+      "status": "pass",
+      "expected": null,
+      "observed": [
+        "ISO_A3"
+      ],
+      "stage": "template"
+    },
+    {
+      "name": "smoke document re-activated",
+      "status": "pass",
+      "expected": "Drawing13.dwg",
+      "observed": "Drawing13.dwg",
+      "stage": "template"
+    },
+    {
+      "name": "layer state restored the colour",
+      "status": "pass",
+      "expected": 1,
+      "observed": 1,
+      "stage": "layer state"
+    },
+    {
+      "name": "layer state thawed SMOKE_B",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "layer state"
+    },
+    {
+      "name": "restore reports nothing missing",
+      "status": "pass",
+      "expected": null,
+      "observed": [],
+      "stage": "layer state"
+    },
+    {
+      "name": "restore applied every layer",
+      "status": "pass",
+      "expected": 4,
+      "observed": 4,
+      "stage": "layer state"
+    },
+    {
+      "name": "restore raised no warnings",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "layer state"
+    },
+    {
+      "name": "layer state listed",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "layer state"
+    },
+    {
+      "name": "where: escaped '-' layer filter, model only",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "ok": true,
+        "dry_run": true,
+        "space": "model",
+        "where": {
+          "layer": [
+            "SMOKE-OLD"
+          ]
+        },
+        "set": {
+          "color": 256
+        },
+        "count": 4,
+        "would_change": 4,
+        "handles": [
+          "137",
+          "138",
+          "139",
+          "13A"
+        ],
+        "truncated": false,
+        "skipped_locked": {
+          "count": 0,
+          "layers": []
+        }
+      },
+      "stage": "set edits"
+    },
+    {
+      "name": "where: 410 ~Model selects the sheet only",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "ok": true,
+        "dry_run": true,
+        "space": "paper",
+        "where": {
+          "layer": [
+            "SMOKE-OLD"
+          ]
+        },
+        "set": {
+          "color": 256
+        },
+        "count": 1,
+        "would_change": 0,
+        "handles": [
+          "13C"
+        ],
+        "truncated": false,
+        "skipped_locked": {
+          "count": 0,
+          "layers": []
+        }
+      },
+      "stage": "set edits"
+    },
+    {
+      "name": "where: 0 INSERT + 2 block name",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "ok": true,
+        "dry_run": true,
+        "space": "all",
+        "where": {
+          "block": [
+            "SMOKE_D*"
+          ]
+        },
+        "set": {
+          "color": 256
+        },
+        "count": 1,
+        "would_change": 0,
+        "handles": [
+          "141"
+        ],
+        "truncated": false,
+        "skipped_locked": {
+          "count": 0,
+          "layers": []
+        }
+      },
+      "stage": "set edits"
+    },
+    {
+      "name": "expect_count mismatch refused stale_revision",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "set edits"
+    },
+    {
+      "name": "where: four lines restyled",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "ok": true,
+        "space": "model",
+        "where": {
+          "layer": [
+            "SMOKE-OLD"
+          ]
+        },
+        "set": {
+          "color": 256,
+          "lineweight": -1
+        },
+        "matched": 4,
+        "changed": 4,
+        "unchanged": 0,
+        "handles": [
+          "137",
+          "138",
+          "139",
+          "13A"
+        ],
+        "truncated": false,
+        "skipped_locked": {
+          "count": 0,
+          "layers": []
+        },
+        "layers_created": [],
+        "changes": {
+          "added": [],
+          "deleted": [],
+          "counts": {
+            "added": 0,
+            "deleted": 0,
+            "modified": 4
+          },
+          "complete": true
+        }
+      },
+      "stage": "set edits"
+    },
+    {
+      "name": "where: ByLayer colour and lineweight read back",
+      "status": "pass",
+      "expected": null,
+      "observed": [
+        [
+          256,
+          "ByLayer"
+        ],
+        [
+          256,
+          "ByLayer"
+        ],
+        [
+          256,
+          "ByLayer"
+        ],
+        [
+          256,
+          "ByLayer"
+        ]
+      ],
+      "stage": "set edits"
+    },
+    {
+      "name": "rename: the table entry moved",
+      "status": "pass",
+      "expected": null,
+      "observed": [
+        "0",
+        "Defpoints",
+        "SMOKE-RENAMED",
+        "SMOKE-WALL",
+        "SMOKE_A",
+        "SMOKE_B",
+        "SMOKE_walls"
+      ],
+      "stage": "set edits"
+    },
+    {
+      "name": "rename: an entity reads the new name",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "set edits"
+    },
+    {
+      "name": "rename of layer 0 refused by name",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "set edits"
+    },
+    {
+      "name": "merge: 4 + 1 model, 1 sheet, 1 block member",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "ok": true,
+        "sources": [
+          "SMOKE-RENAMED",
+          "SMOKE_walls"
+        ],
+        "target": "SMOKE-WALL",
+        "reassigned": 7,
+        "by_space": {
+          "Layout1": 1,
+          "Model": 5,
+          "(block definitions)": 1
+        },
+        "blocks_touched": [
+          "SMOKE_DOOR"
+        ],
+        "note": "A block definition was edited: every INSERT of SMOKE_DOOR shows the change, in every layout and in every block that nests it.",
+        "layers_deleted": [
+          "SMOKE-RENAMED",
+          "SMOKE_walls"
+        ],
+        "layers_not_deleted": [],
+        "current_layer": "0",
+        "changes": {
+          "added": [],
+          "deleted": [],
+          "counts": {
+            "added": 0,
+            "deleted": 0,
+            "modified": 7,
+            "layers_deleted": 2
+          },
+          "complete": true
+        }
+      },
+      "stage": "set edits"
+    },
+    {
+      "name": "merge: the block named",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "ok": true,
+        "sources": [
+          "SMOKE-RENAMED",
+          "SMOKE_walls"
+        ],
+        "target": "SMOKE-WALL",
+        "reassigned": 7,
+        "by_space": {
+          "Layout1": 1,
+          "Model": 5,
+          "(block definitions)": 1
+        },
+        "blocks_touched": [
+          "SMOKE_DOOR"
+        ],
+        "note": "A block definition was edited: every INSERT of SMOKE_DOOR shows the change, in every layout and in every block that nests it.",
+        "layers_deleted": [
+          "SMOKE-RENAMED",
+          "SMOKE_walls"
+        ],
+        "layers_not_deleted": [],
+        "current_layer": "0",
+        "changes": {
+          "added": [],
+          "deleted": [],
+          "counts": {
+            "added": 0,
+            "deleted": 0,
+            "modified": 7,
+            "layers_deleted": 2
+          },
+          "complete": true
+        }
+      },
+      "stage": "set edits"
+    },
+    {
+      "name": "merge: both sources deleted",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "ok": true,
+        "sources": [
+          "SMOKE-RENAMED",
+          "SMOKE_walls"
+        ],
+        "target": "SMOKE-WALL",
+        "reassigned": 7,
+        "by_space": {
+          "Layout1": 1,
+          "Model": 5,
+          "(block definitions)": 1
+        },
+        "blocks_touched": [
+          "SMOKE_DOOR"
+        ],
+        "note": "A block definition was edited: every INSERT of SMOKE_DOOR shows the change, in every layout and in every block that nests it.",
+        "layers_deleted": [
+          "SMOKE-RENAMED",
+          "SMOKE_walls"
+        ],
+        "layers_not_deleted": [],
+        "current_layer": "0",
+        "changes": {
+          "added": [],
+          "deleted": [],
+          "counts": {
+            "added": 0,
+            "deleted": 0,
+            "modified": 7,
+            "layers_deleted": 2
+          },
+          "complete": true
+        }
+      },
+      "stage": "set edits"
+    },
+    {
+      "name": "merge: the other line moved",
+      "status": "pass",
+      "expected": null,
+      "observed": "SMOKE-WALL",
+      "stage": "set edits"
+    },
+    {
+      "name": "dimension_auto: twelve dimensions in one call",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "ok": true,
+        "created": [
+          "151",
+          "183",
+          "1B5",
+          "1E7",
+          "219",
+          "23E",
+          "263",
+          "288",
+          "2AD",
+          "2D2",
+          "2F7",
+          "31C"
+        ],
+        "skipped_existing": [],
+        "omitted": [
+          {
+            "handle": "14C",
+            "type": "ELLIPSE",
+            "reason": "an ellipse has no diameter or radius to dimension; dimension its axes with dimension_linear"
+          }
+        ],
+        "redundant": [
+          {
+            "kind": "overall",
+            "axis": "x",
+            "covered_by": {
+              "kind": "linear",
+              "source": "143",
+              "segment": 0
+            }
+          },
+          {
+            "kind": "overall",
+            "axis": "y",
+            "covered_by": {
+              "kind": "linear",
+              "source": "143",
+              "segment": 1
+            }
+          }
+        ],
+        "layer": "SMOKE-DIM",
+        "dim_overlap": {
+          "checked": true,
+          "issues": []
+        }
+      },
+      "stage": "dimension auto"
+    },
+    {
+      "name": "dimension_auto: the ellipse is omitted by name",
+      "status": "pass",
+      "expected": null,
+      "observed": [
+        {
+          "handle": "14C",
+          "type": "ELLIPSE",
+          "reason": "an ellipse has no diameter or radius to dimension; dimension its axes with dimension_linear"
+        }
+      ],
+      "stage": "dimension auto"
+    },
+    {
+      "name": "dimension_auto: every dimension on the ensured layer",
+      "status": "pass",
+      "expected": null,
+      "observed": [
+        "SMOKE-DIM",
+        "SMOKE-DIM",
+        "SMOKE-DIM",
+        "SMOKE-DIM",
+        "SMOKE-DIM",
+        "SMOKE-DIM",
+        "SMOKE-DIM",
+        "SMOKE-DIM",
+        "SMOKE-DIM",
+        "SMOKE-DIM",
+        "SMOKE-DIM",
+        "SMOKE-DIM"
+      ],
+      "stage": "dimension auto"
+    },
+    {
+      "name": "dimension_auto: the self-check read the drawing",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "checked": true,
+        "issues": []
+      },
+      "stage": "dimension auto"
+    },
+    {
+      "name": "dimension_auto: a second call draws nothing (skip_existing through Document.Export)",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "ok": true,
+        "created": [],
+        "skipped_existing": [
+          {
+            "kind": "linear",
+            "feature": "edge",
+            "existing": "151",
+            "source": "143",
+            "segment": 0
+          },
+          {
+            "kind": "linear",
+            "feature": "edge",
+            "existing": "183",
+            "source": "143",
+            "segment": 1
+          },
+          {
+            "kind": "linear",
+            "feature": "edge",
+            "existing": "1B5",
+            "source": "143",
+            "segment": 2
+          },
+          {
+            "kind": "linear",
+            "feature": "edge",
+            "existing": "1E7",
+            "source": "143",
+            "segment": 3
+          },
+          {
+            "kind": "diameter",
+            "feature": "circle",
+            "existing": "219",
+            "source": "144"
+          },
+          {
+            "kind": "diameter",
+            "feature": "circle",
+            "existing": "23E",
+            "source": "145"
+          },
+          {
+            "kind": "diameter",
+            "feature": "circle",
+            "existing": "263",
+            "source": "146"
+          },
+          {
+            "kind": "diameter",
+            "feature": "circle",
+            "existing": "288",
+            "source": "147"
+          },
+          {
+            "kind": "diameter",
+            "feature": "circle",
+            "existing": "2AD",
+            "source": "148"
+          },
+          {
+            "kind": "diameter",
+            "feature": "circle",
+            "existing": "2D2",
+            "source": "149"
+          },
+          {
+            "kind": "radius",
+            "feature": "arc",
+            "existing": "2F7",
+            "source": "14A"
+          },
+          {
+            "kind": "radius",
+            "feature": "arc",
+            "existing": "31C",
+            "source": "14B"
+          }
+        ],
+        "omitted": [
+          {
+            "handle": "14C",
+            "type": "ELLIPSE",
+            "reason": "an ellipse has no diameter or radius to dimension; dimension its axes with dimension_linear"
+          }
+        ],
+        "redundant": [
+          {
+            "kind": "overall",
+            "axis": "x",
+            "covered_by": {
+              "kind": "linear",
+              "source": "143",
+              "segment": 0
+            }
+          },
+          {
+            "kind": "overall",
+            "axis": "y",
+            "covered_by": {
+              "kind": "linear",
+              "source": "143",
+              "segment": 1
+            }
+          }
+        ],
+        "layer": "DIM",
+        "dim_overlap": {
+          "checked": true,
+          "issues": []
+        }
+      },
+      "stage": "dimension auto"
+    },
+    {
+      "name": "named view listed",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "view and ucs"
+    },
+    {
+      "name": "ucs current",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "view and ucs"
+    },
+    {
+      "name": "non-orthogonal UCS refusal names the angle",
+      "status": "pass",
+      "expected": null,
+      "observed": "ucs_set: x_axis and y_axis must be perpendicular; measured 45.00° between them (tolerance 0.001°)",
+      "stage": "view and ucs"
+    },
+    {
+      "name": "preference set reports old",
+      "status": "pass",
+      "expected": 5,
+      "observed": {
+        "ok": true,
+        "key": "Display.CursorSize",
+        "old": 5,
+        "new": 6,
+        "changed": true,
+        "backend": "com"
+      },
+      "stage": "preferences"
+    },
+    {
+      "name": "preference set reports new",
+      "status": "pass",
+      "expected": 6,
+      "observed": {
+        "ok": true,
+        "key": "Display.CursorSize",
+        "old": 5,
+        "new": 6,
+        "changed": true,
+        "backend": "com"
+      },
+      "stage": "preferences"
+    },
+    {
+      "name": "preference reverted",
+      "status": "pass",
+      "expected": 5,
+      "observed": {
+        "ok": true,
+        "key": "Display.CursorSize",
+        "old": 6,
+        "new": 5,
+        "changed": true,
+        "backend": "com"
+      },
+      "stage": "preferences"
+    },
+    {
+      "name": "read-only keys listed",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "preferences"
+    },
+    {
+      "name": "read-only preference refused",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "preferences"
+    },
+    {
+      "name": "summary available on COM",
+      "status": "pass",
+      "expected": null,
+      "observed": null,
+      "stage": "properties"
+    },
+    {
+      "name": "title round trip",
+      "status": "pass",
+      "expected": null,
+      "observed": "ACADMCP settings smoke",
+      "stage": "properties"
+    },
+    {
+      "name": "custom property round trip",
+      "status": "pass",
+      "expected": null,
+      "observed": "1",
+      "stage": "properties"
+    }
+  ],
+  "documents": {
+    "opened": 2,
+    "closed": 2,
+    "left_open": [],
+    "kept": false
+  },
+  "report": {
+    "system_launch": {
+      "attached": true,
+      "launched": false
+    },
+    "document": "Drawing13.dwg",
+    "styles": {
+      "dimstyle": {
+        "ok": true,
+        "name": "ISO-25-SMOKE",
+        "values": {
+          "DIMTXT": 2.5,
+          "DIMASZ": 2.5,
+          "DIMEXE": 1.25,
+          "DIMEXO": 0.625,
+          "DIMGAP": 0.625,
+          "DIMTAD": 1,
+          "DIMTIH": 0,
+          "DIMTOH": 0,
+          "DIMDEC": 2,
+          "DIMDSEP": ",",
+          "DIMLUNIT": 2,
+          "DIMZIN": 8,
+          "DIMBLK": "",
+          "DIMTXSTY": "ISOCP",
+          "DIMLWD": -2,
+          "DIMLWE": -2,
+          "DIMSCALE": 1.0
+        },
+        "written": [
+          "DIMASZ",
+          "DIMBLK",
+          "DIMDEC",
+          "DIMDSEP",
+          "DIMEXE",
+          "DIMEXO",
+          "DIMGAP",
+          "DIMLUNIT",
+          "DIMLWD",
+          "DIMLWE",
+          "DIMSCALE",
+          "DIMTAD",
+          "DIMTIH",
+          "DIMTOH",
+          "DIMTXSTY",
+          "DIMTXT",
+          "DIMZIN"
+        ],
+        "current": true,
+        "textstyle_created": true
+      },
+      "textstyle": {
+        "ok": true,
+        "name": "ISOCP-SMOKE",
+        "font": "isocp.shx",
+        "font_resolved": true,
+        "current": false
+      },
+      "mleaderstyle": {
+        "ok": true,
+        "name": "SMOKE",
+        "values": {
+          "arrow_size": 2.5,
+          "landing_gap": 1.0,
+          "text_style": "ISOCP",
+          "text_height": 2.5
+        },
+        "textstyle_created": false
+      },
+      "mleaderstyles_on_seat": [
+        "SMOKE",
+        "Standard"
+      ]
+    },
+    "dimension_truth": {
+      "before": {
+        "86": [
+          "19,6",
+          true
+        ],
+        "B2": [
+          "Ø∅20",
+          true
+        ]
+      },
+      "after": {
+        "86": [
+          "20",
+          true
+        ],
+        "B2": [
+          "Ø∅20",
+          true
+        ]
+      },
+      "modify": {
+        "ok": true,
+        "name": "ISO-25-SMOKE",
+        "changed": {
+          "DIMDEC": [
+            2,
+            0
+          ]
+        },
+        "dimensions_using_style": [
+          "86",
+          "B2"
+        ],
+        "rerendered": [
+          "86"
+        ],
+        "text_kept": [],
+        "rerender_required": false,
+        "already_current": [
+          "B2"
+        ],
+        "stale": []
+      },
+      "scale": {
+        "ok": true,
+        "handle": "86",
+        "rerendered": [
+          "86"
+        ],
+        "stale": []
+      },
+      "rerender": {
+        "ok": true,
+        "rerendered": [],
+        "already_current": [
+          "86",
+          "B2"
+        ],
+        "stale": [],
+        "text_kept": [],
+        "verified": true
+      },
+      "double_prefix_rendered": "Ø∅20",
+      "double_prefix_is_double": true,
+      "double_prefix_codepoints": [
+        "U+00D8",
+        "U+2205",
+        "U+0032",
+        "U+0030"
+      ],
+      "dimension_truth": [
+        {
+          "severity": "info",
+          "focus": "dimension_truth",
+          "message": "Dimension 86 (Model): not checked against geometry (unknown: a measured point lies on no feature) - never a pass",
+          "handles": [
+            "86"
+          ],
+          "detail": {
+            "code": "dim_unbound",
+            "handle": "86",
+            "space": "Model",
+            "layer": "0",
+            "repairable": false,
+            "displayed_text": "39",
+            "displayed_value": 39.0,
+            "display_rounding": -0.2,
+            "geometric_value": null,
+            "measurement": 39.2,
+            "dimlfac": 1.0,
+            "status": "unknown",
+            "reason": "a measured point lies on no feature"
+          }
+        },
+        {
+          "severity": "warning",
+          "focus": "dimension_truth",
+          "message": "Dimension B2 (Model): the override '%%c<>' adds its own Ø before <>, which already carries one: the sheet shows 'ØØ20' (S4: live double sign pending)",
+          "handles": [
+            "B2"
+          ],
+          "detail": {
+            "code": "dim_double_prefix",
+            "handle": "B2",
+            "space": "Model",
+            "layer": "0",
+            "repairable": false,
+            "displayed_text": "ØØ20",
+            "displayed_value": 20.0,
+            "display_rounding": 0.0,
+            "geometric_value": 20.0,
+            "measurement": 20.0,
+            "dimlfac": 1.0,
+            "override": "%%c<>"
+          }
+        }
+      ]
+    },
+    "page_setup": {
+      "applied": {
+        "paper": "ISO_A3",
+        "orientation": "landscape",
+        "size_mm": [
+          420.0,
+          297.0
+        ],
+        "canonical_media_name": "ISO_A3_(420.00_x_297.00_MM)",
+        "plot_style": "monochrome.ctb",
+        "plot_style_known": true,
+        "scale": "1:1",
+        "scale_factor": 1.0,
+        "scale_ratio": [
+          1.0,
+          1.0
+        ],
+        "dxf_standard_scale_type": 16,
+        "activex_standard_scale": 16,
+        "plot_area": "layout",
+        "plot_type": 5,
+        "device": "DWG To PDF.pc3",
+        "margins_mm": null,
+        "center": null,
+        "paper_units": "mm"
+      },
+      "changed": {
+        "paper": [
+          "",
+          "ISO_A3"
+        ],
+        "canonical_media_name": [
+          "",
+          "ISO_A3_(420.00_x_297.00_MM)"
+        ],
+        "size_mm": [
+          [
+            0.0,
+            0.0
+          ],
+          [
+            420.0,
+            297.0
+          ]
+        ],
+        "plot_style": [
+          "",
+          "monochrome.ctb"
+        ],
+        "device": [
+          "~\\AppData\\Roaming\\Autodesk\\AutoCAD 2026\\R25.1\\enu\\plotters\\PublishToWeb PNG.pc3",
+          "DWG To PDF.pc3"
+        ],
+        "margins_mm": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            17.0,
+            17.0,
+            5.0,
+            5.0
+          ]
+        ],
+        "paper_units": [
+          "inches",
+          "mm"
+        ]
+      },
+      "pdf": {
+        "layout": "Layout1",
+        "ok": true,
+        "bytes": 4036,
+        "mediabox_mm": [
+          420.158,
+          297.039
+        ],
+        "paper": "ISO_A3",
+        "name": "Drawing13-Layout1.pdf"
+      },
+      "installed_plot_styles": [
+        "Autodesk-Color.stb",
+        "Autodesk-MONO.stb",
+        "DWF Virtual Pens.ctb",
+        "Fill Patterns.ctb",
+        "Grayscale.ctb",
+        "Screening 100%.ctb",
+        "Screening 25%.ctb",
+        "Screening 50%.ctb",
+        "Screening 75%.ctb",
+        "acad.ctb",
+        "acad.stb",
+        "monochrome.ctb",
+        "monochrome.stb"
+      ]
+    },
+    "template": {
+      "template": "iso_a3_mech.dwt",
+      "source": "bundled",
+      "dimstyle_current": [
+        "ISO-25"
+      ],
+      "papers": [
+        "ISO_A3"
+      ]
+    },
+    "layer_state": {
+      "saved": {
+        "ok": true,
+        "name": "SMOKE",
+        "layer_count": 4,
+        "replaced": false,
+        "chunks": 3,
+        "backend": "com"
+      },
+      "restored": {
+        "ok": true,
+        "name": "SMOKE",
+        "applied": {
+          "layers": 4,
+          "properties": [
+            "on",
+            "frozen",
+            "locked",
+            "color",
+            "linetype",
+            "lineweight",
+            "plot",
+            "current"
+          ],
+          "current_layer": "0"
+        },
+        "missing_layers": [],
+        "new_layers": [],
+        "backend": "com"
+      },
+      "deleted": {
+        "ok": true,
+        "deleted": "SMOKE",
+        "backend": "com"
+      }
+    },
+    "set_edits": {
+      "dry_run": {
+        "ok": true,
+        "dry_run": true,
+        "space": "model",
+        "where": {
+          "layer": [
+            "SMOKE-OLD"
+          ]
+        },
+        "set": {
+          "color": 256
+        },
+        "count": 4,
+        "would_change": 4,
+        "handles": [
+          "137",
+          "138",
+          "139",
+          "13A"
+        ],
+        "truncated": false,
+        "skipped_locked": {
+          "count": 0,
+          "layers": []
+        }
+      },
+      "applied": {
+        "ok": true,
+        "space": "model",
+        "where": {
+          "layer": [
+            "SMOKE-OLD"
+          ]
+        },
+        "set": {
+          "color": 256,
+          "lineweight": -1
+        },
+        "matched": 4,
+        "changed": 4,
+        "unchanged": 0,
+        "handles": [
+          "137",
+          "138",
+          "139",
+          "13A"
+        ],
+        "truncated": false,
+        "skipped_locked": {
+          "count": 0,
+          "layers": []
+        },
+        "layers_created": [],
+        "changes": {
+          "added": [],
+          "deleted": [],
+          "counts": {
+            "added": 0,
+            "deleted": 0,
+            "modified": 4
+          },
+          "complete": true
+        }
+      },
+      "renamed": {
+        "ok": true,
+        "old": "SMOKE-OLD",
+        "new": "SMOKE-RENAMED",
+        "entities": null,
+        "by_space": null,
+        "blocks_touched": null,
+        "note": "Live: entities reference the layer by object id; none was rewritten.",
+        "current_layer": "0",
+        "changes": {
+          "added": [],
+          "deleted": [],
+          "counts": {
+            "added": 0,
+            "deleted": 0,
+            "modified": 0,
+            "layers_renamed": 1
+          },
+          "complete": true
+        }
+      },
+      "merged": {
+        "ok": true,
+        "sources": [
+          "SMOKE-RENAMED",
+          "SMOKE_walls"
+        ],
+        "target": "SMOKE-WALL",
+        "reassigned": 7,
+        "by_space": {
+          "Layout1": 1,
+          "Model": 5,
+          "(block definitions)": 1
+        },
+        "blocks_touched": [
+          "SMOKE_DOOR"
+        ],
+        "note": "A block definition was edited: every INSERT of SMOKE_DOOR shows the change, in every layout and in every block that nests it.",
+        "layers_deleted": [
+          "SMOKE-RENAMED",
+          "SMOKE_walls"
+        ],
+        "layers_not_deleted": [],
+        "current_layer": "0",
+        "changes": {
+          "added": [],
+          "deleted": [],
+          "counts": {
+            "added": 0,
+            "deleted": 0,
+            "modified": 7,
+            "layers_deleted": 2
+          },
+          "complete": true
+        }
+      }
+    },
+    "dimension_auto": {
+      "outline": "143",
+      "holes": [
+        "144",
+        "145",
+        "146",
+        "147",
+        "148",
+        "149"
+      ],
+      "arcs": [
+        "14A",
+        "14B"
+      ],
+      "first": {
+        "ok": true,
+        "created": [
+          "151",
+          "183",
+          "1B5",
+          "1E7",
+          "219",
+          "23E",
+          "263",
+          "288",
+          "2AD",
+          "2D2",
+          "2F7",
+          "31C"
+        ],
+        "skipped_existing": [],
+        "omitted": [
+          {
+            "handle": "14C",
+            "type": "ELLIPSE",
+            "reason": "an ellipse has no diameter or radius to dimension; dimension its axes with dimension_linear"
+          }
+        ],
+        "redundant": [
+          {
+            "kind": "overall",
+            "axis": "x",
+            "covered_by": {
+              "kind": "linear",
+              "source": "143",
+              "segment": 0
+            }
+          },
+          {
+            "kind": "overall",
+            "axis": "y",
+            "covered_by": {
+              "kind": "linear",
+              "source": "143",
+              "segment": 1
+            }
+          }
+        ],
+        "layer": "SMOKE-DIM",
+        "dim_overlap": {
+          "checked": true,
+          "issues": []
+        }
+      },
+      "again": {
+        "ok": true,
+        "created": [],
+        "skipped_existing": [
+          {
+            "kind": "linear",
+            "feature": "edge",
+            "existing": "151",
+            "source": "143",
+            "segment": 0
+          },
+          {
+            "kind": "linear",
+            "feature": "edge",
+            "existing": "183",
+            "source": "143",
+            "segment": 1
+          },
+          {
+            "kind": "linear",
+            "feature": "edge",
+            "existing": "1B5",
+            "source": "143",
+            "segment": 2
+          },
+          {
+            "kind": "linear",
+            "feature": "edge",
+            "existing": "1E7",
+            "source": "143",
+            "segment": 3
+          },
+          {
+            "kind": "diameter",
+            "feature": "circle",
+            "existing": "219",
+            "source": "144"
+          },
+          {
+            "kind": "diameter",
+            "feature": "circle",
+            "existing": "23E",
+            "source": "145"
+          },
+          {
+            "kind": "diameter",
+            "feature": "circle",
+            "existing": "263",
+            "source": "146"
+          },
+          {
+            "kind": "diameter",
+            "feature": "circle",
+            "existing": "288",
+            "source": "147"
+          },
+          {
+            "kind": "diameter",
+            "feature": "circle",
+            "existing": "2AD",
+            "source": "148"
+          },
+          {
+            "kind": "diameter",
+            "feature": "circle",
+            "existing": "2D2",
+            "source": "149"
+          },
+          {
+            "kind": "radius",
+            "feature": "arc",
+            "existing": "2F7",
+            "source": "14A"
+          },
+          {
+            "kind": "radius",
+            "feature": "arc",
+            "existing": "31C",
+            "source": "14B"
+          }
+        ],
+        "omitted": [
+          {
+            "handle": "14C",
+            "type": "ELLIPSE",
+            "reason": "an ellipse has no diameter or radius to dimension; dimension its axes with dimension_linear"
+          }
+        ],
+        "redundant": [
+          {
+            "kind": "overall",
+            "axis": "x",
+            "covered_by": {
+              "kind": "linear",
+              "source": "143",
+              "segment": 0
+            }
+          },
+          {
+            "kind": "overall",
+            "axis": "y",
+            "covered_by": {
+              "kind": "linear",
+              "source": "143",
+              "segment": 1
+            }
+          }
+        ],
+        "layer": "DIM",
+        "dim_overlap": {
+          "checked": true,
+          "issues": []
+        }
+      }
+    },
+    "view": {
+      "saved": {
+        "ok": true,
+        "name": "SMOKE_VIEW",
+        "center": [
+          100.0,
+          50.0
+        ],
+        "height": 80.0,
+        "width": 171.0159529806885,
+        "replaced": false,
+        "backend": "com"
+      },
+      "restored": {
+        "ok": true,
+        "name": "SMOKE_VIEW",
+        "center": [
+          100.0,
+          50.0
+        ],
+        "height": 80.0,
+        "width": 171.0159529806885,
+        "applied": "zoom_window",
+        "backend": "com",
+        "viewctr": [
+          100.0,
+          50.0
+        ],
+        "viewsize": 80.0
+      }
+    },
+    "ucs": {
+      "set": {
+        "ok": true,
+        "name": "SMOKE_UCS",
+        "origin": [
+          10.0,
+          20.0,
+          0.0
+        ],
+        "x_axis": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "y_axis": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "replaced": false,
+        "current": true,
+        "backend": "com"
+      },
+      "world": {
+        "ok": true,
+        "name": "world",
+        "current": true,
+        "backend": "com"
+      }
+    },
+    "preferences": {
+      "cursor_size": 5,
+      "read_only": [
+        "Files.SupportPath",
+        "Files.TemplateDwgPath",
+        "Files.PrinterStyleSheetPath",
+        "Files.PrinterConfigPath"
+      ]
+    },
+    "properties": {
+      "set": {
+        "ok": true,
+        "summary_written": [
+          "author",
+          "title"
+        ],
+        "custom_written": [
+          "ACADMCP_SMOKE"
+        ],
+        "custom_deleted": [],
+        "backend": "com"
+      },
+      "get": {
+        "summary": {
+          "title": "ACADMCP settings smoke",
+          "subject": "",
+          "author": "smoke_settings_com.py",
+          "keywords": "",
+          "comments": ""
+        },
+        "summary_available": true,
+        "custom": {
+          "ACADMCP_SMOKE": "1"
+        },
+        "backend": "com"
+      }
+    },
+    "prompt_message": {
+      "ok": true,
+      "text": "ACADMCP settings smoke: done",
+      "backend": "com"
+    }
+  }
+}

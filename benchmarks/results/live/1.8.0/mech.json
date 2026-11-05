@@ -1,0 +1,250 @@
+{
+  "schema": "acadmcp-live-harness/1",
+  "smoke": "mech",
+  "status": "pass",
+  "exit_code": 0,
+  "reason": null,
+  "started_at": "2026-11-05T07:22:00+00:00",
+  "duration_s": 31.422,
+  "environment": {
+    "autocad": {
+      "name": "AutoCAD",
+      "version": "25.1s",
+      "build": "W.60.0.0 (UNICODE)",
+      "progid": "AutoCAD.Application"
+    },
+    "os": {
+      "platform": "Windows-11-10.0.26300-SP0",
+      "system": "Windows",
+      "release": "11",
+      "machine": "AMD64"
+    },
+    "python": {
+      "version": "3.12.16",
+      "implementation": "CPython"
+    },
+    "pywin32": "312",
+    "server": {
+      "version": "1.8.0",
+      "sha": "da2d7f6933a1cc153e381093a24165735ad22023",
+      "dirty": false
+    }
+  },
+  "summary": {
+    "checks": 13,
+    "passed": 13,
+    "failed": 0,
+    "errors": 0,
+    "rpc_retries": 0
+  },
+  "checks": [
+    {
+      "name": "the section view omitted nothing",
+      "status": "pass",
+      "expected": [],
+      "observed": [],
+      "stage": "checks"
+    },
+    {
+      "name": "the part was dimensioned",
+      "status": "pass",
+      "expected": null,
+      "observed": 12,
+      "stage": "checks"
+    },
+    {
+      "name": "the bolt carries ACADMCP_MECH XDATA",
+      "status": "pass",
+      "expected": ">= 1",
+      "observed": 1,
+      "stage": "checks"
+    },
+    {
+      "name": "the parts list read off the drawing is the bolt",
+      "status": "pass",
+      "expected": {
+        "rows": 1,
+        "handle": "3C0"
+      },
+      "observed": {
+        "rows": 1,
+        "handles": [
+          "3C0"
+        ]
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "the parts list drawn as a native TABLE",
+      "status": "pass",
+      "expected": "native",
+      "observed": "native",
+      "stage": "checks"
+    },
+    {
+      "name": "the balloon placed",
+      "status": "pass",
+      "expected": null,
+      "observed": "3E3",
+      "stage": "checks"
+    },
+    {
+      "name": "the xref listed once attached",
+      "status": "pass",
+      "expected": 1,
+      "observed": 1,
+      "stage": "checks"
+    },
+    {
+      "name": "the xref gone once detached",
+      "status": "pass",
+      "expected": 0,
+      "observed": 0,
+      "stage": "checks"
+    },
+    {
+      "name": "the DWG is on disk with the AC10 magic",
+      "status": "pass",
+      "expected": "AC10",
+      "observed": "AC1032",
+      "stage": "checks"
+    },
+    {
+      "name": "the critique found nothing",
+      "status": "pass",
+      "expected": 0,
+      "observed": [],
+      "stage": "checks"
+    },
+    {
+      "name": "mech_part_revise kept every in-place handle and left the part current",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "changed": true,
+        "in_place": 26,
+        "in_place_alive": 26,
+        "handle_map": [
+          {
+            "old": "110",
+            "new": "3FA",
+            "reason": "recreated:HATCH"
+          },
+          {
+            "old": "112",
+            "new": "3FC",
+            "reason": "recreated:HATCH"
+          }
+        ],
+        "model_is_current": true,
+        "refused_handles": [
+          "F5"
+        ],
+        "moved_handle": "F5",
+        "fingerprints_unchanged": true,
+        "overwritten": [
+          "F5"
+        ],
+        "restored_current": true
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "a hand-moved tagged line refused the revision, nothing changed",
+      "status": "pass",
+      "expected": [
+        "F5"
+      ],
+      "observed": {
+        "handles": [
+          "F5"
+        ],
+        "unchanged": true
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "overwrite=True put the line back",
+      "status": "pass",
+      "expected": null,
+      "observed": [
+        "F5"
+      ],
+      "stage": "checks"
+    }
+  ],
+  "documents": {
+    "opened": 2,
+    "closed": 2,
+    "left_open": [],
+    "kept": false
+  },
+  "report": {
+    "part_id": "F4",
+    "views": 2,
+    "section_omitted": [],
+    "dimensions": 12,
+    "bolt_handle": "3C0",
+    "xdata_chunks": 1,
+    "parts_list_rows": 1,
+    "parts_list_handles": [
+      "3C0"
+    ],
+    "parts_list_representation": "native",
+    "balloon": "3E3",
+    "xref_attached": "XREF_SOURCE",
+    "xref_listed": 1,
+    "xref_detached": true,
+    "xrefs_after_detach": 0,
+    "dwg": {
+      "name": "mech_smoke.dwg",
+      "exists": true,
+      "bytes": 39152,
+      "magic": "AC1032"
+    },
+    "critique_issues": 0,
+    "critique": [],
+    "revise": {
+      "changed": true,
+      "in_place": 26,
+      "in_place_alive": 26,
+      "handle_map": [
+        {
+          "old": "110",
+          "new": "3FA",
+          "reason": "recreated:HATCH"
+        },
+        {
+          "old": "112",
+          "new": "3FC",
+          "reason": "recreated:HATCH"
+        }
+      ],
+      "model_is_current": true,
+      "refused_handles": [
+        "F5"
+      ],
+      "moved_handle": "F5",
+      "fingerprints_unchanged": true,
+      "overwritten": [
+        "F5"
+      ],
+      "restored_current": true
+    },
+    "std_tables": {
+      "drawn": {},
+      "looked_up": {},
+      "refused": {},
+      "skipped": [
+        "DIN 471",
+        "DIN 472",
+        "DIN 509-E",
+        "DIN 509-F",
+        "DIN 332-A",
+        "DIN 332-B",
+        "ISO 3601-2",
+        "ISO 3601-2-axial"
+      ]
+    }
+  }
+}

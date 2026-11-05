@@ -1,0 +1,329 @@
+{
+  "schema": "acadmcp-live-harness/1",
+  "smoke": "edit",
+  "status": "pass",
+  "exit_code": 0,
+  "reason": null,
+  "started_at": "2026-11-05T07:21:48+00:00",
+  "duration_s": 4.265,
+  "environment": {
+    "autocad": {
+      "name": "AutoCAD",
+      "version": "25.1s",
+      "build": "W.60.0.0 (UNICODE)",
+      "progid": "AutoCAD.Application"
+    },
+    "os": {
+      "platform": "Windows-11-10.0.26300-SP0",
+      "system": "Windows",
+      "release": "11",
+      "machine": "AMD64"
+    },
+    "python": {
+      "version": "3.12.16",
+      "implementation": "CPython"
+    },
+    "pywin32": "312",
+    "server": {
+      "version": "1.8.0",
+      "sha": "da2d7f6933a1cc153e381093a24165735ad22023",
+      "dirty": false
+    }
+  },
+  "summary": {
+    "checks": 10,
+    "passed": 10,
+    "failed": 0,
+    "errors": 0,
+    "rpc_retries": 0
+  },
+  "checks": [
+    {
+      "name": "a same-count vertex write keeps the handle",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "handle_kept": true,
+        "points_ok": true
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "the 4 -> 6 write left six vertices and two bulges",
+      "status": "pass",
+      "expected": {
+        "points": [
+          [
+            0.0,
+            0.0
+          ],
+          [
+            40.0,
+            0.0
+          ],
+          [
+            40.0,
+            20.0
+          ],
+          [
+            20.0,
+            30.0
+          ],
+          [
+            0.0,
+            20.0
+          ],
+          [
+            0.0,
+            10.0
+          ]
+        ],
+        "bulges": [
+          1.0,
+          0.0,
+          0.5,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "observed": {
+        "points": [
+          [
+            0.0,
+            0.0
+          ],
+          [
+            40.0,
+            0.0
+          ],
+          [
+            40.0,
+            20.0
+          ],
+          [
+            20.0,
+            30.0
+          ],
+          [
+            0.0,
+            20.0
+          ],
+          [
+            0.0,
+            10.0
+          ]
+        ],
+        "bulges": [
+          1.0,
+          0.0,
+          0.5,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "the 4 -> 6 write kept the handle or said it replaced it",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "handle": "80",
+        "replaced": []
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "the rewritten polyline kept its layer and XDATA",
+      "status": "pass",
+      "expected": {
+        "layer": "GEOMETRY",
+        "xdata": [
+          "{\"feature\":\"\",\"kind\":\"feature\",\"part\":\"SMOKE\",\"v\":1,\"view\":\"front\"}"
+        ]
+      },
+      "observed": {
+        "layer": "GEOMETRY",
+        "xdata": [
+          "{\"feature\":\"\",\"kind\":\"feature\",\"part\":\"SMOKE\",\"v\":1,\"view\":\"front\"}"
+        ]
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "the perimeter is the arc-exact one",
+      "status": "pass",
+      "expected": 151.1112221300699,
+      "observed": 151.111222,
+      "stage": "checks"
+    },
+    {
+      "name": "the TEXT moved in place",
+      "status": "pass",
+      "expected": [
+        50.0,
+        60.0
+      ],
+      "observed": {
+        "handle_kept": true,
+        "insertion": [
+          50.0,
+          60.0
+        ],
+        "target": [
+          50.0,
+          60.0
+        ]
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "the MTEXT moved in place",
+      "status": "pass",
+      "expected": [
+        -5.0,
+        12.5
+      ],
+      "observed": {
+        "handle_kept": true,
+        "insertion": [
+          -5.0,
+          12.5
+        ],
+        "target": [
+          -5.0,
+          12.5
+        ]
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "the dimension carries the tag of its create call",
+      "status": "pass",
+      "expected": null,
+      "observed": [
+        "{\"feature\":\"\",\"kind\":\"feature\",\"part\":\"SMOKE\",\"v\":1,\"view\":\"front\"}"
+      ],
+      "stage": "checks"
+    },
+    {
+      "name": "the table carries the tag of its create call",
+      "status": "pass",
+      "expected": null,
+      "observed": [
+        "{\"feature\":\"\",\"kind\":\"feature\",\"part\":\"SMOKE\",\"v\":1,\"view\":\"front\"}"
+      ],
+      "stage": "checks"
+    },
+    {
+      "name": "every mechanical dimension is tagged role dim",
+      "status": "pass",
+      "expected": null,
+      "observed": {
+        "dimensions": 4,
+        "roles": [
+          "dim"
+        ]
+      },
+      "stage": "checks"
+    }
+  ],
+  "documents": {
+    "opened": 1,
+    "closed": 1,
+    "left_open": [],
+    "kept": false
+  },
+  "report": {
+    "same_count": {
+      "handle_kept": true,
+      "points_ok": true
+    },
+    "four_to_six": {
+      "old": "80",
+      "handle": "80",
+      "handle_kept": true,
+      "replaced": [],
+      "points": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          40.0,
+          0.0
+        ],
+        [
+          40.0,
+          20.0
+        ],
+        [
+          20.0,
+          30.0
+        ],
+        [
+          0.0,
+          20.0
+        ],
+        [
+          0.0,
+          10.0
+        ]
+      ],
+      "bulges": [
+        1.0,
+        0.0,
+        0.5,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "points_ok": true,
+      "bulges_ok": true,
+      "layer": "GEOMETRY",
+      "xdata": [
+        "{\"feature\":\"\",\"kind\":\"feature\",\"part\":\"SMOKE\",\"v\":1,\"view\":\"front\"}"
+      ],
+      "perimeter": 151.111222,
+      "perimeter_hand": 151.1112221300699
+    },
+    "s4": {
+      "question": "AcadLWPolyline.Coordinates with a different vertex count",
+      "answer": "in_place"
+    },
+    "text": {
+      "handle_kept": true,
+      "insertion": [
+        50.0,
+        60.0
+      ],
+      "target": [
+        50.0,
+        60.0
+      ]
+    },
+    "mtext": {
+      "handle_kept": true,
+      "insertion": [
+        -5.0,
+        12.5
+      ],
+      "target": [
+        -5.0,
+        12.5
+      ]
+    },
+    "dimension_xdata": [
+      "{\"feature\":\"\",\"kind\":\"feature\",\"part\":\"SMOKE\",\"v\":1,\"view\":\"front\"}"
+    ],
+    "table_xdata": [
+      "{\"feature\":\"\",\"kind\":\"feature\",\"part\":\"SMOKE\",\"v\":1,\"view\":\"front\"}"
+    ],
+    "mech_dimensions": 4,
+    "mech_roles": [
+      "dim"
+    ]
+  }
+}

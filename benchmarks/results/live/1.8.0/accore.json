@@ -1,0 +1,346 @@
+{
+  "schema": "acadmcp-live-harness/1",
+  "smoke": "accore",
+  "status": "pass",
+  "exit_code": 0,
+  "reason": null,
+  "started_at": "2026-11-05T07:27:38+00:00",
+  "duration_s": 2.625,
+  "environment": {
+    "autocad": {
+      "name": "AutoCAD Core Console",
+      "version": "W.60.0.0 (UNICODE)",
+      "build": null,
+      "progid": null,
+      "path": "C:\\Program Files\\Autodesk\\AutoCAD 2026\\accoreconsole.exe"
+    },
+    "os": {
+      "platform": "Windows-11-10.0.26300-SP0",
+      "system": "Windows",
+      "release": "11",
+      "machine": "AMD64"
+    },
+    "python": {
+      "version": "3.12.16",
+      "implementation": "CPython"
+    },
+    "pywin32": "312",
+    "server": {
+      "version": "1.8.0",
+      "sha": "da2d7f6933a1cc153e381093a24165735ad22023",
+      "dirty": false
+    }
+  },
+  "summary": {
+    "checks": 8,
+    "passed": 8,
+    "failed": 0,
+    "errors": 0,
+    "rpc_retries": 0
+  },
+  "checks": [
+    {
+      "name": "drawing_open converts the DWG through accoreconsole",
+      "status": "pass",
+      "expected": {
+        "route": "accoreconsole",
+        "timed_out": false
+      },
+      "observed": {
+        "route": "accoreconsole",
+        "timed_out": false,
+        "exit_code": 0,
+        "seconds": 0.704
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "the console's UTF-16LE log is read back",
+      "status": "pass",
+      "expected": "a log line holding _SAVEAS",
+      "observed": {
+        "log_lines": 24,
+        "tail": [
+          "Enter version [R12(LT2)/2000(LT2000)/2004(LT2004)/2007(LT2007)/2010(LT2010)/2013(LT2013)/2018(LT2018)] <2018>: _2018",
+          "Enter decimal places of accuracy (0 to 16) or [Binary/select Objects/Preview/Version] <16>: 16",
+          "Save drawing as <~\\AppData\\Local\\Temp\\acadmcp_smoke_accore_state_y6qtdqki\\accore\\b74cb2cb3926\\in.dxf>: \"~\\AppData\\Local\\Temp\\acadmcp_smoke_accore_state_y6qtdqki\\accore\\b74cb2cb3926\\out.dxf\""
+        ]
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "the opened drawing holds the DXF twin's layers, blocks and entity counts",
+      "status": "pass",
+      "expected": {
+        "layers": [
+          "0",
+          "CENTER",
+          "CONSTRUCTION",
+          "DIM",
+          "Defpoints",
+          "GEOMETRY",
+          "HATCH",
+          "HIDDEN",
+          "PHANTOM",
+          "TEXT",
+          "TITLEBLOCK"
+        ],
+        "blocks": [
+          "*Model_Space",
+          "*Paper_Space"
+        ],
+        "entities": {
+          "Model": 0,
+          "A3": 34
+        }
+      },
+      "observed": {
+        "layers": [
+          "0",
+          "CENTER",
+          "CONSTRUCTION",
+          "DIM",
+          "Defpoints",
+          "GEOMETRY",
+          "HATCH",
+          "HIDDEN",
+          "PHANTOM",
+          "TEXT",
+          "TITLEBLOCK"
+        ],
+        "blocks": [
+          "*Model_Space",
+          "*Paper_Space"
+        ],
+        "entities": {
+          "A3": 34,
+          "Model": 0
+        }
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "the drawing saved as DXF reads back the same",
+      "status": "pass",
+      "expected": {
+        "layers": [
+          "0",
+          "CENTER",
+          "CONSTRUCTION",
+          "DIM",
+          "Defpoints",
+          "GEOMETRY",
+          "HATCH",
+          "HIDDEN",
+          "PHANTOM",
+          "TEXT",
+          "TITLEBLOCK"
+        ],
+        "blocks": [
+          "*Model_Space",
+          "*Paper_Space"
+        ],
+        "entities": {
+          "Model": 0,
+          "A3": 34
+        }
+      },
+      "observed": {
+        "layers": [
+          "0",
+          "CENTER",
+          "CONSTRUCTION",
+          "DIM",
+          "Defpoints",
+          "GEOMETRY",
+          "HATCH",
+          "HIDDEN",
+          "PHANTOM",
+          "TEXT",
+          "TITLEBLOCK"
+        ],
+        "blocks": [
+          "*Model_Space",
+          "*Paper_Space"
+        ],
+        "entities": {
+          "A3": 34,
+          "Model": 0
+        }
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "the script holds only the module's _-prefixed commands and its own staging path",
+      "status": "pass",
+      "expected": "_SAVEAS _DXF _V _2018 16 \"<staging>\\out.dxf\"",
+      "observed": [
+        "_SAVEAS\r\n_DXF\r\n_V\r\n_2018\r\n16\r\n\"~\\AppData\\Local\\Temp\\acadmcp_smoke_accore_state_y6qtdqki\\accore\\b74cb2cb3926\\out.dxf\"\r\n"
+      ],
+      "stage": "checks"
+    },
+    {
+      "name": "an overrun is killed and reported dwg_conversion_failed / timed_out",
+      "status": "pass",
+      "expected": {
+        "kind": "dwg_conversion_failed",
+        "timed_out": true
+      },
+      "observed": {
+        "raised": "DwgConversionError",
+        "kind": "dwg_conversion_failed",
+        "timed_out": true,
+        "reason": "timed_out after 0.05 s; the process tree was killed (raise ACCORECONSOLE_TIMEOUT_S for a large drawing)"
+      },
+      "stage": "checks"
+    },
+    {
+      "name": "no accoreconsole process is left running",
+      "status": "pass",
+      "expected": [],
+      "observed": [],
+      "stage": "checks"
+    },
+    {
+      "name": "the staging folder is ASCII and nothing is left in it",
+      "status": "pass",
+      "expected": {
+        "ascii": true,
+        "left": []
+      },
+      "observed": {
+        "ascii": true,
+        "left": []
+      },
+      "stage": "checks"
+    }
+  ],
+  "documents": {
+    "opened": 0,
+    "closed": 0,
+    "left_open": [],
+    "kept": false
+  },
+  "report": {
+    "exe": "C:\\Program Files\\Autodesk\\AutoCAD 2026\\accoreconsole.exe",
+    "dwg_read": {
+      "route": "accoreconsole",
+      "timeout_s": 60.0,
+      "exit_code": 0,
+      "timed_out": false,
+      "seconds": 0.704,
+      "log": [
+        "Redirect stdout (file: ~\\AppData\\Local\\Temp\\accc574122).",
+        "AcCoreConsole: StdOutConsoleMode: processed-output: disabled,auto",
+        "AutoCAD Core Engine Console - Copyright 2025 Autodesk, Inc.  All rights reserved. (W.60.0.0)",
+        "Execution Path:",
+        "C:\\Program Files\\Autodesk\\AutoCAD 2026\\accoreconsole.exe",
+        "Current Directory: ~\\AppData\\Local\\Temp\\acadmcp_smoke_accore_state_y6qtdqki\\accore\\b74cb2cb3926",
+        "Version Number: W.60.0.0 (UNICODE)",
+        "LogFilePath has been set to the working folder.",
+        "CoreHeartBeat",
+        "Regenerating model.",
+        "**** System Variable Changed ****",
+        "2 of the monitored system variables have changed from the preferred value. Use SYSVARMONITOR command to view changes.",
+        "AutoCAD menu utilities loaded.",
+        "Command:",
+        "Command:",
+        "Command:",
+        "Command: _SAVEAS",
+        "Current file format: AutoCAD 2018 Drawing",
+        "Enter file format [R14(LT98&LT97)/2000(LT2000)/2004(LT2004)/2007(LT2007)/2010(LT2010)/2013(LT2013)/2018(LT2018)/Standards/DXF/Template] <2018>: _DXF",
+        "Current DXF settings: Precision= 16 Format= ASCII Preview= No Version= 2018",
+        "Enter decimal places of accuracy (0 to 16) or [Binary/select Objects/Preview/Version] <16>: _V",
+        "Enter version [R12(LT2)/2000(LT2000)/2004(LT2004)/2007(LT2007)/2010(LT2010)/2013(LT2013)/2018(LT2018)] <2018>: _2018",
+        "Enter decimal places of accuracy (0 to 16) or [Binary/select Objects/Preview/Version] <16>: 16",
+        "Save drawing as <~\\AppData\\Local\\Temp\\acadmcp_smoke_accore_state_y6qtdqki\\accore\\b74cb2cb3926\\in.dxf>: \"~\\AppData\\Local\\Temp\\acadmcp_smoke_accore_state_y6qtdqki\\accore\\b74cb2cb3926\\out.dxf\""
+      ],
+      "log_lines": 24,
+      "dxf_version": "AC1032"
+    },
+    "counts": {
+      "truth": {
+        "layers": [
+          "0",
+          "CENTER",
+          "CONSTRUCTION",
+          "DIM",
+          "Defpoints",
+          "GEOMETRY",
+          "HATCH",
+          "HIDDEN",
+          "PHANTOM",
+          "TEXT",
+          "TITLEBLOCK"
+        ],
+        "blocks": [
+          "*Model_Space",
+          "*Paper_Space"
+        ],
+        "entities": {
+          "Model": 0,
+          "A3": 34
+        }
+      },
+      "opened": {
+        "layers": [
+          "0",
+          "CENTER",
+          "CONSTRUCTION",
+          "DIM",
+          "Defpoints",
+          "GEOMETRY",
+          "HATCH",
+          "HIDDEN",
+          "PHANTOM",
+          "TEXT",
+          "TITLEBLOCK"
+        ],
+        "blocks": [
+          "*Model_Space",
+          "*Paper_Space"
+        ],
+        "entities": {
+          "A3": 34,
+          "Model": 0
+        }
+      },
+      "saved": {
+        "layers": [
+          "0",
+          "CENTER",
+          "CONSTRUCTION",
+          "DIM",
+          "Defpoints",
+          "GEOMETRY",
+          "HATCH",
+          "HIDDEN",
+          "PHANTOM",
+          "TEXT",
+          "TITLEBLOCK"
+        ],
+        "blocks": [
+          "*Model_Space",
+          "*Paper_Space"
+        ],
+        "entities": {
+          "A3": 34,
+          "Model": 0
+        }
+      }
+    },
+    "scripts": [
+      "_SAVEAS\r\n_DXF\r\n_V\r\n_2018\r\n16\r\n\"~\\AppData\\Local\\Temp\\acadmcp_smoke_accore_state_y6qtdqki\\accore\\b74cb2cb3926\\out.dxf\"\r\n",
+      "_SAVEAS\r\n_DXF\r\n_V\r\n_2018\r\n16\r\n\"~\\AppData\\Local\\Temp\\acadmcp_smoke_accore_state_y6qtdqki\\accore\\42eaff12d60c\\out.dxf\"\r\n"
+    ],
+    "timeout": {
+      "raised": "DwgConversionError",
+      "kind": "dwg_conversion_failed",
+      "timed_out": true,
+      "reason": "timed_out after 0.05 s; the process tree was killed (raise ACCORECONSOLE_TIMEOUT_S for a large drawing)"
+    },
+    "left_running": [],
+    "staging_root_is_ascii": true,
+    "staged_left": []
+  }
+}
