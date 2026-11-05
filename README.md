@@ -64,28 +64,28 @@ Earlier releases, 1.7 and 1.6 included, are in the [changelog](https://github.co
 
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/autocad-mcp-showcase.png" alt="ISO A3 sheet: a module-6, 24-tooth spur gear with a keyed bore, its section A-A, ISO 129 dimensions with an H7 bore fit, and an ISO 7200 title block" width="820">
+<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/autocad-mcp-showcase.png" alt="ISO A3 sheet with zones: a module-6, 24-tooth spur gear with a keyed bore and full centre lines, its hatched section A-A cut along the keyway, six ISO 129 dimensions with the bore at Ø40 H7, an Ra 1.6 surface-texture symbol, a gear-data note, an ISO 7200 title block and a revision row" width="820">
 
-<sub><b>Not a mockup.</b> Every line on this sheet was drawn by the tools this server exposes — ISO layers, involute gear geometry, DIN 6885 keyway, section A-A, ISO 129 dimensions, an ISO 286 <code>H7</code> bore fit, ISO 7200 title block — then rendered headlessly by <code>view_screenshot</code>. <code>drawing_critique</code> returns <b>0 issues</b> on it. Rebuild it with <code>python scripts/render_readme_showcase.py</code>.</sub>
+<sub><b>Not a mockup.</b> Every line on this A3 sheet was drawn by the tools this server exposes — an ISO 5457 frame with zones, involute gear geometry (m6, z24), a DIN 6885 keyed bore, the section A-A cut along the keyway with hatched faces, centre lines, an ISO 128-40 cutting plane, an Ra 1.6 surface-texture symbol, six ISO 129 dimensions with the bore at <code>Ø40 H7 +0.025 / 0</code> from the ISO 286 tables, an ISO 7200 title block and a revision row — then rendered headlessly by <code>view_render</code>. <code>drawing_critique(focus=None)</code> returns <b>0 issues</b> and the finalize gate scores it <b>100</b> (grade A) over 176 entities. Rebuild it with <code>python scripts/render_readme_showcase.py</code>.</sub>
 
 </div>
 
 <table>
 <tr>
 <td width="33%" valign="top">
-<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/mech-showcase.png" alt="ISO A3 flange-coupling sheet: a hub with a full section and chain dimensions, a flange with its bolt-circle end view, two ISO 4014 bolts with ISO 4032 nuts, a parts list with linked balloons, an ISO 5457 frame with zones and an ISO 7200 title block" width="280">
+<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/mech-showcase.png" alt="ISO A3 flange-coupling sheet: the hub's end view with four holes on a Ø110 pitch circle, its hatched section A-A dimensioned Ø40 H7, Ø70, Ø140, R3, 18 and 70, a keyed shaft with its end view, four ISO 4014 M12x60 bolts and four ISO 4032 nuts as blocks, a parts list with linked balloons, an ISO 5457 frame with zones and an ISO 7200 title block" width="280">
 <br>
-<sub><b>A mechanical sheet, gated.</b> The <code>mech_assembly</code> benchmark sheet: a hub drawn from its part model with a full section and chain dimensions, a flange with its bolt-circle end view, two ISO 4014 M12×60 bolts and ISO 4032 nuts inserted as blocks, the ISO 7573 parts list read off the drawing, balloons linked to its rows, an ISO 5457 frame and an ISO 7200 title block. <code>drawing_critique(focus=None)</code> returns <b>0 issues</b> and the finalize score is <b>100</b>. Rebuild it with <code>python scripts/render_readme_mech.py</code>.</sub>
+<sub><b>A mechanical sheet, gated.</b> A flange coupling from two part models: <code>mech_part_draw</code> draws the hub's end view and the keyed shaft, <code>mech_view_add</code> adds the hatched section A-A, and the four M12 clearance holes are a <code>mech_hole_pattern</code> on a Ø110 pitch circle. Every diameter sits on its own station — bore <code>Ø40 H7</code>, boss Ø70, flange Ø140, shaft <code>Ø40 k6</code> — with ISO 21920-1 surface-texture symbols on the machined seats. The four ISO 4014 M12×60 bolts and four ISO 4032 nuts are blocks that carry XDATA, so the ISO 7573 parts list (2 rows, 4 each) is read off the drawing and its balloons are linked to them. <code>drawing_critique(focus=None)</code> returns <b>0 issues</b> and <code>drawing_finalize</code> scores it <b>100</b> (grade A) over 253 entities. Rebuild it with <code>python scripts/render_readme_mech.py</code>.</sub>
 </td>
 <td width="33%" valign="top">
-<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/arch-showcase.png" alt="Two-room floor plan: hatched brick walls with an aerated-concrete partition, two doors, two windows, a straight stair, room labels with measured areas, exterior dimension chains, and door, window and room schedules" width="280">
+<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/arch-showcase.png" alt="A2 apartment plan at 1:50 on its paper layout: a hatched brick ring split into five rooms by aerated-concrete partitions, five doors, five windows, a straight stair, furniture and sanitary blocks, a structural grid, a north arrow, section marks, exterior dimension chains, room labels with measured areas, and door, window and room schedules" width="280">
 <br>
-<sub><b>A floor plan whose areas nobody typed.</b> <code>arch_plan_from_spec</code>'s example, drawn in one transaction: a 250 mm brick ring split by a 100 mm AAC wall, two doors, two windows, a straight stair and exterior dimension chains at 1:50. The rooms measure 27.74 and 21.99 m², read from the faces the walls enclose, and the door, window and room schedules are read off the drawing. <code>drawing_critique(focus=None)</code> returns <b>0 issues</b>. Rebuild it with <code>python scripts/render_readme_arch.py</code>.</sub>
+<sub><b>A floor plan whose areas nobody typed.</b> An A2 apartment plan at 1:50, rendered from its paper layout. One <code>arch_plan_from_spec</code> transaction draws a 250 mm brick ring, splits it into five rooms with 100 mm AAC partitions, hosts five doors and five windows in their walls, adds a straight stair and sets out the door, window and room schedules as tables. The engine measured each room off its wall faces — living 19.27 m², bedroom 13.99 m², 57.20 m² in total — and no area was typed. <code>arch_grid</code>, <code>arch_dimension_chains</code>, <code>arch_symbol</code> (north arrow, section marks) and 15 catalogue blocks finish it. <code>drawing_critique(focus=None)</code> returns <b>0 issues</b> and the finalize gate scores it <b>100</b> (grade A). Rebuild it with <code>python scripts/render_readme_arch.py</code>.</sub>
 </td>
 <td width="33%" valign="top">
-<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/pid-showcase.png" alt="P&ID sheet: a centrifugal pump, a diaphragm-actuated globe control valve, a vertical vessel with two nozzles, a flow controller bubble and an off-page connector, joined by numbered process lines and an electric signal line" width="280">
+<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/pid-showcase.png" alt="A3 feed-and-reaction P&ID: a feed tank, two centrifugal pumps, a shell-and-tube cooler and a reactor joined by numbered process and cooling-water lines routed round the symbols, three ISA-5.1 control loops with diaphragm control valves, two pressure gauges, four off-page connectors, notes, an ISO 5457 frame with zones and an ISO 7200 title block" width="280">
 <br>
-<sub><b>The same server as a P&ID drafter.</b> <code>pid_from_spec</code> placed five catalogue symbols as real blocks with <code>TAG</code> attributes and named ports and routed four port-to-port lines with ISA-5.1 classes and line numbers, all in one transaction. Then <code>pid_graph</code> read the sheet back: 5 nodes, 4 edges, 0 dangling ends, <code>confidence_min</code> 1.0. Rebuild it with <code>python scripts/render_readme_pid.py</code>.</sub>
+<sub><b>The same server as a P&ID drafter.</b> <code>pid_from_spec</code> drew this A3 feed-and-reaction sheet in one transaction, routed round every symbol (<code>routing: "avoid"</code>): a feed tank, two centrifugal pumps, a shell-and-tube cooler, a reactor, three ISA-5.1 control loops with diaphragm valves, two pressure gauges and four off-page connectors. Then <code>pid_graph</code> read the sheet back: 21 nodes, 19 edges, 0 dangling ends, <code>confidence_min</code> 1.0. <code>drawing_critique(focus=None)</code> returns <b>0 issues</b> and the finalize gate scores it <b>100</b>. Rebuild it with <code>python scripts/render_readme_pid.py</code>.</sub>
 </td>
 </tr>
 </table>
@@ -470,21 +470,24 @@ The diagram under *The two engines* is the call path; the typed contract is 23 m
 The sequence in [`scripts/render_readme_showcase.py`](https://github.com/U-C4N/Autocad-MCP/blob/main/scripts/render_readme_showcase.py), which produced the gear sheet:
 
 ```text
-drawing_new()                                    ISO linetypes + layers bootstrapped
+drawing_new() + drawing_plan(...)                ISO linetypes + layers bootstrapped, the plan on record
 drawing_apply_iso_layers("mech")                 ISO 128 lineweights per layer
-drawing_settings({units: "mm", linear_precision: 2})
+dimstyle_create("ISO-35", ...)                   3.5 mm text and arrows for an A3 sheet
+sheet_frame(size="A3")                           ISO 5457 frame with zones
 
 gear_draw_spur_front_view(                       involute flanks, not a decorated circle
-    module=6, teeth=24, center=[135, 172],
-    bore_diameter=40, keyway_width=12, keyway_depth=3.3)
-gear_draw_section_aa(x_offset=300, face_width=46)
+    module=6, teeth=24, bore_diameter=40,
+    keyway_width=12, keyway_depth=3.3)
+gear_draw_section_aa(face_width=46)              then cut along the keyway, faces hatched (hatch_material)
+centre_marks(...) + section_line(...)            centre lines, the A-A cutting plane
 
-dimension_linear(...)                            ISO 129
-dimension_diameter(..., fit="H7")                deviations from authored ISO 286 tables
-titleblock_apply_iso_a3(title="SPUR GEAR m6 z24", material="C45E", ...)
+dimension_linear(...) x5                         ISO 129: pitch Ø144, tip Ø156, face 46, keyway 12 and 43.3
+dimension_diameter(..., fit="H7")                Ø40 H7 +0.025 / 0 from the authored ISO 286 tables
+surface_texture(..., ra=1.6)                     on the bore
+titleblock_apply(title="SPUR GEAR m6 z24", material="C45E", ...) + a revision row
 
 drawing_critique(focus=None)                     -> []  must be empty before finalize
-view_screenshot()                                -> PNG
+view_render(max_px=3200)                         -> PNG
 ```
 
 The full production loop adds `drawing_preflight` and `drawing_plan` at the front, `drawing_refine` after the critique, and `layout_create` + `viewport_create` + `drawing_deliver` at the end.
