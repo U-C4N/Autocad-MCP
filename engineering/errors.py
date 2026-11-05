@@ -353,16 +353,23 @@ class CadNotRunningError(RuntimeError):
     """No CAD application is running and ``CAD_LAUNCH=never`` forbids starting
     one (#19): ``GetActiveObject`` failed and ``Dispatch`` was never called, so
     nothing was started and nothing was written. A ``RuntimeError``, like the
-    connect error it replaces under that setting."""
+    connect error it replaces under that setting.
+
+    ``detail`` is the ``GetActiveObject`` failure. It is carried in the message
+    and raised ``from None``: the envelope's message is the deepest cause on
+    the chain, and a chained ``com_error`` put a bare, localised HRESULT tuple
+    on the wire instead of this text (measured live, 2026-11-05)."""
 
     kind = "cad_not_running"
 
-    def __init__(self, progid: str):
+    def __init__(self, progid: str, detail: str | None = None):
         self.progid = str(progid)
+        self.detail = None if detail is None else str(detail)
+        suffix = f" (GetActiveObject: {self.detail})" if self.detail else ""
         super().__init__(
             f"{self.progid} is not running, and CAD_LAUNCH=never lets this server attach "
             "only. Nothing was started or written. Open it and retry (or set "
-            "CAD_LAUNCH=auto to let the server start it)."
+            f"CAD_LAUNCH=auto to let the server start it).{suffix}"
         )
 
 

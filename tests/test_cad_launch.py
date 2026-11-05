@@ -319,4 +319,15 @@ async def test_never_reaches_the_client_as_cad_not_running(monkeypatch, com, sea
         assert payload["kind"] == "cad_not_running" and payload["category"] == "dependency"
         assert payload["retryable"] is True and payload["backend"] == "com"
         assert payload["hint"] == errors.describe("cad_not_running").hint
-    assert [call for call, _ in seat.calls] == ["GetActiveObject"], "nothing was launched"
+        # Measured live (2026-11-05): with the com_error chained as the cause,
+        # the wire message was the bare localised HRESULT tuple, not this text.
+        assert payload["message"].startswith(f"{config.DEFAULT_CAD_PROGID} is not running")
+        assert "CAD_LAUNCH=never" in payload["message"]
+        assert "Operation unavailable" in payload["message"], "the attach failure is kept"
+        launch = await connected.call_tool("system_launch", {}, raise_on_error=False)
+        assert launch.is_error is True
+        assert launch.structured_content["kind"] == "cad_not_running"
+        assert launch.structured_content["message"].startswith(
+            f"{config.DEFAULT_CAD_PROGID} is not running"
+        )
+    assert [call for call, _ in seat.calls] == ["GetActiveObject"] * 2, "nothing was launched"

@@ -431,7 +431,7 @@ def _acad_app():
         except Exception as exc:
             if config.settings.cad_launch == "never":
                 log.debug("GetActiveObject(%r) failed and CAD_LAUNCH=never: %s", progid, exc)
-                raise CadNotRunningError(progid) from exc
+                raise CadNotRunningError(progid, detail=str(exc)) from None
             log.debug("GetActiveObject(%r) failed, trying Dispatch: %s", progid, exc)
             try:
                 app = win32com.client.Dispatch(progid)
@@ -5383,7 +5383,7 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
                     app = win32com.client.GetActiveObject(progid)
                 except Exception as exc:
                     if config.settings.cad_launch == "never":
-                        raise CadNotRunningError(progid) from exc
+                        raise CadNotRunningError(progid, detail=str(exc)) from None
                     log.debug("GetActiveObject(%r) failed, dispatching: %s", progid, exc)
                     app = win32com.client.Dispatch(progid)
                     launched = True
