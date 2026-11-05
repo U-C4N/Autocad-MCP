@@ -264,9 +264,17 @@ def _code_build(code_root: Path) -> dict:
             return None
         return done.stdout.strip() if done.returncode == 0 else None
 
+    # The checkout's own pyproject, never ``import version``: a side's
+    # version.py answers from the installed package's metadata first, which is
+    # the environment's release (a v1.7.0 checkout measured from a 1.8.0
+    # environment read "1.8.0"), not the code under test.
+    version = None
     try:
-        from version import __version__ as version
-    except ImportError:
+        import tomllib
+
+        with (code_root / "pyproject.toml").open("rb") as stream:
+            version = str(tomllib.load(stream)["project"]["version"])
+    except (OSError, KeyError, ValueError):
         version = None
     status = git("status", "--porcelain", "--untracked-files=no")
     return {

@@ -676,6 +676,22 @@ def test_the_committed_perf_result_is_pending_against_the_fixed_targets():
         assert all(row["pass"] is None for row in payload["verdict"].values())
 
 
+def test_a_perf_side_names_the_version_of_its_own_checkout(tmp_path, monkeypatch):
+    """MEASURED (perf_com, 2026-11-05): the v1.7.0 side was recorded as
+    ``version: "1.8.0"``, because its version.py answers from the installed
+    package's metadata - the environment's release, not the code under test."""
+    import sys
+    import types
+
+    perf = importlib.import_module("benchmarks.perf_com")
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "autocad-mcp-pro"\nversion = "1.7.0"\n', encoding="utf-8"
+    )
+    monkeypatch.setitem(sys.modules, "version", types.SimpleNamespace(__version__="1.8.0"))
+    assert perf._code_build(tmp_path)["version"] == "1.7.0"
+    assert perf._code_build(tmp_path / "missing")["version"] is None
+
+
 def test_the_perf_verdict_reads_the_targets_the_way_the_plan_states_them():
     perf = importlib.import_module("benchmarks.perf_com")
 
