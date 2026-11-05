@@ -445,7 +445,7 @@ def _acad_app():
             try:
                 _make_launched_visible(app, progid)
             except Exception:
-                app = None  # released here, on the COM thread (see the helper)
+                app = None  # the helper stripped the tracebacks that held it
                 raise
             _COM_STATE["app"] = app
     return _COM_STATE["app"]
@@ -478,6 +478,15 @@ def _launch_visible_budget() -> float:
     return _LAUNCH_VISIBLE_BUDGET_S
 
 
+def _strip_tracebacks(exc: BaseException) -> None:
+    """Drop the traceback of ``exc`` and of every exception chained to it."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        exc.with_traceback(None)
+        exc = exc.__cause__ or exc.__context__
+
+
 def _make_launched_visible(app, progid: str) -> None:
     """Set ``Visible = True`` on an instance ``Dispatch`` just started (#19).
 
@@ -508,8 +517,12 @@ def _make_launched_visible(app, progid: str) -> None:
             except Exception as quit_exc:  # best effort: it may already be gone
                 log.warning("Quit() of the %s this server started failed: %s", progid, quit_exc)
                 quit_note = f"tried to quit it (Quit failed: {quit_exc})"
-            # The traceback keeps this frame alive; a COM proxy is released on
-            # the COM thread, never wherever the exception is collected.
+            # The proxy must die here, on the COM thread, not wherever the error
+            # is dropped: the cause's traceback ends in pywin32's
+            # ``CDispatch.__setattr__``, whose frame holds the proxy as ``self``
+            # (and its ``__context__``, the swallowed com_error, does too), so
+            # the chain keeps its messages but loses its tracebacks.
+            _strip_tracebacks(exc)
             app = None
             raise RuntimeError(
                 f"Cannot connect to CAD application {progid!r}: it was not running, so this "

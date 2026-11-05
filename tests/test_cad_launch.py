@@ -20,7 +20,9 @@ pywin32) and ``_COM_STATE`` is a fresh dict per test.
 
 from __future__ import annotations
 
+import gc
 import types
+import weakref
 
 import pytest
 from fastmcp import Client
@@ -210,6 +212,48 @@ def test_a_quit_that_fails_is_reported_not_raised_instead(monkeypatch, seat):
     with pytest.raises(RuntimeError, match=r"tried to quit it \(Quit failed"):
         cb._acad_app()
     assert "app" not in cb._COM_STATE
+
+
+class _HoldsSelfApp:
+    """A proxy whose ``Visible`` setter fails the way pywin32's
+    ``CDispatch.__setattr__`` does: inside a method holding ``self``, turning a
+    caught com_error into ``AttributeError`` (so ``__context__`` holds one too)."""
+
+    def __setattr__(self, name, value):
+        if name == "Visible":
+            try:
+                raise _FakeComError(
+                    _RPC_E_CALL_REJECTED, "Call was rejected by callee.", None, None
+                )
+            except _FakeComError:
+                raise AttributeError(  # noqa: B904 - pywin32 chains implicitly
+                    "Property 'AutoCAD.Application.Visible' can not be set."
+                )
+        object.__setattr__(self, name, value)
+
+    def Quit(self):  # noqa: N802
+        pass
+
+
+def test_a_failed_launch_does_not_keep_the_proxy_alive_in_the_error(monkeypatch, seat):
+    """The proxy is released on the COM thread, not wherever the error is dropped."""
+    monkeypatch.setattr(cb, "_launch_visible_budget", lambda: 0.0)
+
+    def _launch():
+        app = _HoldsSelfApp()
+        ref = weakref.ref(app)
+        try:
+            cb._make_launched_visible(app, config.DEFAULT_CAD_PROGID)
+        except RuntimeError as exc:
+            del app  # the test drops its own reference
+            return ref, exc
+        raise AssertionError("Visible never lands, so the helper must raise")
+
+    ref, raised = _launch()
+    gc.collect()
+    assert ref() is None, "the raised error (its cause's traceback) still holds the proxy"
+    assert isinstance(raised.__cause__, AttributeError), "the cause and its message are kept"
+    assert "can not be set" in str(raised) and "quit it" in str(raised)
 
 
 def test_the_visible_budget_is_inside_the_job_deadline(monkeypatch):
