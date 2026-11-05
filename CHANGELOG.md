@@ -129,6 +129,135 @@ command:
   by the coordinator on an idle machine. The W1 gate numbers below are kept as
   history; their A/A spread was 12.3 %, so their bound was 1.25.
 
+### Live-seat fixes (2026-11-04)
+
+The first runs of the live smokes on AutoCAD 2026 found these; each is fixed
+where the fault was, with a test that fails on the previous code. The result
+files they cite are the live-fix run's; *Live evidence* below records what is
+pinned to the release.
+
+- **Two lines are trimmed and extended by geometry
+  (`backends/com_backend.py`).** Measured: the seat's `TRIMEXTENDMODE` is 1
+  (Quick, the default since AutoCAD 2021), so the `_TRIM` script took the
+  cutter as the object to trim and erased it; in Standard mode the pick is a
+  screen point, so a line outside the view selected nothing and left
+  `SendCommand` blocked at a crossing-window prompt, and TRIM removes the
+  picked side where the contract keeps it. LINE + LINE now goes through
+  `_line_corner`, the headless engine's own rule (the intersection of the
+  infinite lines; trim keeps the segment holding the point, extend moves the
+  nearer end), in place, handle kept, with no command and no tab switch.
+  Other pairs keep the command, now under `TRIMEXTENDMODE` 0 for that command
+  only (`_safe_send_command(sysvars=)`, restored after); `_set_variable`
+  retries an int as a `VT_I2` VARIANT, because a Python int raised `Error
+  setting system variable`. Tests in `tests/test_com_space.py`.
+- **`drawing_undo` and `drawing_redo` touch no system variable.** Measured:
+  `_safe_send_command` zeroed OSMODE / SNAPMODE / CMDECHO around a command,
+  and a `SetVariable` is an undo record of its own - after
+  `SetVariable(OSMODE, 0)`, `_UNDO 1` undid the variable and left the drawing,
+  and `_REDO` after the restore answered `Nothing to redo`. The undo check had
+  passed only because the variables were already 0. `_undo_step_sync` now
+  calls `_safe_send_command(quiet=False)`, which touches no variable
+  (`tests/test_com_space.py::test_undo_and_redo_touch_no_system_variable`).
+- **The space smoke's raw-command stage measures what AutoCAD 2026 allows
+  (`scripts/smoke_space_com.py`; product unchanged).** A raw command runs in
+  the active space, so with the operator's tab on Layout1 its circle is
+  reported in Layout1 with `created_outside_target_space`, and on the Model tab
+  in Model, clean; the stage now checks both. A command left at its prompt
+  cannot be produced through ActiveX on this seat: `SendCommand('_SCALE\n')`
+  does not return until the prompt is answered, `PostCommand` returns but then
+  every COM call is `RPC_E_CALL_REJECTED` until a key is pressed in AutoCAD,
+  and an ESC character in a `SendCommand` string is refused as `Invalid
+  input`. The smoke no longer sends such a command and records
+  `PROMPT_LIMITATION`; `_safe_send_command`'s docstring says that a raw
+  command left at its prompt overruns `COM_CALL_TIMEOUT`.
+- **An entity fingerprint leaves out what AutoCAD regenerates on every export
+  (`engineering/changes/preview.py`).** Measured: two `Document.Export` reads
+  of an untouched parts-list ACAD_TABLE differed, because each export hands
+  the table a new extension dictionary (the `{ACAD_XDICTIONARY` pointer, 360)
+  and new proxy graphics (160 + 310), so the preview and precondition
+  fingerprints of any live TABLE moved on every read and an apply with a
+  precondition on one would have been refused `stale_revision` for nothing.
+  The fingerprint now hashes `_content_tags`: the extension dictionary's
+  pointer becomes a marker that one exists, the proxy graphics are dropped,
+  every other tag counts. Both engines use it; headless fingerprints of
+  entities with neither are unchanged
+  (`tests/test_change_preview.py::test_what_autocad_regenerates_on_every_export_does_not_move_a_fingerprint`).
+- **The live harness never runs a write twice after a refused later call
+  (`scripts/live/harness.py`).** Measured: on a freshly started seat a
+  content-changing job that had already drawn its LINE when a later call was
+  refused was retried whole and drew the line again (`Lines 9D and 9E are
+  duplicates`). Inside a `ComBackend` `_mutating` call, a job that had touched
+  the Application before the refusal is no longer retried and the refusal is
+  raised; reads, the smoke's own raw jobs and `application_busy` (refused
+  before anything ran) are retried as before (`tests/test_live_harness.py`).
+- **The settings smoke counts both diameter glyphs in the `%%c<>` read-back
+  (`scripts/smoke_settings_com.py`).** Measured: the `*D` text AutoCAD holds
+  for a diameter with the override `%%c<>` is `Ø∅20` - U+00D8 from `%%c`, then
+  U+2205, the diameter dimension's own prefix - and the smoke counted only
+  `Ø`, so its recorded (not asserted) `double_prefix_is_double` read false
+  although the sign is printed twice. It now counts both and records
+  `double_prefix_codepoints`.
+- **A refused member lookup is waited out before it reaches the caller
+  (`backends/com_backend.py`, `RejectedLookupError`).** Measured: pywin32's
+  dynamic `CDispatch.__getattr__` swallowed the `RPC_E_CALL_REJECTED` of its
+  `GetIDsOfNames` and raised a bare `AttributeError` (`<unknown>.Count` right
+  after a document was closed), so no rejection handler ever saw it; and in a
+  5,000-line drawing one `entity_fillet`'s `SendCommand` lookup was refused
+  right after the previous FILLET. `com_backend` wraps
+  `CDispatch.__getattr__` once at import: a lookup that already failed costs
+  one more `GetIDsOfNames`; a busy answer is repeated (0.05 s doubling to
+  1 s) for up to `_LOOKUP_PATIENCE_S` = 10 s, then raised as
+  `RejectedLookupError` (an `AttributeError`, so `hasattr` is unchanged, and a
+  `com_error` carrying the HRESULT, so every rejection handler sees it); a
+  missing member stays the `AttributeError` it was
+  (`tests/test_com_rejected_lookup.py`).
+- **The operator-edit counter never calls into a closed document's namespace
+  (`backends/com_backend.py`).** Measured: AutoCAD 2026 crashed three times
+  (heap corruption 0xC0000374), and a probe that saves a DWG, closes it, opens
+  it again and draws reproduced an access violation in OLEAUT32 in one round.
+  The counter cached its Visual LISP function objects per document id, and a
+  file closed and reopened in one session keeps its name, path and document
+  id, so the reopened document's first job called the closed namespace's
+  evaluator. The cache key is now the document id and the document's window
+  handle (`_doc_window`, new for every open), so a reopened document misses
+  the cache, the stale entry is dropped without being called, and without a
+  readable window nothing is cached. The probe then ran 4 rounds (8 documents
+  opened and closed) with no Application Error
+  (`tests/test_operator_edit_revision.py`).
+- **A call AutoCAD answers "retry later" is retried by COM
+  (`backends/message_filter.py`).** Measured: one `entity_create_line` inside
+  the mech smoke's title block and one `entity_fillet` in
+  `benchmarks/perf_com.py` failed with `RPC_E_CALL_REJECTED` mid-write. A
+  ctypes `IMessageFilter` is registered on the STA thread right after
+  `CoInitialize` (`com_backend._com_init`): while AutoCAD answers
+  `SERVERCALL_RETRYLATER` the same call is retried after 100 ms
+  (`RETRY_PAUSE_MS`) until 15 s have passed (`RETRY_BUDGET_MS`), instead of
+  failing mid-write. `_com_teardown` removes it before `CoUninitialize`; a
+  registration that fails is logged and every call behaves as before
+  (`tests/test_com_message_filter.py`).
+- **A killed accoreconsole's staging folder is removed again
+  (`backends/dwg_read._remove_staging`).** Measured: right after thirteen COM
+  smokes, the accore smoke found the timed-out conversion's staging folder a
+  second later, still held by the killed console. The removal is now repeated
+  for up to 5 s (`_REMOVE_PATIENCE_S`, 0.1 s apart); what is still held is
+  logged and left to the hourly sweep (two tests in
+  `tests/test_dwg_read.py`).
+- **Spikes S4 and S5 are measured on AutoCAD 2026**
+  (`docs/analysis/spikes-1.8.0.json`). S4: `Coordinates` with a different
+  vertex count is written in place (a 4-vertex LWPOLYLINE set to 6 vertices
+  kept its handle, layer and XDATA), so `entity_set_vertices` needs no replace
+  fallback on 2026; a dimension's `*D` block is redrawn by `Update()` after a
+  DIMDEC change and after `entity_scale`, confirmed by the export read-back;
+  `%%c<>` prints a double sign (`Ø∅20`), so `dim_double_prefix` is confirmed
+  and its severity may rise in 1.8.1. UNDO steps per `mech_part_draw`, nested
+  `StartUndoMark` and HATCH loop deletion stay unmeasured, their runtime
+  fallbacks stay, and no claim is made. S5: a DWG reopened on Layout1 and an
+  operator's Layout1 tab both make 1.7.0's `ActiveLayout.Block` rule draw on
+  Layout1 (both reproduce), so 1.8-05's bound target space is kept; a
+  `_SCALE` left at its prompt blocks the seat instead of drawing in paper
+  space (`PROMPT_LIMITATION`), so `command_incomplete` is not reachable
+  through ActiveX on AutoCAD 2026.
+
 ### Live evidence
 
 No smoke has a 1.8.0 pass row today: this release's live matrix,

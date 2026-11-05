@@ -11,7 +11,7 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-1f6feb?logo=python&logoColor=white)](https://github.com/U-C4N/Autocad-MCP/blob/main/pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-3fb950)](https://github.com/U-C4N/Autocad-MCP/blob/main/LICENSE)
 
-[Install](#install) · [What's new](#whats-new-in-17) · [Tools](#what-you-get) · [Engines](#the-two-engines) · [Evidence](#evidence) · [Limits](#what-this-release-is-bad-at) · [Config](#configuration) · [Changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md)
+[Install](#install) · [What's new](#whats-new-in-18) · [Tools](#what-you-get) · [Engines](#the-two-engines) · [Evidence](#evidence) · [Limits](#what-this-release-is-bad-at) · [Config](#configuration) · [Changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md)
 
 <img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/autocad-mcp-showcase.png" alt="ISO A3 sheet: a module-6, 24-tooth spur gear with a keyed bore, its section A-A, ISO 129 dimensions with an H7 bore fit, and an ISO 7200 title block" width="800">
 
@@ -26,7 +26,38 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 > `DISCOVERY_MODE=off` lists 253: the 252 a default profile enables (`ENABLE_3D` unset hides the five
 > solids) plus `describe_tool`. `system_about` is the runtime authority.
 
-## What's new in 1.7
+## What's new in 1.8
+
+1.7 made what the server draws provable. 1.8.0 makes it **remember**, finish a job in **one call** and **measure itself honestly** ([design](https://github.com/U-C4N/Autocad-MCP/blob/main/docs/superpowers/specs/2026-11-03-v1.8.0-design.md)). The new tools are `entity_modify_where`, `layer_rename`, `layer_merge`, `checkpoint_create`, `checkpoint_list`, `checkpoint_restore`, `drawing_history`, `mech_part_revise` and `pid_project`, and the new resources `autocad://critique/focuses` and `autocad://pid/project/last`; the counts are in the release snapshot above, and `system_about` is the authority.
+
+| | What 1.8.0 adds |
+|---|---|
+| **It remembers** | The operation journal is durable by default (sqlite in `ACADMCP_STATE_DIR`): a reopened file continues its `document_id` and revision, a client operation id replays after a restart, and headless `drawing_undo` steps back to the newest checkpoint, also after a restart. `checkpoint_create` / `checkpoint_list` / `checkpoint_restore` keep stored states; live, `mode="in_place"` is refused with capability `checkpoint_restore_in_place` and `new_document` opens the checkpoint instead. `drawing_history` finds the value a drawing had in round 2 in two calls after a restart. Every headless DXF write is atomic, and `drawing_open(path, recover=True)` reads a damaged DXF into a new lineage whose source is protected (`recovered_source_protected`) |
+| **One call, not hundreds** | `entity_modify_where` is QSELECT + CHPROP with a dry run, `layer_rename` renames every reference, `layer_merge` is LAYMRG, and `dimension_auto(selector=...)` dimensions a whole part. Measured task cells: a layer clean-up in 2 calls (1.7.0: 124) and a plate's dimensions in 2 (1.7.0: 89). A `cad_batch` that writes is all or nothing by default, and a literal handle that names no entity refuses the whole batch before anything runs (`unknown_handle`) |
+| **Six tools listed, every tool callable** | `DISCOVERY_MODE=search` is the default: `search_tools`, `describe_tool`, `call_tool` and the pinned `cad_batch`, `drawing_info` and `entity_list` cost **1,026** prompt tokens idle, against 59,138 for the full `DISCOVERY_MODE=off` list. A description over 800 characters is listed short, with `Details: describe_tool.`; the whole text is one call away ([table below](#why-this-exists)) |
+| **One error envelope** | Every error on every route is `{ok: false, kind, category, retryable, hint, operation_id, ...}`, typed by exception class and never by message text; the text content is what a 1.7 client read. A missing handle, path, command or file has its own kind (`not_found`, `unknown_handle`, `file_not_found`, ...). A failed `drawing_finalize` returns its `score`, `blocking` rows and `qa_coverage`, so no second QA read is needed |
+| **QA that names what it did not check** | Every critique lane writes `checked` or `not_checked` with a reason, and `qa_coverage` carries them into finalize, delivery and the manifest. The `dimension_truth` focus judges a dimension by the text the sheet really shows (`dim_override_disagrees`, `dim_render_stale`, `dim_value_hidden`, ...), and `property_override` reports entities that override their layer. A lineweight of -3 is *Default*, never ByLayer. With `summary=True` a 500-issue critique is answered in 735 characters |
+| **Parts revised, P&IDs as projects** | `mech_part_revise` changes a drawn part by its parameters and rebuilds its views in place, keeping its handles; a hand edit refuses it (`hand_edited_tagged_entity`), and a part drawn before 1.8.0 is `model_drift` until `overwrite=True`. `pid_line_draw(route="avoid")` goes round the symbols between its ports (`no_route`, `routing_budget_exceeded`), checked by the new `pid_line_through_symbol` focus. `pid_project` checks off-page links, cross-sheet tags and line continuity over a set of sheet files without modifying any; a `.dwg` sheet is read only on the live engine and refused headlessly with capability `dwg` |
+| **DWG opens headlessly** | `drawing_open` on a `.dwg` converts it through the ODA File Converter, then AutoCAD's `accoreconsole`. With neither it is a typed capability refusal (`dwg_read`); when every route fails it is `dwg_conversion_failed` with its `attempts[]`. A save onto the `.dwg` is still refused (`dwg`): save it as `.dxf` |
+| **Narrowed on request** | `READ_ONLY`, `TOOL_ALLOWLIST` / `TOOL_DENYLIST` and `MAX_TOOL_COST` refuse a call before anything runs (`policy_refused`). A writer takes only its own extensions and never a name AutoCAD or Windows loads (`path_refused`). The HTTP transport refuses an unknown Origin (403), a foreign Host (421) and a body over 8 MiB (413). `system_run_lisp` runs an AutoLISP read tier under `LISP_POLICY=read` (COM only: the headless engine has no LISP) |
+| **The live engine draws where it means to** | A live seat draws in model space until `layout_set_current` names a sheet; the tab the operator clicks no longer moves it. `system_run_command` and live undo / redo wait for the command and can fail `command_incomplete`. One display refresh per COM job, and `entity_batch_create` / `entity_delete_many` run as STA jobs sliced at a quarter of `COM_CALL_TIMEOUT`. No smoke result is pinned to 1.8.0 yet: see *Live evidence* in the [changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md) |
+| **Evidence** | Correctness suite 83 / 83 against v1.7.0's 61 / 83, 22 fixed and 0 regressed (`ab-v1.7.0-vs-v1.8.0.json`). Matrix v9: 47 / 47 attempted tasks of 49 (`lisp_read_tier` `environment_blocked`, `std_tables_b40` `not_run`). The full headless suite: `7501 passed, 1 xfailed`. The token budget gate exits 0 ([evidence](#evidence)) |
+
+### One call where 1.7 needed hundreds
+
+```text
+drawing_open(path)                                 the journal continues the file's id and revision
+entity_modify_where(where, set, dry_run=True)      count, would_change and a preview
+cad_batch(steps, expected_revision=...)            all or nothing; a missing handle refuses the batch
+dimension_auto(selector={"layer": "GEOMETRY"})     a part dimensioned in one call
+drawing_critique(focus=None, summary=True)         compact; qa_coverage names every lane not checked
+drawing_history(handle=..., detail="args")         what a value was in round 2, after a restart
+checkpoint_restore("cp-3", mode="new_document")    back to a stored state, as its own document
+```
+
+Several defaults changed. Each has a switch back to 1.7.0's behaviour where one exists (`DISCOVERY_MODE=off`, `cad_batch(on_error="stop")`, `JOURNAL_DURABLE=off`, `LISP_POLICY=denylist`, `strict_critique=False`, `COM_REFRESH_MODE=regen`, ...), and the changelog's *Breaking at a glance* lists every one. Not in 1.8.0: no B40 feature-table row is transcribed (every size is still refused by name), and the native .NET worker is deferred to 1.9.0 by a rule fixed before any measurement (`docs/adr/0001-native-worker.md`).
+
+## What was new in 1.7 (the previous release)
 
 1.6 taught the server to draw whole sheets and to read other people's drawings. 1.7.0 makes what it draws **provable** and what it runs **safe** ([design](https://github.com/U-C4N/Autocad-MCP/blob/main/docs/superpowers/specs/2026-10-24-v1.7.0-design.md)). One new tool, `drawing_verify_requirements`, and three new resources; the rest is what the existing 247 tools now guarantee.
 
