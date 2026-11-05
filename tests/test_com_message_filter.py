@@ -78,7 +78,14 @@ def test_the_filter_registers_on_a_com_thread_and_is_removed_again():
     """The vtable is one COM accepts: registration answers S_OK on a thread
     that initialised COM, a second ``install`` is a no-op, ``uninstall``
     drops it and a second ``uninstall`` has nothing to drop. On its own
-    thread, so pytest's main thread is left as it was."""
+    thread, so pytest's main thread is left as it was.
+
+    The unregistered filter stays referenced (``_retired``): COM may call its
+    ``Release`` when it is replaced or at ``CoUninitialize``, and a freed
+    ctypes callback is a jump into unmapped memory. MEASURED 2026-11-05: with
+    the reference dropped before ``CoRegisterMessageFilter(NULL)`` the full
+    suite died with STATUS_ILLEGAL_INSTRUCTION in a test file that passes on
+    its own."""
     pythoncom = pytest.importorskip("pythoncom")
     seen: dict[str, object] = {}
 
@@ -88,7 +95,9 @@ def test_the_filter_registers_on_a_com_thread_and_is_removed_again():
             seen["first"] = mf.install()
             seen["while"] = mf.installed()
             seen["again"] = mf.install()
+            keep = mf._installed.keep
             seen["removed"] = mf.uninstall()
+            seen["kept"] = mf._retired[-1] is keep
             seen["after"] = mf.installed()
             seen["removed_again"] = mf.uninstall()
         except BaseException as exc:  # noqa: BLE001 - reported below
@@ -106,6 +115,7 @@ def test_the_filter_registers_on_a_com_thread_and_is_removed_again():
         "while": True,
         "again": True,
         "removed": True,
+        "kept": True,
         "after": False,
         "removed_again": False,
     }

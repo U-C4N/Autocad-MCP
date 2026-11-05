@@ -71,6 +71,12 @@ E_NOINTERFACE = -2147467262  # 0x80004002
 stats: dict[str, int] = {"retried": 0, "given_up": 0, "rejected": 0}
 
 _installed = threading.local()
+#: Every filter ever registered, kept for the life of the process: COM may
+#: call ``Release`` on a filter it no longer uses at any later point (when it
+#: is replaced, at ``CoUninitialize``), and a ctypes callback that has been
+#: freed is a jump into unmapped memory. A filter is a few hundred bytes and a
+#: process installs one per STA thread, so nothing is ever freed on purpose.
+_retired: list = []
 
 
 def retry_decision(reject_type: int, tick_count: int) -> int:
@@ -213,13 +219,18 @@ def uninstall() -> bool:
     """
     if not installed():
         return False
-    _installed.keep = None
+    # Unregister first, and keep the objects afterwards (``_retired``): the
+    # unregistration itself, and the apartment's teardown later, may call the
+    # filter's ``Release`` - through a vtable that must still be there.
     try:
         previous = ctypes.c_void_p()
         hr = ctypes.windll.ole32.CoRegisterMessageFilter(None, ctypes.byref(previous))
     except Exception as exc:  # noqa: BLE001 - the apartment is going away anyway
         log.debug("COM message filter not removed: %s", exc)
         return False
+    finally:
+        _retired.append(_installed.keep)
+        _installed.keep = None
     if hr != S_OK:
         log.debug("CoRegisterMessageFilter(NULL) answered %#010x", hr & 0xFFFFFFFF)
         return False
