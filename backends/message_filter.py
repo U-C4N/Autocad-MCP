@@ -71,12 +71,17 @@ E_NOINTERFACE = -2147467262  # 0x80004002
 stats: dict[str, int] = {"retried": 0, "given_up": 0, "rejected": 0}
 
 _installed = threading.local()
-#: Every filter ever registered, kept for the life of the process: COM may
-#: call ``Release`` on a filter it no longer uses at any later point (when it
-#: is replaced, at ``CoUninitialize``), and a ctypes callback that has been
-#: freed is a jump into unmapped memory. A filter is a few hundred bytes and a
-#: process installs one per STA thread, so nothing is ever freed on purpose.
-_retired: list = []
+#: Every filter ever registered, kept for the life of the process. COM calls
+#: a registered filter's methods on its own schedule - when it is replaced,
+#: at ``CoUninitialize``, and when a thread that never unregistered it ends
+#: (the STA worker ``ComBackend._run`` abandons on a timeout) - and a ctypes
+#: callback that has been freed is a jump into unmapped memory. MEASURED
+#: 2026-11-05: held only by ``_installed`` (thread-local, freed with the
+#: thread), the filter of an abandoned worker crashed the process
+#: (STATUS_ILLEGAL_INSTRUCTION / ACCESS_VIOLATION) seconds after the thread
+#: ended. A filter is a few hundred bytes and a process registers one per STA
+#: thread, so nothing is ever freed on purpose.
+_filters: list = []
 
 
 def retry_decision(reject_type: int, tick_count: int) -> int:
@@ -201,7 +206,9 @@ def install() -> bool:
     if hr != S_OK:
         log.debug("CoRegisterMessageFilter answered %#010x", hr & 0xFFFFFFFF)
         return False
-    _installed.keep = (instance, vtbl)  # the callbacks must outlive every call
+    keep = (instance, vtbl)
+    _filters.append(keep)  # for the life of the process: see _filters
+    _installed.keep = keep  # this thread's "installed" mark
     return True
 
 
@@ -219,9 +226,8 @@ def uninstall() -> bool:
     """
     if not installed():
         return False
-    # Unregister first, and keep the objects afterwards (``_retired``): the
-    # unregistration itself, and the apartment's teardown later, may call the
-    # filter's ``Release`` - through a vtable that must still be there.
+    # The objects stay referenced by ``_filters``: the unregistration itself,
+    # and the apartment's teardown later, may call the filter's ``Release``.
     try:
         previous = ctypes.c_void_p()
         hr = ctypes.windll.ole32.CoRegisterMessageFilter(None, ctypes.byref(previous))
@@ -229,7 +235,6 @@ def uninstall() -> bool:
         log.debug("COM message filter not removed: %s", exc)
         return False
     finally:
-        _retired.append(_installed.keep)
         _installed.keep = None
     if hr != S_OK:
         log.debug("CoRegisterMessageFilter(NULL) answered %#010x", hr & 0xFFFFFFFF)

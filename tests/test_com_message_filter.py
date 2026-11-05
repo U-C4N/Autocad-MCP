@@ -80,12 +80,13 @@ def test_the_filter_registers_on_a_com_thread_and_is_removed_again():
     drops it and a second ``uninstall`` has nothing to drop. On its own
     thread, so pytest's main thread is left as it was.
 
-    The unregistered filter stays referenced (``_retired``): COM may call its
-    ``Release`` when it is replaced or at ``CoUninitialize``, and a freed
-    ctypes callback is a jump into unmapped memory. MEASURED 2026-11-05: with
-    the reference dropped before ``CoRegisterMessageFilter(NULL)`` the full
-    suite died with STATUS_ILLEGAL_INSTRUCTION in a test file that passes on
-    its own."""
+    A filter stays referenced for the life of the process (``_filters``),
+    registered or not: COM calls it when it is replaced, at ``CoUninitialize``
+    and when a thread that never unregistered it ends, and a freed ctypes
+    callback is a jump into unmapped memory. MEASURED 2026-11-05: held only
+    by the thread-local, the filter of a worker ``ComBackend._run`` abandoned
+    on a timeout (``tests/test_com_timeout.py``) crashed pytest with
+    STATUS_ILLEGAL_INSTRUCTION seconds after that thread ended."""
     pythoncom = pytest.importorskip("pythoncom")
     seen: dict[str, object] = {}
 
@@ -97,7 +98,7 @@ def test_the_filter_registers_on_a_com_thread_and_is_removed_again():
             seen["again"] = mf.install()
             keep = mf._installed.keep
             seen["removed"] = mf.uninstall()
-            seen["kept"] = mf._retired[-1] is keep
+            seen["kept"] = mf._filters[-1] is keep
             seen["after"] = mf.installed()
             seen["removed_again"] = mf.uninstall()
         except BaseException as exc:  # noqa: BLE001 - reported below
