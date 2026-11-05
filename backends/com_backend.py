@@ -30,6 +30,7 @@ from typing import Any
 import config
 from engineering.errors import (
     ApplicationBusyError,
+    CadNotRunningError,
     CommandIncompleteError,
     EntityNotFoundError,
     classify,
@@ -418,6 +419,12 @@ def _acad_app():
     probe — it COM-launches the application and makes it visible — so honouring
     the setting on ``GetActiveObject`` and then falling back to AutoCAD would
     start the very application the operator said they were not using.
+
+    #19: ``CAD_LAUNCH=never`` stops at the failed ``GetActiveObject`` with
+    ``CadNotRunningError`` (kind ``cad_not_running``); ``Dispatch`` is never
+    called. With ``auto`` (default) a launched instance is made visible by
+    ``_make_launched_visible``, which waits out a starting AutoCAD's "not ready"
+    answers and quits the instance it started if it never accepts ``Visible``.
     """
     guard = getattr(_JOB_STATE, "guard", None)
     if guard is not None:
@@ -427,17 +434,108 @@ def _acad_app():
         try:
             _COM_STATE["app"] = win32com.client.GetActiveObject(progid)
         except Exception as exc:
+            if config.settings.cad_launch == "never":
+                log.debug("GetActiveObject(%r) failed and CAD_LAUNCH=never: %s", progid, exc)
+                raise CadNotRunningError(progid, detail=str(exc)) from None
             log.debug("GetActiveObject(%r) failed, trying Dispatch: %s", progid, exc)
             try:
-                _COM_STATE["app"] = win32com.client.Dispatch(progid)
-                _COM_STATE["app"].Visible = True
+                app = win32com.client.Dispatch(progid)
             except Exception as exc:
                 raise RuntimeError(
                     f"Cannot connect to CAD application {progid!r}: {exc}. Make sure it is "
                     f"installed and running. (Set CAD_PROGID to change it; default "
                     f"{config.DEFAULT_CAD_PROGID!r}.)"
                 ) from exc
+            log.info("%s was not running; started it (CAD_LAUNCH=auto)", progid)
+            try:
+                _make_launched_visible(app, progid)
+            except Exception:
+                app = None  # the helper stripped the tracebacks that held it
+                raise
+            _COM_STATE["app"] = app
     return _COM_STATE["app"]
+
+
+#: HRESULTs a just-started AutoCAD answers ``Visible = True`` with while it is
+#: still coming up (#19): the call was refused before it ran, so setting it
+#: again is safe. pywin32 also turns a refused ``GetIDsOfNames`` inside
+#: ``CDispatch.__setattr__`` into ``AttributeError("Property ... can not be
+#: set.")`` - the message the issue quotes - so that is retried too.
+_LAUNCH_NOT_READY = frozenset({_RPC_E_CALL_REJECTED, _RPC_E_SERVERCALL_RETRYLATER})
+
+#: Pause between two ``Visible = True`` attempts on a launched instance.
+_LAUNCH_RETRY_PAUSE_S = 0.25
+
+#: Ceiling on how long a launched instance is given to accept ``Visible``.
+_LAUNCH_VISIBLE_BUDGET_S = 30.0
+
+# Indirection so a test can drive the deadline without sleeping.
+_launch_clock = time.monotonic
+_launch_sleep = time.sleep
+
+
+def _launch_visible_budget() -> float:
+    """``min(30 s, COM_CALL_TIMEOUT / 2)``: half the job's deadline, so the Quit
+    and the error reach the caller before ``_run`` reports ``timed_out``."""
+    timeout = config.settings.com_call_timeout
+    if timeout > 0:
+        return min(_LAUNCH_VISIBLE_BUDGET_S, timeout / 2.0)
+    return _LAUNCH_VISIBLE_BUDGET_S
+
+
+def _strip_tracebacks(exc: BaseException) -> None:
+    """Drop the traceback of ``exc`` and of every exception chained to it."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        exc.with_traceback(None)
+        exc = exc.__cause__ or exc.__context__
+
+
+def _make_launched_visible(app, progid: str) -> None:
+    """Set ``Visible = True`` on an instance ``Dispatch`` just started (#19).
+
+    Retried every ``_LAUNCH_RETRY_PAUSE_S`` while the answer is a "not ready"
+    one (``_LAUNCH_NOT_READY``, or the ``AttributeError`` pywin32 makes of a
+    refused lookup) until ``_launch_visible_budget()`` runs out. Any other
+    error, or the budget running out, quits the instance - this server started
+    it: ``GetActiveObject`` had just failed - so no windowless ``acad.exe`` is
+    left running, and raises the connect error saying so. The proxy is never
+    cached in that case.
+    """
+    deadline = _launch_clock() + _launch_visible_budget()
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            app.Visible = True
+            return
+        except Exception as exc:
+            hr = exc.args[0] if isinstance(exc, _COM_ERROR) and exc.args else None
+            not_ready = isinstance(exc, AttributeError) or hr in _LAUNCH_NOT_READY
+            if not_ready and _launch_clock() + _LAUNCH_RETRY_PAUSE_S <= deadline:
+                _launch_sleep(_LAUNCH_RETRY_PAUSE_S)
+                continue
+            quit_note = "quit it"
+            try:
+                app.Quit()
+            except Exception as quit_exc:  # best effort: it may already be gone
+                log.warning("Quit() of the %s this server started failed: %s", progid, quit_exc)
+                quit_note = f"tried to quit it (Quit failed: {quit_exc})"
+            # The proxy must die here, on the COM thread, not wherever the error
+            # is dropped: the cause's traceback ends in pywin32's
+            # ``CDispatch.__setattr__``, whose frame holds the proxy as ``self``
+            # (and its ``__context__``, the swallowed com_error, does too), so
+            # the chain keeps its messages but loses its tracebacks.
+            _strip_tracebacks(exc)
+            app = None
+            raise RuntimeError(
+                f"Cannot connect to CAD application {progid!r}: it was not running, so this "
+                f"server started it (CAD_LAUNCH=auto), but it did not accept Visible=True "
+                f"after {attempts} attempt(s) ({exc}); the server {quit_note}. Open it "
+                f"yourself and retry, or set CAD_LAUNCH=never to attach only. (Set "
+                f"CAD_PROGID to change it; default {config.DEFAULT_CAD_PROGID!r}.)"
+            ) from exc
 
 
 def _drop_app() -> None:
@@ -3341,7 +3439,14 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
                 "ucs": FeatureCapability(
                     True, "native", reason="world_restore_via_ucs_command;tool_coordinates_stay_wcs"
                 ),
-                "live_application": FeatureCapability(True, "native"),
+                # #19: CAD_LAUNCH=never attaches only (system_launch included).
+                "live_application": FeatureCapability(
+                    True,
+                    "native" if config.settings.cad_launch == "auto" else "attach_only",
+                    reason=None
+                    if config.settings.cad_launch == "auto"
+                    else "cad_launch_never:attaches_only_never_starts_the_application",
+                ),
                 "preferences": FeatureCapability(True, "native", reason="whitelisted_keys_only"),
                 "interactive_prompt": FeatureCapability(
                     True, "native", reason="cancel_returns_cancelled_true;timeout_returns_timed_out"
@@ -3370,7 +3475,11 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         self._executor = self._new_executor()
         self._connected = True
         progid = config.settings.cad_progid
-        log.info("COM backend ready (will connect to %s on first tool call)", progid)
+        log.info(
+            "COM backend ready (will connect to %s on first tool call; CAD_LAUNCH=%s)",
+            progid,
+            config.settings.cad_launch,
+        )
         if progid != config.DEFAULT_CAD_PROGID:
             log.warning(
                 "CAD_PROGID=%r: only %s is developed and tested against. The connection may "
@@ -5515,7 +5624,8 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         Honours ``CAD_PROGID`` on both paths, like ``_acad_app``: ``Dispatch``
         launches the application, so falling back to AutoCAD would start the
         very product the operator said they were not using. The path is
-        validated before any COM call.
+        validated before any COM call. #19: with ``CAD_LAUNCH=never`` it attaches
+        only - no running application is ``CadNotRunningError``, never a launch.
         """
         path = str(validate_path(open_path, allow_write=False)) if open_path else None
 
@@ -5527,6 +5637,8 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
                 try:
                     app = win32com.client.GetActiveObject(progid)
                 except Exception as exc:
+                    if config.settings.cad_launch == "never":
+                        raise CadNotRunningError(progid, detail=str(exc)) from None
                     log.debug("GetActiveObject(%r) failed, dispatching: %s", progid, exc)
                     app = win32com.client.Dispatch(progid)
                     launched = True
@@ -10058,6 +10170,8 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
                     # GstarCAD/ZWCAD operator reads an "autocad_version" key
                     # naming a product they do not own.
                     "cad_progid": config.settings.cad_progid,
+                    # #19: whether a missing application may be started.
+                    "cad_launch": config.settings.cad_launch,
                     "autocad_version": version,
                     "open_documents": doc_count,
                     "active_document": None if active_key is None else active_key[0],
@@ -10088,12 +10202,16 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
                 }
             except Exception as exc:
                 log.debug("system_status: _acad_app check failed: %s", exc)
-                return {
+                status = {
                     "backend": "com",
                     "connected": False,
                     "cad_progid": config.settings.cad_progid,
+                    "cad_launch": config.settings.cad_launch,
                     "error": str(exc),
                 }
+                if isinstance(exc, CadNotRunningError):
+                    status["error_kind"] = exc.kind  # #19: attach-only, nothing running
+                return status
 
         status = await self._run(_sync)
         identity = self.document_identity()
