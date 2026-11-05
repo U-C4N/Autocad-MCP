@@ -121,6 +121,7 @@ def test_every_kind_attribute_the_code_raises_is_declared():
         operations.RequiresReconcileError,
         errors.EntityNotFoundError,
         errors.ApplicationBusyError,
+        errors.CadNotRunningError,
         errors.CommandIncompleteError,
         errors.InvalidArgsError,
         errors.PathRefusedError,

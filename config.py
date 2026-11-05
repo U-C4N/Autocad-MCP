@@ -24,6 +24,29 @@ LISP_POLICIES: tuple[str, ...] = ("read", "denylist", "off")
 #: ``COM_REFRESH_MODE`` values (1.8-23); the first is the default.
 COM_REFRESH_MODES: tuple[str, ...] = ("auto", "regen")
 
+#: ``CAD_LAUNCH`` values (#19); the first is the default. ``auto`` attaches to a
+#: running CAD application and starts one when none runs (1.7 behaviour);
+#: ``never`` only attaches.
+CAD_LAUNCH_MODES: tuple[str, ...] = ("auto", "never")
+
+
+def parse_cad_launch(raw: str | None) -> str:
+    """A ``CAD_LAUNCH`` value; an unknown one is refused by name.
+
+    Refused, not fallen back with a warning like ``COM_REFRESH_MODE``: the
+    fallback would be ``auto``, so a misspelt ``never`` would start the very
+    application the operator set it to keep closed.
+    """
+    value = str(raw or "").strip().lower()
+    if not value:
+        return CAD_LAUNCH_MODES[0]
+    if value not in CAD_LAUNCH_MODES:
+        raise ValueError(
+            f"CAD_LAUNCH={raw!r} is not a launch mode. Valid values: "
+            f"{', '.join(CAD_LAUNCH_MODES)} (default {CAD_LAUNCH_MODES[0]!r})."
+        )
+    return value
+
 
 def parse_lisp_policy(raw: str | None) -> str:
     """A ``LISP_POLICY`` value; an unknown one falls back to ``read`` with a warning."""
@@ -80,6 +103,18 @@ class Settings:
         return os.environ.get("CAD_PROGID", "").strip() or DEFAULT_CAD_PROGID
 
     @property
+    def cad_launch(self) -> str:
+        """``CAD_LAUNCH`` (#19): ``auto`` (default) or ``never``.
+
+        Whether the live backend may start the CAD application when
+        ``GetActiveObject`` finds none running: ``never`` attaches only, and
+        both the first call and ``system_launch`` answer ``cad_not_running``
+        instead. Read live and read-only, like ``cad_progid``; an unknown value
+        is refused by name (at startup by ``__init__``, and on every read).
+        """
+        return parse_cad_launch(os.environ.get("CAD_LAUNCH"))
+
+    @property
     def accoreconsole_path(self) -> str:
         """``ACCORECONSOLE_PATH`` as set, stripped ("" when unset; K1, 1.8.0).
 
@@ -107,6 +142,9 @@ class Settings:
 
     def __init__(self):
         self.log_level: str = os.environ.get("LOG_LEVEL", "INFO").upper().strip()
+
+        # #19: a misspelt CAD_LAUNCH stops the server at startup, by name.
+        parse_cad_launch(os.environ.get("CAD_LAUNCH"))
 
         raw_paths = os.environ.get("ALLOWED_PATHS", "").strip()
         self.allowed_paths: list[Path] = []

@@ -10898,8 +10898,9 @@ async def system_launch(
     """Connect to the application named by `CAD_PROGID` (attach if running,
     launch otherwise) and report `launched`, `attached`, `version` and the
     active `document`. Refusals: headless, `capability: "live_application"`
-    (there is no application to launch); an `open_path` that fails path
-    validation. Pack: settings · lean: no.
+    (there is no application to launch); with `CAD_LAUNCH=never` and nothing
+    running, `cad_not_running` (attach only, nothing started); an `open_path`
+    that fails path validation. Pack: settings · lean: no.
     """
     if open_path is not None:
         open_path = str(validate_path(open_path, allow_write=False))

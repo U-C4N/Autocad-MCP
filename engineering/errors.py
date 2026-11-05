@@ -54,6 +54,7 @@ __all__ = [
     "GATE_KINDS",
     "ROUTING_KINDS",
     "ApplicationBusyError",
+    "CadNotRunningError",
     "CommandIncompleteError",
     "CommandRefusedError",
     "DimensionRenderError",
@@ -173,6 +174,8 @@ ERROR_KINDS = BATCH_KINDS_1_7 + (
     *REVISE_KINDS,
     *ROUTING_KINDS,
     *CHECKPOINT_KINDS,
+    # #19: CAD_LAUNCH=never and no CAD application running (CadNotRunningError).
+    "cad_not_running",
 )
 
 
@@ -288,6 +291,11 @@ ERROR_TABLE: dict[str, KindSpec] = {
     "checkpoint_evicted": KindSpec(
         "file", False, "Evicted by the CHECKPOINT_* budget; pick a kept one from checkpoint_list."
     ),
+    "cad_not_running": KindSpec(
+        "dependency",
+        True,
+        "Open AutoCAD (or set CAD_LAUNCH=auto to let the server start it) and retry.",
+    ),
 }
 
 #: Record states in which nothing was written (``backends/operations.py``).
@@ -339,6 +347,23 @@ class ApplicationBusyError(RuntimeError):
     touched the document: nothing was written, the same call may be sent again."""
 
     kind = "application_busy"
+
+
+class CadNotRunningError(RuntimeError):
+    """No CAD application is running and ``CAD_LAUNCH=never`` forbids starting
+    one (#19): ``GetActiveObject`` failed and ``Dispatch`` was never called, so
+    nothing was started and nothing was written. A ``RuntimeError``, like the
+    connect error it replaces under that setting."""
+
+    kind = "cad_not_running"
+
+    def __init__(self, progid: str):
+        self.progid = str(progid)
+        super().__init__(
+            f"{self.progid} is not running, and CAD_LAUNCH=never lets this server attach "
+            "only. Nothing was started or written. Open it and retry (or set "
+            "CAD_LAUNCH=auto to let the server start it)."
+        )
 
 
 class DimensionRenderError(RuntimeError):
@@ -868,6 +893,7 @@ def classify(exc: BaseException) -> dict:
     for typed in (
         PathRefusedError,
         ApplicationBusyError,
+        CadNotRunningError,
         EntityNotFoundError,
         InvalidArgsError,
         DimensionRenderError,
