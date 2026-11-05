@@ -5,6 +5,8 @@
 **Production-grade AutoCAD automation for AI agents.**
 Live through COM on Windows, or headless through ezdxf anywhere — one typed contract, two engines.
 
+[![X: @UEdizaslan](https://img.shields.io/badge/X-%40UEdizaslan-000000?logo=x&logoColor=white)](https://x.com/UEdizaslan)
+[![Discord](https://img.shields.io/badge/Discord-join%20the%20server-5865F2?logo=discord&logoColor=white)](https://discord.gg/5yjk9Bb5N)
 [![CI](https://github.com/U-C4N/Autocad-MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/U-C4N/Autocad-MCP/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/autocad-mcp-pro?color=1f6feb&label=PyPI&logo=pypi&logoColor=white)](https://pypi.org/project/autocad-mcp-pro/)
 [![Downloads](https://img.shields.io/pypi/dm/autocad-mcp-pro?color=8957e5&label=downloads)](https://pypi.org/project/autocad-mcp-pro/)
