@@ -123,8 +123,12 @@ command:
   (`lizaixi01-agentcad`, no adapter) is `not_run` on all 49.
   `benchmarks/results/published/lanes-v9/`.
 - **Full suite:** `AUTOCAD_MCP_BACKEND=ezdxf pytest -q -p no:cacheprovider`
-  with no deselection - 7,502 collected, `7501 passed, 1 xfailed` (432 s) at
-  `683ba21`, the tree of this release before its version commit.
+  with no deselection - 7,541 collected, `7540 passed, 1 xfailed` (344 s) at
+  `50a4049`, the last code commit of this release, with `git` on PATH (the
+  benchmark runner's `git_sha` row needs it) and AutoCAD 2026 open and
+  untouched. The same suite at `94aaba1` had died twice with a native crash
+  (STATUS_ILLEGAL_INSTRUCTION, then ACCESS_VIOLATION at 18 %): the message
+  filter's lifetime, fixed in `9cafaa0` and `50a4049` (*Live-seat fixes*).
 - **Headless performance:** `python -m benchmarks.perf_compare --base v1.7.0
   --aa --rounds 20` at `f3523db` on 2026-11-05 - `ok: true`, A/A spread
   7.1 % (bound 1.14): `create_lines_2k` 1.02, `roundtrip_10k` 1.03,
@@ -245,7 +249,13 @@ pinned to the release.
   (`RETRY_PAUSE_MS`) until 15 s have passed (`RETRY_BUDGET_MS`), instead of
   failing mid-write. `_com_teardown` removes it before `CoUninitialize`; a
   registration that fails is logged and every call behaves as before
-  (`tests/test_com_message_filter.py`).
+  (`tests/test_com_message_filter.py`). 2026-11-05, measured by the full
+  suite dying with a native crash: a filter is kept for the life of the
+  process, registered or not (`message_filter._filters`), because COM calls
+  it when it is replaced, at `CoUninitialize`, and when a thread that never
+  unregistered it ends - the STA worker `ComBackend._run` abandons on a
+  timeout - and a freed ctypes callback is a jump into unmapped memory;
+  `tests/test_com_timeout.py` crashed every run before `50a4049`.
 - **A killed accoreconsole's staging folder is removed again
   (`backends/dwg_read._remove_staging`).** Measured: right after thirteen COM
   smokes, the accore smoke found the timed-out conversion's staging folder a
