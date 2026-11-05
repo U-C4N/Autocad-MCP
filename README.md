@@ -271,7 +271,7 @@ One contract across 23 modules in `backends/contracts/`. `@capability(key, reaso
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/loop-dark.svg">
-  <img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/loop-light.svg" alt="The verification loop: drawing_plan, drawing_apply_iso_layers, entity_create or the engineering generators, drawing_critique with drawing_refine back to the drawing, drawing_verify_requirements, then drawing_finalize or drawing_deliver. Rules: nothing invented, measured on the geometry, refused by name." width="900">
+  <img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/loop-light.svg" alt="The verification workflow, in the order of the code block below it: drawing_preflight, drawing_plan with persist_requirements, mech_part_draw or the other generators, drawing_verify_requirements on the document, drawing_critique with drawing_refine back to the drawing, drawing_deliver measured again on the file, and later drawing_verify_requirements with manifest_path. Rules: nothing invented, measured on the geometry, refused by name." width="900">
 </picture>
 
 </div>
