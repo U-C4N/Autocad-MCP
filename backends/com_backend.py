@@ -308,12 +308,16 @@ def _job_clock_get(bucket: str) -> float:
 def _com_init():
     """COM thread initializer – called once by the STA worker thread.
 
+    1.8.0 (#17): it first makes the process DPI-aware (``_ensure_dpi_aware``),
+    so the window rectangle a screenshot reads is in physical pixels.
+
     1.8.0: the thread also registers the client-side message filter
     (``backends.message_filter``), so a call AutoCAD answers "retry later" is
     retried by COM itself instead of failing as ``RPC_E_CALL_REJECTED`` in the
     middle of a write; ``_com_teardown`` removes it. When it cannot be
     registered every call behaves as before and the fact is logged.
     """
+    _ensure_dpi_aware()
     if _COM_IMPORTS_OK:
         pythoncom.CoInitialize()
         if message_filter.install():
@@ -2703,8 +2707,123 @@ def _find_autocad_hwnd() -> int | None:
     return result["hwnd"]
 
 
+def _win_dll(name: str):
+    """``ctypes.windll.<name>``, or None where there is none (not Windows)."""
+    try:
+        import ctypes
+
+        return getattr(ctypes.windll, name)
+    except Exception:
+        return None
+
+
+#: ``DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2`` (a pseudo-handle, winuser.h).
+_DPI_CONTEXT_PER_MONITOR_V2 = -4
+#: ``GetAwarenessFromDpiAwarenessContext`` values (``DPI_AWARENESS``).
+_DPI_AWARENESS_NAMES = {0: "unaware", 1: "system", 2: "per_monitor"}
+#: The once-per-process outcome of ``_ensure_dpi_aware`` (#17).
+_DPI_STATE: dict[str, str] = {}
+_DPI_LOCK = threading.Lock()
+
+
+def _ensure_dpi_aware() -> str:
+    """Make this process DPI-aware once, and say what it ended up as (#17).
+
+    A plain Python process is DPI-unaware, so with Windows display scaling at
+    150 % ``GetWindowRect`` on AutoCAD's frame answers logical pixels (2/3 of
+    the physical size) while ``PrintWindow`` draws physical ones: the capture
+    was the top-left 2/3 of the window (measured 2026-11-05, AutoCAD 2026 on a
+    2560x1600 screen at 144 DPI). Tried in order, once per process:
+    ``SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)``,
+    ``shcore.SetProcessDpiAwareness(2)``, ``SetProcessDPIAware()``. A refusal
+    (the host set it first, an older Windows) is logged at debug, never raised.
+    The server creates no windows of its own, so awareness changes nothing but
+    the coordinates the window-capture code reads.
+
+    Returns ``"per_monitor"``, ``"system"``, ``"unaware"`` - read back through
+    ``GetThreadDpiAwarenessContext`` where Windows has it (10 1607+), else
+    inferred from the call that succeeded - or ``"unknown"`` when neither tells.
+    """
+    with _DPI_LOCK:
+        if "awareness" in _DPI_STATE:
+            return _DPI_STATE["awareness"]
+        awareness = "unknown"
+        user32 = _win_dll("user32") if _WIN32_AVAILABLE else None
+        if user32 is not None:
+            import ctypes
+
+            shcore = _win_dll("shcore")
+            attempts = (
+                (
+                    getattr(user32, "SetProcessDpiAwarenessContext", None),
+                    (ctypes.c_ssize_t(_DPI_CONTEXT_PER_MONITOR_V2),),
+                    lambda ok: bool(ok),
+                    "per_monitor",
+                ),
+                (
+                    getattr(shcore, "SetProcessDpiAwareness", None) if shcore else None,
+                    (2,),  # PROCESS_PER_MONITOR_DPI_AWARE
+                    lambda hr: hr == 0,  # S_OK
+                    "per_monitor",
+                ),
+                (getattr(user32, "SetProcessDPIAware", None), (), lambda ok: bool(ok), "system"),
+            )
+            for call, args, succeeded, outcome in attempts:
+                if call is None:
+                    continue
+                try:
+                    if succeeded(call(*args)):
+                        awareness = outcome
+                        break
+                except Exception as exc:
+                    log.debug("DPI awareness call failed: %s", exc)
+            try:
+                get_context = getattr(user32, "GetThreadDpiAwarenessContext", None)
+                from_context = getattr(user32, "GetAwarenessFromDpiAwarenessContext", None)
+                if get_context is not None and from_context is not None:
+                    get_context.restype = ctypes.c_void_p
+                    from_context.argtypes = [ctypes.c_void_p]
+                    measured = int(from_context(get_context()))
+                    awareness = _DPI_AWARENESS_NAMES.get(measured, awareness)
+            except Exception as exc:
+                log.debug("DPI awareness could not be read back: %s", exc)
+        if awareness != "per_monitor":
+            log.debug("process DPI awareness: %s", awareness)
+        _DPI_STATE["awareness"] = awareness
+        return awareness
+
+
+#: What the last ``_capture_window`` measured, written and read inside one STA
+#: job (``ComBackend._window_capture``), so two captures never mix.
+_LAST_CAPTURE: dict[str, Any] = {}
+
+
+def _window_dpi(user32, hwnd: int) -> int | None:
+    """``GetDpiForWindow(hwnd)`` (Windows 10 1607+), or None where it is absent."""
+    get_dpi = getattr(user32, "GetDpiForWindow", None) if user32 is not None else None
+    if get_dpi is None:
+        return None
+    try:
+        dpi = int(get_dpi(hwnd))
+    except Exception as exc:
+        log.debug("GetDpiForWindow failed: %s", exc)
+        return None
+    return dpi if dpi > 0 else None
+
+
 def _capture_window(hwnd: int) -> bytes | None:
-    """Capture an AutoCAD window using GDI PrintWindow."""
+    """Capture an AutoCAD window using GDI PrintWindow, in physical pixels (#17).
+
+    The rectangle is read after ``_ensure_dpi_aware``; when the process could
+    not be made per-monitor aware, the bitmap is scaled by the window's DPI
+    over the DPI the process sees (96 unaware, the system DPI system-aware),
+    so the capture still covers the whole window. ``_LAST_CAPTURE`` gets
+    ``dpi`` (None without ``GetDpiForWindow``), ``dpi_awareness``,
+    ``capture`` (the bitmap's ``[width, height]``) and ``window_minimized``
+    (``IsIconic``: the picture of a minimized window is meaningless; the
+    operator's window is never restored from here).
+    """
+    _LAST_CAPTURE.clear()
     if not _WIN32_AVAILABLE or not _PIL_OK:
         return None
     hwnd_dc = None
@@ -2712,11 +2831,32 @@ def _capture_window(hwnd: int) -> bytes | None:
     save_dc = None
     save_bmp = None
     try:
+        awareness = _ensure_dpi_aware()
+        user32 = _win_dll("user32")
         left, top, right, bottom = win32gui.GetWindowRect(hwnd)
         width = right - left
         height = bottom - top
         if width <= 0 or height <= 0:
             return None
+        dpi = _window_dpi(user32, hwnd)
+        seen = None
+        if awareness == "unaware":
+            seen = 96
+        elif awareness == "system":
+            get_system = getattr(user32, "GetDpiForSystem", None)
+            seen = int(get_system()) if get_system is not None else None
+        if dpi and seen and dpi != seen:
+            width = round(width * dpi / seen)
+            height = round(height * dpi / seen)
+        minimized = False
+        if user32 is not None and getattr(user32, "IsIconic", None) is not None:
+            minimized = bool(user32.IsIconic(hwnd))
+        _LAST_CAPTURE.update(
+            dpi=dpi,
+            dpi_awareness=awareness,
+            capture=[width, height],
+            window_minimized=minimized,
+        )
 
         hwnd_dc = win32gui.GetWindowDC(hwnd)
         mfc_dc = win32ui.CreateDCFromHandle(hwnd_dc)
@@ -2726,9 +2866,7 @@ def _capture_window(hwnd: int) -> bytes | None:
         save_dc.SelectObject(save_bmp)
 
         # PW_RENDERFULLCONTENT = 2 (works for hardware-accelerated windows)
-        import ctypes
-
-        ctypes.windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 2)
+        user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 2)
 
         bmp_str = save_bmp.GetBitmapBits(True)
         img = PILImage.frombuffer("RGB", (width, height), bmp_str, "raw", "BGRX", 0, 1)
@@ -9678,6 +9816,15 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         another drawing's image. With nothing bound and nothing open the empty
         application window is captured as before.
         """
+        image, _info = await self._window_capture()
+        return image
+
+    async def _window_capture(self) -> tuple[bytes | None, dict]:
+        """``view_screenshot``'s capture plus what ``_capture_window`` measured (#17).
+
+        The measurement is copied out of ``_LAST_CAPTURE`` inside the same STA
+        job as the capture, so another job can never hand back its numbers.
+        """
 
         def _sync():
             app = _acad_app()
@@ -9686,11 +9833,13 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
                 self._guard(app)  # bound with nothing open is refused typed, too
             hwnd = _find_autocad_hwnd()
             if hwnd is None:
-                return None
+                return None, {}
+            _LAST_CAPTURE.clear()
             image = _capture_window(hwnd)
+            info = dict(_LAST_CAPTURE)
             if guarded:
                 self._guard(app)
-            return image
+            return image, info
 
         return await self._run(_sync)
 
@@ -9722,7 +9871,7 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
                 "backend (AUTOCAD_MCP_BACKEND=ezdxf) for a grounded render.",
             )
         if wanted is None:
-            png = await self.view_screenshot()
+            png, capture_info = await self._window_capture()
             if png is None:
                 return {
                     "png": None,
@@ -9741,6 +9890,9 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
                 "region": None,
                 "requested_region": None,
                 "px_per_unit": None,
+                # #17: the window's DPI and the bitmap captured, in physical pixels
+                # (before max_px); a minimized window's picture is meaningless.
+                **capture_info,
                 "note": (
                     "a window capture includes AutoCAD's own frame, so its drawing-unit "
                     "scale is unknown; pass region=[x0, y0, x1, y1] for a measured render"
