@@ -258,6 +258,38 @@ pinned to the release.
   space (`PROMPT_LIMITATION`), so `command_incomplete` is not reachable
   through ActiveX on AutoCAD 2026.
 
+### A hidden tool's call, measured (2026-11-05)
+
+The release perf gate (`perf_compare.py --base v1.7.0 --aa --rounds 20`, at
+`19ada05`) failed on `server_create_lines_2k`: 2,000 direct
+`entity_create_line` calls through an in-memory client took 8.5 x their
+v1.7.0 time (68.7 s against 7.5 s), 0.96 x with `DISCOVERY_MODE=off`, and
+`JOURNAL_DURABLE=off` changed nothing (26.1 s standalone against 27.6 s). The
+profile showed six `tools/list` per call. Under the search default every tool
+but the pinned ones is unlisted, and an unlisted tool's call listed the
+catalog on both sides - the low-level MCP server refreshes its definition
+cache on a miss, and `mcp`'s client session lists again for a tool it was not
+shown - while every listing built the three synthetic tools from scratch
+(`Tool.from_function`, a pydantic schema each) and the pinned cards again.
+
+- **The synthetic tools and the pinned cards are built once per transform**
+  (`discovery/transform.py`, "Built once"; off mode's `describe_tool` too). A
+  listing fell from 2.96 ms to 0.49 ms.
+- **A call of a tool the catalog does not list resolves that tool, not the
+  catalog** (`server._install_tool_definition_cache`): a definition-cache
+  miss resolves the one tool by name (`FastMCP.get_tool`) and keeps it, so
+  the schema check runs as it does for a listed tool and nothing is listed; a
+  name no tool has takes the stock path. The attributes are private to `mcp`
+  1.x / fastmcp 3.4 and `tests/test_discovery_perf.py` holds them; not
+  installed means slower, never wrong.
+- **The gate compares one catalog shape** (`benchmarks/perf_compare.py`):
+  every measurement runs with `DISCOVERY_MODE=off` on both sides, because
+  the in-memory client's own listings - one `tools/list` per call of a tool
+  it was not shown, the SDK's rule, not the server's - would measure the
+  client. Standalone on the fixed tree: 6.3 s under the search default (the
+  client's four listings a call, 0.5 ms each), 4.0 s with `off`, against
+  27.6 s before the fix.
+
 ### Live evidence
 
 No smoke has a 1.8.0 pass row today: this release's live matrix,
