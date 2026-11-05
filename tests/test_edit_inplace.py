@@ -392,8 +392,9 @@ class _FakeText:
         self.Handle = "3C"
         self.InsertionPoint = (1.0, 2.0, 0.0)
         self.Normal = normal or (0.0, 0.0, 1.0)
+        # IAcadMText has TextString only - ``Contents`` is the ObjectARX name and
+        # raises live (measured on AutoCAD 2026), so the fake must not offer it.
         self.TextString = "A"
-        self.Contents = "A"
         self.Height = 2.5
         self.Rotation = 0.0
         self.Layer = "TEXT"
@@ -543,6 +544,79 @@ async def test_com_text_moves_by_activex_move_keeping_the_handle(seat):
     assert _close(info.properties["insertion"], [11.0, 22.0])
     again = await seat.backend.entity_edit_geometry("3C", x=1.0)
     assert _close(again.properties["insertion"], [1.0, 22.0])
+
+
+@needs_pywin32
+async def test_com_a_moved_mtext_reports_its_insertion_and_text(seat):
+    """Live smoke ``edit`` (AutoCAD 2026): the MTEXT read used ``Contents``,
+    which IAcadMText does not have, and lost every MTEXT property."""
+    mtext = _FakeText(seat.log, name="AcDbMText")
+    seat.objects["3C"] = mtext
+    info = await seat.backend.entity_edit_geometry("3C", x=-5.0, y=12.5)
+    assert info.handle == "3C"
+    assert _close(info.properties["insertion"], [-5.0, 12.5])
+    assert info.properties["text"] == "A"
+    assert info.properties["char_height"] == 2.5
+
+
+class _StrictLayers:
+    """ActiveX's layer table: ``Item`` of a missing name raises, ``Add`` creates."""
+
+    def __init__(self, names):
+        self.names = set(names)
+        self.added: list[str] = []
+
+    def Item(self, name):  # noqa: N802
+        if name not in self.names:
+            raise RuntimeError("Key not found")
+        return SimpleNamespace(Name=name)
+
+    def Add(self, name):  # noqa: N802
+        self.added.append(name)
+        self.names.add(name)
+        return SimpleNamespace(Name=name)
+
+
+class _StrictEntity:
+    """``entity.Layer = missing`` raises ``Key not found``, as ActiveX does."""
+
+    def __init__(self, layers, refuse=False):
+        object.__setattr__(self, "_layers", layers)
+        object.__setattr__(self, "_refuse", refuse)
+        object.__setattr__(self, "assigned", [])
+
+    def __setattr__(self, name, value):
+        if name == "Layer" and (self._refuse or value not in self._layers.names):
+            raise RuntimeError("Key not found")
+        self.assigned.append((name, value))
+
+
+@needs_pywin32
+@pytest.mark.parametrize("present", [False, True], ids=["missing", "present"])
+async def test_com_an_entity_layer_is_created_when_activex_will_not(monkeypatch, present):
+    """Live smoke ``edit`` (AutoCAD 2026): ``entity_create_table``'s default
+    layer ``TEXT`` did not exist in a ``Documents.Add`` document and the
+    assignment raised DISP_E_EXCEPTION ``Key not found``. A missing layer is
+    created first; an existing one costs no table read."""
+    import backends.com_backend as cb
+
+    layers = _StrictLayers(["0", "TEXT"] if present else ["0"])
+    monkeypatch.setattr(cb, "_acad_doc", lambda: SimpleNamespace(Layers=layers))
+    entity = _StrictEntity(layers)
+    cb._apply_entity_attrs(entity, "TEXT", None, None)
+    assert entity.assigned == [("Layer", "TEXT")]
+    assert layers.added == ([] if present else ["TEXT"])
+
+
+@needs_pywin32
+async def test_com_a_layer_error_on_an_existing_layer_is_not_hidden(monkeypatch):
+    import backends.com_backend as cb
+
+    layers = _StrictLayers(["0", "LOCKED"])
+    monkeypatch.setattr(cb, "_acad_doc", lambda: SimpleNamespace(Layers=layers))
+    with pytest.raises(RuntimeError, match="Key not found"):
+        cb._apply_entity_attrs(_StrictEntity(layers, refuse=True), "LOCKED", None, None)
+    assert layers.added == []
 
 
 @needs_pywin32

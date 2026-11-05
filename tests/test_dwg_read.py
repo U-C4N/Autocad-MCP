@@ -245,6 +245,44 @@ def test_the_timeout_stays_inside_the_call_deadline(monkeypatch):
         dwg_read.effective_timeout()
 
 
+def test_a_staging_folder_a_killed_console_still_holds_is_removed_again(tmp_path, monkeypatch):
+    """MEASURED 2026-11-04 (AutoCAD 2026 host): the live matrix's ``accore``
+    smoke, run right after thirteen COM smokes, found the timed-out
+    conversion's folder still there a second later - ``rmtree`` had failed
+    silently while the killed console let go of it. The removal is repeated."""
+    folder = tmp_path / "held"
+    folder.mkdir()
+    (folder / "in.dwg").write_bytes(b"x")
+    real_rmtree = dwg_read.shutil.rmtree
+    attempts: list[str] = []
+    sleeps: list[float] = []
+
+    def held_twice(path, ignore_errors=False):
+        attempts.append(str(path))
+        if len(attempts) <= 2:
+            return  # what rmtree(ignore_errors=True) does while a handle is open
+        real_rmtree(path, ignore_errors=ignore_errors)
+
+    monkeypatch.setattr(dwg_read.shutil, "rmtree", held_twice)
+    monkeypatch.setattr(dwg_read.time, "sleep", sleeps.append)
+    assert dwg_read._remove_staging(folder) is True
+    assert not folder.exists()
+    assert len(attempts) == 3 and sleeps == [dwg_read._REMOVE_PAUSE_S] * 2
+
+
+def test_a_staging_folder_held_past_the_patience_is_left_to_the_sweep(
+    tmp_path, monkeypatch, caplog
+):
+    folder = tmp_path / "held"
+    folder.mkdir()
+    monkeypatch.setattr(dwg_read.shutil, "rmtree", lambda path, ignore_errors=False: None)
+    monkeypatch.setattr(dwg_read, "_REMOVE_PATIENCE_S", 0.0)
+    with caplog.at_level("WARNING", logger=dwg_read.log.name):
+        assert dwg_read._remove_staging(folder) is False
+    assert folder.exists()
+    assert "still in use" in caplog.text and "swept" in caplog.text
+
+
 # ── the console route on a fake executable ───────────────────────────────────
 
 

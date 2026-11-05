@@ -33,7 +33,8 @@ The accoreconsole rules (security - the process is a full AutoCAD engine):
 * **A deadline**: ``ACCORECONSOLE_TIMEOUT_S`` (default 60, never more than
   ``EZDXF_CALL_TIMEOUT`` minus 5 s); an overrun kills the whole process tree
   (``taskkill /F /T``) and is reported ``timed_out``.
-* The staging folder is removed on every path; one a killed server left behind
+* The staging folder is removed on every path - repeated for a few seconds
+  while a killed console still holds it - and one a killed server left behind
   is swept on the next conversion once it is an hour old.
 
 Export to DWG and AUDIT through accoreconsole are 1.8.1, not here.
@@ -86,6 +87,11 @@ LOG_LINES_SHOWN = 40
 
 #: A staging folder this old is a killed server's leftover, swept on the next run.
 _STALE_STAGING_S = 3600.0
+
+#: How long a conversion's own staging folder is removed again while a killed
+#: console still holds it (see ``_remove_staging``), and the pause between tries.
+_REMOVE_PATIENCE_S = 5.0
+_REMOVE_PAUSE_S = 0.1
 
 #: Seconds left to the ezdxf call deadline once the conversion is over.
 _CALL_MARGIN_S = 5.0
@@ -281,6 +287,34 @@ def _sweep_stale(root: Path) -> None:
             continue
 
 
+def _remove_staging(folder: Path) -> bool:
+    """Remove one conversion's staging folder; True once it is gone.
+
+    A killed console (``_kill_tree``) lets go of its files a moment after
+    ``wait`` returns, and on a loaded machine that moment is longer. MEASURED
+    2026-11-04 (AutoCAD 2026 host): the live matrix's ``accore`` smoke, run
+    right after thirteen COM smokes, found the timed-out conversion's folder
+    still there a second later, while the same smoke on its own left nothing.
+    So the removal is repeated for up to ``_REMOVE_PATIENCE_S``; a folder still
+    held after that is logged and swept by ``_sweep_stale`` once it is an hour
+    old, as before.
+    """
+    deadline = time.monotonic() + _REMOVE_PATIENCE_S
+    while True:
+        shutil.rmtree(folder, ignore_errors=True)
+        if not folder.exists():
+            return True
+        if time.monotonic() >= deadline:
+            log.warning(
+                "accoreconsole staging folder %s is still in use after %gs; it is swept "
+                "once it is an hour old",
+                folder,
+                _REMOVE_PATIENCE_S,
+            )
+            return False
+        time.sleep(_REMOVE_PAUSE_S)
+
+
 def convert_with_accoreconsole(source: str, read) -> tuple[object, dict]:
     """Convert ``source`` (a DWG) to DXF with the console and ``read(dxf_path)`` it.
 
@@ -348,7 +382,7 @@ def convert_with_accoreconsole(source: str, read) -> tuple[object, dict]:
         attempt.pop("reason", None)
         return result, attempt
     finally:
-        shutil.rmtree(folder, ignore_errors=True)
+        _remove_staging(folder)
 
 
 def _read_with_odafc(source: str):

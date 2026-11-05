@@ -347,16 +347,123 @@ async def test_renaming_the_target_follows_it_and_deleting_it_falls_back_to_mode
 # ── corner ops: WCS pick points ─────────────────────────────────────────────
 
 
+class _Line(_Entity):
+    """An AcDbLine whose points take the VARIANT ``_apoint`` builds, as ActiveX does."""
+
+    def __init__(self, block, handle, start, end):
+        super().__init__(block, handle, "AcDbLine")
+        self.StartPoint, self.EndPoint = start, end
+
+    def __setattr__(self, name, value):
+        if name in ("StartPoint", "EndPoint"):
+            value = tuple(float(v) for v in getattr(value, "value", value))
+        object.__setattr__(self, name, value)
+
+    @property
+    def Length(self):
+        (x1, y1, _), (x2, y2, _) = self.StartPoint, self.EndPoint
+        return ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+
+
+def _line(doc, start, end) -> _Line:
+    block = doc.ModelSpace
+    line = _Line(block, doc.next_handle(), start, end)
+    block._items.append(line)
+    return line
+
+
 @pytest.mark.asyncio
 async def test_trim_and_extend_pick_points_carry_the_wcs_override(com, seat):
-    """``*x,y`` is a WCS point whatever UCS is current: ucs_set cannot shift a pick."""
+    """``*x,y`` is a WCS point whatever UCS is current: ucs_set cannot shift a pick.
+    (A pair that is not LINE + LINE still goes through the command.)"""
     doc = seat.doc
-    line = doc.ModelSpace.add("AcDbLine", StartPoint=(0, 0, 0), EndPoint=(10, 0, 0), Length=10.0)
+    arc = doc.ModelSpace.add("AcDbArc", Center=(0, 0, 0), Radius=10.0)
     cutter = doc.ModelSpace.add("AcDbLine", StartPoint=(5, -5, 0), EndPoint=(5, 5, 0), Length=10)
-    await com.entity_trim(line.Handle, cutter.Handle, 12.0, 3.0)
+    await com.entity_trim(arc.Handle, cutter.Handle, 12.0, 3.0)
     assert "\n*12.0,3.0\n" in doc.sent[-1]
-    await com.entity_extend(line.Handle, cutter.Handle, end_x=1.5, end_y=-2.0)
+    await com.entity_extend(arc.Handle, cutter.Handle, end_x=1.5, end_y=-2.0)
     assert "\n*1.5,-2.0\n" in doc.sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_a_command_trim_runs_in_standard_mode_and_restores_the_operators(com, seat):
+    """Live smoke ``space`` (AutoCAD 2026): under TRIMEXTENDMODE 1 (Quick, the
+    seat's default) the script's cutter handent was taken as the object to trim
+    and the cutter was erased. The command runs under 0; the operator's 1 is back
+    afterwards."""
+    doc = seat.doc
+    doc.vars["TRIMEXTENDMODE"] = 1
+    seen: list[int] = []
+    doc.on_command = lambda d, text: seen.append(d.vars["TRIMEXTENDMODE"])
+    arc = doc.ModelSpace.add("AcDbArc", Center=(0, 0, 0), Radius=10.0)
+    cutter = doc.ModelSpace.add("AcDbLine", StartPoint=(5, -5, 0), EndPoint=(5, 5, 0), Length=10)
+    await com.entity_trim(arc.Handle, cutter.Handle, 12.0, 3.0)
+    await com.entity_extend(arc.Handle, cutter.Handle, end_x=1.5, end_y=-2.0)
+    assert seen == [0, 0]
+    assert doc.vars["TRIMEXTENDMODE"] == 1
+
+
+def test_a_short_variable_is_retried_as_a_16_bit_variant():
+    """MEASURED on AutoCAD 2026: SetVariable("TRIMEXTENDMODE", 0) raises
+    ``Error setting system variable`` (a VT_I4); a VT_I2 VARIANT is accepted."""
+    import pythoncom
+
+    class _Strict:
+        def __init__(self):
+            self.value = None
+
+        def SetVariable(self, name, value):  # noqa: N802
+            if isinstance(value, int):
+                raise RuntimeError("Error setting system variable")
+            assert value.varianttype == pythoncom.VT_I2
+            self.value = value.value
+
+    doc = _Strict()
+    cb._set_variable(doc, "TRIMEXTENDMODE", 0)
+    assert doc.value == 0
+    with pytest.raises(RuntimeError):
+        cb._set_variable(doc, "TRIMEXTENDMODE", 70000)  # not a short: the error stands
+
+
+@pytest.mark.asyncio
+async def test_a_line_trim_keeps_the_side_of_the_point_without_a_command(com, seat):
+    """Live smoke ``space`` (AutoCAD 2026): the ``_TRIM`` pick by screen point
+    missed a line outside the view, opened a crossing window and left
+    SendCommand blocked until a real ESC. Two lines are trimmed by the headless
+    engine's geometry: in place, the handle kept, the segment holding the point
+    kept (the contract; TRIM removes the picked side), nothing sent, the
+    operator's tab untouched."""
+    doc = seat.doc
+    doc.ActiveLayout = doc.Layouts.by_name("Layout1")
+    line = _line(doc, (0.0, 0.0, 0.0), (100.0, 0.0, 0.0))
+    cutter = _line(doc, (50.0, -50.0, 0.0), (50.0, 50.0, 0.0))
+    info = await com.entity_trim(line.Handle, cutter.Handle, 10.0, 0.0)
+    assert info.handle == line.Handle
+    assert line.StartPoint == (0.0, 0.0, 0.0) and line.EndPoint == (50.0, 0.0, 0.0)
+    assert info.properties["length"] == pytest.approx(50.0)
+    assert doc.sent == [] and doc.ActiveLayout.Name == "Layout1"
+
+    other = _line(doc, (0.0, 10.0, 0.0), (100.0, 10.0, 0.0))
+    await com.entity_trim(other.Handle, cutter.Handle, 90.0, 10.0)
+    assert other.StartPoint == (50.0, 10.0, 0.0) and other.EndPoint == (100.0, 10.0, 0.0)
+
+    parallel = _line(doc, (0.0, 20.0, 0.0), (10.0, 20.0, 0.0))
+    with pytest.raises(RuntimeError, match="parallel"):
+        await com.entity_trim(parallel.Handle, other.Handle, 0.0, 20.0)
+
+
+@pytest.mark.asyncio
+async def test_a_line_extend_moves_the_end_nearer_the_point_or_the_boundary_midpoint(com, seat):
+    doc = seat.doc
+    boundary = _line(doc, (50.0, -50.0, 0.0), (50.0, 50.0, 0.0))
+    line = _line(doc, (0.0, 0.0, 0.0), (20.0, 0.0, 0.0))
+    info = await com.entity_extend(line.Handle, boundary.Handle)
+    assert info.handle == line.Handle
+    assert line.StartPoint == (0.0, 0.0, 0.0) and line.EndPoint == (50.0, 0.0, 0.0)
+    back = _line(doc, (60.0, 5.0, 0.0), (90.0, 5.0, 0.0))
+    await com.entity_extend(back.Handle, boundary.Handle, end_x=61.0, end_y=5.0)
+    assert back.StartPoint == (50.0, 5.0, 0.0) and back.EndPoint == (90.0, 5.0, 0.0)
+    assert doc.sent == []
 
 
 @pytest.mark.asyncio
@@ -518,6 +625,23 @@ async def test_drawing_undo_and_redo_report_whether_the_drawing_changed(com, sea
     nothing = await com.drawing_undo()
     assert nothing["ok"] is True and nothing["verified"] is False
     assert "no change" in nothing["message"]
+
+
+@pytest.mark.asyncio
+async def test_undo_and_redo_touch_no_system_variable(com, seat):
+    """Live smoke ``space`` (AutoCAD 2026): a SetVariable is an undo record of
+    its own - ``_UNDO 1`` after the OSMODE zeroing undid that instead of the
+    drawing's step, and the restore after it left ``_REDO`` "Nothing to redo"."""
+    doc = seat.doc
+    doc.vars["OSMODE"] = 4133
+    await com.entity_create_circle(0.0, 0.0, 1.0)
+    writes: list[tuple] = []
+    plain = doc.SetVariable
+    doc.SetVariable = lambda name, value: (writes.append((name, value)), plain(name, value))
+    doc.on_command = _undoes_last_create
+    assert (await com.drawing_undo())["verified"] is True
+    assert (await com.drawing_redo())["verified"] is True
+    assert writes == [] and doc.vars["OSMODE"] == 4133
 
 
 @pytest.mark.asyncio

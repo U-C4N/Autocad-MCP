@@ -378,6 +378,57 @@ async def test_another_com_error_is_not_retried(seat, tmp_path):
     assert any(row["status"] == "error" for row in result["checks"])
 
 
+def _writes_then_refused(fake, attempts: list[int]):
+    """A job that held the Application, wrote, then had a later call refused once."""
+
+    def job():
+        cb._acad_app()
+        fake.added[0].SetVariable("USERI1", len(attempts))
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise com_error(RPC_E_CALL_REJECTED, "Call was rejected by callee.", None, None)
+        return "done"
+
+    return job
+
+
+@pytest.mark.asyncio
+async def test_a_mutating_job_refused_after_it_wrote_is_not_run_twice(seat, tmp_path):
+    """Live smoke ``arch`` (AutoCAD 2026, 2026-11-04): a whole-job retry of a
+    write whose later call was refused drew a LINE twice. Inside a ``_mutating``
+    call, a job that held the Application is not retried."""
+    fake, client = seat
+    attempts: list[int] = []
+
+    async def body(h):
+        await h.new_document()
+        token = cb._MUTATION_PROBE.set({"reached": False})
+        try:
+            await h.backend._run(_writes_then_refused(fake, attempts))
+        finally:
+            cb._MUTATION_PROBE.reset(token)
+
+    code, result = await _run(body, client, tmp_path)
+    assert code == 1 and result["summary"]["rpc_retries"] == 0
+    assert attempts == [1], "the write ran once"
+    assert fake.added[0].writes == [("USERI1", 0)]
+
+
+@pytest.mark.asyncio
+async def test_a_read_refused_mid_job_is_still_retried(seat, tmp_path):
+    fake, client = seat
+    attempts: list[int] = []
+
+    async def body(h):
+        await h.new_document()
+        value = await h.backend._run(_writes_then_refused(fake, attempts))
+        h.check("the job ran again", value == "done")
+
+    code, result = await _run(body, client, tmp_path)
+    assert code == 0, result
+    assert result["summary"]["rpc_retries"] == 1 and len(attempts) == 2
+
+
 @pytest.mark.asyncio
 async def test_a_seat_that_keeps_rejecting_gives_up_after_its_patience(seat, tmp_path):
     fake, client = seat

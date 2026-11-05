@@ -36,7 +36,7 @@ from engineering.errors import (
 from engineering.measure import is_self_intersecting, polygon_area_perimeter
 from security import sanitize_macro_argument, sanitize_symbol_name, validate_path
 
-from . import lineage, ocs
+from . import lineage, message_filter, ocs
 from .atomic_write import atomic_write_dxf, file_sha256, resolve_pending
 from .base import (
     AutoCADBackend,
@@ -125,6 +125,95 @@ _COM_ERROR: tuple[type[BaseException], ...] = (pywintypes.com_error,) if _COM_IM
 #: no ``CoRegisterMessageFilter``, the client-side hook that would retry this
 #: per call, so the read-only reads that follow a switch wait it out themselves.
 _RPC_E_CALL_REJECTED = -2147418111
+
+#: ``RPC_E_SERVERCALL_RETRYLATER``: the same "busy, did not run" answer from a
+#: message filter that asks the caller to retry.
+_RPC_E_SERVERCALL_RETRYLATER = -2147417846
+
+#: How long a refused member lookup is waited out before it is raised as
+#: ``RejectedLookupError``. MEASURED on AutoCAD 2026 (``benchmarks/perf_com.py``,
+#: 2026-11-04): in a 5,000-line drawing the ``SendCommand`` lookup of one
+#: ``entity_fillet`` was refused right after the previous FILLET, and that call
+#: failed. Well inside ``COM_CALL_TIMEOUT``.
+_LOOKUP_PATIENCE_S = 10.0
+
+
+if _COM_IMPORTS_OK:
+
+    class RejectedLookupError(AttributeError, pywintypes.com_error):
+        """A member lookup AutoCAD refused because it was busy - not a missing member.
+
+        MEASURED on AutoCAD 2026 (live smokes ``document`` / ``space``,
+        2026-11-04): right after ``Documents.Close`` the first read of a member
+        name not yet looked up on that proxy - ``app.Documents.Count``,
+        ``Documents.Item``, ``doc.HandleToObject`` - raised ``AttributeError:
+        <unknown>.Count``. pywin32's dynamic ``CDispatch.__getattr__`` swallows
+        the ``RPC_E_CALL_REJECTED`` its ``GetIDsOfNames`` got and reports the
+        name as missing, so no rejection handler (``_wait_out_rejected_call``,
+        ``_acad_doc``'s ``application_busy``, the live harness's retry) saw it.
+        This error is both: an ``AttributeError`` (``hasattr`` still answers
+        False) and a ``com_error`` carrying the HRESULT, so every one of them
+        does.
+        """
+
+        def __init__(self, hresult: int, name: str):
+            super().__init__(hresult, f"AutoCAD refused the lookup of {name!r} (busy)", None, None)
+            self.hresult = hresult
+
+    def _surface_rejected_lookups() -> None:
+        """Wrap ``CDispatch.__getattr__`` so a refused lookup raises ``RejectedLookupError``.
+
+        Only a lookup that already failed costs more calls: ``GetIDsOfNames``
+        again, while it answers busy for up to ``_LOOKUP_PATIENCE_S`` (a
+        lookup changes nothing, so repeating it is always safe), then the
+        read itself. A member that does not exist stays the
+        ``AttributeError`` it was.
+        """
+        from win32com.client import dynamic
+
+        original = dynamic.CDispatch.__getattr__
+        if getattr(original, "_acadmcp_rejection_aware", False):
+            return
+
+        def __getattr__(self, attr):  # noqa: N807 - pywin32's own hook
+            try:
+                return original(self, attr)
+            except AttributeError:
+                oleobj = None if attr.startswith("_") else self.__dict__.get("_oleobj_")
+                if oleobj is None:
+                    raise
+                # A lookup changes nothing on the seat, so a refused one is
+                # waited out here (it is the one COM call that is always safe
+                # to repeat); only its budget running out reaches the caller.
+                deadline = time.monotonic() + _LOOKUP_PATIENCE_S
+                pause = 0.05
+                while True:
+                    try:
+                        oleobj.GetIDsOfNames(0, attr)  # (lcid, name), as pywin32 calls it
+                        break
+                    except pywintypes.com_error as exc:
+                        hr = exc.args[0] if exc.args else 0
+                        if hr not in (_RPC_E_CALL_REJECTED, _RPC_E_SERVERCALL_RETRYLATER):
+                            raise AttributeError(f"{self._username_}.{attr}") from None
+                        if time.monotonic() + pause > deadline:
+                            raise RejectedLookupError(hr, attr) from None
+                        time.sleep(pause)
+                        pause = min(pause * 2.0, 1.0)
+                    except Exception:  # the classification is best effort
+                        raise AttributeError(f"{self._username_}.{attr}") from None
+            # The name resolves now: the failed lookup was a transient refusal
+            # (pywin32 raises AttributeError only when GetIDsOfNames failed).
+            # Measured live: the first lookup after Close was refused and the
+            # next one answered. One more attempt, whose errors are its own.
+            return original(self, attr)
+
+        __getattr__._acadmcp_rejection_aware = True
+        dynamic.CDispatch.__getattr__ = __getattr__
+
+    try:
+        _surface_rejected_lookups()
+    except Exception as _exc:  # pragma: no cover - a pywin32 without dynamic
+        log.debug("rejected-lookup hook not installed: %s", _exc)
 
 
 def _wait_out_rejected_call(read: Callable[[], Any], *, budget_s: float, first_pause_s: float):
@@ -216,9 +305,20 @@ def _job_clock_get(bucket: str) -> float:
 
 
 def _com_init():
-    """COM thread initializer – called once by the STA worker thread."""
+    """COM thread initializer – called once by the STA worker thread.
+
+    1.8.0: the thread also registers the client-side message filter
+    (``backends.message_filter``), so a call AutoCAD answers "retry later" is
+    retried by COM itself instead of failing as ``RPC_E_CALL_REJECTED`` in the
+    middle of a write; ``_com_teardown`` removes it. When it cannot be
+    registered every call behaves as before and the fact is logged.
+    """
     if _COM_IMPORTS_OK:
         pythoncom.CoInitialize()
+        if message_filter.install():
+            log.debug("COM message filter registered on the STA thread")
+        else:
+            log.info("COM message filter not registered; a rejected call surfaces as before")
 
 
 def _com_teardown():
@@ -230,6 +330,7 @@ def _com_teardown():
     """
     _drop_app()
     if _COM_IMPORTS_OK:
+        message_filter.uninstall()
         try:
             pythoncom.CoUninitialize()
         except Exception:
@@ -471,23 +572,46 @@ def _vl_application(app):
     return vl
 
 
-def _vl_document_forms(app, document_id: str, *, fresh: bool):
+def _doc_window(doc) -> int | None:
+    """``doc.HWND`` - the document window, new for every open of a file - or None."""
+    try:
+        return int(doc.HWND)
+    except Exception:  # noqa: BLE001 - without it nothing is cached
+        return None
+
+
+def _vl_document_forms(app, document_id: str, *, fresh: bool, window: int | None = None):
     """``(eval, parsed read form)`` for the namespace of the document active NOW.
 
-    Cached per document id: fetching ``ActiveDocument.Functions`` and the two
-    function objects cost ~6.6 ms live, one ``eval`` of a parsed form ~1 ms.
-    ``fresh`` re-fetches - the cached objects may belong to a closed namespace.
+    Cached per ``(document id, document window)``: fetching
+    ``ActiveDocument.Functions`` and the two function objects cost ~6.6 ms
+    live, one ``eval`` of a parsed form ~1 ms. ``fresh`` re-fetches.
+
+    MEASURED on AutoCAD 2026 (live smoke ``space`` and a reopen probe,
+    2026-11-04): keyed by the document id alone, a file closed and opened again
+    in one session - same name, same path, the same id read back from the
+    file - got the closed namespace's function objects, and the ``funcall`` on
+    them corrupted AutoCAD's heap: an access violation in OLEAUT32 on the next
+    call after the reopened document was closed, and three crashes of the seat
+    (heap corruption 0xC0000374) in the smokes that followed. The document
+    window is new for every open (HWND 199134, then 461152 for the same file),
+    so a reopened document misses the cache; without a readable window
+    nothing is cached. The previous open's objects are dropped, never called.
     """
     vl = _vl_application(app)
     docs = _COM_STATE.setdefault("vl_docs", {})
-    if not fresh and document_id in docs:
-        return docs[document_id]
+    key = (document_id, window)
+    if window is not None and not fresh and key in docs:
+        return docs[key]
     functions = _vl_get(_vl_get(vl, "ActiveDocument"), "Functions")
     reader = _vl_call(functions, "Item", "read")
     evaluator = _vl_call(functions, "Item", "eval")
     source = _EDIT_COUNTER_READ.format(document_id=document_id)
     forms = (reader, evaluator, _vl_call(reader, "funcall", source))
-    docs[document_id] = forms
+    for stale in [k for k in docs if k[0] == document_id and k != key]:
+        docs.pop(stale)  # another open of this file: never called again
+    if window is not None:
+        docs[key] = forms
     return forms
 
 
@@ -1037,10 +1161,106 @@ def _ensure_linetype_loaded(name: str) -> None:
     _load_linetype(doc, name, _default_lin_file(doc))
 
 
+#: The TRIM / EXTEND scripts answer the Standard mode's prompts: cutting edges
+#: (the handent), an empty Enter, then the WCS pick. MEASURED on AutoCAD 2026
+#: (live smoke ``space``, 2026-11-04): the seat's default ``TRIMEXTENDMODE`` 1
+#: (Quick, since AutoCAD 2021) took the cutter's handent as the object to trim,
+#: erased the cutter and left the target untouched. Set for the command only,
+#: restored after; a seat without the variable (before 2021) is Standard.
+_STANDARD_TRIM_MODE = {"TRIMEXTENDMODE": 0}
+
+
+def _line_ends(entity):
+    """``((x, y, z), (x, y, z))`` of an AcDbLine (WCS), None for anything else."""
+    try:
+        if str(entity.ObjectName) != "AcDbLine":
+            return None
+        start, end = entity.StartPoint, entity.EndPoint
+    except Exception:
+        return None
+    return tuple(float(v) for v in start[:3]), tuple(float(v) for v in end[:3])
+
+
+def _line_corner(target, other, ref: tuple[float, float], mode: str) -> EntityInfo:
+    """Trim or extend LINE ``target`` to ``other``'s infinite line, in place.
+
+    The headless engine's rule, computed the same way: the intersection of
+    the two lines taken as infinite; ``trim`` moves the end of the target
+    farther from ``ref`` (the segment holding ``ref`` is kept, the contract's
+    wording), ``extend`` moves the end nearer ``ref``. The handle is kept.
+
+    MEASURED on AutoCAD 2026 (live smoke ``space``, 2026-11-04) - why not the
+    ``_TRIM`` / ``_EXTEND`` command for two lines: the command picks the
+    target by a screen point, so a pick outside the current view selected
+    nothing and opened a crossing window (``Specify opposite corner``) that
+    left ``SendCommand`` blocked until a real ESC; and TRIM removes the picked
+    side where the contract keeps it. Other entity pairs still go through the
+    command (the headless engine refuses them).
+    """
+    (x1, y1, z1), (x2, y2, z2) = _line_ends(target)
+    (x3, y3, _), (x4, y4, _) = _line_ends(other)
+    det = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    if abs(det) < 1e-12:
+        what = "cutter" if mode == "trim" else "boundary"
+        raise RuntimeError(f"entity_{mode}: target and {what} are parallel or do not intersect.")
+    t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / det
+    point = _apoint(x1 + t * (x2 - x1), y1 + t * (y2 - y1), z1 + t * (z2 - z1))
+    near_start = (x1 - ref[0]) ** 2 + (y1 - ref[1]) ** 2 <= (x2 - ref[0]) ** 2 + (y2 - ref[1]) ** 2
+    if (mode == "trim") == near_start:
+        target.EndPoint = point
+    else:
+        target.StartPoint = point
+    _regen(target)
+    return _entity_info(target)
+
+
+def _set_variable(doc, name: str, value) -> None:
+    """``doc.SetVariable(name, value)``, an integer retried as a 16-bit VARIANT.
+
+    MEASURED on AutoCAD 2026 (2026-11-04): ``SetVariable("TRIMEXTENDMODE", 0)``
+    raises ``Error setting system variable`` - pywin32 marshals a Python int as
+    VT_I4 and AutoCAD wants that short as VT_I2 - while OSMODE, SNAPMODE and
+    CMDECHO take the VT_I4. The plain call stays first (it is what every other
+    variable has always been set with).
+    """
+    try:
+        doc.SetVariable(name, value)
+    except Exception:
+        if isinstance(value, bool) or not isinstance(value, int) or not -32768 <= value <= 32767:
+            raise
+        doc.SetVariable(name, win32com.client.VARIANT(pythoncom.VT_I2, value))
+
+
+def _assign_layer(entity, layer: str) -> None:
+    """``entity.Layer = layer``, creating the layer first when it is missing.
+
+    MEASURED on AutoCAD 2026 (live smoke ``edit``, 2026-11-04): ActiveX will not
+    create a layer on assignment - ``entity.Layer = "TEXT"`` in a document
+    without TEXT raises DISP_E_EXCEPTION ``Key not found`` - while the headless
+    engine accepts any name. ``entity_create_table`` defaults to ``"TEXT"``,
+    which a document made by ``Documents.Add`` (no bootstrap) does not have.
+    The hot path stays one call: the table is consulted only after the
+    assignment failed, and an error on a layer that does exist is re-raised.
+    """
+    try:
+        entity.Layer = layer
+        return
+    except Exception:
+        layers = _acad_doc().Layers
+        try:
+            layers.Item(layer)
+        except Exception:
+            pass
+        else:
+            raise
+    layers.Add(layer)
+    entity.Layer = layer
+
+
 def _apply_entity_attrs(entity, layer: str | None, color: int | None, linetype: str | None):
     """Apply common entity attributes after creation."""
     if layer is not None:
-        entity.Layer = layer
+        _assign_layer(entity, layer)
     if color is not None:
         entity.color = int(color)
     if linetype is not None:
@@ -2338,7 +2558,12 @@ def _entity_info(entity) -> EntityInfo:
             props["height"] = entity.Height
             props["rotation"] = rad2deg(entity.Rotation)  # N5 parity with ezdxf
         elif obj_name == "AcDbMText":
-            props["text"] = entity.Contents
+            # MEASURED on AutoCAD 2026 (live smoke ``edit``, 2026-11-04):
+            # IAcadMText has no ``Contents`` (that is the ObjectARX name) - the
+            # read raised AttributeError and the except below dropped every
+            # MTEXT property, ``insertion`` included. ActiveX's member is
+            # ``TextString``, as on TEXT.
+            props["text"] = entity.TextString
             ins = entity.InsertionPoint
             props["insertion"] = [ins[0], ins[1]]
             # N5 parity with ezdxf: MTEXT char_height + rotation.
@@ -3108,6 +3333,7 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
                     "No drawing is open in AutoCAD. Open or create a .dwg file first."
                 )
             self._bind_key(key, application)
+            self._counter_window = _doc_window(doc)
             self._timed_counter_start(app)
             return doc
         restarted = self._bound["app"] != application
@@ -3117,6 +3343,7 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
                 self._view_of(key, application),
                 application_changed=restarted,
             )
+        self._counter_window = _doc_window(doc)
         self._timed_counter_start(app)
         return doc
 
@@ -3160,12 +3387,15 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         if entry is None:
             return
         document_id = entry["document_id"]
+        # The bound document's window this job, set by _guard: the cache key
+        # that keeps a reopened file off the closed namespace (_vl_document_forms).
+        window = entry["window"] = getattr(self, "_counter_window", None)
         try:
-            count = self._read_edit_count(app, document_id)
+            count = self._read_edit_count(app, document_id, window=window)
             gap = False
             if count is None:
                 gap = "edits" in entry  # it was watching; something removed it
-                count = self._install_edit_counter(app, document_id)
+                count = self._install_edit_counter(app, document_id, window)
         except Exception as exc:  # noqa: BLE001 - the counter is evidence, never a failure
             self._edit_counter = {
                 "counted": False,
@@ -3199,18 +3429,27 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         if entry is None or entry.get("edits") is None:
             return
         try:
-            count = self._read_edit_count(app, entry["document_id"], refetch=False)
+            count = self._read_edit_count(
+                app, entry["document_id"], refetch=False, window=entry.get("window")
+            )
         except Exception as exc:  # noqa: BLE001
             log.debug("operator-edit counter: end-of-job read failed: %s", exc)
             return
         if count is not None:
             entry["edits"] = count
 
-    def _read_edit_count(self, app, document_id: str, *, refetch: bool = True) -> int | None:
-        """The bound namespace's count, or None when no reactor of ours answers there."""
+    def _read_edit_count(
+        self, app, document_id: str, *, refetch: bool = True, window: int | None = None
+    ) -> int | None:
+        """The bound namespace's count, or None when no reactor of ours answers there.
+
+        ``window`` is the bound document's HWND this job (``_doc_window``): the
+        cache key that keeps a reopened file off a closed namespace."""
 
         def _once(fresh: bool):
-            _reader, evaluator, form = _vl_document_forms(app, document_id, fresh=fresh)
+            _reader, evaluator, form = _vl_document_forms(
+                app, document_id, fresh=fresh, window=window
+            )
             value = self._wait_out_rejected_call(lambda: _vl_call(evaluator, "funcall", form))
             return _parse_edit_count(value, document_id)
 
@@ -3224,8 +3463,8 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
             count = _once(True)  # the cached objects may belong to a closed namespace
         return count
 
-    def _install_edit_counter(self, app, document_id: str) -> int:
-        reader, evaluator, _form = _vl_document_forms(app, document_id, fresh=True)
+    def _install_edit_counter(self, app, document_id: str, window: int | None = None) -> int:
+        reader, evaluator, _form = _vl_document_forms(app, document_id, fresh=True, window=window)
         source = _EDIT_COUNTER_INSTALL.format(document_id=document_id)
         value = self._wait_out_rejected_call(
             lambda: _vl_call(evaluator, "funcall", _vl_call(reader, "funcall", source))
@@ -3522,9 +3761,13 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
             if hr in (-2147221246, -2147221005, -2147417842):
                 _drop_app()
                 self._connected = False
-            raise RuntimeError(
-                f"AutoCAD COM error ({hr:#010x}): {e.args[1] if len(e.args) > 1 else e}"
-            ) from e
+            message = f"AutoCAD COM error ({hr:#010x}): {e.args[1] if len(e.args) > 1 else e}"
+            # DISP_E_EXCEPTION carries AutoCAD's own words in the excepinfo
+            # (``Key not found``); the localised args[1] alone hides them.
+            info = e.args[2] if len(e.args) > 2 else None
+            if isinstance(info, tuple) and len(info) > 2 and info[2]:
+                message += f" ({info[2]})"
+            raise RuntimeError(message) from e
 
     def _record_breakdown(
         self, submitted: float, began: float, ended: float, ran_ms: float, clock: dict
@@ -6559,12 +6802,14 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         doc = _acad_doc()
         entry = self._known_documents.get(self._bound_entry_key()) or {}
         edits_before = entry.get("edits")
-        outcome = self._safe_send_command(doc, command)
+        # quiet=False: a SetVariable around the command is an undo record of
+        # its own (measured, AutoCAD 2026) - see _safe_send_command.
+        outcome = self._safe_send_command(doc, command, quiet=False)
         edits_after = None
         if edits_before is not None and entry.get("document_id"):
             try:
                 edits_after = self._read_edit_count(
-                    _acad_app(), entry["document_id"], refetch=False
+                    _acad_app(), entry["document_id"], refetch=False, window=entry.get("window")
                 )
             except Exception as exc:  # evidence only
                 log.debug("edit counter unreadable after %s: %s", command, exc)
@@ -10066,11 +10311,21 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         deadline_s: float | None = None,
         target_space: str | None = None,
         owner: str | None = None,
+        sysvars: dict[str, Any] | None = None,
+        quiet: bool = True,
     ) -> CommandOutcome:
         """Send `cmd`, polling CMDACTIVE until the command finishes.
 
         Snap/grid/echo are temporarily zeroed to avoid OSNAP-driven misclicks
-        and chatty echoes; everything is restored in the finally block.
+        and chatty echoes; ``sysvars`` (a command script's own modes, e.g.
+        ``TRIMEXTENDMODE``) are set the same way; everything is restored in the
+        finally block. A variable the seat does not have is skipped.
+
+        ``quiet=False`` touches no variable at all - for ``_UNDO`` / ``_REDO``.
+        MEASURED on AutoCAD 2026 (live smoke ``space``, 2026-11-04): a
+        ``SetVariable`` is an undo record of its own, so ``_UNDO 1`` after the
+        zeroing undid the OSMODE change instead of the drawing's last step,
+        and the restore after the undo left ``_REDO`` with "Nothing to redo".
 
         1.8-05 - what the command did, not only that it was sent:
 
@@ -10080,6 +10335,15 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
           ``COMMAND_DEADLINE_S``, 8 s) - ``LASTPROMPT`` is read first (the
           prompt it stopped at), then ESC x3, then ``CommandIncompleteError``
           (kind ``command_incomplete``, ``{command, last_prompt}``).
+          MEASURED on AutoCAD 2026 (2026-11-04) - this branch is not reached
+          there: ``SendCommand`` of a command that stops at a prompt does not
+          return until the prompt is answered, ``PostCommand`` returns but
+          leaves every COM call ``RPC_E_CALL_REJECTED`` (CMDACTIVE, LASTPROMPT,
+          SendCommand, Close) until a key is pressed in AutoCAD, and an ESC
+          character in a ``SendCommand`` string is refused as ``Invalid
+          input``. A raw command left at its prompt therefore overruns
+          ``COM_CALL_TIMEOUT`` and the call ends as that timeout says; no
+          ActiveX call can cancel the prompt.
         * **Completed:** a ``CommandOutcome`` with every entity created, in
           which space (``{handle, type, space}``, the first 50 plus
           ``created_count``), ``LASTPROMPT``, and the totals before and after;
@@ -10108,10 +10372,12 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         command = cmd.rstrip("\n")
         saved: dict[str, Any] = {}
         try:
-            for var in ("OSMODE", "SNAPMODE", "CMDECHO"):
+            wanted = {"OSMODE": 0, "SNAPMODE": 0, "CMDECHO": 0, **(sysvars or {})}
+            for var, value in wanted.items() if quiet else ():
                 try:
-                    saved[var] = doc.GetVariable(var)
-                    doc.SetVariable(var, 0)
+                    current = doc.GetVariable(var)
+                    _set_variable(doc, var, value)
+                    saved[var] = current
                 except Exception:
                     pass
             snapshot = None if owner is not None else _space_snapshot(doc)
@@ -10190,19 +10456,29 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         finally:
             for var, val in saved.items():
                 try:
-                    doc.SetVariable(var, val)
+                    _set_variable(doc, var, val)
                 except Exception:
                     pass
 
     async def entity_trim(self, target_handle, cutter_handle, keep_x, keep_y) -> EntityInfo:
         def _sync():
             doc = _acad_doc()
+            target = _handle_to_object(doc, target_handle)
+            cutter = _handle_to_object(doc, cutter_handle)
+            if _line_ends(target) is not None and _line_ends(cutter) is not None:
+                # LINE + LINE: the contract's own geometry, as on the headless
+                # engine - no command, no pick, no tab switch (_line_corner).
+                if target_handle == cutter_handle:
+                    raise RuntimeError("entity_trim: target and cutter cannot be the same entity.")
+                return _line_corner(target, cutter, (float(keep_x), float(keep_y)), "trim")
             # 1.8-05: ``*x,y`` is a WCS point whatever UCS is current, so a
             # ucs_set cannot shift the pick (tool coordinates are WCS).
             cmd = f'_TRIM\n(handent "{cutter_handle}")\n\n*{float(keep_x)},{float(keep_y)}\n\n'
             with _target_tab(doc):
                 # 1.8-23: only the target space's block is read, O(new)
-                self._safe_send_command(doc, cmd, owner=_target_space_name())
+                self._safe_send_command(
+                    doc, cmd, owner=_target_space_name(), sysvars=_STANDARD_TRIM_MODE
+                )
             ent = doc.HandleToObject(target_handle)
             return _entity_info(ent)
 
@@ -10219,6 +10495,19 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
             doc = _acad_doc()
             target = _handle_to_object(doc, target_handle)
             boundary = _handle_to_object(doc, boundary_handle)
+            bounds = _line_ends(boundary)
+            if _line_ends(target) is not None and bounds is not None:
+                # LINE + LINE: the headless engine's geometry (_line_corner).
+                if target_handle == boundary_handle:
+                    raise RuntimeError(
+                        "entity_extend: target and boundary cannot be the same entity."
+                    )
+                if end_x is None or end_y is None:
+                    (bx1, by1, _z1), (bx2, by2, _z2) = bounds
+                    ref = ((bx1 + bx2) / 2.0, (by1 + by2) / 2.0)
+                else:
+                    ref = (float(end_x), float(end_y))
+                return _line_corner(target, boundary, ref, "extend")
             if end_x is None or end_y is None:
                 # Auto: pick the target endpoint nearest the boundary midpoint.
                 try:
@@ -10238,7 +10527,9 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
             cmd = f'_EXTEND\n(handent "{boundary_handle}")\n\n*{ex},{ey}\n\n'  # WCS pick
             with _target_tab(doc):
                 # 1.8-23: only the target space's block is read, O(new)
-                self._safe_send_command(doc, cmd, owner=_target_space_name())
+                self._safe_send_command(
+                    doc, cmd, owner=_target_space_name(), sysvars=_STANDARD_TRIM_MODE
+                )
             return _entity_info(doc.HandleToObject(target_handle))
 
         return await self._run(_sync)
