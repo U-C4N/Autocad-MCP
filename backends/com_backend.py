@@ -3632,7 +3632,12 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         }
 
     async def _cached_snapshot(self, *, guarded: bool):
-        """The bound document's ``Document.Export`` snapshot, reused while it stands still.
+        """The snapshot alone; see ``_snapshot_with_reuse``."""
+        snap, _reused = await self._snapshot_with_reuse(guarded=guarded)
+        return snap
+
+    async def _snapshot_with_reuse(self, *, guarded: bool, force: bool = False):
+        """``(snapshot, reused)``: the bound document's ``Document.Export``, reused while it stands still.
 
         A DIMENSION's fields and a HATCH's loops are read from an export of the
         whole drawing (``take_snapshot``), which on a large drawing costs about
@@ -3641,9 +3646,12 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         revision and the operator-edit count are the ones it was taken under,
         no ``_mutating`` job was queued and no (re)binding happened since
         (``_snapshot_epoch``), and it is younger than ``COM_SNAPSHOT_TTL``
-        seconds (0 = never reused). The age is the backstop for what the
-        revision does not count: view changes, ``SetVariable``, an edit during
-        a server call and everything without Visual LISP.
+        seconds, counted from when the export returned (0 = never reused). The
+        age is the backstop for what the revision does not count: view changes,
+        ``SetVariable``, an edit during a server call and everything without
+        Visual LISP. ``reused`` says the snapshot is an earlier export, so a
+        caller that misses a record in it can ask again with ``force=True``,
+        which retires the cached export and takes a fresh one.
 
         ``guarded``: the caller's own job ran the bound-document guard (and with
         it the operator-edit counter) just before this. Otherwise a reuse first
@@ -3658,7 +3666,7 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         ttl = float(config.settings.com_snapshot_ttl)
         if ttl <= 0 or _MUTATION_PROBE.get() is not None:
             self._snapshot_exports = getattr(self, "_snapshot_exports", 0) + 1
-            return await snapshot_module.take_snapshot(self)
+            return await snapshot_module.take_snapshot(self), False
         if getattr(self, "_snapshot_gate", None) is None:
             self._snapshot_gate = asyncio.Lock()
 
@@ -3670,13 +3678,15 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
             )
 
         async with self._snapshot_gate:
+            if force:
+                self._retire_snapshot()
             cached = self._snapshot_cache
             if _fresh(cached):
                 if not guarded:
                     await self._ensure_document_state()
                 if _fresh(cached) and cached["key"] == self._snapshot_key():
                     self._snapshot_reuses += 1
-                    return cached["snapshot"]
+                    return cached["snapshot"], True
             self._snapshot_cache = None
             epoch = self._snapshot_epoch
             self._snapshot_exports += 1
@@ -3691,7 +3701,7 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
                     "taken": time.monotonic(),
                     "snapshot": snap,
                 }
-            return snap
+            return snap, False
 
     def _identity_of_key(self, key: tuple[str, str], application: tuple | None = None) -> dict:
         entry = self._known_documents.get((application, *key))
@@ -7928,14 +7938,19 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         document's revision and operator-edit count stand still
         (``_cached_snapshot``; ``entity_get``'s own job ran the guard): N reads
         of an unchanged drawing cost one export. Never per ``entity_list`` row.
-        A member of a block definition is not in a layout of the export: it
-        says ``detail_unavailable`` instead.
+        A handle the live job found but a reused export lacks (an entity made
+        since, by an edit the revision does not count) is looked up once more
+        in a fresh export. A member of a block definition is not in a layout of
+        the export: it says ``detail_unavailable`` instead.
         """
         from backends.entity_fields import dimension_props, hatch_props
 
-        snap = await self._cached_snapshot(guarded=True)
         wanted = str(info.handle).upper()
+        snap, reused = await self._snapshot_with_reuse(guarded=True)
         record = next((r for r in snap.records if r.handle.upper() == wanted), None)
+        if record is None and reused:
+            snap, _ = await self._snapshot_with_reuse(guarded=True, force=True)
+            record = next((r for r in snap.records if r.handle.upper() == wanted), None)
         if record is None:
             info.properties["detail_unavailable"] = (
                 f"{info.handle} is not in a layout of the exported drawing (a block "

@@ -226,6 +226,42 @@ async def test_a_write_never_reads_its_before_and_after_from_one_export(com, sea
     assert seat.exports == ["First.dwg"] * 4
 
 
+@pytest.mark.asyncio
+async def test_an_entity_missing_from_a_reused_export_is_read_from_a_fresh_one(com, seat, tmp_path):
+    """An entity drawn since the export, by an edit the revision does not count."""
+    await _read(com, seat)  # warm on dimension A
+    doc = ezdxf.readfile(seat.dxf)
+    added = doc.modelspace().add_linear_dim(base=(0, 15), p1=(0, 10), p2=(30, 10))
+    added.render()
+    newer = tmp_path / "drawing_b.dxf"
+    doc.saveas(newer)
+    seat.dxf = str(newer)  # the next export holds B
+    seat.dimension = _Dimension(added.dimension.dxf.handle)  # HandleToObject finds B
+    info = await com.entity_get(seat.dimension.Handle)  # within the TTL, revision unmoved
+    assert "detail_unavailable" not in info.properties
+    assert info.properties["detail_source"] == "dxf_export"
+    assert info.properties["dimension"]["measurement"] == 30.0
+    assert seat.exports == ["First.dwg", "First.dwg"]
+    await com.entity_get(seat.dimension.Handle)  # the fresh export is the cached one now
+    assert seat.exports == ["First.dwg", "First.dwg"]
+
+
+@pytest.mark.asyncio
+async def test_an_operator_edit_the_counter_sees_makes_the_next_read_export_again(
+    com, seat, monkeypatch
+):
+    """The reactor's count is the only thing that moves between the reads."""
+    reactor = {"count": 0}
+    monkeypatch.setattr(com, "_install_edit_counter", lambda app, doc_id, window: 0)
+    monkeypatch.setattr(com, "_read_edit_count", lambda app, doc_id, **kw: reactor["count"])
+    await _read(com, seat)
+    await _read(com, seat)
+    assert seat.exports == ["First.dwg"]  # the counter stood still: reused
+    reactor["count"] += 1  # the operator moves a grip
+    await _read(com, seat)
+    assert seat.exports == ["First.dwg", "First.dwg"]
+
+
 def test_the_ttl_setting_defaults_to_five_seconds_and_clamps_negatives(monkeypatch):
     monkeypatch.delenv("COM_SNAPSHOT_TTL", raising=False)
     assert config.Settings().com_snapshot_ttl == 5.0
