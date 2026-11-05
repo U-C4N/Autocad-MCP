@@ -59,6 +59,7 @@ import re
 
 __all__ = [
     "ACTIVEX_PLOT_SCALE",
+    "BLEEDS",
     "CTB_CATALOG",
     "DXF_STANDARD_SCALE_TYPE",
     "DXF_STD_SCALES",
@@ -80,6 +81,7 @@ __all__ = [
     "paper_from_size",
     "paper_size_mm",
     "paper_units_name",
+    "parse_canonical_media",
     "plot_style_known",
     "require_page_setup",
     "resolve_page_setup",
@@ -255,6 +257,35 @@ ORIENTATIONS: tuple[str, ...] = ("landscape", "portrait")
 
 _SCALE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)\s*$")
 
+#: AutoCAD's own spelling of a canonical media name, e.g.
+#: ``ISO_full_bleed_A3_(420.00_x_297.00_MM)`` or ``ANSI_B_(17.00_x_11.00_Inches)``:
+#: the name fixes width, height and therefore the orientation (issue #18).
+_CANONICAL_MEDIA_RE = re.compile(
+    r"^[A-Za-z0-9_]+_\((\d+(?:\.\d+)?)_x_(\d+(?:\.\d+)?)_(MM|Inches)\)$"
+)
+
+#: ``bleed`` -> the word AutoCAD's PDF drivers put between the series and the
+#: size (``ISO_full_bleed_A3_(…)``, ``ISO_expand_A3_(…)``). Only the ISO names
+#: were seen on a device (DWG To PDF.pc3 and AutoCAD PDF (High Quality
+#: Print).pc3 on AutoCAD 2026, 2026-11-05); the ANSI names follow the same
+#: pattern unmeasured, and the live engine refuses any name its device lacks.
+BLEEDS: dict[str, str | None] = {"none": None, "full_bleed": "full_bleed", "expand": "expand"}
+
+
+def parse_canonical_media(paper) -> tuple[float, float] | None:
+    """(width, height) in millimetres parsed from a canonical media name, or
+    ``None`` when ``paper`` is not spelled the way AutoCAD spells media.
+    Inch-named media convert at 25.4 mm per inch."""
+    match = _CANONICAL_MEDIA_RE.match(str(paper or "").strip())
+    if match is None:
+        return None
+    width, height = float(match.group(1)), float(match.group(2))
+    if width <= 0 or height <= 0:
+        raise ValueError(f"paper: media {paper!r} has a zero dimension")
+    if match.group(3) == "Inches":
+        width, height = round(width * 25.4, 2), round(height * 25.4, 2)
+    return width, height
+
 
 def _paper_key(paper) -> str:
     key = str(paper or "").strip().lower().replace(" ", "_")
@@ -262,7 +293,8 @@ def _paper_key(paper) -> str:
     if resolved is None:
         raise ValueError(
             f"paper: unknown paper {paper!r}. Valid papers: {', '.join(PAPER_SIZES)} "
-            "(short forms A0–A4 and ANSI_A–ANSI_E are accepted)"
+            "(short forms A0–A4 and ANSI_A–ANSI_E are accepted), or a canonical media "
+            "name in AutoCAD's spelling such as 'ISO_full_bleed_A3_(420.00_x_297.00_MM)'"
         )
     return resolved
 
@@ -273,18 +305,66 @@ def _orientation(orientation) -> str:
     return orientation
 
 
-def paper_size_mm(paper: str, orientation: str = "landscape") -> tuple[float, float]:
-    """(width, height) in millimetres for ``paper`` in ``orientation``."""
+def _media_orientation(paper, size: tuple[float, float], orientation) -> str:
+    """The orientation a canonical media name fixes; a contradicting
+    ``orientation`` is refused by name, never flipped. A square media takes
+    whichever orientation is asked for."""
+    width, height = size
+    derived = "landscape" if width >= height else "portrait"
+    if orientation is None or width == height:
+        return derived if orientation is None else _orientation(orientation)
+    if _orientation(orientation) != derived:
+        raise ValueError(
+            f"orientation: {orientation!r} contradicts paper {paper!r}, which is "
+            f"{width:g} x {height:g} mm ({derived}); the media name fixes the "
+            f"orientation — omit orientation or name the {orientation} media"
+        )
+    return derived
+
+
+def paper_size_mm(paper: str, orientation: str | None = "landscape") -> tuple[float, float]:
+    """(width, height) in millimetres for ``paper`` in ``orientation``.
+
+    A canonical media name answers its own parsed size (``orientation`` must
+    agree with it or be ``None``); a catalogue name with ``orientation=None``
+    is landscape."""
+    parsed = parse_canonical_media(paper)
+    if parsed is not None:
+        _media_orientation(paper, parsed, orientation)
+        return parsed
     name = _paper_key(paper)
     short, long = PAPER_SIZES[name]
-    if _orientation(orientation) == "landscape":
+    if _orientation(orientation or "landscape") == "landscape":
         return float(long), float(short)
     return float(short), float(long)
 
 
-def canonical_media_name(paper: str, orientation: str = "landscape") -> str:
+def _bleed_word(bleed) -> str | None:
+    key = str(bleed if bleed is not None else "none").strip().lower()
+    if key not in BLEEDS:
+        raise ValueError(f"bleed: must be one of {', '.join(BLEEDS)}, got {bleed!r}")
+    return BLEEDS[key]
+
+
+def canonical_media_name(
+    paper: str, orientation: str | None = "landscape", bleed: str = "none"
+) -> str:
     """AutoCAD's spelling of the media: ``ISO_A3_(420.00_x_297.00_MM)`` for
-    landscape A3, ``ANSI_B_(17.00_x_11.00_Inches)`` for landscape ANSI B."""
+    landscape A3, ``ANSI_B_(17.00_x_11.00_Inches)`` for landscape ANSI B;
+    ``bleed="full_bleed"`` / ``"expand"`` gives ``ISO_full_bleed_A3_(…)`` /
+    ``ISO_expand_A3_(…)`` (``ANSI_full_bleed_B_(…)`` by the same, unmeasured,
+    pattern). A canonical media name is returned unchanged; ``bleed`` with
+    one is refused, since the name already says which media it is."""
+    word = _bleed_word(bleed)
+    parsed = parse_canonical_media(paper)
+    if parsed is not None:
+        if word is not None:
+            raise ValueError(
+                f"bleed: paper {paper!r} already names the media; pass bleed='none' "
+                "or a catalogue paper (ISO_A3, ANSI_B, …) with bleed"
+            )
+        _media_orientation(paper, parsed, orientation)
+        return str(paper).strip()
     name = _paper_key(paper)
     if name in PAPER_INCHES:
         short, long = PAPER_INCHES[name]
@@ -292,8 +372,11 @@ def canonical_media_name(paper: str, orientation: str = "landscape") -> str:
     else:
         short, long = PAPER_SIZES[name]
         unit = "MM"
-    width, height = (long, short) if _orientation(orientation) == "landscape" else (short, long)
-    return f"{name}_({width:.2f}_x_{height:.2f}_{unit})"
+    landscape = _orientation(orientation or "landscape") == "landscape"
+    width, height = (long, short) if landscape else (short, long)
+    series, size = name.split("_", 1)
+    prefix = name if word is None else f"{series}_{word}_{size}"
+    return f"{prefix}_({width:.2f}_x_{height:.2f}_{unit})"
 
 
 def paper_from_size(width_mm, height_mm, tolerance: float = 0.5) -> str | None:
@@ -460,7 +543,7 @@ def center_applies(plot_type) -> bool:
 
 def resolve_page_setup(
     paper: str,
-    orientation: str = "landscape",
+    orientation: str | None = None,
     plot_style: str = "monochrome.ctb",
     scale: str = "fit",
     plot_area: str = "layout",
@@ -468,11 +551,20 @@ def resolve_page_setup(
     margins_mm=None,
     center: bool = True,
     paper_units: str | None = "mm",
+    bleed: str = "none",
 ) -> dict:
     """Validate a page setup request and resolve it to what both engines write.
 
     Raises ``ValueError`` naming the offending field; nothing here touches a
-    drawing. ``margins_mm`` is ``[top, bottom, left, right]``. ``center`` is
+    drawing. ``paper`` is a catalogue name (``ISO_A3``, ``A3``, ``ANSI_B``) or
+    a canonical media name in AutoCAD's spelling
+    (``ISO_full_bleed_A3_(420.00_x_297.00_MM)``, issue #18), which is written
+    unchanged and whose numbers fix the size and the orientation:
+    ``orientation=None`` takes it from the name, a contradicting one is
+    refused. ``orientation=None`` on a catalogue name is landscape. ``bleed``
+    (``none`` / ``full_bleed`` / ``expand``) picks the device's full-bleed or
+    expanded variant of a catalogue size and is refused beside a canonical
+    name. ``margins_mm`` is ``[top, bottom, left, right]``. ``center`` is
     validated as a bool and resolved to ``None`` for ``plot_area="layout"``,
     where centring is not applicable (see the module docstring) — the default
     call (layout, centre) is therefore a layout plot with no centring write.
@@ -484,8 +576,18 @@ def resolve_page_setup(
     rescales every paper-space unit by 25.4; both engines report it in
     ``changed`` and ``warnings``.
     """
-    name = _paper_key(paper)
-    width, height = paper_size_mm(name, _orientation(orientation))
+    word = _bleed_word(bleed)
+    parsed = parse_canonical_media(paper)
+    if parsed is not None:
+        media = canonical_media_name(paper, orientation, bleed)  # refuses bleed / orientation
+        orientation = _media_orientation(paper, parsed, orientation)
+        width, height = parsed
+        name = paper_from_size(width, height) or media
+    else:
+        name = _paper_key(paper)
+        orientation = _orientation(orientation or "landscape")
+        width, height = paper_size_mm(name, orientation)
+        media = canonical_media_name(name, orientation, bleed)
 
     style = str(plot_style or "").strip()
     if not style:
@@ -541,7 +643,8 @@ def resolve_page_setup(
         "paper": name,
         "orientation": orientation,
         "size_mm": [width, height],
-        "canonical_media_name": canonical_media_name(name, orientation),
+        "canonical_media_name": media,
+        "bleed": "none" if word is None else word,
         "plot_style": style,
         "plot_style_known": plot_style_known(style),
         "scale": label,

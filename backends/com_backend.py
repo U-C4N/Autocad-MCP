@@ -11,6 +11,7 @@ import collections
 import concurrent.futures
 import contextlib
 import contextvars
+import difflib
 import functools
 import io
 import logging
@@ -6423,10 +6424,15 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
                 names = [str(n) for n in (target.GetCanonicalMediaNames() or ())]
                 if media not in names:
                     nearest = [n for n in names if n.split("_(")[0] == media.split("_(")[0]]
+                    # Issue #18: a canonical name or a bleed variant the device
+                    # lacks has no "same paper" twin, so the three closest
+                    # spellings the device does offer are named as well.
+                    closest = difflib.get_close_matches(media, names, n=3, cutoff=0.0)
                     raise ValueError(
                         f"page_setup_apply: device {resolved['device']!r} has no media "
                         f"{media!r} (same paper on this device: "
-                        f"{', '.join(nearest) or 'none'}; {len(names)} media in total)"
+                        f"{', '.join(nearest) or 'none'}; closest names: "
+                        f"{', '.join(closest) or 'none'}; {len(names)} media in total)"
                     )
                 step = "CanonicalMediaName"
                 _set("CanonicalMediaName", media)

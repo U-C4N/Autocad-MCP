@@ -65,6 +65,45 @@ async def test_every_paper_layout_is_plotted_and_measured(backend, tmp_path):
     assert b["paper"] == "ANSI_B"
 
 
+async def test_a_full_bleed_sheet_is_measured_420_by_297_issue_18(backend, tmp_path):
+    pytest.importorskip("matplotlib", reason="rendering needs the [pdf] extra")
+    await backend.layout_rename("Layout1", "Bleed")
+    await backend.page_setup_apply(
+        "Bleed", resolve_page_setup("ISO_full_bleed_A3_(420.00_x_297.00_MM)")
+    )
+    await backend.entity_create_line(0, 0, 100, 50)
+    result = await batch_plot(backend, ["Bleed"], str(tmp_path / "out"))
+    sheet = result["sheets"][0]
+    assert sheet["ok"] and sheet["paper"] == "ISO_A3"
+    assert abs(sheet["mediabox_mm"][0] - 420) <= 0.5 and abs(sheet["mediabox_mm"][1] - 297) <= 0.5
+
+
+async def test_page_setup_apply_tool_takes_bleed_and_derives_orientation(backend):
+    await backend.layout_rename("Layout1", "Sheet")
+    tool = server.page_setup_apply
+    result = await tool(
+        layout="Sheet", paper="ISO_expand_A4_(210.00_x_297.00_MM)", ctx=_Ctx(backend)
+    )
+    assert result["applied"]["orientation"] == "portrait"
+    assert result["applied"]["canonical_media_name"] == "ISO_expand_A4_(210.00_x_297.00_MM)"
+    result = await tool(layout="Sheet", paper="A3", bleed="full_bleed", ctx=_Ctx(backend))
+    assert result["applied"]["canonical_media_name"] == "ISO_full_bleed_A3_(420.00_x_297.00_MM)"
+    with pytest.raises(ToolError, match="already names the media"):
+        await tool(
+            layout="Sheet",
+            paper="ISO_full_bleed_A3_(420.00_x_297.00_MM)",
+            bleed="full_bleed",
+            ctx=_Ctx(backend),
+        )
+    with pytest.raises(ToolError, match="contradicts"):
+        await tool(
+            layout="Sheet",
+            paper="ISO_full_bleed_A3_(420.00_x_297.00_MM)",
+            orientation="portrait",
+            ctx=_Ctx(backend),
+        )
+
+
 async def test_model_is_included_only_when_named(backend, tmp_path):
     pytest.importorskip("matplotlib", reason="rendering needs the [pdf] extra")
     await _two_sheets(backend)

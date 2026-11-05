@@ -22,7 +22,9 @@ from engineering.standards.papers import (
     canonical_media_name,
     dxf_scale_label,
     paper_from_size,
+    paper_size_mm,
     paper_units_name,
+    parse_canonical_media,
     resolve_page_setup,
     scale_label,
     scale_ratio,
@@ -59,6 +61,67 @@ def test_canonical_media_name_uses_autocad_spelling():
     assert canonical_media_name("ISO_A3", "landscape") == "ISO_A3_(420.00_x_297.00_MM)"
     assert canonical_media_name("ISO_A3", "portrait") == "ISO_A3_(297.00_x_420.00_MM)"
     assert canonical_media_name("ANSI_B", "landscape") == "ANSI_B_(17.00_x_11.00_Inches)"
+
+
+FULL_BLEED_A3 = "ISO_full_bleed_A3_(420.00_x_297.00_MM)"
+
+
+def test_a_canonical_media_name_is_accepted_and_parsed_issue_18():
+    """Issue #18: the device's full-bleed media could not be named at all
+    (``paper: unknown paper``). AutoCAD's own spelling is now taken as is."""
+    assert parse_canonical_media(FULL_BLEED_A3) == (420.0, 297.0)
+    assert parse_canonical_media("ISO_expand_A4_(210.00_x_297.00_MM)") == (210.0, 297.0)
+    assert parse_canonical_media("ANSI_B_(17.00_x_11.00_Inches)") == (431.8, 279.4)
+    assert parse_canonical_media("ISO_A3") is None
+    assert parse_canonical_media("ISO_A3_(420.00 x 297.00 MM)") is None, "not AutoCAD's spelling"
+    assert canonical_media_name(FULL_BLEED_A3) == FULL_BLEED_A3
+    assert canonical_media_name(FULL_BLEED_A3, None) == FULL_BLEED_A3
+    assert paper_size_mm(FULL_BLEED_A3, None) == (420.0, 297.0)
+
+    setup = resolve_page_setup(FULL_BLEED_A3)
+    assert setup["canonical_media_name"] == FULL_BLEED_A3
+    assert setup["size_mm"] == [420.0, 297.0]
+    assert setup["orientation"] == "landscape", "derived from the numbers"
+    assert setup["paper"] == "ISO_A3" and setup["bleed"] == "none"
+
+    portrait = resolve_page_setup("ISO_expand_A4_(210.00_x_297.00_MM)")
+    assert portrait["orientation"] == "portrait" and portrait["size_mm"] == [210.0, 297.0]
+    assert resolve_page_setup(FULL_BLEED_A3, "landscape")["orientation"] == "landscape"
+
+
+def test_a_contradicting_orientation_is_refused_not_flipped():
+    with pytest.raises(ValueError, match=r"orientation: 'portrait' contradicts paper"):
+        resolve_page_setup(FULL_BLEED_A3, "portrait")
+    with pytest.raises(ValueError, match="orientation"):
+        paper_size_mm(FULL_BLEED_A3, "portrait")
+    with pytest.raises(ValueError, match="orientation"):
+        canonical_media_name(FULL_BLEED_A3, "portrait")
+
+
+def test_bleed_selects_the_full_bleed_and_expand_media():
+    assert canonical_media_name("ISO_A3", "landscape", "full_bleed") == FULL_BLEED_A3
+    assert canonical_media_name("A3", "portrait", "full_bleed") == (
+        "ISO_full_bleed_A3_(297.00_x_420.00_MM)"
+    )
+    assert canonical_media_name("ISO_A4", "portrait", "expand") == (
+        "ISO_expand_A4_(210.00_x_297.00_MM)"
+    )
+    assert canonical_media_name("ANSI_B", "landscape", "full_bleed") == (
+        "ANSI_full_bleed_B_(17.00_x_11.00_Inches)"
+    )
+    assert canonical_media_name("ISO_A3", "landscape", "none") == "ISO_A3_(420.00_x_297.00_MM)"
+    setup = resolve_page_setup("ISO_A3", bleed="full_bleed")
+    assert setup["canonical_media_name"] == FULL_BLEED_A3 and setup["bleed"] == "full_bleed"
+    assert setup["size_mm"] == [420.0, 297.0] and setup["paper"] == "ISO_A3"
+    with pytest.raises(ValueError, match="bleed: must be one of"):
+        resolve_page_setup("ISO_A3", bleed="borderless")
+
+
+def test_bleed_beside_a_canonical_media_name_is_refused():
+    with pytest.raises(ValueError, match="already names the media"):
+        resolve_page_setup(FULL_BLEED_A3, bleed="full_bleed")
+    with pytest.raises(ValueError, match="already names the media"):
+        resolve_page_setup("ISO_A3_(420.00_x_297.00_MM)", bleed="expand")
 
 
 def test_paper_from_size_matches_either_orientation_within_half_a_millimetre():
@@ -315,6 +378,39 @@ async def test_apply_iso_a3_landscape_and_the_pdf_mediabox_agrees(backend, tmp_p
 
     width, height = await _mediabox_after_export(backend, tmp_path, SHEET)
     assert abs(width - 420.0) <= 0.5 and abs(height - 297.0) <= 0.5
+
+
+async def test_apply_full_bleed_a3_round_trips_and_the_pdf_mediabox_agrees(backend, tmp_path):
+    """Issue #18 on the headless engine: the full-bleed name is written into
+    the LAYOUT's plot settings, read back by page_setup_list, carried by the
+    DXF on disk, and the exported PDF is 420 x 297 mm."""
+    import ezdxf
+
+    await _sheet(backend)
+    result = await backend.page_setup_apply(SHEET, resolve_page_setup(FULL_BLEED_A3))
+    assert result["ok"] is True
+    assert result["changed"]["canonical_media_name"][1] == FULL_BLEED_A3
+    row = (await backend.page_setup_list(SHEET))[0]
+    assert row["canonical_media_name"] == FULL_BLEED_A3
+    assert row["size_mm"] == [420.0, 297.0] and row["orientation"] == "landscape"
+    assert row["paper"] == "ISO_A3", "the catalogue size the media measures"
+
+    saved = tmp_path / "bleed.dxf"
+    await backend.drawing_save(str(saved))
+    plot = ezdxf.readfile(str(saved)).layouts.get(SHEET).dxf_layout.dxf
+    assert plot.paper_size == FULL_BLEED_A3
+    assert (plot.paper_width, plot.paper_height) == (420.0, 297.0)
+
+    width, height = await _mediabox_after_export(backend, tmp_path, SHEET)
+    assert abs(width - 420.0) <= 0.5 and abs(height - 297.0) <= 0.5
+
+
+async def test_apply_bleed_expand_portrait_a4(backend, tmp_path):
+    await _sheet(backend)
+    await backend.page_setup_apply(SHEET, resolve_page_setup("ISO_A4", "portrait", bleed="expand"))
+    row = (await backend.page_setup_list(SHEET))[0]
+    assert row["canonical_media_name"] == "ISO_expand_A4_(210.00_x_297.00_MM)"
+    assert row["size_mm"] == [210.0, 297.0] and row["orientation"] == "portrait"
 
 
 async def test_apply_ansi_b(backend, tmp_path):
@@ -1175,6 +1271,54 @@ async def test_com_apply_restores_the_device_when_the_media_name_is_unknown(com_
         await backend.page_setup_apply("Layout1", resolve_page_setup("ISO_A3"))
     assert layout.ConfigName == "None", "the device write is rolled back"
     assert layout.CanonicalMediaName == "ISO_A4_(210.00_x_297.00_MM)"
+
+
+#: The six A3 names the two PDF drivers listed on AutoCAD 2026 (measured 2026-11-05).
+A3_MEDIA_WITH_BLEED = (
+    "ISO_A3_(420.00_x_297.00_MM)",
+    "ISO_A3_(297.00_x_420.00_MM)",
+    "ISO_expand_A3_(420.00_x_297.00_MM)",
+    "ISO_expand_A3_(297.00_x_420.00_MM)",
+    "ISO_full_bleed_A3_(420.00_x_297.00_MM)",
+    "ISO_full_bleed_A3_(297.00_x_420.00_MM)",
+    "ISO_A4_(210.00_x_297.00_MM)",
+)
+
+
+async def test_com_apply_writes_a_full_bleed_media_the_device_offers(com_backend):
+    """Issue #18 on the live engine: the canonical name is checked against
+    GetCanonicalMediaNames() and written as CanonicalMediaName unchanged."""
+    backend, document = com_backend
+    layout = _FakeLayout("Layout1", A3_MEDIA_WITH_BLEED)
+    document.Layouts.layouts[1] = layout
+    result = await backend.page_setup_apply(
+        "Layout1",
+        resolve_page_setup(FULL_BLEED_A3, device="AutoCAD PDF (High Quality Print).pc3"),
+    )
+    assert result["ok"] is True
+    log = layout.log
+    assert log.index(("call", "GetCanonicalMediaNames")) < log.index(
+        ("set", "CanonicalMediaName", FULL_BLEED_A3)
+    )
+    row = (await backend.page_setup_list("Layout1"))[0]
+    assert row["canonical_media_name"] == FULL_BLEED_A3 and row["size_mm"] == [420.0, 297.0]
+    assert result["changed"]["canonical_media_name"] == [
+        "ISO_A4_(210.00_x_297.00_MM)",
+        FULL_BLEED_A3,
+    ]
+
+
+async def test_com_apply_refuses_a_full_bleed_media_the_device_lacks_by_name(com_backend):
+    backend, document = com_backend
+    layout = document.Layouts.Item("Layout1")  # MEDIA: no full-bleed names
+    before = layout.snapshot()
+    with pytest.raises(ValueError, match="has no media") as info:
+        await backend.page_setup_apply("Layout1", resolve_page_setup("ISO_A3", bleed="full_bleed"))
+    message = str(info.value)
+    assert repr(FULL_BLEED_A3) in message
+    assert "closest names: " in message and "ISO_A3_(420.00_x_297.00_MM)" in message
+    assert not any(entry == ("set", "CanonicalMediaName", FULL_BLEED_A3) for entry in layout.log)
+    assert layout.snapshot() == before, "the device write is rolled back"
 
 
 PDF_DEVICE = "DWG To PDF.pc3"
