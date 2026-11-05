@@ -123,10 +123,12 @@ command:
   (`lizaixi01-agentcad`, no adapter) is `not_run` on all 49.
   `benchmarks/results/published/lanes-v9/`.
 - **Full suite:** `AUTOCAD_MCP_BACKEND=ezdxf pytest -q -p no:cacheprovider`
-  with no deselection - 7,541 collected, `7540 passed, 1 xfailed` (344 s) at
-  `50a4049`, the last code commit of this release, with `git` on PATH (the
-  benchmark runner's `git_sha` row needs it) and AutoCAD 2026 open and
-  untouched. The same suite at `94aaba1` had died twice with a native crash
+  with no deselection - 7,583 collected, `7582 passed, 1 xfailed` (685 s under
+  `-v`) at `e427387`, the last code commit of this release (the four tracker
+  fixes merged, the wire risk-notice test derived), with `git` on PATH (the
+  benchmark runner's `git_sha` row needs it) and no AutoCAD running. Earlier
+  the same day: 7,541 collected, `7540 passed, 1 xfailed` (344 s) at
+  `50a4049`; and at `94aaba1` the suite had died twice with a native crash
   (STATUS_ILLEGAL_INSTRUCTION, then ACCESS_VIOLATION at 18 %): the message
   filter's lifetime, fixed in `9cafaa0` and `50a4049` (*Live-seat fixes*).
 - **Headless performance:** `python -m benchmarks.perf_compare --base v1.7.0
