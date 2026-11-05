@@ -1,10 +1,5 @@
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/logo-dark.svg">
-  <img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/logo-light.svg" alt="AutoCAD MCP Pro mark: a drafted A with a dimension line for its crossbar and a connection node at its apex" width="140">
-</picture>
-
 # AutoCAD MCP Pro
 
 **Production-grade AutoCAD automation for AI agents.**
@@ -18,9 +13,7 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 
 [Install](#install) · [What's new](#whats-new-in-18) · [Gallery](#what-it-draws) · [Tools](#what-you-get) · [Engines](#the-two-engines) · [Verification](#the-verification-workflow) · [Evidence](#evidence) · [Limits](#what-this-release-is-bad-at) · [Config](#configuration) · [Changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md)
 
-<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/autocad-mcp-showcase.png" alt="ISO A3 sheet: a module-6, 24-tooth spur gear with a keyed bore, its section A-A, ISO 129 dimensions with an H7 bore fit, and an ISO 7200 title block" width="800">
-
-<sub><b>Not a mockup.</b> Every line on this sheet was drawn by the tools this server exposes — ISO layers, involute gear geometry, DIN 6885 keyway, section A-A, ISO 129 dimensions, an ISO 286 <code>H7</code> bore fit, ISO 7200 title block — then rendered headlessly by <code>view_screenshot</code>. <code>drawing_critique</code> returns <b>0 issues</b> on it. Rebuild it with <code>python scripts/render_readme_showcase.py</code>.</sub>
+<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/hero.svg" alt="AutoCAD MCP Pro: one typed contract, two engines. The mark, the two engine chips (COM for live AutoCAD, ezdxf for headless DXF) and a drafting vignette: a spur gear with its section, centrelines and a dimension chain on a dark sheet" width="960">
 
 </div>
 
@@ -47,7 +40,7 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 | **Narrowed on request** | `READ_ONLY`, `TOOL_ALLOWLIST` / `TOOL_DENYLIST` and `MAX_TOOL_COST` refuse a call before anything runs (`policy_refused`). A writer takes only its own extensions and never a name AutoCAD or Windows loads (`path_refused`). The HTTP transport refuses an unknown Origin (403), a foreign Host (421) and a body over 8 MiB (413). `system_run_lisp` runs an AutoLISP read tier under `LISP_POLICY=read` (COM only: the headless engine has no LISP) |
 | **The live engine draws where it means to** | A live seat draws in model space until `layout_set_current` names a sheet; the tab the operator clicks no longer moves it. `system_run_command` and live undo / redo wait for the command and can fail `command_incomplete`. One display refresh per COM job, and `entity_batch_create` / `entity_delete_many` run as STA jobs sliced at a quarter of `COM_CALL_TIMEOUT`. All fourteen live smokes passed for this release (AutoCAD 2026, 1.8.0): see *Live evidence* in the [changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md) |
 | **Four tracker reports, fixed the same day** | `view_screenshot` captures the whole AutoCAD window at any display scaling, not the top-left 2/3 at 150 % (#17); `page_setup_apply` takes the device's full-bleed and expanded media, `ISO_full_bleed_A3_(420.00_x_297.00_MM)` or `bleed="full_bleed"` (#18); `CAD_LAUNCH=never` keeps the live engine to the session you opened, and a launch that never accepts `Visible` is quit, not left windowless (#19); a live `entity_get` on a DIMENSION / HATCH reuses one `Document.Export` for `COM_SNAPSHOT_TTL` seconds instead of exporting the drawing per call (#20). *Issues fixed from the tracker* in the changelog says what each one measured |
-| **Evidence** | Correctness suite 83 / 83 against v1.7.0's 61 / 83, 22 fixed and 0 regressed (`ab-v1.7.0-vs-v1.8.0.json`). Matrix v9: 47 / 47 attempted tasks of 49 (`lisp_read_tier` `environment_blocked`, `std_tables_b40` `not_run`). The full headless suite: `7540 passed, 1 xfailed`. The headless performance gate against v1.7.0: `ok: true`, ratios 0.96 to 1.06 ([`perf-v1.7.0-vs-v1.8.0.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/perf-v1.7.0-vs-v1.8.0.json); the 1.06 is the durable journal, [measured](#headless-performance)). The token budget gate exits 0 ([evidence](#evidence)) |
+| **Evidence** | Correctness suite 83 / 83 against v1.7.0's 61 / 83, 22 fixed and 0 regressed (`ab-v1.7.0-vs-v1.8.0.json`). Matrix v9: 47 / 47 attempted tasks of 49 (`lisp_read_tier` `environment_blocked`, `std_tables_b40` `not_run`). The full headless suite: `7540 passed, 1 xfailed`. The headless performance gate against v1.7.0: `ok: true`, ratios 0.96 to 1.06 ([`perf-v1.7.0-vs-v1.8.0.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/perf-v1.7.0-vs-v1.8.0.json); the 1.06 is the durable journal, [measured](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/README.md)). The token budget gate exits 0 ([evidence](#evidence)) |
 
 ### One call where 1.7 needed hundreds
 
@@ -63,7 +56,17 @@ checkpoint_restore("cp-3", mode="new_document")    back to a stored state, as it
 
 Several defaults changed. Each has a switch back to 1.7.0's behaviour where one exists (`DISCOVERY_MODE=off`, `cad_batch(on_error="stop")`, `JOURNAL_DURABLE=off`, `LISP_POLICY=denylist`, `strict_critique=False`, `COM_REFRESH_MODE=regen`, ...), and the changelog's *Breaking at a glance* lists every one. Not in 1.8.0: no B40 feature-table row is transcribed (every size is still refused by name), and the native .NET worker is deferred to 1.9.0 by a rule fixed before any measurement (`docs/adr/0001-native-worker.md`).
 
+Earlier releases, 1.7 and 1.6 included, are in the [changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md).
+
 ## What it draws
+
+<div align="center">
+
+<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/autocad-mcp-showcase.png" alt="ISO A3 sheet: a module-6, 24-tooth spur gear with a keyed bore, its section A-A, ISO 129 dimensions with an H7 bore fit, and an ISO 7200 title block" width="820">
+
+<sub><b>Not a mockup.</b> Every line on this sheet was drawn by the tools this server exposes — ISO layers, involute gear geometry, DIN 6885 keyway, section A-A, ISO 129 dimensions, an ISO 286 <code>H7</code> bore fit, ISO 7200 title block — then rendered headlessly by <code>view_screenshot</code>. <code>drawing_critique</code> returns <b>0 issues</b> on it. Rebuild it with <code>python scripts/render_readme_showcase.py</code>.</sub>
+
+</div>
 
 <table>
 <tr>
@@ -95,6 +98,9 @@ Several defaults changed. Each has a switch back to 1.7.0's behaviour where one 
 
 ## Why this exists
 
+<details>
+<summary><b>Why six tools are listed, and what the whole catalog costs</b></summary>
+
 **A big MCP server is expensive to be connected to.** Listing the whole catalog (`DISCOVERY_MODE=off`, 253 tools) costs a client **59,138 tokens** of prompt payload before it has asked for anything. Since 1.8.0 a default install lists six tools instead - `search_tools`, `describe_tool`, `call_tool` and the three `DISCOVERY_PINNED` tools - for **1,026 tokens**, and every tool stays callable by name.
 
 **A drafter searches for `FILLET`, not `entity_fillet`.** Before the corpus, those command names appeared in no tool name or description. That was `df = 0` against a stock index: the tools were not ranked badly, they were *absent*. The fix was data: an authored corpus of **207 AutoCAD command names and 1,479 distinct synonym phrases** covering all 257 registered tools. A test refuses to let a tool exist without one.
@@ -112,6 +118,8 @@ Several defaults changed. Each has a switch back to 1.7.0's behaviour where one 
 
 > [!NOTE]
 > Measured on the 1.8.0 release tree with `python -m benchmarks.token_suite` (idle lane, over the real in-memory server; [`token-cost.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/token-cost.json)). The 1.7.0 columns are the v1.7.0 tag measured the same way with this release's lock (`benchmarks/token_budget.json`, `v1.7.0_measured`); 1.7.0's own README quoted the wire column on its older lock (89,226 / 61,422 / 25,066 / 503). Tokens are offline ratio estimates, not tokenizer counts, and they are the *uncached* cost: prompt caching amortises the idle term. The prompt payload is the `tools` array a client forwards to the model; the wire column is the whole `tools/list` result, the basis of every figure up to 1.7.0. In `off` mode the list carries `describe_tool` too, and a description over 800 characters is listed as its leading paragraphs plus `Details: describe_tool.`, the full text one `describe_tool` call away. `benchmarks/token_suite.py --tokenizer anthropic` counts for real.
+
+</details>
 
 ## Install
 
@@ -205,7 +213,7 @@ It works with Claude Desktop, Cursor, or any stdio MCP host. For HTTP, run `auto
 | Errors | every failure on every route is one typed envelope: `{ok: false, kind, category, retryable, hint, tool, backend, operation_id, message}` beside the unchanged sentence. `retryable` is true only when nothing was written; a refused raw command lists the typed tools that do the same job (`alternatives`) |
 | Security | `READ_ONLY`, `TOOL_ALLOWLIST` / `TOOL_DENYLIST` and `MAX_TOOL_COST` narrow what a client may reach: a refused tool is not advertised, and a call to it - direct, through `call_tool`, or as a `cad_batch` step - is refused `policy_refused` before anything runs (`system_status.policy` says what is in force). Every writer accepts only its own extensions and none writes a file AutoCAD or Windows loads (`acad*.lsp`, `.fas`, `.scr`, `.dll`, `acad.pgp`, ...), even inside `ALLOWED_PATHS`. Over HTTP, an unknown Origin is 403, a foreign Host 421, a body over 8 MiB 413, tokens are compared in constant time, and `MCP_AUTH_TOKEN_READONLY` issues a read-only token. `system_run_lisp` runs the AutoLISP read tier (`vla-get-*`, `entget`, `mapcar` over a `lambda`, ...) under `LISP_POLICY=read`, and refuses the rest with `symbol`, `line`, `column` and the typed `alternatives` |
 | Session metrics | `system_status(metrics=True)` reports this connection's calls, `by_tool`, `result_bytes`, `errors_by_kind` and p50 / p95 ms, and on a live seat each COM job's queue / guard / work / refresh / counter ms; off by default. `system_status.operations` is a short summary (`{count, last, unknown_commit}`); `drawing_history` lists the calls |
-| Live speed | the live engine refreshes the display once per COM job (`Update()` of the entity for a single create, one Regen otherwise; `COM_REFRESH_MODE=regen` for a seat where `Update()` does not paint), `entity_batch_create` / `entity_delete_many` run as one STA job sliced inside `COM_CALL_TIMEOUT`, and the corner operations read only the target block's new entities. `benchmarks/perf_com.py` measures it against v1.7.0 on a live seat: on AutoCAD 2026 three of its four targets are missed (see *The live speed-ups miss three of their four targets* below) |
+| Live speed | the live engine refreshes the display once per COM job (`Update()` of the entity for a single create, one Regen otherwise; `COM_REFRESH_MODE=regen` for a seat where `Update()` does not paint), `entity_batch_create` / `entity_delete_many` run as one STA job sliced inside `COM_CALL_TIMEOUT`, and the corner operations read only the target block's new entities. `benchmarks/perf_com.py` measures it against v1.7.0 on a live seat: on AutoCAD 2026 three of its four targets are missed (see *What this release is bad at*) |
 
 <sub>257 tools in 28 groups. <code>TOOL_PACKS=core</code> hides these from a client that needs none of them: the ten <code>pid_*</code> tools, the 22 environment tools, the 15 mechanical tools, the 12 architectural tools and the two plant takeoffs. <code>TOOL_PACKS=core,mech</code> keeps the mechanical ones, <code>TOOL_PACKS=core,arch</code> the architectural ones, and <code>TOOL_PACKS=core,plant</code> the takeoffs. There are also 13 resources that cost nothing in the tool budget (<code>autocad://drawing/info</code>, <code>layers</code>, <code>blocks</code>, <code>entities/stats</code>, <code>entities/{layer_name}</code>, <code>system/status</code>, <code>pid/symbols</code>, <code>pid/project/last</code>, <code>standards/isa51</code>, <code>standards/coverage</code>, <code>critique/focuses</code>, and the task recipes <code>recipes/index</code> and <code>recipes/{recipe_id}</code> - seven recipes, among them <code>layer_cleanup</code> and <code>dimension_part</code>, each one <code>cad_batch</code>) and 5 prompt templates.</sub>
 
@@ -288,222 +296,27 @@ drawing_verify_requirements(manifest_path=)    later: has anything in the delive
 
 A drafting score is not an acceptance. `drawing_finalize` still returns its 0–100 score, but with `requirements=` a requirement that does not pass blocks it (`failed_acceptance`), whatever the score.
 
-## What was new in 1.7 (the previous release)
-
-1.6 taught the server to draw whole sheets and to read other people's drawings. 1.7.0 makes what it draws **provable** and what it runs **safe** ([design](https://github.com/U-C4N/Autocad-MCP/blob/main/docs/superpowers/specs/2026-10-24-v1.7.0-design.md)). One new tool, `drawing_verify_requirements`, and three new resources; the rest is what the existing 247 tools now guarantee.
-
-A source requirement (*Ø40 bore, six Ø8 holes on a Ø100 PCD*) is bound to the real CAD feature and measured on the geometry read from the drawing: never on a dimension's label, a stored part model or the numbers that were typed in. Two equal holes where the requirement names one are `ambiguous`, never a pick. A dimension reading 40 over geometry that measures 42 fails on the geometry, and the label is reported as its own `dimension_mismatch` finding. A hole moved inside an unchanged outline in the delivered file fails delivery; 1.6's parity check passed it. QA reads every entity of every space (a defect at position 5,001 or on a paper layout used to read as clean), and a check that crashes says so. Five versioned recipes served as resources (`autocad://recipes/index`): dimensioned part → verify → deliver, foreign P&ID → lists, revision pair → takeoff delta, A3 sheet delivery and foreign-drawing audit. Each one runs end to end in a test. The premium skill is back. It is rewritten around [the verification workflow](#the-verification-workflow) and installs with the server as a Claude Code plugin ([above](#as-a-claude-code-plugin)), along with twenty negative eval cases.
-
-Correctness suite 61 / 61 against v1.6.0's 48 / 61 with zero regressions, matrix v8 31 / 31, the live COM harness passing on AutoCAD 2026, and no workload slower than 1.6.0 beyond the measured noise ([evidence](#evidence)). Identity and revisions, exact previews, safe cancellation and the rest are in the [changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md).
-
-<details>
-<summary><b>What 1.6 added: five tracks, 154 → 247 tools</b></summary>
-
-Five tracks of one [roadmap](https://github.com/U-C4N/Autocad-MCP/blob/main/docs/superpowers/specs/2026-09-15-v1.6-roadmap-design.md). Each track has its own design spec, correctness checks that can fail, and a live AutoCAD 2026 run of its COM paths recorded in the [changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md).
-
-| Track | What it adds | Pack |
-|---|---|---|
-| **P&ID — drafter and reader** | 43 ISO 10628-2 / ISA-5.1 symbols as real blocks with ports and `TAG` attributes, port-to-port lines with ISA-5.1 classes and line numbers, `pid_graph` reading any P&ID back with a confidence per node, instrument index, line list, equipment list, `pid_from_spec` for a whole sheet in one transaction | `pid` |
-| **The AutoCAD environment** | ISO-25 / ANSI dimension styles, text and leader styles, `drawing_apply_standard`, ISO 216 / ANSI page setups checked against the plotted PDF's own `/MediaBox`, five bundled templates, several open documents headlessly, portable layer states, named views, UCS, a 90-entry system-variable catalogue; on a live seat, preferences, launch and operator prompts | `core`, `settings` |
-| **Mechanical parts and the sheet** | one part model and one view engine (front, side, top, section and detail views with hidden lines, cut faces and ISO 129 dimensions), ISO fasteners and bearings as blocks with attributes, ISO 21920-1 surface texture, ISO 2553 welds, ISO 5457 frames A4–A0, ISO 7200 title blocks, an ISO 7573 parts list read off the drawing with linked ISO 6433 balloons, xrefs, images, real `.dwg` | `mech`, `core` |
-| **Architecture** | walls with hosted doors and windows: one engine resolves L / T / X junctions and cuts the openings. Room areas are measured from the faces the walls enclose, and rooms are read back from any plan. Door / window / room schedules are real tables; labels in English or Turkish | `arch` |
-| **Understanding and takeoffs** | `drawing_understand` reads a drawing somebody else made in one call. Also `drawing_scale_check`, `drawing_diff` and `drawing_topology_check`. `pipe_takeoff` / `cable_takeoff` take the topology from the P&ID and the lengths from the layout into a Turkish, English or Russian workbook | `core`, `plant` |
-
-</details>
-
-`TOOL_PACKS` keeps a client from paying for the tracks it does not use ([idle cost](#why-this-exists)).
-
 ## Evidence
 
-Everything below is produced by scripts in [`benchmarks/`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/) and published as JSON under [`benchmarks/results/published/`](https://github.com/U-C4N/Autocad-MCP/tree/main/benchmarks/results/published).
+Every number here is produced by a script under [`benchmarks/`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/) and published as JSON under [`benchmarks/results/published/`](https://github.com/U-C4N/Autocad-MCP/tree/main/benchmarks/results/published); [`benchmarks/README.md`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/README.md) explains each lane and keeps the full tables.
 
-### Against the other AutoCAD MCP servers
-
-<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/autocad-mcp-benchmark.svg" alt="Source-reviewed capability leaderboard: U-C4N/Autocad-MCP 93, varavista 84, beiming183-cloud 83, best-cad-mcp 74, multiCAD-mcp 73, puran-water 70, NCO-1986 68, daobataotie 35, Easy-MCP-AutoCad 30" width="800">
-
-A fixed 100-point rubric applied to nine public AutoCAD MCP servers ([`source_review.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/source_review.json)). Stars and raw tool counts score nothing. 1.6.0 is scored **per category, with the evidence for every point withheld**:
-
-| Category | Weight | 1.6.0 | Points withheld for |
-|---|---:|---:|---|
-| Functional CAD coverage | 25 | 24 | no electrical schematics, image-to-CAD tracing, Plant 3D, obstacle-avoiding routing or headless REGION / 3DSOLID |
-| Correctness and delivery | 20 | 19 | a headless DIMENSION does not re-render; a takeoff on a real P&ID still needs the engineer's scope decisions |
-| Backends and platforms | 15 | 14 | BricsCAD, ZWCAD and GstarCAD unverified |
-| Engineering production | 15 | 14 | four DIN / ISO feature tables ship empty |
-| Tests and maintenance | 15 | 14 | headless entity creation slower than v1.4.0 |
-| Security and operations | 10 | 8 | `ALLOWED_PATHS` unscoped by default; command filtering is a denylist |
-| **Total** | **100** | **93** | |
-
-> [!NOTE]
-> Read this as a documented self-assessment, not an independent review: this repository applies the rubric to itself and to the others. The competitor rows are their July 2026 snapshots and were not re-reviewed for this release, and the best of them, varavista/autocad-mcp, scored 84. 1.4.0 was given one overall 95. This review is stricter and scores each category apart. The rubric was not re-applied for 1.7.0: the 1.6.0 column stands as it was published.
-
-A second lane runs tasks instead of reading source. Every task in the fixed-task matrix can fail, and its artifacts are verified by re-opening the DXF, never by trusting a response. 1.8.0's default is matrix v9, **49 tasks** (v8's 31 plus 18). On the headless engine this server passes **47 / 47** of the tasks it attempts ([`lanes-v9/autocad-mcp-pro.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/lanes-v9/autocad-mcp-pro.json)). The other two are not counted: `lisp_read_tier` is `environment_blocked`, because AutoLISP runs only in AutoCAD, and `std_tables_b40` is `not_run`, because every B40 table ships empty in 1.8.0 (deferred to 1.8.1). `dwg_headless_roundtrip` passed through AutoCAD 2026's `accoreconsole` on the machine that ran it; a machine with neither ODA nor `accoreconsole` reports it `environment_blocked`. AgentCAD (`lizaixi01-agentcad`), whose published comparison nine v9 tasks answer, has no adapter here, so its lane is `not_run` on every task, never a zero. The two competitors with adapters, pinned at their July 2026 commits, passed 5 / 10 and 4 / 10 of the ten v2 tasks they were run on. The tasks added since were never put to them, so their lanes record them as `not_run` or `environment_blocked`, never as zero. The chart is still the v8 render (31 tasks; v8 31 / 31):
-
-<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/autocad-mcp-taskmatrix.svg" alt="Task matrix v8: autocad-mcp-pro passes all 31 tasks; beiming183 and puran-water were run on the first ten, with the later twenty-one not run" width="800">
-
-### Correctness — every release re-proves itself
-
-83 deterministic headless checks against the previous tag and the current tree. Each runs in its own subprocess, so a hard crash counts as a miss rather than killing the run.
+83 deterministic headless checks run against the previous tag and the current tree, each in its own subprocess:
 
 | Version | Checks passing | Pass rate | Fixed | Regressed |
 |---|---:|---:|---:|---:|
 | v1.7.0 *(baseline)* | 61 / 83 | 73.5 % | — | — |
 | **v1.8.0** *(this release)* | **83 / 83** | **100 %** | 22 | **0** |
 
-The 61 checks v1.7.0 was released on all still pass. Twenty-two rows are fixed ([`ab-v1.7.0-vs-v1.8.0.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/ab-v1.7.0-vs-v1.8.0.json)). Six of them are the first phase's, one per W1 item of 1.8.0: four reproduce a 1.7.0 defect on v1.7.0 (`fail → pass`), two call a method 1.7.0 does not have (`miss → pass`):
-
-| Check | Verified against |
-|---|---|
-| `lineweight_truth` | an entity created with lineweight -3 reports `lineweight_name: "Default"`, never ByLayer; `"ByLayer"` by name writes -1 and reads back as ByLayer; a layer asked for ByLayer is refused before anything is written |
-| `error_envelope_routes_agree` | a missing handle (`not_found`) and a path outside `ALLOWED_PATHS` (`path_refused`) carry the same kind, category and `retryable` as a direct call and as a `cad_batch` step |
-| `journal_replay_after_kill` | `cad_batch(operation_id=…)` on one server, `Popen.kill()`, the same id and steps on a fresh process answer `replayed: true` with the same entity count; other steps under that id are `operation_conflict` |
-| `atomic_save_untouched_on_failure` | a save whose target is held open by another process is refused `save_locked`: the target's bytes are identical, no `.tmp` and no pending marker is left, and the save after release writes the drawing |
-| `lineage_revision_continues` | open, add three lines, save, close, reopen the unchanged file in a fresh backend: the same `document_id` and the same revision, never back to 0 |
-| `region_render_applied` | `view_screenshot(region=[0,0,100,50], max_px=400)` answers `applied: true`, a 400 × 200 PNG (read from its own IHDR) and one `px_per_unit` on x and y; `view_zoom_and_screenshot` with four corners applies its window headlessly |
-
-The other sixteen are the second and third phases' (twelve W2, four W3). Fourteen answer `fail` on v1.7.0; `dimension_truth_focus` and `b40_between_rows_refused` call what 1.7.0 does not have (`miss → pass`):
-
-| Check | Verified against |
-|---|---|
-| `qa_coverage_not_checked` | a frame line on `Layout1` with no viewport onto the model: the critique report names that layout's legibility lane `not_checked` (`no_viewport_scale`), finalize carries the row in `qa_coverage`, and `strict_critique=True` fails `critique_gate_failed` naming it |
-| `dimension_display_truth` | a 19.6 mm dimension after DIMDEC 2 → 0 shows "20" in its `*D` block and in `bind_dimension`, with `display_rounding` 0.4 and no mismatch |
-| `dimension_truth_focus` | an override lie, a doubled Ø and a stale render are exactly `dim_override_disagrees`, `dim_double_prefix` and `dim_render_stale`; `drawing_refine` redraws the stale one and leaves the other two |
-| `policy_read_only_batch` | under `READ_ONLY`, a one-step `entity_create_line` batch is `policy_refused` (`read_only`) and neither the revision nor the entity count moves |
-| `write_path_autoload_refused` | `data_extract` to `acaddoc.lsp` and `drawing_save_as` to `acad.lsp` are both `path_refused`, nothing written |
-| `dimension_auto_one_call_part` | one `dimension_auto(selector={"layer": "GEOMETRY"})` on a 120 × 80 plate draws 4 edge dimensions (120, 80, 120, 80), six Ø11 and two R8, names the ellipse in `omitted`, and a second call draws nothing |
-| `property_override_focus` | a line on GEOMETRY given colour 1 and lineweight 30 is named by exactly `lineweight_not_bylayer` (error) and `color_not_bylayer` (warning) with only its handle, a clean line by nothing, and `drawing_refine` puts it back to colour 256 and ByLayer |
-| `search_default_lists_pins_and_batch_first` | with nothing set, a client lists exactly `search_tools`, `call_tool`, `describe_tool`, `cad_batch`, `drawing_info` and `entity_list`; an unlisted `entity_create_line` still runs on a direct call; `describe_tool(names=[...])` answers two cards in one call; the instructions name `cad_batch`, nothing unlisted and no `titleblock_apply_iso_a3` |
-| `undo_after_restart` | a real `python server.py` draws, saves, moves, saves and is killed; a new process opens the file and one `drawing_undo` puts the line back at (0, 0)-(10, 0) with `granularity: "save"`; a killed unsaved session leaves the file as saved and the next open reports `lost_since_save.count == 1` |
-| `atomic_batch_default` | `[entity_move(L), entity_delete("DEAD")]` with no `on_error` is refused `unknown_handle`, `executed: 0`, L unchanged; the run-time twin (`entity_edit_text` on a LINE) is rolled back by the default with `atomicity.verified` true |
-| `delete_many_all_or_nothing` | `entity_delete_many([A, "DEAD"])` does not answer `ok: true` and A survives; a delete made to fail mid-call (a locked layer) answers `ok: false` with A, B and C all still in the drawing |
-| `history_round2_value` | three rounds of a plate (hole 10, 12 labelled `round 2`, 16) drawn by a real server that is then killed; a new process answers 12 with `drawing_open` + `drawing_history(label="round 2", detail="args")`; an unknown label is refused `invalid_args` naming the labels; an unlabelled round is read from the checkpoint diff |
-| `pid_project_links` | two P&ID sheet files: a matched link whose line numbers disagree, an orphan, a direction mismatch and a pump on both sheets are each reported once with the sheet and the handle; 51 sheets are refused by name |
-| `b40_between_rows_refused` | every empty B40 table refuses a lookup naming itself; on a synthetic double entry (round numbers, not DIN values) a listed size draws exactly its row, a size between two rows is refused with both neighbours named and nothing drawn, and an entry B one value off entry A is refused by path |
-| `mech_revise_keeps_handles` | a Ø60 × 30 bushing revised to a Ø24 bore and length 40: every LINE / CIRCLE / ARC edited in place keeps its handle, the end view's bore circle is r = 12, the signatures equal a fresh draw of the hand-written revised part; a tagged line moved 1 mm by hand refuses the revision `hand_edited_tagged_entity` with nothing changed |
-| `pid_avoid_no_symbol_crossing` | a pump discharging into a far vessel with another vessel between them: with `sheet.routing: "avoid"` the polyline enters no symbol's box but its two ends - measured on each INSERT's own ezdxf bounding box, not by the server's focus - and the graph read back holds no dangling end |
-
-<details>
-<summary><b>The thirteen checks 1.7 added</b></summary>
-
-The 48 checks v1.6.0 was released on all still passed on v1.7.0. Thirteen rows were fixed in 1.7.0. Four are reliability defects 1.6.0 shipped with, each reproduced on v1.6.0 (`fail → pass`) and fixed in 1.7.0; the other nine are the roadmap's acceptance scenarios, which 1.6.0 could not even attempt (`miss → pass`: the verification engine they call is new in 1.7.0):
-
-| Check | Verified against |
-|---|---|
-| `cancel_never_overlaps` | a call cancelled while its worker runs keeps the document until that worker ends: the next call runs after it, never beside it |
-| `qa_scan_finds_entity_5001` | a construction line placed as the 5,001st entity is found by `drawing_critique`; the scan used to stop at 5,000 |
-| `export_text_never_formula` | `=1+1`, `@x` and a leading tab come back from the parts-list CSV with a leading `'` and from the XLSX as string cells; a `-12.5` mass stays a number |
-| `spec_refuses_non_finite` | a NaN vessel width, an infinite height and a NaN symbol scale in a `pid_from_spec` dry run are each refused by their path |
-| `verify_t05_stale_preview_no_silent_mutation` | T05: after a `cad_batch` preview the operator moves the line in CAD; the apply is refused `stale_revision` and the line keeps the operator's (3, 3), not (8, 3); a server edit is refused too, an undisturbed preview applies |
-| `verify_t09_diameter_under_its_label` | T09: a Ø39.8 circle under a dimension reading "Ø40" fails its Ø40 requirement with delta −0.2; the label is a `dimension_mismatch` finding, never the measurement |
-| `verify_t10_moved_circle_against_its_model` | T10: a hole moved 2 mm after `draw_part`; the stored part model still says x = 60, the requirement measured on the circles says 22, not 20, and fails |
-| `verify_t11_inner_hole_moved_caught_on_reopen` | T11: an inner hole moved inside the saved file's outline (same counts, same extents) fails its 20 mm pitch with 22 on the file, re-bound and opened alone |
-| `verify_t12_equal_holes_ambiguous` | T12: "the Ø10 hole" among two equal ones is `ambiguous` with both as candidates and no handle chosen; naming it by feature tag binds one |
-| `verify_t13_hole_count_cardinality` | T13: exactly six Ø8 holes on a Ø100 PCD passes; five and seven fail, every diameter right in all three |
-| `verify_t18_dimension_override_and_dimlfac_visible` | T18: a "42" override over 40 and a DIMLFAC 2 over 21 leave the geometry rows passing and are two blocking `dimension_mismatch` findings; honest dimensions are accepted |
-| `verify_t25_handle_renumber_rebinds` | T25: a save that gave the bore's handle to the pin is re-bound by geometry (Ø40 passes on the bore); a copied feature tag is `unknown`, never a pick |
-| `verify_t36_report_stale_after_file_change` | T36: a line appended to the delivered DXF after delivery: `verify_manifest` names it stale and the acceptance report turns stale and unaccepted |
-
-</details>
-
-The twenty-two checks 1.6 added against v1.5.1 (`miss → pass`) each pin a number computed by hand, not read back from the code that drew it:
-
-<details>
-<summary><b>The twenty-two checks 1.6 added</b></summary>
-
-| Track | Check | Verified against |
-|---|---|---|
-| Understanding | `scale_check_detects_schematic` | the synthetic P&ID reads **schematic** against its layout; a uniform 2× copy of six tags reads **to scale** with factor 2 |
-| | `pipe_takeoff_rmst_exact` | all eight routable runs measure exactly the rectilinear MST of their tags |
-| | `cable_takeoff_roundup` | 9, 17, 19 and 10 m after the 20 % allowance; the heater's unstated power stays empty |
-| | `diff_detects_known_edits` | a move, a text change, an attribute change, an add and a delete, and nothing else |
-| | `topology_known_defects` | a 5 mm near miss, one interior crossing, and a clean T that is neither |
-| Architecture | `arch_junction_l_t_x` | an L corner mitres at (4100, −100) / (3900, 100), a T stem stops on the near face, an X cuts all four faces; wall areas 1 400 000, 1 490 000 and 2 360 000 mm² |
-| | `arch_room_area_net` | a 4 × 5 m room between 200 mm walls is labelled 20.00 m², not the 21.84 m² its axes enclose |
-| | `arch_opening_cuts_wall` | both faces are interrupted across a 900 door and two jambs close it |
-| | `arch_rooms_detect_foreign` | plain lines on a `WALLS` layer yield 20 and 15 m² at confidence 0.6, and nothing is written |
-| Mechanical and sheet | `mech_part_roundtrip` | a part read back out of its own `ACADMCP_MECH` XDATA equals the part drawn |
-| | `mech_section_hatch_area` | a 60 × ⌀40 sleeve with a ⌀20 bore cuts 1200 mm², measured out of the drawing by `analysis_measure_entity` |
-| | `mech_iso286_on_dimension` | 40 H7 is +0.025 / 0 and survives the layout |
-| | `mech_thread_unrepresented_is_caught` | the ISO 6410 focus fires on a thread drawn as a plain circle. A gate that never fires is not a gate |
-| | `std_part_iso4014_m12` | s = 18, k = 7.5, read by value |
-| | `sheet_frame_iso5457_a3` | the frame runs 20,10 to 410,287 inside the 420 × 297 sheet |
-| | `bom_balloon_link` | two identical bolts are one row of quantity 2, and its balloon carries the row's item number |
-| Environment | `settings_dimstyle_iso25_values` | the ISO-25 preset lands in the DIMSTYLE table with ISO 129-1's numbers |
-| | `settings_layer_state_roundtrip` | save → change → restore puts the layer table back, and the state survives save/reopen |
-| | `settings_pdf_mediabox_a3` | the plotted PDF's own `/MediaBox` reads 420 × 297 |
-| P&ID | `pid_block_define_attdef_roundtrip`, `pid_tag_parse_fic`, `pid_graph_edge_count` | a block with ATTDEFs defined and read back, an ISA-5.1 tag parsed, a drawn P&ID's edge count |
-
-</details>
-
-### The task matrix — tasks that can fail
-
-An early matrix scored this server 10/10, which carried no information: every task exercised something the server was built around. Since 1.5 a task joins the matrix only if it *can* fail. Three of 1.5's five did while being written.
-
-1.7 adds ten (matrix v8, 31 tasks). Five test what 1.7.0 promises, and five stand on ground a rival server claims:
-
-- `requirements_roundtrip`: a plate verified on the document; then its bore is moved 3 mm inside the saved file, with counts and extents unchanged. Exactly that requirement must fail on the reopened file;
-- `cancel_safety`, `qa_large_drawing` (offenders at the 5,001st entity, after the 10,000th and on a paper layout), `export_safety` and `stale_preview`;
-- `revision_guarded_edit` (beiming183's revision discipline), `pid_file_roundtrip` (puran-water's P&ID tools), `foreign_edit_verified`, `damaged_dxf_refusal` (refused by name; since 1.8.0, recovered only on request with `drawing_open(recover=True)`) and `dimension_binding`.
-
-1.8.0 adds eighteen (matrix v9, 49 tasks, the runner's default since 1.8.0; `--matrix v8` reproduces the 1.7.0 set):
-
-- `dimension_lie_detect`, `policy_read_only`, `lisp_read_tier` (live engine; `environment_blocked` headlessly), `layer_cleanup_budget` (six misnamed layers and 300 overridden entities clean in at most 3 calls) and `call_count_dimension_part` (a plate dimensioned in at most 2 calls);
-- `undo_across_restart` (one `drawing_undo` in a new process puts the line back before the move), `atomic_batch_default` (a batch with a missing handle runs nothing; its run-time twin rolls back) and `history_value_lookup` (the round-2 diameter in at most two calls after a restart);
-- `parametric_revise_keeps_handles` (a three-view flange revised in one call, handles kept, signatures equal to a fresh draw; a hand-moved tagged line refused), `pid_routing_obstacles` (an `avoid` sheet with no line through a symbol; a walled-in pump refused `no_route` naming the four vessels), `pid_project_offpage` (three sheet files, four cross-sheet defects each found once), `std_tables_b40` (`not_run` while every B40 table is empty, never a pass) and `dwg_headless_roundtrip` (a DWG opened headlessly through a converter keeps its DXF twin's layers, blocks and entity counts; no converter: `environment_blocked`);
-- `replay_across_restart` (a client operation id replayed by a new process with nothing drawn; a server killed inside a `cad_batch` leaves that id `requires_reconcile`), `interrupted_save_recover` (a writer dying half way through a save leaves the file byte for byte as it was; a kill between fsync and replace is finished by the next start), `damaged_dxf_recover` (a truncated DXF with clashing handles opens only with `recover=True`, the source untouched), `bylayer_truth` (22 lines at lineweight Default read back from the saved DXF and named in one grouped issue, all ByLayer after `drawing_refine`) and `space_context` (a circle created on a drawing saved with Layout1 active lands in model space; a trim under a rotated UCS keeps the WCS endpoints). The two kill tasks kill a real `python server.py` with `Popen.kill()`, at a named barrier inside the call where the row says so (`benchmarks/fault_inject.py`), and the run manifest lists every kill point.
-
-Two CI gates hold the call economy: `benchmarks/call_budget.py` runs each scripted job naive (one tool per entity, labelled) and with its least-call oracle - the layer clean-up takes 2 calls (1.7.0: 124, the rival: 11), the plate 2 (1.7.0: 89, the rival: 10) and the value of round 2 after a restart 2 (`drawing_open` + `drawing_history`; 1.7.0 could not answer it) - and `benchmarks/token_suite.py --budget benchmarks/token_budget.json` holds the idle catalog and the task lane to ceilings fixed before W2 began.
-
-The tasks added in 1.5 and 1.6, with what each is verified against:
-
-| Task | Verified against |
-|---|---|
-| `tool_discovery` | six AutoCAD command names, each ranking #1 |
-| `token_budget` | 78,391 → 1,300 wire tokens: the 253-tool `off` catalog against the six tools a default install lists, under a ceiling fixed in advance (2,000). 1.7.0 measured 89,226 → 503 for its 243 tools against three |
-| `hatch_islands` | 300 filled with the island, 400 ignoring it |
-| `selection_filter` | window 1, crossing 2, bounding box 3, polygon 1 |
-| `measure_from_handle` | 139.2699 against the 100.0 a vertex shoelace gives |
-| `pid_roundtrip` | the example sheet drawn by `pid_from_spec`, read back by `pid_graph`, which never sees the spec: 5 nodes, 4 edges, 0 dangling, `confidence_min` 1.0, `FIC-101` wired to `FCV-101` |
-| `page_setup_truth` | ANSI B, then ISO A3 landscape, applied to Layout1. Each is plotted through `batch_plot` and read back from its PDF's `/MediaBox`: 432 × 279, then 420 × 297 mm, not the setter's return value. A fresh layout is already A3, so the B sheet is what a no-op setter cannot fake |
-| `mech_assembly` | a flange-coupling A3 sheet: a hub with a full section, a flange with its bolt-circle end view, two ISO 4014 bolts with ISO 4032 nuts, an ISO 7573 parts list read off the drawing, linked balloons, an ISO 5457 frame and an ISO 7200 title block. Gated on `drawing_critique(focus=None)` returning **zero** issues and a finalize score of at least **90**; a test drops one balloon and watches the gate fail |
-| `arch_roundtrip` | a two-room plan (an entrance door, an interior door, two windows, a stair) drawn by `arch_plan_from_spec` and read back by `arch_rooms_detect`, which never sees the spec. Each room must be within 0.1 % of its label and of the net floor computed by hand (4825 × 5750 and 3825 × 5750 mm), and the schedules must list D1, D2, W1, W2. Gated like `mech_assembly`; a test removes one room label and watches the gate fail |
-| `takeoff_roundtrip` | the synthetic plant pair: a P&ID stretched 1.3× in one room and rearranged in the other, Russian supply / return words, a return drawn on the supply layer, a reducer, a segment drawn twice. The scale check must call it **schematic** (21.8 % of 55 pairs within ±10 %). `pipe_takeoff` must give every routable run's layout length equal to the rectilinear MST of its tags, sizes and services as drawn, and the run to a tag the layout lacks status C. `cable_takeoff` must give 9 / 17 / 19 / 10 m after the 20 % allowance and leave the heater's power empty. A test removes the wiring callouts and watches the cable half fail by name |
-| `understand_foreign` | the pair's layout (inches declared over millimetres, a stray line 5,000 km out, two plan copies) comes back as millimetres with an `INSUNITS` warning, the stray line's handle and two clusters. The P&ID's `P_product piping` / `P_cipsupplyline` / `P_cipreturnline` / `P_ijswater` / `E_power` classify as product / CIP supply / CIP return / ice water / electrical. A test makes the layout declare millimetres and watches the units gate fail |
-
-### Headless performance
-
-<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/autocad-mcp-perf.svg" alt="Performance across four headless workloads" width="800">
-
-The workloads call the same backend methods the MCP tools call, so server-side overhead is included. Numbers move with hardware; the report records the machine fingerprint. **Read the next section before quoting them.** Entity creation is still slower than in v1.4.0.
-
-**1.8.0 against 1.7.0: not slower beyond the noise, with one row to watch.** The same gate, run on 2026-11-05 at `f3523db` against a v1.7.0 worktree: 20 rounds after 5 warm-ups, CPython 3.12.16, every measurement in a fresh state folder of its own ([`perf-v1.7.0-vs-v1.8.0.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/perf-v1.7.0-vs-v1.8.0.json)):
-
-| Workload | v1.7.0 | 1.8.0 | ratio |
-|---|---:|---:|---:|
-| 2,000 lines, one call each | 272.1 ms | 286.2 ms | 1.02 |
-| 10,000 lines: build, DXF export, reopen | 1,682.8 ms | 1,721.3 ms | 1.03 |
-| Region query over 10,000 entities | 249.3 ms | 224.5 ms | 0.97 |
-| Premium quality pass | 46.9 ms | 41.2 ms | 0.96 |
-| 2,000 `entity_create_line` calls through the MCP server | 3,496.3 ms | 3,636.0 ms | 1.06 |
-
-The machine was in use during this run: the A/A spread was 7.1 %, so the bound was 1.14, and every row is inside it. The row to watch is the last one. Its 1.06 is the durable journal (on by default): one `sqlite` commit per mutating call, for the `running` row that lets a restart report an interrupted call as `unknown_commit`, measured at about 50 µs of a 1.7 ms call, with the change summary, the session metrics and the tool policy at about 50 µs more together (`JOURNAL_DURABLE=off` puts the row at 1.03). On a quiet machine the A/A spread was 1.4 % earlier that day, the bound is then the 1.05 floor, and that row misses it by about 1 %; the four others pass either way. It is recorded here, not re-run until it passed. The 1.8.1 item that closes it without changing what a restart reports is an append-only running log: one write per call, the rows written in batches, reconciled at open. The first run of the gate that day measured 1.15 on that row and 1.09 on the roundtrip, because its workers had written into this machine's default state folder, which held a 213 MB journal and 656 checkpoint lineages left by earlier runs; the gate now gives each measurement an empty state folder. The roundtrip's 1.03 is the atomic save (a tmp file fsynced and verified before it replaces the target) and the S0 checkpoint of a reopened file.
-
-**1.7.0 against 1.6.0: not slower beyond the noise.** `benchmarks/perf_compare.py` builds a v1.6.0 worktree and measures both trees in alternating rounds, base, head, head, base, with one interpreter. The A/A calibration measures the base against itself in every round. Values are medians of 20 rounds after 5 warm-ups, and each ratio is the median of the paired per-round ratios ([`perf-v1.6.0-vs-v1.7.0.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/perf-v1.6.0-vs-v1.7.0.json)):
-
-| Workload | v1.6.0 | v1.7.0 | ratio |
-|---|---:|---:|---:|
-| 2,000 lines, one call each | 492.1 ms | 454.9 ms | 0.95 |
-| 10,000 lines: build, DXF export, reopen | 5,139.3 ms | 4,986.8 ms | 0.91 |
-| Region query over 10,000 entities | 1,377.6 ms | 1,012.8 ms | 1.02 |
-| Premium quality pass | 182.7 ms | 108.0 ms | 0.62 |
-| 2,000 `entity_create_line` calls through the MCP server | 14,414.4 ms | 13,412.6 ms | 0.96 |
-
-The gate holds every ratio at or below 1 + max(0.05, 2 × the A/A spread). This run was taken on an idle machine: the A/A spread was 5.5 %, so the bound was 1.11. The region query's 1.02 is inside that noise. Its two medians differ the other way (1,377.6 vs 1,012.8 ms) because the ratio column pairs each round's base and head before taking the median, and the paired figure is the one the gate trusts. These runs use CPython 3.13 and the table below uses 3.11.15, so compare ratios, never milliseconds across tables.
+The task matrix v9 (49 tasks, each one able to fail) passes 47 / 47 of the tasks the headless engine attempts ([`lanes-v9/`](https://github.com/U-C4N/Autocad-MCP/tree/main/benchmarks/results/published/lanes-v9)); the headless performance gate against v1.7.0 is `ok: true` with ratios 0.96 to 1.06, the 1.06 being the durable journal's one commit per mutating call ([`perf-v1.7.0-vs-v1.8.0.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/perf-v1.7.0-vs-v1.8.0.json)); the token budget gate exits 0 ([`token-cost.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/token-cost.json)); and all fourteen live smokes passed on AutoCAD 2026 for this release ([`matrix.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/live/1.8.0/matrix.json)). What was measured and found wanting is in the changelog's *Live evidence* and under the limits below.
 
 ## What this release is bad at
 
 A page that only lists strengths is a page that has not been measured.
 
-**Headless entity creation is slower than v1.4.0, and neither 1.6, 1.7 nor 1.8 won it back.** 1.8.0 is not slower than 1.7.0 beyond the gate's noise, and 1.7.0 not slower than 1.6.0 ([above](#headless-performance)); the loss is 1.6's against v1.4.0, and winning it back is B10, 1.8.1. 1.8.0 adds two measured costs of its own on that path, both named above: the durable journal's commit on every mutating call, and the atomic save's fsync and verification. These are medians of five alternating runs on one machine, with one interpreter (CPython 3.11.15) and one ezdxf, v1.4.0's code against 1.6.0's ([`perf-v1.4.0-vs-v1.6.0.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/perf-v1.4.0-vs-v1.6.0.json)):
+<details>
+<summary><b>Measured limits, by track</b></summary>
+
+**Headless entity creation is slower than v1.4.0, and neither 1.6, 1.7 nor 1.8 won it back.** 1.8.0 is not slower than 1.7.0 beyond the gate's noise, and 1.7.0 not slower than 1.6.0 ([measured](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/README.md)); the loss is 1.6's against v1.4.0, and winning it back is B10, 1.8.1. 1.8.0 adds two measured costs of its own on that path, both named above: the durable journal's commit on every mutating call, and the atomic save's fsync and verification. These are medians of five alternating runs on one machine, with one interpreter (CPython 3.11.15) and one ezdxf, v1.4.0's code against 1.6.0's ([`perf-v1.4.0-vs-v1.6.0.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/perf-v1.4.0-vs-v1.6.0.json)):
 
 | Workload | v1.4.0 | v1.6.0 | v1.6.0, `EZDXF_CALL_TIMEOUT=0` |
 |---|---:|---:|---:|
@@ -583,6 +396,8 @@ A `.dwt` template is the same case (`dwt_write`): a `.dwt` is a DWG container, s
 
 **Nominal, not standard.** The furniture and sanitary blocks carry nominal catalogue sizes and say so. The stair tool reports the Blondel relation (2R + G within 600–650 mm) as a design rule, never as a building code. The `arch` layer colours are a repository convention: ISO 13567 fixes the names, not the colours. Labels speak English or Turkish; any other `lang` is refused with the list.
 
+</details>
+
 ## Configuration
 
 Nothing loads a `.env` file — export these, or set them in your MCP client's `env` block.
@@ -645,23 +460,12 @@ Nothing loads a `.env` file — export these, or set them in your MCP client's `
 
 ## Architecture
 
-```mermaid
-flowchart LR
-  A[MCP host / AI agent] --> B[FastMCP 3 server]
-  B --> C[Error · audit · timing · logging · capability-refusal middleware]
-  C --> D[Typed contract · 23 modules · 45 capability keys]
-  D --> E[COM backend<br/>single-STA thread]
-  D --> F[ezdxf backend<br/>asyncio.to_thread]
-  E --> G[Live AutoCAD]
-  F --> H[Headless DXF]
-  E --> I[Engineering · critique · scoring · delivery]
-  F --> I
-```
+The diagram under *The two engines* is the call path; the typed contract is 23 modules under `backends/contracts/` with 45 capability keys held equal on both engines.
 
 <details>
-<summary><b>The drawing at the top of this page, as tool calls</b></summary>
+<summary><b>The gear sheet in the gallery, as tool calls</b></summary>
 
-The sequence in [`scripts/render_readme_showcase.py`](https://github.com/U-C4N/Autocad-MCP/blob/main/scripts/render_readme_showcase.py), which produced the hero sheet:
+The sequence in [`scripts/render_readme_showcase.py`](https://github.com/U-C4N/Autocad-MCP/blob/main/scripts/render_readme_showcase.py), which produced the gear sheet:
 
 ```text
 drawing_new()                                    ISO linetypes + layers bootstrapped
@@ -699,6 +503,9 @@ The live COM paths are checked on a running AutoCAD, never in CI: `python script
 
 ## Roadmap
 
+<details>
+<summary><b>1.7.1, 1.8.1 and 1.9</b></summary>
+
 **1.7.1**
 
 - **Speed.** Win back the headless creation throughput that 1.6 lost against v1.4.0 (criterion 7). Arm the per-call timeout only where a call can block, and remove the per-call work that came with it.
@@ -714,6 +521,8 @@ The live COM paths are checked on a running AutoCAD, never in CI: `python script
 Architecture decisions live in [`docs/adr/`](https://github.com/U-C4N/Autocad-MCP/tree/main/docs/adr): ADR 0001 records why 1.8.0 ships no native .NET worker and the rule that decides it for 1.9.0.
 
 Features ship when their contracts and limitations are testable — not when they make a longer checklist.
+
+</details>
 
 ## Star History
 
