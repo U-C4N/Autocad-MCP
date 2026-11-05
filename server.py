@@ -3979,8 +3979,11 @@ async def entity_get(
     or spline edge. A DIMENSION also reports `dimension`: `dimtype`, the five
     `defpoints`, its own `measurement` (before DIMLFAC), `text_override`,
     `dimstyle`, `dimlfac` and `angle`. On the live engine those two are read
-    from the drawing's DXF export (one export per call; `detail_source` says
-    so), and a member of a block definition reports `detail_unavailable`. An
+    from a DXF export of the whole drawing (`detail_source` says so), which
+    costs about as much as drawing_understand; it is reused for
+    COM_SNAPSHOT_TTL seconds (default 5) while the document's revision and
+    operator-edit count stand still, so N reads of an unchanged drawing cost
+    one export. A member of a block definition reports `detail_unavailable`. An
     entity in a plane tilted out of WCS XY reports `plane_normal` (or
     `tilted`) and omits what xy cannot express. Refused: a handle the drawing
     does not hold.
@@ -7442,7 +7445,9 @@ async def system_status(
     `active_document_changed`). Live, the revision counts this server's writes
     and the operator's object edits between two calls (an AutoLISP reactor;
     `operator_edits` says whether it runs); without Visual LISP, this server's
-    writes only.
+    writes only. Live, `snapshot_reuse` is `{ttl_s, exports, reused}`: the
+    COM_SNAPSHOT_TTL in force, and how many DIMENSION / HATCH detail reads
+    took a fresh export or reused one.
 
     `operations` is `{count, last: {op, tool, state, rev}, unknown_commit}`;
     drawing_history lists the calls.

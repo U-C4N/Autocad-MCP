@@ -148,6 +148,15 @@ class Settings:
         # otherwise block the single-thread STA executor forever.
         self.com_call_timeout: float = float(os.environ.get("COM_CALL_TIMEOUT", "60"))
 
+        # Issue #20: a live entity_get on a DIMENSION or HATCH reads its fields
+        # from a Document.Export of the whole drawing. That export is reused for
+        # this many seconds while the bound document, its revision and the
+        # operator-edit count stand still; the age bounds what the revision does
+        # not count (view changes, SetVariable, an edit during a server call,
+        # everything without Visual LISP). 0 = one export per read, as 1.8.0
+        # did; a negative value reads as 0.
+        self.com_snapshot_ttl: float = max(0.0, float(os.environ.get("COM_SNAPSHOT_TTL", "5")))
+
         # 1.8-05: how long a command sent to AutoCAD's command line (a raw
         # system_run_command, drawing_undo / drawing_redo, a corner op, the
         # transaction mark) may stay active before it is cancelled with ESC x3

@@ -3051,6 +3051,15 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
             "method": "lisp_database_reactor",
             "reason": "no call has touched a document yet",
         }
+        # Issue #20: the last Document.Export snapshot (``_cached_snapshot``).
+        # ``_snapshot_epoch`` moves at every job a ``_mutating`` call submits
+        # and at every (re)binding, so an export that overlapped one is never
+        # stored as current.
+        self._snapshot_cache: dict | None = None
+        self._snapshot_epoch = 0
+        self._snapshot_exports = 0
+        self._snapshot_reuses = 0
+        self._snapshot_gate: asyncio.Lock | None = None
 
     @property
     def name(self) -> str:
@@ -3267,6 +3276,7 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         self._document_scope_key = None
         self._bound = None
         self._known_documents.clear()
+        self._retire_snapshot()
         self._transaction_active = False
         self._reset_document_state()
         self._connected = False
@@ -3483,6 +3493,9 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
             entry = {"document_id": uuid.uuid4().hex, "revision": 0}
             self._known_documents[entry_key] = entry
         previous = None if self._bound is None else self._bound["document_id"]
+        # Issue #20: a (re)binding retires the cached export - a file closed
+        # unsaved and opened again keeps its entry and revision.
+        self._retire_snapshot()
         # 1.8-05: every (re)binding - drawing_new / drawing_open /
         # document_activate, the first contact - starts in model space;
         # only layout_set_current moves the target.
@@ -3510,6 +3523,7 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
             changed = self._bound is not None
             self._bound = None
             self._document_scope_key = None
+            self._retire_snapshot()
             return changed
         return self._bind_key(key, _app_identity(app))
 
@@ -3590,6 +3604,105 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         entry = self._known_documents.get(self._bound_entry_key())
         if entry is not None:
             entry["revision"] += 1
+
+    # -- the reused export (issue #20) --------------------------------------------
+
+    def _retire_snapshot(self) -> None:
+        """No export taken before now is current: a write was queued, or a rebinding."""
+        self._snapshot_epoch = getattr(self, "_snapshot_epoch", 0) + 1
+        self._snapshot_cache = None
+
+    def _snapshot_key(self) -> tuple | None:
+        """(document id, bound key, revision, operator-edit count) as memory holds them.
+
+        Read from what the last guarded job left - no COM round trip. None
+        until a document is bound.
+        """
+        entry_key = self._bound_entry_key()
+        entry = self._known_documents.get(entry_key) if entry_key is not None else None
+        if entry is None:
+            return None
+        return (entry["document_id"], entry_key, int(entry.get("revision", 0)), entry.get("edits"))
+
+    def snapshot_reuse_status(self) -> dict:
+        """``system_status.snapshot_reuse``: the TTL in force and this session's counts."""
+        return {
+            "ttl_s": float(config.settings.com_snapshot_ttl),
+            "exports": getattr(self, "_snapshot_exports", 0),
+            "reused": getattr(self, "_snapshot_reuses", 0),
+        }
+
+    async def _cached_snapshot(self, *, guarded: bool):
+        """The snapshot alone; see ``_snapshot_with_reuse``."""
+        snap, _reused = await self._snapshot_with_reuse(guarded=guarded)
+        return snap
+
+    async def _snapshot_with_reuse(self, *, guarded: bool, force: bool = False):
+        """``(snapshot, reused)``: the bound document's ``Document.Export``, reused while it stands still.
+
+        A DIMENSION's fields and a HATCH's loops are read from an export of the
+        whole drawing (``take_snapshot``), which on a large drawing costs about
+        as much as ``drawing_understand``. The last export is reused while the
+        bound document (its id and its (application, Name, FullName) key), its
+        revision and the operator-edit count are the ones it was taken under,
+        no ``_mutating`` job was queued and no (re)binding happened since
+        (``_snapshot_epoch``), and it is younger than ``COM_SNAPSHOT_TTL``
+        seconds, counted from when the export returned (0 = never reused). The
+        age is the backstop for what the revision does not count: view changes,
+        ``SetVariable``, an edit during a server call and everything without
+        Visual LISP. ``reused`` says the snapshot is an earlier export, so a
+        caller that misses a record in it can ask again with ``force=True``,
+        which retires the cached export and takes a fresh one.
+
+        ``guarded``: the caller's own job ran the bound-document guard (and with
+        it the operator-edit counter) just before this. Otherwise a reuse first
+        runs the guard as a job of its own, so a switched active document is
+        still refused and an operator edit since the last call still moves the
+        revision. Inside a ``_mutating`` call nothing is reused or stored: the
+        before and after reads of a write must not share an export. Concurrent
+        reads wait for one export instead of each taking their own.
+        """
+        from engineering.understand import snapshot as snapshot_module
+
+        ttl = float(config.settings.com_snapshot_ttl)
+        if ttl <= 0 or _MUTATION_PROBE.get() is not None:
+            self._snapshot_exports = getattr(self, "_snapshot_exports", 0) + 1
+            return await snapshot_module.take_snapshot(self), False
+        if getattr(self, "_snapshot_gate", None) is None:
+            self._snapshot_gate = asyncio.Lock()
+
+        def _fresh(cached) -> bool:
+            return (
+                cached is not None
+                and cached["epoch"] == self._snapshot_epoch
+                and time.monotonic() - cached["taken"] < ttl
+            )
+
+        async with self._snapshot_gate:
+            if force:
+                self._retire_snapshot()
+            cached = self._snapshot_cache
+            if _fresh(cached):
+                if not guarded:
+                    await self._ensure_document_state()
+                if _fresh(cached) and cached["key"] == self._snapshot_key():
+                    self._snapshot_reuses += 1
+                    return cached["snapshot"], True
+            self._snapshot_cache = None
+            epoch = self._snapshot_epoch
+            self._snapshot_exports += 1
+            snap = await snapshot_module.take_snapshot(self)
+            # The key after the export: its own guard may have folded an
+            # operator edit into the revision, which the snapshot then holds.
+            key = self._snapshot_key()
+            if key is not None and epoch == self._snapshot_epoch:
+                self._snapshot_cache = {
+                    "key": key,
+                    "epoch": epoch,
+                    "taken": time.monotonic(),
+                    "snapshot": snap,
+                }
+            return snap, False
 
     def _identity_of_key(self, key: tuple[str, str], application: tuple | None = None) -> dict:
         entry = self._known_documents.get((application, *key))
@@ -3698,6 +3811,9 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
 
         work = self._executor.submit(_job)
         _note_reached()  # B11: from here a `_mutating` call may have written
+        if _MUTATION_PROBE.get() is not None:
+            # Issue #20: a write is queued - no export taken before it is current.
+            self._retire_snapshot()
         future = asyncio.wrap_future(work, loop=loop)
         try:
             if timeout > 0:
@@ -7820,18 +7936,27 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
 
         ActiveX has no loop reader that leaves a non-associative hatch
         untouched and no defpoint reader for every dimension class, so the
-        drawing is exported once (``Document.Export``, measured on AutoCAD 2026 -
+        drawing is exported (``Document.Export``, measured on AutoCAD 2026 -
         ``engineering/understand/snapshot.py``) and the record of this handle is
-        read with the same code the headless engine runs. One export per call,
-        never per ``entity_list`` row. A member of a block definition is not in
-        a layout of the export: it says ``detail_unavailable`` instead.
+        read with the same code the headless engine runs. The export costs
+        about as much as ``drawing_understand`` (issue #20: ~50 s on a 3.5 MB
+        site plan), so it is reused for ``COM_SNAPSHOT_TTL`` seconds while the
+        document's revision and operator-edit count stand still
+        (``_cached_snapshot``; ``entity_get``'s own job ran the guard): N reads
+        of an unchanged drawing cost one export. Never per ``entity_list`` row.
+        A handle the live job found but a reused export lacks (an entity made
+        since, by an edit the revision does not count) is looked up once more
+        in a fresh export. A member of a block definition is not in a layout of
+        the export: it says ``detail_unavailable`` instead.
         """
         from backends.entity_fields import dimension_props, hatch_props
-        from engineering.understand import snapshot as snapshot_module
 
-        snap = await snapshot_module.take_snapshot(self)
         wanted = str(info.handle).upper()
+        snap, reused = await self._snapshot_with_reuse(guarded=True)
         record = next((r for r in snap.records if r.handle.upper() == wanted), None)
+        if record is None and reused:
+            snap, _ = await self._snapshot_with_reuse(guarded=True, force=True)
+            record = next((r for r in snap.records if r.handle.upper() == wanted), None)
         if record is None:
             info.properties["detail_unavailable"] = (
                 f"{info.handle} is not in a layout of the exported drawing (a block "
@@ -9823,6 +9948,7 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
         status["document_id"] = identity["document_id"]
         status["revision"] = identity["revision"]
         status["operator_edits"] = self.operator_edits_status()
+        status["snapshot_reuse"] = self.snapshot_reuse_status()
         status["call_outcomes"] = [dict(row) for row in self.call_outcomes][
             -self._STATUS_CALL_OUTCOMES :
         ]
@@ -10029,11 +10155,12 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
     async def _dimension_display(self, handles=None) -> dict:
         """``{HANDLE: (rendered_text, matches)}`` of the DIMENSIONs ``handles``
         (every one when None), read back through the ``Document.Export``
-        snapshot - the ``*D`` blocks AutoCAD actually holds (1.8-15)."""
+        snapshot - the ``*D`` blocks AutoCAD actually holds (1.8-15). Every
+        caller is a ``_mutating`` call, where ``_cached_snapshot`` always
+        exports afresh: a write's before and after never share an export."""
         from engineering.dimtext import rendered_matches
-        from engineering.understand.snapshot import take_snapshot
 
-        snap = await take_snapshot(self)
+        snap = await self._cached_snapshot(guarded=False)
         wanted = None if handles is None else {str(h).upper() for h in handles}
         out: dict = {}
         for record in snap.records:
