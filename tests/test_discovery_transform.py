@@ -820,16 +820,30 @@ async def test_the_search_tool_answers_on_the_wire():
 
 
 async def test_the_risk_notice_survives_to_the_wire():
+    """The notice names every higher-risk hit the unfiltered search lists.
+
+    Which tools those are is incidental (the stock test above says why): the
+    tool descriptions merged on 2026-11-05 (#17-#20) moved ``entity_delete_many``
+    from the top five to sixth for this query, so the names are read from the
+    ``risk="any"`` answer instead of being pinned.
+    """
     server._apply_discovery_mode("search")
     async with Client(server.mcp) as client:
-        result = await client.call_tool(
-            "search_tools",
-            {"query": "how many entities are on the GEOMETRY layer", "risk": "read"},
+        unfiltered = await client.call_tool(
+            "search_tools", {"query": COUNTING_QUERY, "risk": "any"}
         )
+        result = await client.call_tool("search_tools", {"query": COUNTING_QUERY, "risk": "read"})
+    hidden = [
+        line.split(" ", 1)[0]
+        for line in unfiltered.content[0].text.splitlines()
+        if " (write) " in line or " (destructive) " in line
+    ]
+    assert hidden, unfiltered.content[0].text
     text = result.content[0].text
     assert "analysis_entity_stats" in text
     assert "Risk filter:" in text
-    assert "entity_delete_many" in text
+    for name in hidden:
+        assert name in text, f"{name} hidden by the filter but not named in: {text}"
 
 
 async def test_search_cannot_surface_a_tool_the_profile_disabled():
