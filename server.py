@@ -7078,7 +7078,10 @@ async def view_screenshot(
     `applied`, `framing`, `px` (read from the PNG), `region` (the window drawn —
     the requested one widened by under a pixel so x and y share one scale),
     `px_per_unit` (drawing point (x, y) is pixel ((x - x0)·ppu, (y1 - y)·ppu));
-    a window capture reports `region`/`px_per_unit` null. A zero-width region or
+    a window capture reports `region`/`px_per_unit` null, plus `dpi` (the
+    window's DPI), `dpi_awareness`, `capture` (the bitmap in physical pixels,
+    before `max_px`) and `window_minimized` - the server makes itself DPI-aware,
+    so the whole window is captured at any display scaling. A zero-width region or
     a `max_px` outside 64-4096 is refused by name.
 
     With `overlay_handles`, each entity is labelled with its handle at its own
@@ -7161,7 +7164,8 @@ async def view_zoom_and_screenshot(
     the bound document's export drawn at a stated scale
     (`source: "export_snapshot"`). Without a window: extents (headless render;
     live ZoomExtents + window capture). The report beside the image is the one
-    `view_screenshot` gives — `applied`, `px`, `region`, `px_per_unit`. Give all
+    `view_screenshot` gives — `applied`, `px`, `region`, `px_per_unit`, and on a
+    live window capture `dpi`, `capture`, `window_minimized`. Give all
     four corners or none: a partial window is refused, never silently widened
     to the extents.
     """
