@@ -36,7 +36,7 @@ from engineering.errors import (
 from engineering.measure import is_self_intersecting, polygon_area_perimeter
 from security import sanitize_macro_argument, sanitize_symbol_name, validate_path
 
-from . import lineage, ocs
+from . import lineage, message_filter, ocs
 from .atomic_write import atomic_write_dxf, file_sha256, resolve_pending
 from .base import (
     AutoCADBackend,
@@ -305,9 +305,20 @@ def _job_clock_get(bucket: str) -> float:
 
 
 def _com_init():
-    """COM thread initializer – called once by the STA worker thread."""
+    """COM thread initializer – called once by the STA worker thread.
+
+    1.8.0: the thread also registers the client-side message filter
+    (``backends.message_filter``), so a call AutoCAD answers "retry later" is
+    retried by COM itself instead of failing as ``RPC_E_CALL_REJECTED`` in the
+    middle of a write; ``_com_teardown`` removes it. When it cannot be
+    registered every call behaves as before and the fact is logged.
+    """
     if _COM_IMPORTS_OK:
         pythoncom.CoInitialize()
+        if message_filter.install():
+            log.debug("COM message filter registered on the STA thread")
+        else:
+            log.info("COM message filter not registered; a rejected call surfaces as before")
 
 
 def _com_teardown():
@@ -319,6 +330,7 @@ def _com_teardown():
     """
     _drop_app()
     if _COM_IMPORTS_OK:
+        message_filter.uninstall()
         try:
             pythoncom.CoUninitialize()
         except Exception:

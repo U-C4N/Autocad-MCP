@@ -26,6 +26,11 @@ every existing handler keeps its meaning. Incoming calls are accepted
 
 ``stats`` counts what the filter saw (calls retried, refusals passed on), for
 evidence; nothing reads it to decide anything.
+
+``com_backend._com_init`` installs the filter on the STA thread right after
+``CoInitialize`` and ``com_backend._com_teardown`` removes it (``uninstall()``)
+before ``CoUninitialize``; off Windows, or when registration fails, both are
+no-ops and every call behaves as it did before.
 """
 
 from __future__ import annotations
@@ -37,7 +42,15 @@ import threading
 
 log = logging.getLogger(__name__)
 
-__all__ = ["RETRY_BUDGET_MS", "RETRY_PAUSE_MS", "install", "retry_decision", "stats"]
+__all__ = [
+    "RETRY_BUDGET_MS",
+    "RETRY_PAUSE_MS",
+    "install",
+    "installed",
+    "retry_decision",
+    "stats",
+    "uninstall",
+]
 
 #: How long one rejected call is retried, in ms since its first attempt (COM's
 #: ``dwTickCount``). Well inside ``COM_CALL_TIMEOUT`` (60 s).
@@ -96,7 +109,11 @@ def _build():  # pragma: no cover - Windows only, exercised by install()
     )
     count = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)
     incoming = ctypes.WINFUNCTYPE(
-        wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
         ctypes.c_void_p,
     )
     retry = ctypes.WINFUNCTYPE(
@@ -145,7 +162,11 @@ def _build():  # pragma: no cover - Windows only, exercised by install()
         return PENDINGMSG_WAITDEFPROCESS
 
     vtbl = Vtbl(
-        query(_query), count(_add_ref), count(_release), incoming(_incoming), retry(_retry),
+        query(_query),
+        count(_add_ref),
+        count(_release),
+        incoming(_incoming),
+        retry(_retry),
         pending(_pending),
     )
     instance = Filter(ctypes.pointer(vtbl))
@@ -175,4 +196,31 @@ def install() -> bool:
         log.debug("CoRegisterMessageFilter answered %#010x", hr & 0xFFFFFFFF)
         return False
     _installed.keep = (instance, vtbl)  # the callbacks must outlive every call
+    return True
+
+
+def installed() -> bool:
+    """True while this thread's filter is registered."""
+    return getattr(_installed, "keep", None) is not None
+
+
+def uninstall() -> bool:
+    """Remove the calling thread's filter again; True when one was in place.
+
+    Called by ``com_backend._com_teardown`` before ``CoUninitialize``. A thread
+    that never installed one (or already removed it) answers False and nothing
+    is touched.
+    """
+    if not installed():
+        return False
+    _installed.keep = None
+    try:
+        previous = ctypes.c_void_p()
+        hr = ctypes.windll.ole32.CoRegisterMessageFilter(None, ctypes.byref(previous))
+    except Exception as exc:  # noqa: BLE001 - the apartment is going away anyway
+        log.debug("COM message filter not removed: %s", exc)
+        return False
+    if hr != S_OK:
+        log.debug("CoRegisterMessageFilter(NULL) answered %#010x", hr & 0xFFFFFFFF)
+        return False
     return True
