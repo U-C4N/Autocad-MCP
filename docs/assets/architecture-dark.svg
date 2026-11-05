@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 444" width="960" height="444" role="img" aria-label="How a call travels: an MCP client calls the FastMCP server; the call passes the middleware stack and the tool layer to the typed contract, which one engine implements, COM for live AutoCAD or ezdxf for headless DXF; the operation journal, checkpoints, lineage records and save markers live in the state folder.">
+<title>AutoCAD MCP Pro: how a call travels</title>
+<defs><marker id="arch-dark-fg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/></marker><marker id="arch-dark-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#fbbf24"/></marker><marker id="arch-dark-cyan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#38bdf8"/></marker></defs>
+<rect width="960" height="444" fill="#0d1117"/>
+<g font-family="'Segoe UI', Inter, Roboto, 'Helvetica Neue', Arial, sans-serif">
+<rect x="16" y="104" width="148" height="160" rx="10" fill="#0d1117" stroke="#e5e7eb" stroke-width="2.5"/>
+<text x="90" y="132" font-size="15" font-weight="700" fill="#e5e7eb" text-anchor="middle">MCP client</text>
+<text x="90" y="158" font-size="13" font-weight="400" fill="#e5e7eb" text-anchor="middle">Claude Code</text>
+<text x="90" y="180" font-size="13" font-weight="400" fill="#e5e7eb" text-anchor="middle">Claude Desktop</text>
+<text x="90" y="202" font-size="13" font-weight="400" fill="#e5e7eb" text-anchor="middle">Cursor</text>
+<text x="90" y="224" font-size="13" font-weight="400" fill="#9ca3af" text-anchor="middle">any stdio or</text>
+<text x="90" y="246" font-size="13" font-weight="400" fill="#9ca3af" text-anchor="middle">HTTP host</text>
+<path d="M 168 150 L 212 150" stroke="#9ca3af" stroke-width="2.5" marker-start="url(#arch-dark-fg)" marker-end="url(#arch-dark-fg)"/>
+<rect x="216" y="24" width="340" height="296" rx="12" fill="#0d1117" stroke="#e5e7eb" stroke-width="2.5"/>
+<text x="232" y="48" font-size="16" font-weight="700" fill="#e5e7eb" text-anchor="start">FastMCP server</text>
+<text x="540" y="48" font-size="13" font-weight="400" fill="#9ca3af" text-anchor="end">server.py</text>
+<text x="232" y="70" font-size="13" font-weight="400" fill="#9ca3af" text-anchor="start">middleware, first added = outermost</text>
+<rect x="232" y="80" width="308" height="24" rx="8" fill="#0d1117" stroke="#9ca3af" stroke-width="2"/>
+<text x="246" y="97" font-size="13" font-weight="600" fill="#9ca3af" text-anchor="start">1</text>
+<text x="266" y="97" font-size="13" font-weight="400" fill="#e5e7eb" text-anchor="start">ErrorHandling</text>
+<rect x="232" y="108" width="308" height="24" rx="8" fill="#0d1117" stroke="#fbbf24" stroke-width="2"/>
+<text x="246" y="125" font-size="13" font-weight="600" fill="#9ca3af" text-anchor="start">2</text>
+<text x="266" y="125" font-size="13" font-weight="600" fill="#e5e7eb" text-anchor="start">Audit · operation journal</text>
+<rect x="232" y="136" width="308" height="24" rx="8" fill="#0d1117" stroke="#9ca3af" stroke-width="2"/>
+<text x="246" y="153" font-size="13" font-weight="600" fill="#9ca3af" text-anchor="start">3</text>
+<text x="266" y="153" font-size="13" font-weight="400" fill="#e5e7eb" text-anchor="start">Timing</text>
+<rect x="232" y="164" width="308" height="24" rx="8" fill="#0d1117" stroke="#9ca3af" stroke-width="2"/>
+<text x="246" y="181" font-size="13" font-weight="600" fill="#9ca3af" text-anchor="start">4</text>
+<text x="266" y="181" font-size="13" font-weight="400" fill="#e5e7eb" text-anchor="start">Logging</text>
+<rect x="232" y="192" width="308" height="24" rx="8" fill="#0d1117" stroke="#9ca3af" stroke-width="2"/>
+<text x="246" y="209" font-size="13" font-weight="600" fill="#9ca3af" text-anchor="start">5</text>
+<text x="266" y="209" font-size="13" font-weight="400" fill="#e5e7eb" text-anchor="start">CapabilityRefusal · refusal as result</text>
+<rect x="232" y="228" width="308" height="36" rx="8" fill="#0d1117" stroke="#e5e7eb" stroke-width="2"/>
+<text x="386" y="251" font-size="14" font-weight="700" fill="#e5e7eb" text-anchor="middle">257 tools · 13 resources · 5 prompts</text>
+<rect x="232" y="274" width="308" height="34" rx="8" fill="#0d1117" stroke="#fbbf24" stroke-width="2"/>
+<text x="386" y="296" font-size="14" font-weight="600" fill="#e5e7eb" text-anchor="middle">typed contract · backends/contracts/</text>
+<path d="M 542 291 L 592 291" stroke="#fbbf24" stroke-width="2.5" marker-end="url(#arch-dark-amber)"/>
+<rect x="596" y="24" width="348" height="296" rx="12" fill="#0d1117" stroke="#e5e7eb" stroke-width="2.5"/>
+<text x="612" y="48" font-size="16" font-weight="700" fill="#e5e7eb" text-anchor="start">Engine, one per server</text>
+<text x="612" y="70" font-size="13" font-weight="400" fill="#9ca3af" text-anchor="start">AUTOCAD_MCP_BACKEND = auto | com | ezdxf</text>
+<text x="612" y="90" font-size="13" font-weight="400" fill="#9ca3af" text-anchor="start">auto on Windows: COM first, else ezdxf</text>
+<rect x="608" y="104" width="156" height="204" rx="10" fill="#0d1117" stroke="#38bdf8" stroke-width="2.5"/>
+<text x="686" y="132" font-size="15" font-weight="700" fill="#38bdf8" text-anchor="middle">COM</text>
+<text x="686" y="160" font-size="13" font-weight="400" fill="#e5e7eb" text-anchor="middle">live AutoCAD</text>
+<text x="686" y="186" font-size="13" font-weight="400" fill="#e5e7eb" text-anchor="middle">Windows, pywin32</text>
+<text x="686" y="212" font-size="13" font-weight="400" fill="#e5e7eb" text-anchor="middle">one STA thread</text>
+<text x="686" y="238" font-size="13" font-weight="400" fill="#e5e7eb" text-anchor="middle">IMessageFilter</text>
+<text x="686" y="264" font-size="13" font-weight="400" fill="#e5e7eb" text-anchor="middle">bound document</text>
+<rect x="776" y="104" width="156" height="204" rx="10" fill="#0d1117" stroke="#e5e7eb" stroke-width="2.5"/>
+<text x="854" y="132" font-size="15" font-weight="700" fill="#e5e7eb" text-anchor="middle">ezdxf</text>
+<text x="854" y="160" font-size="13" font-weight="400" fill="#e5e7eb" text-anchor="middle">headless DXF</text>
+<text x="854" y="186" font-size="13" font-weight="400" fill="#e5e7eb" text-anchor="middle">any OS</text>
+<text x="854" y="212" font-size="13" font-weight="400" fill="#e5e7eb" text-anchor="middle">asyncio.to_thread</text>
+<text x="854" y="238" font-size="13" font-weight="400" fill="#e5e7eb" text-anchor="middle">DXF undo snapshots</text>
+<text x="854" y="264" font-size="13" font-weight="400" fill="#e5e7eb" text-anchor="middle">document registry</text>
+<path d="M 386 322 L 386 344" stroke="#fbbf24" stroke-width="2.5" marker-end="url(#arch-dark-amber)"/>
+<path d="M 770 322 L 770 344" stroke="#9ca3af" stroke-width="2.5" marker-end="url(#arch-dark-fg)"/>
+<rect x="216" y="348" width="728" height="88" rx="12" fill="#0d1117" stroke="#e5e7eb" stroke-width="2.5"/>
+<text x="232" y="370" font-size="14" font-weight="700" fill="#e5e7eb" text-anchor="start">State folder</text>
+<text x="332" y="370" font-size="13" font-weight="400" fill="#9ca3af" text-anchor="start">ACADMCP_STATE_DIR, default %LOCALAPPDATA%\autocad-mcp-pro\state</text>
+<rect x="228" y="380" width="167" height="46" rx="8" fill="#0d1117" stroke="#fbbf24" stroke-width="2"/>
+<text x="312" y="399" font-size="13" font-weight="600" fill="#e5e7eb" text-anchor="middle">journal.sqlite3</text>
+<text x="312" y="418" font-size="13" font-weight="400" fill="#9ca3af" text-anchor="middle">operation journal</text>
+<rect x="407" y="380" width="167" height="46" rx="8" fill="#0d1117" stroke="#9ca3af" stroke-width="2"/>
+<text x="491" y="399" font-size="13" font-weight="600" fill="#e5e7eb" text-anchor="middle">docs/&lt;lineage_id&gt;/</text>
+<text x="491" y="418" font-size="13" font-weight="400" fill="#9ca3af" text-anchor="middle">checkpoints</text>
+<rect x="586" y="380" width="167" height="46" rx="8" fill="#0d1117" stroke="#9ca3af" stroke-width="2"/>
+<text x="670" y="399" font-size="13" font-weight="600" fill="#e5e7eb" text-anchor="middle">lineage/&lt;key&gt;.json</text>
+<text x="670" y="418" font-size="13" font-weight="400" fill="#9ca3af" text-anchor="middle">lineage records</text>
+<rect x="765" y="380" width="167" height="46" rx="8" fill="#0d1117" stroke="#9ca3af" stroke-width="2"/>
+<text x="849" y="399" font-size="13" font-weight="600" fill="#e5e7eb" text-anchor="middle">pending/</text>
+<text x="849" y="418" font-size="13" font-weight="400" fill="#9ca3af" text-anchor="middle">save markers</text>
+</g></svg>

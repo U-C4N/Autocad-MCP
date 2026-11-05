@@ -1,5 +1,10 @@
 <div align="center">
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/logo-dark.svg">
+  <img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/logo-light.svg" alt="AutoCAD MCP Pro mark: a drafted A with a dimension line for its crossbar and a connection node at its apex" width="140">
+</picture>
+
 # AutoCAD MCP Pro
 
 **Production-grade AutoCAD automation for AI agents.**
@@ -11,7 +16,7 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-1f6feb?logo=python&logoColor=white)](https://github.com/U-C4N/Autocad-MCP/blob/main/pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-3fb950)](https://github.com/U-C4N/Autocad-MCP/blob/main/LICENSE)
 
-[Install](#install) · [What's new](#whats-new-in-18) · [Tools](#what-you-get) · [Engines](#the-two-engines) · [Evidence](#evidence) · [Limits](#what-this-release-is-bad-at) · [Config](#configuration) · [Changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md)
+[Install](#install) · [What's new](#whats-new-in-18) · [Gallery](#what-it-draws) · [Tools](#what-you-get) · [Engines](#the-two-engines) · [Verification](#the-verification-workflow) · [Evidence](#evidence) · [Limits](#what-this-release-is-bad-at) · [Config](#configuration) · [Changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md)
 
 <img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/autocad-mcp-showcase.png" alt="ISO A3 sheet: a module-6, 24-tooth spur gear with a keyed bore, its section A-A, ISO 129 dimensions with an H7 bore fit, and an ISO 7200 title block" width="800">
 
@@ -58,64 +63,29 @@ checkpoint_restore("cp-3", mode="new_document")    back to a stored state, as it
 
 Several defaults changed. Each has a switch back to 1.7.0's behaviour where one exists (`DISCOVERY_MODE=off`, `cad_batch(on_error="stop")`, `JOURNAL_DURABLE=off`, `LISP_POLICY=denylist`, `strict_critique=False`, `COM_REFRESH_MODE=regen`, ...), and the changelog's *Breaking at a glance* lists every one. Not in 1.8.0: no B40 feature-table row is transcribed (every size is still refused by name), and the native .NET worker is deferred to 1.9.0 by a rule fixed before any measurement (`docs/adr/0001-native-worker.md`).
 
-## What was new in 1.7 (the previous release)
+## What it draws
 
-1.6 taught the server to draw whole sheets and to read other people's drawings. 1.7.0 makes what it draws **provable** and what it runs **safe** ([design](https://github.com/U-C4N/Autocad-MCP/blob/main/docs/superpowers/specs/2026-10-24-v1.7.0-design.md)). One new tool, `drawing_verify_requirements`, and three new resources; the rest is what the existing 247 tools now guarantee.
-
-| | What 1.7.0 adds |
-|---|---|
-| **Requirements, measured** | A source requirement (*Ø40 bore, six Ø8 holes on a Ø100 PCD*) is bound to the real CAD feature and measured on the geometry read from the drawing: never on a dimension's label, a stored part model or the numbers that were typed in. Each requirement gets **pass / fail / unknown / unsupported / ambiguous** with target, measured, delta and the handles behind it. Two equal holes where the requirement names one are `ambiguous`, never a pick. A dimension reading 40 over geometry that measures 42 fails on the geometry, and the label is reported as its own `dimension_mismatch` finding |
-| **Measured again on the saved file** | `drawing_finalize(requirements=)` and `drawing_deliver(requirements=)` reopen what they wrote and measure every requirement on the file, re-binding each feature by handle, tag or geometry. A hole moved inside an unchanged outline in the delivered file fails delivery; 1.6's parity check passed it. Parity compares the file with a second export of the same document, so content the export itself loses is caught by the requirements measured on the file, not by parity. A file checked against an open document that is not its source is never accepted (`artifact_source_mismatch`). A manifest whose artifact changed afterwards is reported stale |
-| **Safe execution** | A cancelled call keeps the drawing until its worker really ends. QA reads every entity of every space (a defect at position 5,001 or on a paper layout used to read as clean), and a check that crashes says so. CSV and XLSX text never becomes a formula. NaN and infinite spec values are refused by their path |
-| **Identity, revisions, previews** | Every document has an id and a content revision. On a live seat the session stays on the document it chose: a switch of AutoCAD's active tab is refused (`active_document_changed`), not followed. `cad_batch`, `drawing_refine`, `text_find_replace` and `pid_from_spec` preview exactly what they would change and apply only if nothing moved (`stale_revision`). A client operation id makes a retry replay instead of repeat |
-| **The skill, as a plugin** | The premium skill is back. It is rewritten around this workflow and installs with the server as a Claude Code plugin ([below](#as-a-claude-code-plugin)), along with twenty negative eval cases |
-| **Task recipes** | Five versioned recipes served as resources (`autocad://recipes/index`): dimensioned part → verify → deliver, foreign P&ID → lists, revision pair → takeoff delta, A3 sheet delivery and foreign-drawing audit. Each one runs end to end in a test |
-| **Evidence** | Correctness suite 61 / 61 against v1.6.0's 48 / 61 with zero regressions, matrix v8 31 / 31, the live COM harness passing on AutoCAD 2026, and no workload slower than 1.6.0 beyond the measured noise ([evidence](#evidence)) |
-
-### The verification workflow
-
-```text
-drawing_preflight(intent, requirements)        typed items: id, quantity, target + unit, feature, source
-drawing_plan(..., persist_requirements=True)   the set travels inside the DWG/DXF
-mech_part_draw(spec)                           every entity tagged with its feature
-drawing_verify_requirements(use_stored=True)   measured on the document: pass / fail / unknown / ambiguous
-drawing_critique(focus=None)                   drafting checks over every entity of every space
-drawing_deliver(..., requirements=...)         exported, reopened, measured again on the file
-drawing_verify_requirements(manifest_path=)    later: has anything in the delivery changed since?
-```
-
-A drafting score is not an acceptance. `drawing_finalize` still returns its 0–100 score, but with `requirements=` a requirement that does not pass blocks it (`failed_acceptance`), whatever the score.
-
-<details>
-<summary><b>What 1.6 added: five tracks, 154 → 247 tools</b></summary>
-
-Five tracks of one [roadmap](https://github.com/U-C4N/Autocad-MCP/blob/main/docs/superpowers/specs/2026-09-15-v1.6-roadmap-design.md). Each track has its own design spec, correctness checks that can fail, and a live AutoCAD 2026 run of its COM paths recorded in the [changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md).
-
-| Track | What it adds | Pack |
-|---|---|---|
-| **P&ID — drafter and reader** | 43 ISO 10628-2 / ISA-5.1 symbols as real blocks with ports and `TAG` attributes, port-to-port lines with ISA-5.1 classes and line numbers, `pid_graph` reading any P&ID back with a confidence per node, instrument index, line list, equipment list, `pid_from_spec` for a whole sheet in one transaction | `pid` |
-| **The AutoCAD environment** | ISO-25 / ANSI dimension styles, text and leader styles, `drawing_apply_standard`, ISO 216 / ANSI page setups checked against the plotted PDF's own `/MediaBox`, five bundled templates, several open documents headlessly, portable layer states, named views, UCS, a 90-entry system-variable catalogue; on a live seat, preferences, launch and operator prompts | `core`, `settings` |
-| **Mechanical parts and the sheet** | one part model and one view engine (front, side, top, section and detail views with hidden lines, cut faces and ISO 129 dimensions), ISO fasteners and bearings as blocks with attributes, ISO 21920-1 surface texture, ISO 2553 welds, ISO 5457 frames A4–A0, ISO 7200 title blocks, an ISO 7573 parts list read off the drawing with linked ISO 6433 balloons, xrefs, images, real `.dwg` | `mech`, `core` |
-| **Architecture** | walls with hosted doors and windows: one engine resolves L / T / X junctions and cuts the openings. Room areas are measured from the faces the walls enclose, and rooms are read back from any plan. Door / window / room schedules are real tables; labels in English or Turkish | `arch` |
-| **Understanding and takeoffs** | `drawing_understand` reads a drawing somebody else made in one call. Also `drawing_scale_check`, `drawing_diff` and `drawing_topology_check`. `pipe_takeoff` / `cable_takeoff` take the topology from the P&ID and the lengths from the layout into a Turkish, English or Russian workbook | `core`, `plant` |
-
-</details>
-
-`TOOL_PACKS` keeps a client from paying for the tracks it does not use ([idle cost below](#why-this-exists)).
+<table>
+<tr>
+<td width="33%" valign="top">
+<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/mech-showcase.png" alt="ISO A3 flange-coupling sheet: a hub with a full section and chain dimensions, a flange with its bolt-circle end view, two ISO 4014 bolts with ISO 4032 nuts, a parts list with linked balloons, an ISO 5457 frame with zones and an ISO 7200 title block" width="280">
+<br>
+<sub><b>A mechanical sheet, gated.</b> The <code>mech_assembly</code> benchmark sheet: a hub drawn from its part model with a full section and chain dimensions, a flange with its bolt-circle end view, two ISO 4014 M12×60 bolts and ISO 4032 nuts inserted as blocks, the ISO 7573 parts list read off the drawing, balloons linked to its rows, an ISO 5457 frame and an ISO 7200 title block. <code>drawing_critique(focus=None)</code> returns <b>0 issues</b> and the finalize score is <b>100</b>. Rebuild it with <code>python scripts/render_readme_mech.py</code>.</sub>
+</td>
+<td width="33%" valign="top">
+<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/arch-showcase.png" alt="Two-room floor plan: hatched brick walls with an aerated-concrete partition, two doors, two windows, a straight stair, room labels with measured areas, exterior dimension chains, and door, window and room schedules" width="280">
+<br>
+<sub><b>A floor plan whose areas nobody typed.</b> <code>arch_plan_from_spec</code>'s example, drawn in one transaction: a 250 mm brick ring split by a 100 mm AAC wall, two doors, two windows, a straight stair and exterior dimension chains at 1:50. The rooms measure 27.74 and 21.99 m², read from the faces the walls enclose, and the door, window and room schedules are read off the drawing. <code>drawing_critique(focus=None)</code> returns <b>0 issues</b>. Rebuild it with <code>python scripts/render_readme_arch.py</code>.</sub>
+</td>
+<td width="33%" valign="top">
+<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/pid-showcase.png" alt="P&ID sheet: a centrifugal pump, a diaphragm-actuated globe control valve, a vertical vessel with two nozzles, a flow controller bubble and an off-page connector, joined by numbered process lines and an electric signal line" width="280">
+<br>
+<sub><b>The same server as a P&ID drafter.</b> <code>pid_from_spec</code> placed five catalogue symbols as real blocks with <code>TAG</code> attributes and named ports and routed four port-to-port lines with ISA-5.1 classes and line numbers, all in one transaction. Then <code>pid_graph</code> read the sheet back: 5 nodes, 4 edges, 0 dangling ends, <code>confidence_min</code> 1.0. Rebuild it with <code>python scripts/render_readme_pid.py</code>.</sub>
+</td>
+</tr>
+</table>
 
 <div align="center">
-
-<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/mech-showcase.png" alt="ISO A3 flange-coupling sheet: a hub with a full section and chain dimensions, a flange with its bolt-circle end view, two ISO 4014 bolts with ISO 4032 nuts, a parts list with linked balloons, an ISO 5457 frame with zones and an ISO 7200 title block" width="800">
-
-<sub><b>A mechanical sheet, gated.</b> The <code>mech_assembly</code> benchmark sheet: a hub drawn from its part model with a full section and chain dimensions, a flange with its bolt-circle end view, two ISO 4014 M12×60 bolts and ISO 4032 nuts inserted as blocks, the ISO 7573 parts list <i>read off the drawing</i>, balloons linked to its rows, an ISO 5457 frame and an ISO 7200 title block. <code>drawing_critique(focus=None)</code> returns <b>0 issues</b> and the finalize score is <b>100</b>. Rebuild it with <code>python scripts/render_readme_mech.py</code>.</sub>
-
-<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/arch-showcase.png" alt="Two-room floor plan: hatched brick walls with an aerated-concrete partition, two doors, two windows, a straight stair, room labels with measured areas, exterior dimension chains, and door, window and room schedules" width="800">
-
-<sub><b>A floor plan whose areas nobody typed.</b> <code>arch_plan_from_spec</code>'s example, drawn in one transaction: a 250 mm brick ring split by a 100 mm AAC wall, two doors, two windows, a straight stair and exterior dimension chains at 1:50. The rooms measure 27.74 and 21.99 m², read from the faces the walls enclose, and the door, window and room schedules are read off the drawing. <code>drawing_critique(focus=None)</code> returns <b>0 issues</b>. Rebuild it with <code>python scripts/render_readme_arch.py</code>.</sub>
-
-<img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/pid-showcase.png" alt="P&ID sheet: a centrifugal pump, a diaphragm-actuated globe control valve, a vertical vessel with two nozzles, a flow controller bubble and an off-page connector, joined by numbered process lines and an electric signal line" width="800">
-
-<sub><b>The same server as a P&ID drafter.</b> <code>pid_from_spec</code> placed five catalogue symbols as real blocks with <code>TAG</code> attributes and named ports and routed four port-to-port lines with ISA-5.1 classes and line numbers, all in one transaction. Then <code>pid_graph</code> read the sheet back: 5 nodes, 4 edges, 0 dangling ends, <code>confidence_min</code> 1.0. Rebuild it with <code>python scripts/render_readme_pid.py</code>.</sub>
 
 <img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/pid-catalog.png" alt="Contact sheet of the 43 P&ID catalogue symbols: valve bodies with actuators, pumps and compressors, heat exchangers, vessels, instrument bubbles, line markers and connectors" width="800">
 
@@ -247,6 +217,15 @@ It works with Claude Desktop, Cursor, or any stdio MCP host. For HTTP, run `auto
 
 ## The two engines
 
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/architecture-dark.svg">
+  <img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/architecture-light.svg" alt="How a call travels: an MCP client calls the FastMCP server; the call passes the middleware stack and the tool layer to the typed contract, which one engine implements, COM for live AutoCAD or ezdxf for headless DXF; the operation journal, checkpoints, lineage records and save markers live in the state folder." width="900">
+</picture>
+
+</div>
+
 One contract across 23 modules in `backends/contracts/`. `@capability(key, reason=…)` supplies a default that *refuses*, and a test holds both backends' capability key sets equal. There are **45 capability keys**. Read `system_capabilities` at runtime rather than trusting the table: several depend on what the machine has installed (matplotlib, openpyxl, the ODA File Converter).
 
 | Capability | COM (live AutoCAD) | ezdxf (headless) |
@@ -285,6 +264,54 @@ One contract across 23 modules in `backends/contracts/`. `@capability(key, reaso
 
 > [!IMPORTANT]
 > The COM paths run against a **live AutoCAD 2026** through eight asserting smoke scripts (`scripts/smoke_*_com.py`) on one harness (`scripts/live/harness.py`: attach only, its own documents, an active-document guard). The 1.7.0 runs passed **129 / 129** checks on the close-out commit `13499fe`; their JSON is committed under [`benchmarks/results/live/`](https://github.com/U-C4N/Autocad-MCP/tree/main/benchmarks/results/live). These runs catch what no headless test can: ActiveX refuses `entity.Layer` on a missing layer where ezdxf quietly creates it, calls a block reference `BLOCKREFERENCE` rather than `INSERT`, and, once pywin32's type-library cache exists, hands every listed entity back as a bare `IAcadEntity` with no endpoints. Each of those broke a tool that passed every headless test.
+
+## The verification workflow
+
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/loop-dark.svg">
+  <img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/loop-light.svg" alt="The verification workflow, in the order of the code block below it: drawing_preflight, drawing_plan with persist_requirements, mech_part_draw or the other generators, drawing_verify_requirements on the document, drawing_critique with drawing_refine back to the drawing, drawing_deliver measured again on the file, and later drawing_verify_requirements with manifest_path. Rules: nothing invented, measured on the geometry, refused by name." width="900">
+</picture>
+
+</div>
+
+```text
+drawing_preflight(intent, requirements)        typed items: id, quantity, target + unit, feature, source
+drawing_plan(..., persist_requirements=True)   the set travels inside the DWG/DXF
+mech_part_draw(spec)                           every entity tagged with its feature
+drawing_verify_requirements(use_stored=True)   measured on the document: pass / fail / unknown / ambiguous
+drawing_critique(focus=None)                   drafting checks over every entity of every space
+drawing_deliver(..., requirements=...)         exported, reopened, measured again on the file
+drawing_verify_requirements(manifest_path=)    later: has anything in the delivery changed since?
+```
+
+A drafting score is not an acceptance. `drawing_finalize` still returns its 0–100 score, but with `requirements=` a requirement that does not pass blocks it (`failed_acceptance`), whatever the score.
+
+## What was new in 1.7 (the previous release)
+
+1.6 taught the server to draw whole sheets and to read other people's drawings. 1.7.0 makes what it draws **provable** and what it runs **safe** ([design](https://github.com/U-C4N/Autocad-MCP/blob/main/docs/superpowers/specs/2026-10-24-v1.7.0-design.md)). One new tool, `drawing_verify_requirements`, and three new resources; the rest is what the existing 247 tools now guarantee.
+
+A source requirement (*Ø40 bore, six Ø8 holes on a Ø100 PCD*) is bound to the real CAD feature and measured on the geometry read from the drawing: never on a dimension's label, a stored part model or the numbers that were typed in. Two equal holes where the requirement names one are `ambiguous`, never a pick. A dimension reading 40 over geometry that measures 42 fails on the geometry, and the label is reported as its own `dimension_mismatch` finding. A hole moved inside an unchanged outline in the delivered file fails delivery; 1.6's parity check passed it. QA reads every entity of every space (a defect at position 5,001 or on a paper layout used to read as clean), and a check that crashes says so. Five versioned recipes served as resources (`autocad://recipes/index`): dimensioned part → verify → deliver, foreign P&ID → lists, revision pair → takeoff delta, A3 sheet delivery and foreign-drawing audit. Each one runs end to end in a test. The premium skill is back. It is rewritten around [the verification workflow](#the-verification-workflow) and installs with the server as a Claude Code plugin ([above](#as-a-claude-code-plugin)), along with twenty negative eval cases.
+
+Correctness suite 61 / 61 against v1.6.0's 48 / 61 with zero regressions, matrix v8 31 / 31, the live COM harness passing on AutoCAD 2026, and no workload slower than 1.6.0 beyond the measured noise ([evidence](#evidence)). Identity and revisions, exact previews, safe cancellation and the rest are in the [changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md).
+
+<details>
+<summary><b>What 1.6 added: five tracks, 154 → 247 tools</b></summary>
+
+Five tracks of one [roadmap](https://github.com/U-C4N/Autocad-MCP/blob/main/docs/superpowers/specs/2026-09-15-v1.6-roadmap-design.md). Each track has its own design spec, correctness checks that can fail, and a live AutoCAD 2026 run of its COM paths recorded in the [changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md).
+
+| Track | What it adds | Pack |
+|---|---|---|
+| **P&ID — drafter and reader** | 43 ISO 10628-2 / ISA-5.1 symbols as real blocks with ports and `TAG` attributes, port-to-port lines with ISA-5.1 classes and line numbers, `pid_graph` reading any P&ID back with a confidence per node, instrument index, line list, equipment list, `pid_from_spec` for a whole sheet in one transaction | `pid` |
+| **The AutoCAD environment** | ISO-25 / ANSI dimension styles, text and leader styles, `drawing_apply_standard`, ISO 216 / ANSI page setups checked against the plotted PDF's own `/MediaBox`, five bundled templates, several open documents headlessly, portable layer states, named views, UCS, a 90-entry system-variable catalogue; on a live seat, preferences, launch and operator prompts | `core`, `settings` |
+| **Mechanical parts and the sheet** | one part model and one view engine (front, side, top, section and detail views with hidden lines, cut faces and ISO 129 dimensions), ISO fasteners and bearings as blocks with attributes, ISO 21920-1 surface texture, ISO 2553 welds, ISO 5457 frames A4–A0, ISO 7200 title blocks, an ISO 7573 parts list read off the drawing with linked ISO 6433 balloons, xrefs, images, real `.dwg` | `mech`, `core` |
+| **Architecture** | walls with hosted doors and windows: one engine resolves L / T / X junctions and cuts the openings. Room areas are measured from the faces the walls enclose, and rooms are read back from any plan. Door / window / room schedules are real tables; labels in English or Turkish | `arch` |
+| **Understanding and takeoffs** | `drawing_understand` reads a drawing somebody else made in one call. Also `drawing_scale_check`, `drawing_diff` and `drawing_topology_check`. `pipe_takeoff` / `cable_takeoff` take the topology from the P&ID and the lengths from the layout into a Turkish, English or Russian workbook | `core`, `plant` |
+
+</details>
+
+`TOOL_PACKS` keeps a client from paying for the tracks it does not use ([idle cost](#why-this-exists)).
 
 ## Evidence
 
@@ -697,6 +724,15 @@ Features ship when their contracts and limitations are testable — not when the
 **Umutcan Edizsalan** · Mechanical engineering work at **Anka-Makine** · GitHub [@U-C4N](https://github.com/U-C4N)
 
 Built from production drawing work, then made model-agnostic through MCP.
+
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/wordmark-dark.svg">
+  <img src="https://raw.githubusercontent.com/U-C4N/Autocad-MCP/main/docs/assets/wordmark-light.svg" alt="AutoCAD MCP Pro: one typed contract, two engines" width="480">
+</picture>
+
+</div>
 
 ## License
 
