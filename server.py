@@ -10393,8 +10393,17 @@ async def page_setup_list(
 )
 async def page_setup_apply(
     layout: Annotated[str, "Paper-space layout to set up (never 'Model')."],
-    paper: Annotated[str, "ISO_A0…ISO_A4 or ANSI_A…ANSI_E (short forms A3, ansi_b accepted)."],
-    orientation: Annotated[str, "landscape | portrait"] = "landscape",
+    paper: Annotated[
+        str,
+        "ISO_A0…ISO_A4 or ANSI_A…ANSI_E (short forms A3, ansi_b accepted), or a canonical "
+        "media name in AutoCAD's spelling, e.g. ISO_full_bleed_A3_(420.00_x_297.00_MM), "
+        "written unchanged.",
+    ],
+    orientation: Annotated[
+        str | None,
+        "landscape | portrait. Omit: landscape for a catalogue paper, taken from the "
+        "numbers of a canonical media name (a contradicting value is refused).",
+    ] = None,
     plot_style: Annotated[
         str, "Plot style table, e.g. monochrome.ctb, acad.ctb, Grayscale.ctb (plot_style_list)."
     ] = "monochrome.ctb",
@@ -10408,6 +10417,11 @@ async def page_setup_apply(
         "[top, bottom, left, right] in mm. Headless only: AutoCAD takes margins from the .pc3.",
     ] = None,
     center: Annotated[bool, "Centre the plot on the paper."] = True,
+    bleed: Annotated[
+        str,
+        "none | full_bleed | expand: the device's ISO_full_bleed_<size> / ISO_expand_<size> "
+        "media for a catalogue paper. Refused with a canonical media name in paper.",
+    ] = "none",
     ctx: Context = None,
 ) -> dict:
     """AutoCAD's PAGESETUP as one call, on both engines.
@@ -10418,11 +10432,28 @@ async def page_setup_apply(
     written and reported `plot_style_known: false` (a missing ctb only matters
     at plot time). Viewports on the sheet are never touched.
 
-    Refused before anything is written: an unknown paper, orientation, scale
-    or plot_area, an empty device or plot_style, margins that leave no
-    printable area, `Model`, an unknown layout. On the live engine `margins_mm`
-    is refused (the .pc3 owns them) and a media the device does not offer is
-    refused with the device's names for the same paper.
+    Full-bleed and expanded media (issue #18): `paper` also takes any
+    canonical media name the device offers, e.g.
+    `ISO_full_bleed_A3_(420.00_x_297.00_MM)` or
+    `ISO_expand_A4_(210.00_x_297.00_MM)`; it is written unchanged, its numbers
+    are the sheet size, and they fix the orientation (reported in `applied`).
+    Or keep a catalogue paper and pass `bleed="full_bleed"` / `"expand"`,
+    which builds `ISO_full_bleed_A3_(…)` / `ISO_expand_A3_(…)`. The ISO
+    full-bleed and expand names were listed by `DWG To PDF.pc3` and
+    `AutoCAD PDF (High Quality Print).pc3` on AutoCAD 2026 (measured
+    2026-11-05); the ANSI ones (`ANSI_full_bleed_B_(…)`) follow the same
+    pattern unmeasured. The headless engine has no device and writes the name
+    as given; the live engine checks it against the device's
+    `GetCanonicalMediaNames()`.
+
+    Refused before anything is written: an unknown paper, orientation, scale,
+    plot_area or bleed, an orientation that contradicts a canonical media
+    name, `bleed` beside a canonical media name ("paper already names the
+    media"), an empty device or plot_style, margins that leave no printable
+    area, `Model`, an unknown layout. On the live engine `margins_mm` is
+    refused (the .pc3 owns them) and a media the device does not offer is
+    refused with the device's names for the same paper and its three closest
+    names.
 
     The proof is the PDF: `batch_plot` reads each sheet's `/MediaBox` back.
     """
@@ -10430,9 +10461,20 @@ async def page_setup_apply(
 
     try:
         setup = resolve_page_setup(
-            paper, orientation, plot_style, scale, plot_area, device, margins_mm, center
+            paper,
+            orientation,
+            plot_style,
+            scale,
+            plot_area,
+            device,
+            margins_mm,
+            center,
+            bleed=bleed,
         )
-        await ctx.info(f"Applying page setup {setup['paper']} {orientation} to {layout}")
+        await ctx.info(
+            f"Applying page setup {setup['canonical_media_name']} {setup['orientation']} "
+            f"to {layout}"
+        )
         return await _backend(ctx).page_setup_apply(layout, setup)
     except ValueError as exc:
         raise ToolError(str(exc)) from exc
