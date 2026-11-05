@@ -311,6 +311,103 @@ shown - while every listing built the three synthetic tools from scratch
   client's four listings a call, 0.5 ms each), 4.0 s with `off`, against
   27.6 s before the fix.
 
+### Issues fixed from the tracker (2026-11-05)
+
+Four reports on the tracker were checked against the release tree on
+2026-11-05 - two reproduced on this machine, two confirmed in the code - and
+fixed the same day, each on its own branch with an adversarial review and
+tests that fail on the old code (`tests/test_screenshot_dpi.py`,
+`tests/test_page_setup.py`, `tests/test_batch_plot.py`,
+`tests/test_cad_launch.py`, `tests/test_com_snapshot_reuse.py`), merged at
+`9c30874`. What each one measured live is at the end of its bullet; the seat
+crashed in the middle of that stage (*Live evidence* below).
+
+- **#17 `view_screenshot` / `view_zoom_and_screenshot` captured only the
+  top-left 2/3 of the AutoCAD window at 150 % display scaling.** The server
+  process was DPI-unaware, so `GetWindowRect` answered logical pixels while
+  `PrintWindow` drew physical ones (measured 2026-11-05, AutoCAD 2026,
+  2560x1600 at 144 DPI: 158x26 unaware, 237x39 aware). The live engine now
+  makes the process DPI-aware once (per-monitor v2, else shcore per-monitor,
+  else system-aware; a refusal is logged, never raised), from the STA
+  initializer and before every capture. If awareness cannot be set, it scales
+  the bitmap by `GetDpiForWindow` over the DPI the process sees. The window
+  report now carries `dpi`, `dpi_awareness`, `capture` (the bitmap in physical
+  pixels) and `window_minimized`, and a minimized window is never restored
+  from the server. Live after the fix on this seat: the process reads back
+  per-monitor aware and the capture is 2558x1526, equal to the window's
+  physical rect, with the right-hand ribbon, the title-bar buttons, the status
+  bar and the layout tabs present (the old code gave about 1705x1017 there).
+  The unaware fallback and the minimized flag are covered by unit tests and
+  not yet measured live: AutoCAD crashed four seconds into that probe, after
+  both captures had returned.
+- **#18 `page_setup_apply` can choose the device's full-bleed and expanded
+  media.** `paper` used to accept only the catalogue names (`ISO_A0` to
+  `ISO_A4`, `ANSI_A` to `ANSI_E`), and `canonical_media_name()` always built
+  the plain `ISO_A3_(420.00_x_297.00_MM)`, so a sheet drawn for full-bleed
+  paper kept the device's non-printable margins. `paper` now also takes any
+  canonical media name in AutoCAD's spelling
+  (`ISO_full_bleed_A3_(420.00_x_297.00_MM)`,
+  `ISO_expand_A4_(210.00_x_297.00_MM)`). The name is written unchanged and its
+  numbers are the sheet size. They also fix the orientation: `orientation`
+  now defaults to `None`, which is landscape for a catalogue paper and taken
+  from the name otherwise, and a contradicting value is refused by name. A
+  new `bleed: none | full_bleed | expand` builds `ISO_full_bleed_<size>_(...)`
+  / `ISO_expand_<size>_(...)` from a catalogue paper and is refused beside a
+  canonical name ("paper already names the media"). On AutoCAD 2026
+  (2026-11-05), `DWG To PDF.pc3` and `AutoCAD PDF (High Quality Print).pc3`
+  each listed 112 media, the ISO full-bleed and expand A3 names in both
+  orientations among them. The ANSI names (`ANSI_full_bleed_B_(...)`) follow
+  the same pattern but were not measured. The live engine still checks the
+  name against `GetCanonicalMediaNames()`, and its refusal now also names the
+  device's three closest media. Headlessly the name and size land in the
+  LAYOUT plot settings, the saved DXF carries both, and `batch_plot` reads a
+  420 x 297 mm `/MediaBox` for a full-bleed A3 sheet. Not yet measured on a
+  live seat: the seat was gone when its turn came.
+- **#19 COM: with AutoCAD closed, the first call launched it, sometimes
+  leaving a windowless acad.exe.** New `CAD_LAUNCH` setting: `auto` (default,
+  the 1.7 behaviour: attach, else start the application) or `never` (attach
+  only). Under `never`, a failed `GetActiveObject` is refused with kind
+  `cad_not_running` (category `dependency`, retryable, "Open AutoCAD (or set
+  CAD_LAUNCH=auto to let the server start it) and retry."), its message says
+  so with the `GetActiveObject` failure at the end, and `Dispatch` is never
+  called. This holds on the first tool call and on `system_launch`; an
+  unknown value stops the server at startup by name. Under `auto`,
+  `Visible = True` on the instance `Dispatch` just started is retried every
+  250 ms while it answers `RPC_E_CALL_REJECTED`, `RPC_E_SERVERCALL_RETRYLATER`
+  or the `AttributeError` pywin32 makes of a refused lookup ("Property
+  'AutoCAD.Application.Visible' can not be set.", the message in the report).
+  It gives up after min(30 s, `COM_CALL_TIMEOUT` / 2), and at once on any
+  other error; the server then calls `Quit()` on the instance it started,
+  does not cache it, and the raised error keeps no reference to its proxy.
+  `system_status` reports `cad_launch`, and `system_capabilities.live_application`
+  reports mode `attach_only` under `never`. The windowless outcome was not
+  reproduced: the maintainer's AutoCAD was never closed on purpose. The
+  refusal under `never` was measured live on 2026-11-05 with no AutoCAD
+  running: real `GetActiveObject`, zero `Dispatch` calls, no acad.exe before
+  or after, `cad_not_running` on `document_list`, `system_launch` and
+  `system_get_variable`, `system_status` reporting `cad_launch: never`, and
+  `CAD_LAUNCH=nevr` stopping the server by name. The launch, the `Visible`
+  retry and the `Quit` are covered by fake-COM tests only.
+- **#20 a live `entity_get` on a DIMENSION or HATCH no longer exports the
+  whole drawing on every call.** 1.7.0 and 1.8.0 read those fields through a
+  fresh `Document.Export` per call. On the reporter's 3.5 MB site plan each
+  read cost about as much as `drawing_understand` (120-161 s for four reads
+  issued together); on a two-entity drawing on this seat, about 55 ms of every
+  66-75 ms read was the export. The export is now reused for
+  `COM_SNAPSHOT_TTL` seconds (default 5, counted from when the export
+  returned; 0 exports on every read, as before) while the bound document, its
+  revision and its operator-edit count stand still, no write was queued and
+  no document was rebound. N reads of an unchanged drawing cost one export,
+  and reads issued together wait for that one export. The age is the backstop
+  for what the revision does not count: view changes, `SetVariable`, an edit
+  during a server call, everything without Visual LISP. A handle the live
+  read finds but a reused export lacks is looked up again in a fresh export,
+  never reported unavailable. Inside a write (`dimension_rerender`,
+  `entity_scale`, `dimstyle_modify`) the before and after reads still export
+  afresh. `system_status.snapshot_reuse` reports `{ttl_s, exports, reused}`.
+  Not yet measured live: the seat was gone when its turn came; the figures
+  above are the pre-fix measurements.
+
 ### Live evidence
 
 **The matrix.** `python scripts/live/run_all.py` ran every smoke once, each
@@ -374,6 +471,18 @@ next 30 fillets with `RPC_E_WRONG_THREAD`, and its document could not be
 closed until AutoCAD was idle again (it was closed by hand, unsaved). The
 1.8.0 side made no tool error in either run. ADR 0001's worker spike is
 decided on these numbers, not here.
+
+**After the matrix.** The four tracker fixes above landed after that run,
+at `9c30874`, and touch the live engine (the window capture, the launch
+path, the detail export, the page setup). Their live verification started
+on the same seat: #17's capture was measured, and then AutoCAD 2026 crashed
+at 14:37:06 on 2026-11-05, four seconds into that probe and after both
+captures had returned - exception 0xc0000374 (heap corruption) in
+ntdll.dll, a signature the seat's event log already shows five times on
+2026-11-04, before that branch existed; the cause is unmeasured. The probes
+for #18 and #20, the attach checks for #19 and this matrix are run again on
+the final tree once the seat is back; until then the pass rows above are
+the `da2d7f6` run.
 
 **Still not run.** The B40 stage of the mech smoke ran but measured nothing:
 all eight feature tables are empty, so each was skipped. The live `.dwg`

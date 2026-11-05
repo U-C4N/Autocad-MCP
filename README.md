@@ -19,7 +19,7 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 
 </div>
 
-> **v1.8 release snapshot:** 257 tools · 13 resources · 5 prompt templates · 7541 collected tests.
+> **v1.8 release snapshot:** 257 tools · 13 resources · 5 prompt templates · 7583 collected tests.
 > 257 is the **registered** count. Since 1.8.0 a default install lists six over `tools/list`
 > (`DISCOVERY_MODE=search`: `search_tools`, `describe_tool`, `call_tool` and the three
 > `DISCOVERY_PINNED` tools), and every tool the profile and packs allow stays callable by name;
@@ -41,6 +41,7 @@ Live through COM on Windows, or headless through ezdxf anywhere — one typed co
 | **DWG opens headlessly** | `drawing_open` on a `.dwg` converts it through the ODA File Converter, then AutoCAD's `accoreconsole`. With neither it is a typed capability refusal (`dwg_read`); when every route fails it is `dwg_conversion_failed` with its `attempts[]`. A save onto the `.dwg` is still refused (`dwg`): save it as `.dxf` |
 | **Narrowed on request** | `READ_ONLY`, `TOOL_ALLOWLIST` / `TOOL_DENYLIST` and `MAX_TOOL_COST` refuse a call before anything runs (`policy_refused`). A writer takes only its own extensions and never a name AutoCAD or Windows loads (`path_refused`). The HTTP transport refuses an unknown Origin (403), a foreign Host (421) and a body over 8 MiB (413). `system_run_lisp` runs an AutoLISP read tier under `LISP_POLICY=read` (COM only: the headless engine has no LISP) |
 | **The live engine draws where it means to** | A live seat draws in model space until `layout_set_current` names a sheet; the tab the operator clicks no longer moves it. `system_run_command` and live undo / redo wait for the command and can fail `command_incomplete`. One display refresh per COM job, and `entity_batch_create` / `entity_delete_many` run as STA jobs sliced at a quarter of `COM_CALL_TIMEOUT`. All fourteen live smokes passed for this release (AutoCAD 2026, 1.8.0): see *Live evidence* in the [changelog](https://github.com/U-C4N/Autocad-MCP/blob/main/CHANGELOG.md) |
+| **Four tracker reports, fixed the same day** | `view_screenshot` captures the whole AutoCAD window at any display scaling, not the top-left 2/3 at 150 % (#17); `page_setup_apply` takes the device's full-bleed and expanded media, `ISO_full_bleed_A3_(420.00_x_297.00_MM)` or `bleed="full_bleed"` (#18); `CAD_LAUNCH=never` keeps the live engine to the session you opened, and a launch that never accepts `Visible` is quit, not left windowless (#19); a live `entity_get` on a DIMENSION / HATCH reuses one `Document.Export` for `COM_SNAPSHOT_TTL` seconds instead of exporting the drawing per call (#20). *Issues fixed from the tracker* in the changelog says what each one measured |
 | **Evidence** | Correctness suite 83 / 83 against v1.7.0's 61 / 83, 22 fixed and 0 regressed (`ab-v1.7.0-vs-v1.8.0.json`). Matrix v9: 47 / 47 attempted tasks of 49 (`lisp_read_tier` `environment_blocked`, `std_tables_b40` `not_run`). The full headless suite: `7540 passed, 1 xfailed`. The headless performance gate against v1.7.0: `ok: true`, ratios 0.96 to 1.06 ([`perf-v1.7.0-vs-v1.8.0.json`](https://github.com/U-C4N/Autocad-MCP/blob/main/benchmarks/results/published/perf-v1.7.0-vs-v1.8.0.json); the 1.06 is the durable journal, [measured](#headless-performance)). The token budget gate exits 0 ([evidence](#evidence)) |
 
 ### One call where 1.7 needed hundreds
@@ -219,7 +220,7 @@ It works with Claude Desktop, Cursor, or any stdio MCP host. For HTTP, run `auto
 | Discovery | the default since 1.8.0 (`DISCOVERY_MODE=search`): a client lists `search_tools`, `describe_tool`, `call_tool` and the `DISCOVERY_PINNED` tools (`cad_batch`, `drawing_info`, `entity_list`), and can still call every tool by name. `search_tools` is ranked over an AutoCAD command and synonym corpus — `FILLET`, `BPOLY`, `QSELECT`, `WBLOCK`, `OVERKILL`, `CHSPACE` each rank **#1** among the 252 tools a default install searches (the v9 `tool_discovery` task); `describe_tool` returns one hit's full input schema, risk, pack and its docstring's own examples, or up to 25 with `names=[...]`. The server instructions name only the tools the client can see and teach batching first |
 | Batching | `cad_batch` runs a step list in one round trip and, since 1.8.0, is all or nothing by default (`on_error="auto"`: a batch that writes is rolled back on a failure; `on_error="stop"` keeps the steps before it). A literal handle that names no entity refuses the whole batch before anything runs (`unknown_handle`); the result carries `changes` {added, deleted, counts} and `label=` names it in the history. `entity_delete_many` deletes all of its handles or none. `fields=` projects 11 result-heavy tools |
 | Paper space | tab lifecycle, viewports, `entity_change_space` (CHSPACE), `drawing_export_pdf(layout=…)` |
-| Page setup & templates | ISO 216 / ANSI Y14.1 sheets, ctb catalog, `page_setup_apply` on both engines, and `batch_plot` with every sheet size read back from its PDF's `/MediaBox`. Five bundled templates, built by the server's own tools and pinned reproducible: `drawing_new(template="iso_a3_mech")`, `iso_a1_arch`, `iso_a3_pid`, `ansi_b_mech`, `ansi_d_arch`. Save any drawing as a template (`.dwt` on live AutoCAD; `dwt_write` refused headlessly) |
+| Page setup & templates | ISO 216 / ANSI Y14.1 sheets, ctb catalog, `page_setup_apply` on both engines (`paper` also takes a canonical media name exactly as AutoCAD spells it, e.g. `ISO_full_bleed_A3_(420.00_x_297.00_MM)`, or a catalogue paper with `bleed="full_bleed"` / `"expand"`; the name's numbers fix the sheet size and orientation, a contradicting `orientation` is refused, and on a live seat a media the device does not list in `GetCanonicalMediaNames()` is refused with its three closest names, #18), and `batch_plot` with every sheet size read back from its PDF's `/MediaBox`. Five bundled templates, built by the server's own tools and pinned reproducible: `drawing_new(template="iso_a3_mech")`, `iso_a1_arch`, `iso_a3_pid`, `ansi_b_mech`, `ansi_d_arch`. Save any drawing as a template (`.dwt` on live AutoCAD; `dwt_write` refused headlessly) |
 | Environment | several open documents headlessly, portable layer states (`ACADMCP_LAYERSTATES` XRECORDs — in the file, not in AutoCAD's Layer States Manager), named views, UCS *(tool coordinates stay WCS)*, a system-variable catalog with ranges, document properties. On a live seat: launch/attach, preferences, and an operator prompt / pick / select, where ESC is `cancelled`, not an error |
 | Selection | window vs crossing stated back to the caller; a polygon tested against its own shape, not its bounding box |
 | Boundaries | `boundary_trace` (BOUNDARY/BPOLY) chains loose edges into one closed polyline, arcs kept as bulges *(headless)* |
@@ -258,7 +259,7 @@ One contract across 23 modules in `backends/contracts/`. `@capability(key, reaso
 | Selection window / crossing / polygon | ✅ | ✅ |
 | Entity area by handle | ActiveX `.Area` | Analytic, bulges included |
 | HATCH filled area (islands subtracted) | AutoCAD's own number | Loops walked, `hatch_style` reported |
-| HATCH loops and DIMENSION fields in `entity_get` | ✅ read from a `Document.Export` snapshot | ✅ |
+| HATCH loops and DIMENSION fields in `entity_get` | ✅ read from a `Document.Export` snapshot, which costs about as much as `drawing_understand` on a large drawing and is reused for `COM_SNAPSHOT_TTL` seconds (default 5) while the document's revision and operator-edit count stand still, so N reads of an unchanged drawing cost one export; an entity missing from the reused export is read from a fresh one; `system_status.snapshot_reuse` counts exports and reuses (#20) | ✅ |
 | A session bound to its document | ✅ an active-tab switch is refused, `view_screenshot` included; a restarted AutoCAD is a new document (`application_changed`); the operator's object edits move the revision | — *only the server switches documents* |
 | Where new geometry goes | model space until `layout_set_current` names a sheet; the layout tab the operator clicks never moves it | model space until `layout_set_current` |
 | Raw commands | `system_run_command` waits for the command (`COMMAND_DEADLINE_S`) and reports `created` entities and `last_prompt`; a command left at a prompt is `command_incomplete` | — *refused by name* |
@@ -275,7 +276,7 @@ One contract across 23 modules in `backends/contracts/`. `@capability(key, reaso
 | CHSPACE | — *unverified on a live seat* | ✅ ᶜ |
 | Undo history | ✅ AutoCAD's own; a checkpoint restores as a new document (`checkpoint_restore_in_place` refused) | durable checkpoints, also after a restart; per-call steps opt-in with `EZDXF_UNDO_DEPTH` |
 | TABLE and MLEADER | Native | Portable composite |
-| Screenshots and PDF | Window capture | Matplotlib ᵐ |
+| Screenshots and PDF | Window capture, DPI-aware: the server makes itself DPI-aware before reading AutoCAD's window rectangle, so the whole window is captured at any Windows display scaling, and the report states `dpi`, `capture` (physical pixels) and `window_minimized` (#17) | Matplotlib ᵐ |
 | A region screenshot (`view_screenshot(region=[x0, y0, x1, y1], max_px=)`) | ✅ the `Document.Export` snapshot drawn by the headless renderer (`source: "export_snapshot"`) | ✅ ᵐ |
 
 <sub>ᵐ Needs matplotlib (<code>[pdf]</code>/<code>[full]</code>). Without it, <code>png</code>, <code>pdf</code>, <code>viewport_render</code> and <code>handle_overlay</code> report unsupported headlessly.<br>
@@ -522,6 +523,8 @@ The readers were tuned on the synthetic plant pair and on one real P&ID / layout
 
 **Non-AutoCAD ProgIDs are unverified.** `CAD_PROGID` changes which COM application the backend attaches to; nothing beyond the connection has been tested against BricsCAD, ZWCAD or GstarCAD.
 
+**The live engine attaches to your session, or starts one.** With the default `CAD_LAUNCH=auto`, the first tool call attaches to a running AutoCAD and starts one when none runs; set `CAD_LAUNCH=never` to have the server work only in the session you opened, and it answers `cad_not_running` until you open AutoCAD (#19). The launch path itself - `Dispatch`, the `Visible` retry and the `Quit` of an instance that never comes up - is covered by fake-COM tests and was not exercised on a live seat.
+
 ### Known limitations of the P&ID track
 
 **The default router is orthogonal and blind; `avoid` sees symbols.** `pid_line_draw` picks `auto` (still the default) from seven orthogonal candidates, by fewest bends then length:
@@ -564,6 +567,7 @@ Nothing loads a `.env` file — export these, or set them in your MCP client's `
 |---|---|---|
 | `AUTOCAD_MCP_BACKEND` | `auto` | `auto`, `com`, or `ezdxf` |
 | `CAD_PROGID` | `AutoCAD.Application` | COM ProgID the live backend attaches to |
+| `CAD_LAUNCH` | `auto` | Whether the live engine may start the CAD application when none is running: `auto` attaches, else starts it (and quits an instance it started that never accepts `Visible`); `never` attaches only, and the first call and `system_launch` answer `cad_not_running` instead. An unknown value stops the server at startup |
 | `TOOL_PROFILE` | `full` | `lean` (67 curated tools, 57 with `TOOL_PACKS=core`) or `full` |
 | `TOOL_PACKS` | `all` | Vertical packs to advertise: `core,pid,settings,mech,arch,plant` (`core` always on) |
 | `DISCOVERY_MODE` | `search` | `search` (the default since 1.8.0) lists `search_tools` + `call_tool` + `describe_tool` and the `DISCOVERY_PINNED` tools, and every tool stays callable by name; `off` advertises the full catalog (the 1.7 default). An unknown value falls back to `off` with a warning |
@@ -579,6 +583,7 @@ Nothing loads a `.env` file — export these, or set them in your MCP client's `
 | `MAX_SPEC_ITEMS` | `2000` | Items per list of a `pid_from_spec` / `arch_plan_from_spec` document; `0` disables |
 | `MAX_VESSEL_TRAYS` | `500` | Trays a parametric column may carry; `0` disables |
 | `COM_CALL_TIMEOUT` | `60` | Per-call live AutoCAD timeout (s); `0` disables |
+| `COM_SNAPSHOT_TTL` | `5` | Seconds a live `entity_get` on a DIMENSION / HATCH reuses its whole-drawing `Document.Export` (counted from when the export returned) while the document's revision and operator-edit count stand still; `0` exports on every read |
 | `COMMAND_DEADLINE_S` | `8` | How long a command sent to AutoCAD's command line (`system_run_command`, live undo / redo, corner operations, the transaction mark) may stay active; past it AutoCAD's `LASTPROMPT` is read, ESC is sent three times and the call fails `command_incomplete` |
 | `COM_REFRESH_UPDATE_MAX` | `1` | A live job that asked for at most this many display refreshes, each naming its entity, calls `Update()` on the last one; a larger job does one `Regen`. `0` makes every job Regen |
 | `COM_REFRESH_MODE` | `auto` | `regen` forces one `Regen` per live job (for a graphics setup where `Update()` does not paint). An unknown value falls back to `auto` with a warning |
