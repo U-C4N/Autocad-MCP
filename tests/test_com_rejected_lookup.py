@@ -18,10 +18,15 @@ from types import SimpleNamespace
 
 import pytest
 
-pytest.importorskip("win32com.client", reason="the hook wraps pywin32's CDispatch")
+# pywin32 is the [com] extra (Windows only): without it every test here is
+# skipped, not the module, so every CI lane collects the count the README states.
+try:
+    import pywintypes
+    from win32com.client import dynamic
+except ImportError:
+    pywintypes = dynamic = None
 
-import pywintypes  # noqa: E402
-from win32com.client import dynamic  # noqa: E402
+pytestmark = pytest.mark.skipif(dynamic is None, reason="the hook wraps pywin32's CDispatch")
 
 from backends import com_backend as cb  # noqa: E402
 from scripts.live.harness import RPC_E_CALL_REJECTED, hresult  # noqa: E402

@@ -20,11 +20,15 @@ OwnerID, ActiveLayout, GetVariable (CMDACTIVE, LASTPROMPT), SendCommand.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 
 import pytest
 
-pytest.importorskip("win32com.client", reason="pywin32 builds the point VARIANTs")
+# pywin32 is the [com] extra (Windows only): without it every test here is
+# skipped, not the module, so every CI lane collects the count the README states.
+_PYWIN32 = importlib.util.find_spec("win32com") is not None
+pytestmark = pytest.mark.skipif(not _PYWIN32, reason="pywin32 builds the point VARIANTs")
 
 from fastmcp import Client  # noqa: E402
 

@@ -18,15 +18,22 @@ layer still referenced (or current) refuses ``Delete``.
 
 from __future__ import annotations
 
+import importlib.util
+
 import pytest
 
-pytest.importorskip("win32com.client", reason="pywin32 builds the filter VARIANTs")
+# pywin32 is the [com] extra (Windows only): without it every test here is
+# skipped, not the module, so every CI lane collects the count the README states.
+_PYWIN32 = importlib.util.find_spec("win32com") is not None
 
 from backends import com_backend as cb  # noqa: E402
 from backends.quarantine import DaemonExecutor  # noqa: E402
 from engineering.changes.preview import StaleRevisionError  # noqa: E402
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.skipif(not _PYWIN32, reason="pywin32 builds the filter VARIANTs"),
+]
 
 _DXF = {
     "AcDbLine": "LINE",

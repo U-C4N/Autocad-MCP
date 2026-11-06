@@ -135,7 +135,11 @@ def test_a_client_id_replays_after_the_server_is_killed(folders):
 
         store = second.call("system_status")["state_store"]
         assert store["mode"] == "durable" and store["degraded"] is False
-        assert store["path"] == str(state_dir / JOURNAL_FILE)
+        # The server reports the resolved folder; a runner's TEMP may be an 8.3
+        # short name (C:\Users\RUNNER~1, measured on GitHub's Windows lane).
+        assert os.path.normcase(os.path.realpath(store["path"])) == os.path.normcase(
+            os.path.realpath(state_dir / JOURNAL_FILE)
+        )
     finally:
         second.kill()
 

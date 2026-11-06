@@ -32,7 +32,8 @@ The accoreconsole rules (security - the process is a full AutoCAD engine):
   :data:`LOG_LINES_SHOWN` lines) on success and on failure.
 * **A deadline**: ``ACCORECONSOLE_TIMEOUT_S`` (default 60, never more than
   ``EZDXF_CALL_TIMEOUT`` minus 5 s); an overrun kills the whole process tree
-  (``taskkill /F /T``) and is reported ``timed_out``.
+  (``taskkill /F /T`` on Windows; elsewhere the console runs in a session of
+  its own and its process group is killed) and is reported ``timed_out``.
 * The staging folder is removed on every path - repeated for a few seconds
   while a killed console still holds it - and one a killed server left behind
   is swept on the next conversion once it is an hour old.
@@ -45,6 +46,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -249,8 +251,20 @@ def _argv(exe: str, dwg: str, script: str) -> list[str]:
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
-    """End ``proc`` and every process it started (taskkill /T on Windows)."""
-    if sys.platform == "win32":
+    """End ``proc`` and every process it started.
+
+    Windows: ``taskkill /F /T``. Elsewhere the console was started in a
+    session of its own (``start_new_session``), so its pid is its process
+    group and ``killpg`` ends the children too. MEASURED on the Linux CI lanes
+    (2026-11-06): with ``proc.kill()`` alone the console died and the process
+    it had started stayed alive.
+    """
+    if sys.platform != "win32":
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError as exc:  # already gone, or not ours to signal
+            log.debug("killpg of accoreconsole pid %s: %s", proc.pid, exc)
+    else:
         taskkill = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "taskkill.exe"
         try:
             subprocess.run(
@@ -350,6 +364,8 @@ def convert_with_accoreconsole(source: str, read) -> tuple[object, dict]:
                     stdout=log_handle,
                     stderr=subprocess.STDOUT,
                     creationflags=flags,
+                    # its own process group, so an overrun kills its children too
+                    start_new_session=sys.platform != "win32",
                 )
             except OSError as exc:
                 attempt["reason"] = f"{exe} could not be started ({type(exc).__name__}: {exc})"
