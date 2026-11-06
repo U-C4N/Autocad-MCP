@@ -1854,6 +1854,24 @@ TOOL_ALIASES: dict[str, ToolAliases] = {
             "active text style",
         ),
     ),
+    "textstyle_modify": ToolAliases(
+        acad=("STYLE",),
+        synonyms=(
+            "change text style font",
+            "fix missing font",
+            "set style to arial",
+            "replace shitty font",
+            "modify text style",
+        ),
+    ),
+    "textstyle_remap_entities": ToolAliases(
+        acad=("STYLE", "CHANGE"),
+        synonyms=(
+            "remap text styles",
+            "change all text to arial style",
+            "retarget text style on entities",
+        ),
+    ),
     # ── Page setup & templates (track E) ────────────────────────────────────
     "batch_plot": ToolAliases(
         acad=("PUBLISH", "PLOT"),

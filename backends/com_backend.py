@@ -589,50 +589,45 @@ _COM_REFERENCE_OBJECTS = ("AcDbBlockReference", "AcDbMInsertBlock")
 
 def _com_text_candidates(doc):
     """Every object ``text_find_replace`` reads on the live engine, in the
-    headless engine's scope (``TEXT_SEARCH_SCOPE``): model space and every paper
-    layout (``Layouts.Item(i).Block``, in ``TabOrder``), every block definition
-    that is neither a layout block nor an xref (``Blocks.Item(i).IsLayout`` /
-    ``IsXRef``), and the ATTRIBs of every block reference found in any of them
-    (``GetAttributes()``, which answers an empty array for a reference without
-    attributes). It searched ``ModelSpace`` alone, so an attribute on a sheet,
-    a title-block field or a block definition's ATTDEF default was never found
-    on the live engine while the headless one replaced it.
+    headless engine's scope (``TEXT_SEARCH_SCOPE``).
 
-    An anonymous block (``Name`` starting with ``*``) is not searched: a
-    dimension's ``*D`` block, a table's ``*T`` and a dynamic or hatch ``*U`` /
-    ``*X`` hold a rendering AutoCAD regenerates from the owning object, so a
-    match there rewrote a dimension's displayed measurement while the
-    dimension still measured the old value (measured on AutoCAD 2026: an
-    ``AddDimAligned`` of 50 mm owns ``*D1`` and its MText ``50`` was matched).
-    The headless engine skips the same blocks by the same rule.
+    Fast path: one filtered ``SelectionSet.Select(acSelectionSetAll)`` for
+    TEXT/MTEXT/ATTDEF and one for INSERT (attributes via ``GetAttributes``),
+    instead of reading ``ObjectName`` on every entity of every layout — that
+    walk timed out past ``COM_CALL_TIMEOUT`` on a ~35k-entity album
+    (measured AutoCAD 2024 / MCP Pro 1.7.0). Block-definition ATTDEF defaults
+    are still visited (ssget does not enter non-anonymous block defs), skipping
+    layout / xref / anonymous ``*`` blocks the same way as before.
 
     Every item is yielded through ``_com_concrete_entity``: with a makepy cache
-    ``Block.Item(i)`` is the gen_py ``IAcadEntity`` wrapper, which has no
-    ``TextString`` (measured on AutoCAD 2026: ``hasattr(item, "TextString")``
-    is False on a TEXT, and the walk raised ``AttributeError``).
-
-    Members measured on AutoCAD 2026 by Task 12's probe (a scratch
-    ``Documents.Add()`` document closed with ``Close(False)``).
+    ``Block.Item(i)`` / ``SelectionSet.Item`` may be the gen_py ``IAcadEntity``
+    wrapper, which has no ``TextString``.
     """
-    layouts = doc.Layouts
-    spaces = []
-    for index in range(int(layouts.Count)):
-        layout = layouts.Item(index)
-        spaces.append((int(layout.TabOrder), layout.Block))
-    containers = [block for _order, block in sorted(spaces, key=lambda row: row[0])]
+    for entity in _com_select_filtered(doc, [(0, "TEXT,MTEXT,ATTDEF")]):
+        yield entity
+    for entity in _com_select_filtered(doc, [(0, "INSERT")]):
+        yield entity
+        if str(entity.ObjectName) in _COM_REFERENCE_OBJECTS:
+            try:
+                attributes = entity.GetAttributes()
+            except Exception as exc:
+                log.debug("GetAttributes failed on %s: %s", getattr(entity, "Handle", "?"), exc)
+                continue
+            for attribute in attributes:
+                yield _com_concrete_entity(attribute)
     blocks = doc.Blocks
     for index in range(int(blocks.Count)):
         block = blocks.Item(index)
         if bool(block.IsLayout) or bool(block.IsXRef) or str(block.Name).startswith("*"):
             continue
-        containers.append(block)
-    for container in containers:
-        for index in range(int(container.Count)):
-            entity = _com_concrete_entity(container.Item(index))
-            yield entity
-            if str(entity.ObjectName) in _COM_REFERENCE_OBJECTS:
-                for attribute in entity.GetAttributes():
-                    yield _com_concrete_entity(attribute)
+        for item_index in range(int(block.Count)):
+            try:
+                entity = _com_concrete_entity(block.Item(item_index))
+            except Exception as exc:
+                log.debug("text candidate skip block item %d: %s", item_index, exc)
+                continue
+            if str(entity.ObjectName) == "AcDbAttributeDefinition":
+                yield entity
 
 
 def _com_text_find_replace(doc, pattern, replace: str, layer: str | None, dry_run: bool) -> list:
@@ -939,6 +934,13 @@ def _same_dimvar(old: Any, new: Any) -> bool:
     return str(old) == str(new)
 
 
+#: ``SelectionSet.Select`` mode ``acSelectionSetWindow`` (AcSelect enum).
+_AC_SELECTION_SET_WINDOW = 0
+#: ``SelectionSet.Select`` mode ``acSelectionSetCrossing`` (AcSelect enum).
+#: There is no ``SelectCrossing`` member — callers that used that name raised
+#: ``AttributeError: Add.SelectCrossing`` on every region query (measured
+#: AutoCAD 2024 / MCP Pro 1.7.0 on a 35k-entity album).
+_AC_SELECTION_SET_CROSSING = 1
 #: ``SelectionSet.Select`` mode ``acSelectionSetAll`` (AcSelect enum): every
 #: entity in the database, in every layout — ``ssget "X"``.
 _AC_SELECTION_SET_ALL = 5
@@ -962,6 +964,50 @@ def _wcmatch_literal(text: str) -> str:
     return "".join("`" + char if char in _WCMATCH_SPECIALS else char for char in text)
 
 
+def _ssget_type_name(type_filter: str) -> str:
+    """DXF group-0 name for an ``ssget`` filter from a caller ``type_filter``."""
+    wanted = type_filter.upper().strip()
+    if wanted in {"BLOCKREFERENCE", "MINSERTBLOCK", "INSERT"}:
+        return "INSERT"
+    if wanted == "POLYLINE":
+        return "LWPOLYLINE"
+    if wanted.endswith("DIMENSION"):
+        return "DIMENSION"
+    return wanted
+
+
+def _com_select_filtered(
+    doc,
+    dxf_pairs: list[tuple[int, str]] | None = None,
+    *,
+    mode: int = _AC_SELECTION_SET_ALL,
+    pt1=None,
+    pt2=None,
+) -> list:
+    """Concrete entities from one ``SelectionSet.Select`` (ssget), then delete the set.
+
+    ``dxf_pairs`` are ``(group_code, value)`` rows, e.g. ``[(0, "TEXT"), (8, "NOTES")]``.
+    Empty / None means no filter. Crossing / window modes need ``pt1`` and ``pt2``.
+    """
+    ss = doc.SelectionSets.Add(f"_SEL_{uuid.uuid4().hex[:8]}")
+    try:
+        if dxf_pairs:
+            filter_types = _ai([code for code, _ in dxf_pairs])
+            filter_values = win32com.client.VARIANT(
+                pythoncom.VT_ARRAY | pythoncom.VT_VARIANT,
+                [val for _, val in dxf_pairs],
+            )
+            ss.Select(mode, pt1, pt2, filter_types, filter_values)
+        else:
+            ss.Select(mode, pt1, pt2)
+        return [_com_concrete_entity(ss.Item(index)) for index in range(int(ss.Count))]
+    finally:
+        try:
+            ss.Delete()
+        except Exception as exc:
+            log.debug("SelectionSet cleanup failed: %s", exc)
+
+
 def _com_dimensions_using(doc, style_name: str) -> list[str]:
     """Handles of every DIMENSION, in every layout, whose style is ``style_name``.
 
@@ -982,22 +1028,11 @@ def _com_dimensions_using(doc, style_name: str) -> list[str]:
     selection that fails is an error the caller sees, not an empty list
     reported as fact.
     """
-    ss = doc.SelectionSets.Add(f"_DIMSTYLE_{uuid.uuid4().hex[:8]}")
-    try:
-        filter_types = _ai([0, 3])
-        filter_values = win32com.client.VARIANT(
-            pythoncom.VT_ARRAY | pythoncom.VT_VARIANT,
-            ["DIMENSION", _wcmatch_literal(style_name)],
-        )
-        ss.Select(_AC_SELECTION_SET_ALL, None, None, filter_types, filter_values)
-        # ``Handle`` is an IAcadObject member, so it answers on the narrowed
-        # ``IAcadEntity`` wrapper ``SelectionSet.Item`` hands back.
-        handles = [str(ss.Item(index).Handle) for index in range(ss.Count)]
-    finally:
-        try:
-            ss.Delete()
-        except Exception as exc:
-            log.debug("SelectionSet cleanup failed: %s", exc)
+    entities = _com_select_filtered(
+        doc,
+        [(0, "DIMENSION"), (3, _wcmatch_literal(style_name))],
+    )
+    handles = [str(entity.Handle) for entity in entities]
     return sorted(handles, key=lambda handle: int(handle, 16))
 
 
@@ -6475,6 +6510,30 @@ class ComBackend(AutoCADBackend):
         offset=0,
     ) -> list[EntityInfo]:
         def _sync():
+            doc = _acad_doc()
+            # Filtered ssget when the caller names a type and/or layer — the
+            # ModelSpace.Item walk timed out at 60 s on ~35k entities looking
+            # for TEXT (measured AutoCAD 2024). Unfiltered pages still walk
+            # the active space so offset/limit stay cheap on the head of the
+            # collection.
+            if type_filter or layer_filter:
+                pairs: list[tuple[int, str]] = []
+                if type_filter:
+                    pairs.append((0, _ssget_type_name(type_filter)))
+                if layer_filter:
+                    pairs.append((8, _wcmatch_literal(layer_filter)))
+                entities = _com_select_filtered(doc, pairs)
+                page = entities[offset : offset + limit]
+                results = []
+                for ent in page:
+                    try:
+                        results.append(_entity_info(ent))
+                    except Exception as exc:
+                        log.debug(
+                            "entity_list: skip %s: %s", getattr(ent, "Handle", "?"), exc
+                        )
+                return results
+
             mspace = _msp()
             results = []
             total = mspace.Count
@@ -6483,18 +6542,9 @@ class ComBackend(AutoCADBackend):
             for i in range(total):
                 try:
                     ent = mspace.Item(i)
-                    ent_type = ent.ObjectName.replace("AcDb", "").upper()
-                    ent_layer = ent.Layer
-
-                    if type_filter and not _type_filter_matches(type_filter, ent_type):
-                        continue
-                    if layer_filter and layer_filter.lower() != ent_layer.lower():
-                        continue
-
                     if skipped < offset:
                         skipped += 1
                         continue
-
                     results.append(_entity_info(ent))
                     collected += 1
                     if collected >= limit:
@@ -6507,28 +6557,18 @@ class ComBackend(AutoCADBackend):
         return await self._run(_sync)
 
     async def entity_count(self, type_filter=None, layer_filter=None) -> int:
-        # Same filter arms as entity_list, and the same per-entity skip-on-error
-        # policy, so the count and the page always describe one set. What it
-        # skips is `_entity_info(ent)` — the property/extents extraction, which
-        # is several COM round trips per entity against the two cheap attribute
-        # reads kept here.
+        # Same filter arms as entity_list. Filtered counts use ssget so a
+        # compact=true list does not pay a second full COM walk.
         def _sync():
-            mspace = _msp()
-            count = 0
-            for i in range(mspace.Count):
-                try:
-                    ent = mspace.Item(i)
-                    if type_filter and not _type_filter_matches(
-                        type_filter, ent.ObjectName.replace("AcDb", "").upper()
-                    ):
-                        continue
-                    if layer_filter and layer_filter.lower() != ent.Layer.lower():
-                        continue
-                    count += 1
-                except Exception as exc:
-                    log.debug("entity_count: skip entity at index %d: %s", i, exc)
-                    continue
-            return count
+            doc = _acad_doc()
+            if not type_filter and not layer_filter:
+                return int(_msp().Count)
+            pairs: list[tuple[int, str]] = []
+            if type_filter:
+                pairs.append((0, _ssget_type_name(type_filter)))
+            if layer_filter:
+                pairs.append((8, _wcmatch_literal(layer_filter)))
+            return len(_com_select_filtered(doc, pairs))
 
         return await self._run(_sync)
 
@@ -7503,23 +7543,25 @@ class ComBackend(AutoCADBackend):
     ) -> list[EntityInfo]:
         def _sync():
             doc = _acad_doc()
-            ss_name = f"_REGION_{uuid.uuid4().hex[:8]}"
-            ss = doc.SelectionSets.Add(ss_name)
-            try:
-                ss.SelectCrossing(_apoint(x1, y1), _apoint(x2, y2))
-                results = []
-                for i in range(ss.Count):
-                    try:
-                        results.append(_entity_info(ss.Item(i)))
-                    except Exception as exc:
-                        log.debug("analysis_entities_in_region: skip selection item %d: %s", i, exc)
-                        continue
-                return results
-            finally:
+            # AcSelect crossing window — never ``SelectCrossing`` (that member
+            # does not exist on AcadSelectionSet; 1.7.0 raised AttributeError).
+            entities = _com_select_filtered(
+                doc,
+                mode=_AC_SELECTION_SET_CROSSING,
+                pt1=_apoint(x1, y1),
+                pt2=_apoint(x2, y2),
+            )
+            results = []
+            for entity in entities:
                 try:
-                    ss.Delete()
+                    results.append(_entity_info(entity))
                 except Exception as exc:
-                    log.debug("SelectionSet cleanup failed: %s", exc)
+                    log.debug(
+                        "analysis_entities_in_region: skip %s: %s",
+                        getattr(entity, "Handle", "?"),
+                        exc,
+                    )
+            return results
 
         return await self._run(_sync)
 
@@ -7663,37 +7705,39 @@ class ComBackend(AutoCADBackend):
     async def analysis_select_by_layer(self, layer_name) -> list[EntityInfo]:
         def _sync():
             doc = _acad_doc()
-            ss_name = f"_BYLAYER_{uuid.uuid4().hex[:8]}"
-            ss = doc.SelectionSets.Add(ss_name)
-            try:
-                ft = _ai([8])  # group code 8 = layer
-                fv = win32com.client.VARIANT(
-                    pythoncom.VT_ARRAY | pythoncom.VT_VARIANT, [layer_name]
-                )
-                ss.SelectAll(ft, fv)
-                return [_entity_info(ss.Item(i)) for i in range(ss.Count)]
-            finally:
+            entities = _com_select_filtered(
+                doc, [(8, _wcmatch_literal(layer_name))]
+            )
+            results = []
+            for ent in entities:
                 try:
-                    ss.Delete()
+                    results.append(_entity_info(ent))
                 except Exception as exc:
-                    log.debug("SelectionSet cleanup failed: %s", exc)
+                    log.debug(
+                        "analysis_select_by_layer: skip %s: %s",
+                        getattr(ent, "Handle", "?"),
+                        exc,
+                    )
+            return results
 
         return await self._run(_sync)
 
     async def analysis_select_by_type(self, entity_type) -> list[EntityInfo]:
         def _sync():
-            _acad_doc()
-            mspace = _msp()
+            doc = _acad_doc()
+            entities = _com_select_filtered(
+                doc, [(0, _ssget_type_name(entity_type))]
+            )
             results = []
-            et_upper = entity_type.upper()
-            for i in range(mspace.Count):
+            for ent in entities:
                 try:
-                    ent = mspace.Item(i)
-                    if et_upper == ent.ObjectName.replace("AcDb", "").upper():
-                        results.append(_entity_info(ent))
+                    results.append(_entity_info(ent))
                 except Exception as exc:
-                    log.debug("analysis_select_by_type: skip entity at index %d: %s", i, exc)
-                    continue
+                    log.debug(
+                        "analysis_select_by_type: skip %s: %s",
+                        getattr(ent, "Handle", "?"),
+                        exc,
+                    )
             return results
 
         return await self._run(_sync)
@@ -8070,29 +8114,40 @@ class ComBackend(AutoCADBackend):
     async def system_run_lisp(self, expression) -> dict:
         def _sync():
             doc = _acad_doc()
-            # R23: refuse to send while a command/prompt is active (raw SendCommand
-            # of a prompting form would deadlock the single STA thread). CMDACTIVE
-            # is a document sysvar; read through the Application (which has no
-            # GetVariable) this guard never fired.
+            # R23: refuse while a command/prompt is active.
             if int(doc.GetVariable("CMDACTIVE")):
                 raise RuntimeError(
                     "AutoCAD has an active command/prompt (CMDACTIVE). "
                     "Press ESC in AutoCAD and retry."
                 )
-            # N6: SendCommand is void-returning, so the value can't be read from its
-            # return. Stash it in USERS1 and read it back after the form completes
-            # (CMDACTIVE-polled by _safe_send_command).
-            wrapped = f'(vl-load-com)(setvar "USERS1" (vl-princ-to-string (progn {expression})))'
-            self._safe_send_command(doc, wrapped)
-            try:
-                result = doc.GetVariable("USERS1")
-            except Exception as exc:  # optional read: the expression already ran
-                log.debug("doc.GetVariable(USERS1) failed, reporting nil: %s", exc)
-                result = None
+            # Evaluate through VL.Application.16 (same channel as the
+            # operator-edit counter) — never SendCommand + _safe_send_command.
+            # The old path snapshotted every ModelSpace handle before send
+            # (~52 s on a 35k-entity drawing) and then raised
+            # AttributeError: <unknown>.SendCommand on the narrowed document
+            # proxy (measured AutoCAD 2024 / MCP Pro 1.7.0).
+            app = _acad_app()
+            vl = _vl_application(app)
+            functions = _vl_get(_vl_get(vl, "ActiveDocument"), "Functions")
+            reader = _vl_call(functions, "Item", "read")
+            evaluator = _vl_call(functions, "Item", "eval")
+            # Wrap so the VL result is always a printable string (matches the
+            # old USERS1 + vl-princ-to-string contract agents already expect).
+            source = f"(vl-princ-to-string (progn {expression}))"
+            form = _vl_call(reader, "funcall", source)
+            value = self._wait_out_rejected_call(
+                lambda: _vl_call(evaluator, "funcall", form)
+            )
+            if value is None:
+                rendered = "nil"
+            else:
+                rendered = str(value)
+                if rendered == "":
+                    rendered = "nil"
             return {
                 "ok": True,
                 "expression": expression,
-                "result": str(result) if result not in (None, "") else "nil",
+                "result": rendered,
             }
 
         return await self._run(_sync)
@@ -8360,6 +8415,121 @@ class ComBackend(AutoCADBackend):
 
         return await self._run(_sync)
 
+    async def textstyle_modify(
+        self,
+        name: str,
+        font: str | None = None,
+        height: float | None = None,
+        width_factor: float | None = None,
+        oblique_deg: float | None = None,
+        set_current: bool = False,
+    ) -> dict:
+        """Change font / metrics on an existing text style (ActiveX SetFont / fontFile)."""
+        from engineering.standards.textstyles import validate_textstyle
+
+        if font is None and height is None and width_factor is None and oblique_deg is None:
+            raise ValueError(
+                "textstyle_modify: pass at least one of font, height, width_factor, oblique_deg"
+            )
+
+        def _sync():
+            doc = _acad_doc()
+            style = _com_named(doc.TextStyles, name)
+            if style is None:
+                raise ValueError(
+                    f"textstyle_modify: text style {name!r} does not exist; "
+                    "textstyle_list names the styles this drawing holds"
+                )
+            before = {
+                "font": str(style.fontFile),
+                "height": float(style.Height),
+                "width_factor": float(style.Width),
+                "oblique_deg": rad2deg(float(style.ObliqueAngle)),
+            }
+            # Reuse create validation for any field that is being set.
+            spec = validate_textstyle(
+                str(style.Name),
+                font if font is not None else before["font"] or "arial.ttf",
+                height if height is not None else before["height"],
+                width_factor if width_factor is not None else before["width_factor"],
+                oblique_deg if oblique_deg is not None else before["oblique_deg"],
+            )
+            if font is not None:
+                located = _com_locate_font("font", spec["font_file"])
+                _com_write_font(style, located)
+            if width_factor is not None:
+                style.Width = float(spec["width_factor"])
+            if oblique_deg is not None:
+                style.ObliqueAngle = deg2rad(spec["oblique_deg"])
+            if height is not None:
+                style.Height = float(spec["height"])
+            if set_current:
+                doc.ActiveTextStyle = style
+            after = {
+                "font": str(style.fontFile),
+                "height": float(style.Height),
+                "width_factor": float(style.Width),
+                "oblique_deg": rad2deg(float(style.ObliqueAngle)),
+            }
+            return {
+                "ok": True,
+                "name": str(style.Name),
+                "before": before,
+                "after": after,
+                "current": set_current
+                or str(doc.ActiveTextStyle.Name).lower() == str(style.Name).lower(),
+            }
+
+        return await self._run(_sync)
+
+    async def textstyle_remap_entities(
+        self,
+        from_styles: list[str],
+        to_style: str,
+    ) -> dict:
+        """Retarget TEXT/MTEXT/ATTDEF (and INSERT attributes) from named styles onto ``to_style``."""
+        if not from_styles:
+            raise ValueError("textstyle_remap_entities: from_styles must not be empty")
+
+        def _sync():
+            doc = _acad_doc()
+            target = _com_named(doc.TextStyles, to_style)
+            if target is None:
+                raise ValueError(
+                    f"textstyle_remap_entities: text style {to_style!r} does not exist"
+                )
+            wanted = {name.casefold() for name in from_styles}
+            target_name = str(target.Name)
+            changed: list[dict] = []
+            for entity in _com_text_candidates(doc):
+                object_name = str(entity.ObjectName)
+                if object_name not in _COM_TEXT_OBJECTS:
+                    continue
+                try:
+                    style_name = str(entity.StyleName)
+                except Exception:
+                    continue
+                if style_name.casefold() not in wanted:
+                    continue
+                handle = str(entity.Handle)
+                entity.StyleName = target_name
+                changed.append(
+                    {
+                        "handle": handle,
+                        "type": object_name,
+                        "from_style": style_name,
+                        "to_style": target_name,
+                    }
+                )
+            return {
+                "ok": True,
+                "to_style": target_name,
+                "count": len(changed),
+                "changed": changed,
+            }
+
+        return await self._run(_sync)
+
     async def mleaderstyle_list(self) -> list[dict]:
         def _sync():
             doc = _acad_doc()
@@ -8422,13 +8592,25 @@ class ComBackend(AutoCADBackend):
     # ── corner ops ──────────────────────────────────────────────────────────
 
     @staticmethod
-    def _safe_send_command(doc, cmd: str, deadline_s: float = 8.0) -> list[str]:
+    def _safe_send_command(
+        doc,
+        cmd: str,
+        deadline_s: float = 8.0,
+        *,
+        track_new_handles: bool = False,
+    ) -> list[str]:
         """Send `cmd`, polling CMDACTIVE until the command finishes.
 
         Snap/grid/echo are temporarily zeroed to avoid OSNAP-driven misclicks
         and chatty echoes; everything is restored in the finally block.
-        Returns a list of new entity handles created by the command (empty
-        list for in-place operations like TRIM/EXTEND).
+        Returns a list of new entity handles created by the command when
+        ``track_new_handles`` is True (empty list otherwise, and for
+        in-place operations like TRIM/EXTEND).
+
+        Handle snapshots iterate every ModelSpace entity and cost tens of
+        seconds on large drawings — default off so TRIM/EXTEND/UNDO stay
+        fast. Pass ``track_new_handles=True`` only when the caller needs the
+        diff.
         """
         saved: dict[str, Any] = {}
         try:
@@ -8438,13 +8620,20 @@ class ComBackend(AutoCADBackend):
                     doc.SetVariable(var, 0)
                 except Exception:
                     pass
-            # Snapshot model-space handles (best-effort).
-            try:
-                pre = {e.Handle for e in doc.ModelSpace}
-            except Exception:
-                pre = set()
+            pre: set[str] = set()
+            if track_new_handles:
+                try:
+                    pre = {e.Handle for e in doc.ModelSpace}
+                except Exception:
+                    pre = set()
+            # Prefer a concrete document proxy: after long COM walks a narrowed
+            # wrapper has been observed without SendCommand (AttributeError).
+            send = getattr(doc, "SendCommand", None)
+            if send is None:
+                doc = _com_unnarrow(doc)
+                send = doc.SendCommand
             payload = cmd if cmd.endswith("\n") else cmd + "\n"
-            doc.SendCommand(payload)
+            send(payload)
             deadline = time.monotonic() + float(deadline_s)
             while True:
                 try:
@@ -8455,13 +8644,15 @@ class ComBackend(AutoCADBackend):
                     break
                 if time.monotonic() > deadline:
                     try:
-                        doc.SendCommand("\x1b\x1b\x1b\n")  # ESC×3
+                        send("\x1b\x1b\x1b\n")  # ESC×3
                     except Exception:
                         pass
                     raise RuntimeError(
                         f"AutoCAD command did not finish within {deadline_s:.1f}s: {cmd!r}"
                     )
                 time.sleep(0.05)
+            if not track_new_handles:
+                return []
             try:
                 post = {e.Handle for e in doc.ModelSpace}
             except Exception:
@@ -8762,6 +8953,8 @@ _MUTATING_METHODS: frozenset[str] = frozenset(
         "text_find_replace",
         "text_set_background",
         "textstyle_create",
+        "textstyle_modify",
+        "textstyle_remap_entities",
         "textstyle_set_current",
         "transaction_rollback",
         "ucs_restore",

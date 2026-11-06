@@ -3264,9 +3264,11 @@ async def entity_list(
     result = await b.entity_list(type_filter, layer_filter, capped, offset)
     total = None
     if compact:
-        # Only counted when there is a field to report it in; the default path
-        # must not grow a second full pass over the drawing.
-        total = await b.entity_count(type_filter, layer_filter)
+        # Short page ⇒ we already know the total; skip a second count pass.
+        if len(result) < capped:
+            total = offset + len(result)
+        else:
+            total = await b.entity_count(type_filter, layer_filter)
     elif len(result) >= capped:
         # A full page is the one case where the plain list is indistinguishable
         # from a complete answer. The value cannot say so without breaking the
@@ -8602,6 +8604,52 @@ async def textstyle_set_current(
     carry the style on both engines. Refuses a style the drawing does not
     hold. Returns `previous` and `changed`."""
     return await _backend(ctx).textstyle_set_current(name)
+
+
+@cad_tool(
+    summary="Change the font or metrics of an existing text style (e.g. missing SHX → Arial).",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Styles: Modify Text Style", "readOnlyHint": False},
+    tags={"style", "modify"},
+)
+async def textstyle_modify(
+    name: Annotated[str, "Existing text style name"],
+    font: Annotated[
+        str | None,
+        "New font file or preset (arial.ttf, isocp.shx, …); omit to keep",
+    ] = None,
+    height: Annotated[float | None, "New fixed height; 0 = ask per text; omit to keep"] = None,
+    width_factor: Annotated[float | None, "New width factor; omit to keep"] = None,
+    oblique_deg: Annotated[float | None, "New obliquing angle in degrees; omit to keep"] = None,
+    set_current: Annotated[bool, "Also make it the current text style"] = False,
+    ctx: Context = None,
+) -> dict:
+    """Update an existing STYLE table entry. Live engine uses SetFont for
+    TrueType (same as textstyle_create). Pass at least one field to change."""
+    await ctx.info(f"Modify text style {name!r}")
+    return await _backend(ctx).textstyle_modify(
+        name, font, height, width_factor, oblique_deg, set_current
+    )
+
+
+@cad_tool(
+    summary="Retarget TEXT/MTEXT/attributes from listed styles onto one text style.",
+    cost="mutate",
+)
+@mcp.tool(
+    annotations={"title": "Styles: Remap Text Style On Entities", "readOnlyHint": False},
+    tags={"style", "modify", "text"},
+)
+async def textstyle_remap_entities(
+    from_styles: Annotated[list[str], "Style names to replace (case-insensitive)"],
+    to_style: Annotated[str, "Destination text style that already exists"],
+    ctx: Context = None,
+) -> dict:
+    """Change StyleName on matching TEXT/MTEXT/ATTDEF/ATTRIB entities."""
+    await ctx.info(f"Remap styles {from_styles!r} → {to_style!r}")
+    return await _backend(ctx).textstyle_remap_entities(from_styles, to_style)
 
 
 @cad_tool(
