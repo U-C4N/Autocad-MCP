@@ -8958,6 +8958,118 @@ class EzdxfBackend(AutoCADBackend):
 
         return await self._async(_sync)
 
+    async def textstyle_modify(
+        self,
+        name: str,
+        font: str | None = None,
+        height: float | None = None,
+        width_factor: float | None = None,
+        oblique_deg: float | None = None,
+        set_current: bool = False,
+    ) -> dict:
+        from engineering.standards.textstyles import validate_textstyle
+
+        if font is None and height is None and width_factor is None and oblique_deg is None:
+            raise ValueError(
+                "textstyle_modify: pass at least one of font, height, width_factor, oblique_deg"
+            )
+
+        def _sync():
+            doc = self._require_doc()
+            if not doc.styles.has_entry(name):
+                raise ValueError(
+                    f"textstyle_modify: text style {name!r} does not exist; "
+                    "textstyle_list names the styles this drawing holds"
+                )
+            style = doc.styles.get(name)
+            before = {
+                "font": str(style.dxf.get("font", "") or ""),
+                "height": float(style.dxf.get("height", 0.0) or 0.0),
+                "width_factor": float(style.dxf.get("width", 1.0) or 1.0),
+                "oblique_deg": float(style.dxf.get("oblique", 0.0) or 0.0),
+            }
+            spec = validate_textstyle(
+                style.dxf.name,
+                font if font is not None else before["font"] or "arial.ttf",
+                height if height is not None else before["height"],
+                width_factor if width_factor is not None else before["width_factor"],
+                oblique_deg if oblique_deg is not None else before["oblique_deg"],
+            )
+            if font is not None:
+                style.dxf.font = spec["font_file"]
+            if width_factor is not None:
+                style.dxf.width = spec["width_factor"]
+            if oblique_deg is not None:
+                style.dxf.oblique = spec["oblique_deg"]
+            if height is not None:
+                style.dxf.height = spec["height"]
+            if set_current:
+                doc.header["$TEXTSTYLE"] = style.dxf.name
+            self._mark_dirty()
+            after = {
+                "font": str(style.dxf.get("font", "") or ""),
+                "height": float(style.dxf.get("height", 0.0) or 0.0),
+                "width_factor": float(style.dxf.get("width", 1.0) or 1.0),
+                "oblique_deg": float(style.dxf.get("oblique", 0.0) or 0.0),
+            }
+            return {
+                "ok": True,
+                "name": style.dxf.name,
+                "before": before,
+                "after": after,
+                "current": set_current or style.dxf.name == _current_textstyle_name(doc),
+                "font_resolved": (
+                    spec["known"] or _font_available(spec["font_file"])
+                    if font is not None
+                    else True
+                ),
+            }
+
+        return await self._async(_sync)
+
+    async def textstyle_remap_entities(
+        self, from_styles: list[str], to_style: str
+    ) -> dict:
+        if not from_styles:
+            raise ValueError("textstyle_remap_entities: from_styles must not be empty")
+
+        def _sync():
+            doc = self._require_doc()
+            if not doc.styles.has_entry(to_style):
+                raise ValueError(
+                    f"textstyle_remap_entities: text style {to_style!r} does not exist"
+                )
+            target = doc.styles.get(to_style).dxf.name
+            wanted = {name.casefold() for name in from_styles}
+            changed: list[dict] = []
+            for layout in doc.layouts:
+                for entity in layout:
+                    dxftype = entity.dxftype()
+                    if dxftype not in {"TEXT", "MTEXT", "ATTDEF", "ATTRIB"}:
+                        continue
+                    style_name = str(entity.dxf.get("style", "Standard") or "Standard")
+                    if style_name.casefold() not in wanted:
+                        continue
+                    entity.dxf.style = target
+                    changed.append(
+                        {
+                            "handle": str(entity.dxf.handle),
+                            "type": dxftype,
+                            "from_style": style_name,
+                            "to_style": target,
+                        }
+                    )
+            if changed:
+                self._mark_dirty()
+            return {
+                "ok": True,
+                "to_style": target,
+                "count": len(changed),
+                "changed": changed,
+            }
+
+        return await self._async(_sync)
+
     async def mleaderstyle_list(self) -> list[dict]:
         def _sync():
             doc = self._require_doc()

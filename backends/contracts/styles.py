@@ -110,6 +110,34 @@ class StylesContract(ABC):
         ...
 
     @abstractmethod
+    async def textstyle_modify(
+        self,
+        name: str,
+        font: str | None = None,
+        height: float | None = None,
+        width_factor: float | None = None,
+        oblique_deg: float | None = None,
+        set_current: bool = False,
+    ) -> dict:
+        """Change an existing text style. Returns ``{ok, name, before, after, current}``.
+
+        At least one of ``font`` / ``height`` / ``width_factor`` / ``oblique_deg``
+        is required. Live engine refuses a font AutoCAD cannot open; headless
+        writes the name and reports resolution like ``textstyle_create``.
+        """
+        ...
+
+    @abstractmethod
+    async def textstyle_remap_entities(
+        self, from_styles: list[str], to_style: str
+    ) -> dict:
+        """Retarget TEXT/MTEXT/ATTDEF (and attributes) from ``from_styles`` onto ``to_style``.
+
+        Returns ``{ok, to_style, count, changed}``.
+        """
+        ...
+
+    @abstractmethod
     async def mleaderstyle_list(self) -> list[dict]:
         """``[{name, arrow_size, landing_gap, text_style, text_height, values_available}]``.
 

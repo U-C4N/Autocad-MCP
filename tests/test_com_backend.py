@@ -246,8 +246,19 @@ def test_safe_send_command_timeout_sends_esc():
     assert "\x1b" in calls[-1][0][0]
 
 
+def test_safe_send_command_skips_handle_snapshot_by_default():
+    """Default path must not diff ModelSpace (large drawings timed out here)."""
+    doc = _make_mock_doc(
+        cmdactive_sequence=[0],
+        modelspace_handles_pre={"1A"},
+        modelspace_handles_post={"1A", "1B"},
+    )
+    # Without track_new_handles, new entities are invisible to the return value.
+    assert ComBackend._safe_send_command(doc, "LINE\n") == []
+
+
 def test_safe_send_command_new_handle_detection():
-    """Handles created during the command appear in the return value."""
+    """Handles created during the command appear when track_new_handles=True."""
     pre_handles = {"1A", "1B"}
     post_handles = {"1A", "1B", "1C", "1D"}
     doc = _make_mock_doc(
@@ -255,8 +266,20 @@ def test_safe_send_command_new_handle_detection():
         modelspace_handles_pre=pre_handles,
         modelspace_handles_post=post_handles,
     )
-    result = ComBackend._safe_send_command(doc, "LINE\n")
+    result = ComBackend._safe_send_command(doc, "LINE\n", track_new_handles=True)
     assert set(result) == {"1C", "1D"}
+
+
+def test_no_selectcrossing_api():
+    """Region queries must use Select(crossing mode), never a SelectCrossing call."""
+    import backends.com_backend as cb
+    import inspect
+    import re
+
+    source = inspect.getsource(cb)
+    assert "_AC_SELECTION_SET_CROSSING" in source
+    assert re.search(r"\.SelectCrossing\s*\(", source) is None
+    assert "analysis_entities_in_region" in source
 
 
 # ---------------------------------------------------------------------------
