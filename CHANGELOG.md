@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.8.0] - 2026-11-04
+## [1.8.0] - 2026-11-06
 
 1.8.0: the server remembers, finishes a job in one call and measures itself
 honestly. Nine tools are added (248 -> 257) and two resources (11 -> 13); the
@@ -481,10 +481,13 @@ on the same seat: #17's capture was measured, and then AutoCAD 2026 crashed
 at 14:37:06 on 2026-11-05, four seconds into that probe and after both
 captures had returned - exception 0xc0000374 (heap corruption) in
 ntdll.dll, a signature the seat's event log already shows five times on
-2026-11-04, before that branch existed; the cause is unmeasured. The probes
-for #18 and #20, the attach checks for #19 and this matrix are run again on
-the final tree once the seat is back; until then the pass rows above are
-the `da2d7f6` run.
+2026-11-04, before that branch existed; the cause is unmeasured. The seat
+was not back before the tag, so 1.8.0 ships without them: the probes for #18
+and #20, the attach checks for #19 on a running seat and a matrix run of the
+final tree were **not run**, and the pass rows above are the `da2d7f6` run,
+the tree before the four fixes. Each fix is covered by fake-COM tests; #17's
+main case and #19's refusal with no AutoCAD running are the only parts
+measured live. The rest is 1.8.1's first live job (*Not in 1.8.0*).
 
 **Still not run.** The B40 stage of the mech smoke ran but measured nothing:
 all eight feature tables are empty, so each was skipped. The live `.dwg`
@@ -523,6 +526,20 @@ HATCH loop deletion (spike S4) stay unmeasured.
   it is 1.8.1. `CheckpointStore._evict_budget` scans every lineage folder at
   every checkpoint: 0.2 ms in a fresh store, 41 ms at 656 lineages (measured
   on the maintainer's machine); a cached total is 1.8.1 as well.
+- **The tracker fixes' remaining live checks.** #18 (a full-bleed media read
+  back and its PDF `/MediaBox`), #20 (one export for N reads, measured), #19
+  (attach under both `CAD_LAUNCH` values) and #17 (the unaware fallback, the
+  minimized flag) were not run on a seat before the tag, and neither was the
+  matrix on the final tree; they are 1.8.1's first live job.
+- **Server gaps the README sheets found.** `DIMTDEC` is not in
+  `DIM_VARIABLE_WHITELIST`, so a stacked deviation prints at the style's
+  `DIMDEC` (+0.025 as +0.03; the sheets write the fit in the text instead);
+  `gear_draw_section_aa` draws a section's keyway as a 12 mm notch instead of
+  the full-width groove (the gear sheet redraws it); a headless
+  `dimension_linear` has no text location, so a chain text wider than its gap
+  is drawn over the neighbouring extension lines (four on the plan sheet);
+  and the critique does not report two dimensions on one station or a text
+  over a hatch. All 1.8.1.
 - **1.8.1, from the phases:** batch lease, `confirm_large` and batch budgets;
   `cad_batch` step coalescing; the AutoLISP write tier (`command`, `entmod`,
   `setvar`, `vla-put-*`); `mech_part_revise`'s spec-reconciliation and
