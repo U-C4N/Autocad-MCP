@@ -132,6 +132,34 @@ _RPC_E_CALL_REJECTED = -2147418111
 #: message filter that asks the caller to retry.
 _RPC_E_SERVERCALL_RETRYLATER = -2147417846
 
+#: ``RPC_E_DISCONNECTED``: the proxy's server is gone, so every member of it is
+#: dead. MEASURED in AutoCAD 2026 during the 2026-11-17 telecom-plan session:
+#: after one COM call was abandoned at its deadline while the STA worker was
+#: still inside ``SendCommand``, every later call answered
+#: ``应用程序调用一个已为另一线程整理的接口`` (-2147417848).
+_RPC_E_DISCONNECTED = -2147417848
+
+#: ``RPC_S_SERVER_UNAVAILABLE``: the out-of-process server (acad.exe) exited or
+#: stopped servicing RPC. MEASURED in AutoCAD 2026, same session: after acad.exe
+#: was closed and relaunched, ``GetActiveObject`` was never re-called because the
+#: stale proxy was still cached, so the call answered ``RPC 服务器不可用``
+#: (-2147023174) for as long as the server process lived.
+_RPC_S_SERVER_UNAVAILABLE = -2147023174
+
+#: The HRESULTs that mean *the connection is gone*, not *the call was refused*:
+#: the Application proxy has to be dropped so the next call re-Dispatches in a
+#: live apartment. ``_run`` drops on these, and ``_handle_to_object`` re-raises
+#: them instead of reading them as "handle not found".
+_CONNECTION_LOST = frozenset(
+    {
+        -2147221246,  # CO_E_OBJNOTCONNECTED family: server not connected
+        -2147221005,  # CO_E_CLASSSTRING: the ProgID is not registered
+        -2147417842,  # RPC_E_WRONG_THREAD: the proxy belongs to another apartment
+        _RPC_E_DISCONNECTED,
+        _RPC_S_SERVER_UNAVAILABLE,
+    }
+)
+
 #: How long a refused member lookup is waited out before it is raised as
 #: ``RejectedLookupError``. MEASURED on AutoCAD 2026 (``benchmarks/perf_com.py``,
 #: 2026-11-04): in a 5,000-line drawing the ``SendCommand`` lookup of one
@@ -836,19 +864,9 @@ def _acad_doc():
 
 #: HRESULTs ``HandleToObject`` may answer that are about the connection, not
 #: the handle: the call was refused or the server went away, so the handle is
-#: not known to be missing. The three ``ComBackend._run`` drops the
-#: Application proxy on, plus RPC_E_CALL_REJECTED, RPC_E_DISCONNECTED
-#: (0x80010108) and RPC_S_SERVER_UNAVAILABLE (0x800706BA).
-_NOT_A_HANDLE_ANSWER = frozenset(
-    {
-        _RPC_E_CALL_REJECTED,
-        -2147221246,
-        -2147221005,
-        -2147417842,
-        -2147417848,
-        -2147023174,
-    }
-)
+#: not known to be missing. The same ``_CONNECTION_LOST`` set ``_run`` drops the
+#: Application proxy on, plus RPC_E_CALL_REJECTED (a live-but-busy server).
+_NOT_A_HANDLE_ANSWER = frozenset({_RPC_E_CALL_REJECTED}) | _CONNECTION_LOST
 
 
 def _handle_to_object(doc, handle):
@@ -4122,7 +4140,7 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
             ) from e
         except _COM_ERROR as e:
             hr = e.args[0] if e.args else 0
-            if hr in (-2147221246, -2147221005, -2147417842):
+            if hr in _CONNECTION_LOST:
                 _drop_app()
                 self._connected = False
             message = f"AutoCAD COM error ({hr:#010x}): {e.args[1] if len(e.args) > 1 else e}"
