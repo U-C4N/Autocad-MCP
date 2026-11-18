@@ -405,6 +405,52 @@ class CommandIncompleteError(RuntimeError):
         )
 
 
+class LispRuntimeError(RuntimeError):
+    """An AutoLISP expression raised, so there is no value to report (1.8-24).
+
+    ``message`` is AutoCAD's own ``vl-catch-all-error-message``, verbatim (it
+    is localised). ``expression`` is what was sent.
+
+    Before 1.8-24 this outcome was reported as ``result: nil`` or - worse - as
+    the *previous* call's value: the expression's value was stashed in the
+    ``USERS1`` sysvar, and an expression that raised never reached the
+    ``setvar``, so the read returned whatever an earlier call had left there.
+    ``USERS1`` is a document variable: nothing reset it between calls.
+    """
+
+    kind = "lisp_runtime_error"
+    retryable = False
+
+    def __init__(self, expression: str, message: str | None):
+        self.expression = str(expression)
+        self.lisp_message = None if message is None else str(message)
+        detail = "" if self.lisp_message is None else f" AutoCAD said: {self.lisp_message}"
+        super().__init__(
+            f"The LISP expression raised, so it has no value: {self.expression!r}.{detail}"
+        )
+
+
+class LispNotExecutedError(RuntimeError):
+    """The expression was sent but never started (1.8-24).
+
+    The sentinel written just before the expression was still in ``USERS1``
+    when it was read back, which means the form did not run at all - an
+    unbalanced expression that AutoCAD refused, or a seat that swallowed the
+    input. Distinct from :class:`LispRuntimeError`: nothing was evaluated, so
+    nothing was written either.
+    """
+
+    kind = "lisp_not_executed"
+    retryable = False
+
+    def __init__(self, expression: str):
+        self.expression = str(expression)
+        super().__init__(
+            "The LISP expression never ran (its sentinel was still in USERS1 "
+            f"after it was sent): {self.expression!r}. Nothing was evaluated."
+        )
+
+
 class GateFailure(ToolError):
     """``drawing_finalize``'s gate failed; ``payload`` is what it computed.
 
@@ -904,6 +950,8 @@ def classify(exc: BaseException) -> dict:
         EntityNotFoundError,
         InvalidArgsError,
         DimensionRenderError,
+        LispRuntimeError,
+        LispNotExecutedError,
     ):
         found = _first_of(exc, typed)
         if found is not None:

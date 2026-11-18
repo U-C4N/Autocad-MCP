@@ -258,3 +258,102 @@ async def test_offset_picks_copy_nearest_side_point(monkeypatch):
     assert kept is neg_copy
     pos_copy.Delete.assert_called_once()
     neg_copy.Delete.assert_not_called()
+
+
+# ── 1.8-24 — a raised expression must not return the previous call's value ───
+
+
+class _TaggingDoc(_Doc):
+    """Emulates the tagged-outcome contract the wrapper now relies on.
+
+    ``outcome`` says what AutoCAD would leave in USERS1: ``"ok"`` writes the
+    OK: tag, ``"err"`` the ERR: tag, and ``None`` leaves the sentinel that the
+    wrapper wrote first (the form never ran).
+    """
+
+    def __init__(self, outcome, value="3", message="error: bad argument type"):
+        super().__init__()
+        self.outcome = outcome
+        self.value = value
+        self.message = message
+        self._sentinel = None
+
+    def SendCommand(self, cmd):
+        self.sent.append(cmd)
+        # The wrapper's first act is `(setvar "USERS1" "!PENDING:...")`, and a
+        # form that raises never reaches a later setvar - so the sentinel is
+        # what USERS1 holds afterwards.
+        marker = 'setvar "USERS1" "'
+        if marker in cmd:
+            start = cmd.index(marker) + len(marker)
+            self._sentinel = cmd[start:cmd.index('"', start)]
+            assert self._sentinel.startswith("!PENDING:"), self._sentinel
+            self._vars["USERS1"] = self._sentinel
+        if self.outcome == "ok":
+            self._vars["USERS1"] = f"OK:{self.value}"
+        elif self.outcome == "err":
+            self._vars["USERS1"] = f"ERR:{self.message}"
+        # None: leave the sentinel in place.
+
+    def GetVariable(self, name):
+        # _safe_send_command zeroes OSMODE/SNAPMODE/CMDECHO and restores them;
+        # USERS1 must answer with what SendCommand left, never with 0.
+        if name == "USERS1":
+            return self._vars.get("USERS1", "")
+        return self._vars.get(name, 0)
+
+
+async def test_run_lisp_returns_the_value_a_raised_form_never_had(monkeypatch):
+    """The regression: USERS1 is a *document* variable, so an expression that
+    raised used to hand back whatever the previous call left there."""
+    doc = _TaggingDoc("err")
+    monkeypatch.setattr(cb, "_acad_app", lambda: _App())
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
+
+    b = _backend_no_executor()
+    with pytest.raises(cb.LispRuntimeError) as info:
+        await b.system_run_lisp('(vla-get-Rows (vlax-ename->vla-object (handent "ZZZZZ")))')
+
+    assert info.value.kind == "lisp_runtime_error"
+    assert "bad argument type" in str(info.value)
+    assert info.value.retryable is False
+
+
+async def test_run_lisp_ok_value_is_unwrapped(monkeypatch):
+    doc = _TaggingDoc("ok", value="3")
+    monkeypatch.setattr(cb, "_acad_app", lambda: _App())
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
+
+    b = _backend_no_executor()
+    out = await b.system_run_lisp("(+ 1 2)")
+
+    assert out["result"] == "3", "the OK: tag is stripped, the value is kept"
+
+
+async def test_run_lisp_sentinel_means_the_form_never_ran(monkeypatch):
+    doc = _TaggingDoc(None)
+    monkeypatch.setattr(cb, "_acad_app", lambda: _App())
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
+
+    b = _backend_no_executor()
+    with pytest.raises(cb.LispNotExecutedError):
+        await b.system_run_lisp("(progn (+ 1 2)")
+
+    # The wrapper wrote the sentinel before the expression: one send, tagged.
+    assert len(doc.sent) == 1
+    assert '!PENDING:' in doc.sent[0]
+    assert "vl-catch-all-apply" in doc.sent[0]
+
+
+async def test_run_lisp_wrapper_tags_ok_and_err(monkeypatch):
+    """The sent string itself carries both tags, or the outcome is unreadable."""
+    doc = _TaggingDoc("ok")
+    monkeypatch.setattr(cb, "_acad_app", lambda: _App())
+    monkeypatch.setattr(cb, "_acad_doc", lambda: doc)
+
+    b = _backend_no_executor()
+    await b.system_run_lisp("(+ 1 2)")
+
+    sent = doc.sent[0]
+    assert "vl-catch-all-error-p" in sent
+    assert '"ERR:"' in sent and '"OK:"' in sent
