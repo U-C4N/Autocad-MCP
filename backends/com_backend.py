@@ -2046,6 +2046,83 @@ def _com_delete_quietly(obj, what: str) -> None:
         log.warning("could not remove half-made %s: %s", what, exc)
 
 
+#: Fonts that carry a CJK coverage, strongest first. A TABLE cell takes its
+#: text style per cell (``SetCellTextStyle``) and AddTable leaves every cell on
+#: ``Standard`` - whose ``txt.shx`` has no CJK glyph at all, so a Chinese cell
+#: is written but draws as nothing. Any of these has the glyphs.
+_CJK_FONT_FILES: tuple[str, ...] = (
+    "simhei.ttf",
+    "simsun.ttc",
+    "msyh.ttc",
+    "simkai.ttf",
+    "simfang.ttf",
+)
+
+#: The text style this module creates when a table needs one and the drawing
+#: has none it can reuse.
+_CJK_STYLE_NAME = "MCP-CJK"
+
+
+def _com_needs_cjk_style(cells) -> bool:
+    """True when any cell holds a character ``txt.shx`` cannot draw.
+
+    ASCII is safe on ``Standard``; everything else needs a CJK-capable face.
+    ``m²`` / ``Ø`` / ``±`` / ``°`` are in that set too - the SHX shape file
+    has no glyph for them either (measured: a schedule's ``288.0 m²`` drew as
+    ``288.0 m``).
+    """
+    for row in cells:
+        for value in row:
+            if any(ord(ch) > 0x7F for ch in str(value)):
+                return True
+    return False
+
+
+def _com_cell_textstyle_name(doc) -> str | None:
+    """Name of a text style whose font can draw CJK, creating one if needed.
+
+    Reuses an existing style first - the operator may already have made one
+    (``textstyle_create(name="CN", font="simhei.ttf")``) and pointing the table
+    at it keeps one style in the drawing instead of two. Returns ``None`` when
+    no CJK font is present on this seat: the caller then leaves the cells on
+    ``Standard`` rather than failing the whole table.
+    """
+    try:
+        count = int(doc.TextStyles.Count)
+    except Exception:
+        return None
+    # Reuse: a style whose font file is one of the CJK faces.
+    for index in range(count):
+        try:
+            style = doc.TextStyles.Item(index)
+            font_file = str(getattr(style, "fontFile", "") or "")
+        except Exception:
+            continue
+        if font_file.lower() in {f.lower() for f in _CJK_FONT_FILES}:
+            return str(style.Name)
+    # Create: the first CJK face this seat actually has.
+    for font_file in _CJK_FONT_FILES:
+        try:
+            _com_locate_font("table cell style", font_file)
+        except Exception:
+            continue
+        try:
+            _com_create_textstyle(
+                doc,
+                _CJK_STYLE_NAME,
+                font_file,
+                width=1.0,
+                oblique_deg=0.0,
+                height=0.0,
+                key="table cell style",
+            )
+        except Exception as exc:
+            log.debug("could not create the CJK table style (%s): %s", font_file, exc)
+            continue
+        return _CJK_STYLE_NAME
+    return None
+
+
 def _com_create_textstyle(
     doc, name: str, font_file: str, *, width: float, oblique_deg: float, height: float, key: str
 ):
@@ -7468,11 +7545,36 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
             # (the old `table.TextHeight = h` raised and was swallowed, leaving
             # the Standard style's 6.0 / 4.5 - illegible at 1:50). The member
             # is SetCellTextHeight(row, col, h), set per cell.
+            #
+            # 1.8-24: a cell created by AddTable is on the `Standard` text
+            # style, and SetCellTextStyle - not the AcDbText StyleName - is what
+            # a cell follows. `Standard` is txt.shx, which has no CJK glyph, so
+            # a Chinese cell was written and drew as nothing (measured: the
+            # style read back as `None` and the DXF cell carried style=None).
+            # The cells are pointed at a CJK-capable style when the text needs
+            # one; ASCII-only tables keep `Standard`, exactly as before.
+            cell_style = None
+            if _com_needs_cjk_style(layout.cells):
+                cell_style = _com_cell_textstyle_name(_acad_doc())
+                if cell_style is None:
+                    log.warning(
+                        "table contains non-ASCII text but this AutoCAD has no CJK font "
+                        "(%s); the cells stay on Standard and may draw blank",
+                        ", ".join(_CJK_FONT_FILES),
+                    )
             for row_index, row in enumerate(layout.cells):
                 table.SetRowHeight(row_index, layout.row_height)
                 for column_index, value in enumerate(row):
                     table.SetText(row_index, column_index, value)
                     table.SetCellTextHeight(row_index, column_index, layout.text_height)
+                    # A cell created by AddTable is top-aligned, so a value sits
+                    # on the cell's upper edge and reads as "floating above" its
+                    # row. MEASURED on AutoCAD 2026: SetCellAlignment(row, col, 5)
+                    # is acMiddleCenter, which centres the text both ways and is
+                    # what a schedule is read as.
+                    table.SetCellAlignment(row_index, column_index, 5)
+                    if cell_style is not None:
+                        table.SetCellTextStyle(row_index, column_index, cell_style)
             _apply_entity_attrs(table, layer, None, None)
             _attach_xdata(table, prepared)
             _regen(table)

@@ -196,6 +196,14 @@ class _MeasuredTable:
         self._heights = {
             (r, c): (6.0 if r == 0 else 4.5) for r in range(rows) for c in range(columns)
         }
+        # MEASURED on AutoCAD 2026 (2026-11-18): AddTable leaves every cell
+        # top-aligned; SetCellAlignment(row, col, 5) is acMiddleCenter.
+        self._alignments = {
+            (r, c): 1 for r in range(rows) for c in range(columns)   # 1 = acTopLeft
+        }
+        self._styles = {
+            (r, c): "Standard" for r in range(rows) for c in range(columns)
+        }
 
     def __setattr__(self, name, value):
         if name == "TextHeight":
@@ -216,6 +224,18 @@ class _MeasuredTable:
 
     def GetCellTextHeight(self, row, column):
         return self._heights[(row, column)]
+
+    def SetCellAlignment(self, row, column, alignment):
+        self._alignments[(row, column)] = int(alignment)
+
+    def GetCellAlignment(self, row, column):
+        return self._alignments[(row, column)]
+
+    def SetCellTextStyle(self, row, column, name):
+        self._styles[(row, column)] = str(name)
+
+    def GetCellTextStyle(self, row, column):
+        return self._styles[(row, column)]
 
 
 async def test_com_table_sets_every_cell_text_height_through_the_measured_member():
@@ -252,3 +272,90 @@ async def test_com_table_sets_every_cell_text_height_through_the_measured_member
         for row in range(table.Rows)
         for column in range(table.Columns)
     } == {(row, column): 125.0 for row in range(3) for column in range(2)}
+
+
+# ── 1.8-24 — every cell centred; a non-ASCII table gets a CJK cell style ─────
+
+
+async def _make_table(backend, rows, headers=None, title=None):
+    """Run entity_create_table against _MeasuredTable; return the table it made."""
+    async def run_inline(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    backend._run = run_inline
+    mspace = MagicMock()
+    made: list[_MeasuredTable] = []
+
+    def add_table(_point, rows_, columns, _row_height, _column_width):
+        made.append(_MeasuredTable(rows_, columns))
+        return made[-1]
+
+    mspace.AddTable.side_effect = add_table
+    info = EntityInfo("A1", "ACAD_TABLE", "TEXT", 256, "ByLayer", True, {})
+    with (
+        patch("backends.com_backend._msp", return_value=mspace),
+        patch("backends.com_backend._apoint", side_effect=lambda *p: tuple(p)),
+        patch("backends.com_backend._entity_info", return_value=info),
+        patch("backends.com_backend._apply_entity_attrs"),
+        patch("backends.com_backend._regen"),
+    ):
+        await backend.entity_create_table(0, 50, rows, headers=headers, title=title)
+    (table,) = made
+    return table
+
+
+async def test_every_cell_is_middle_centred():
+    """AddTable leaves cells top-aligned; 5 is acMiddleCenter."""
+    table = await _make_table(ComBackend(), [["A", "1"]], headers=["Name", "Qty"], title="BOM")
+
+    assert {
+        (row, column): table.GetCellAlignment(row, column)
+        for row in range(table.Rows)
+        for column in range(table.Columns)
+    } == {(row, column): 5 for row in range(3) for column in range(2)}
+
+
+async def test_ascii_table_keeps_the_standard_cell_style():
+    """A CJK style must not be forced on a table that has no CJK text."""
+    table = await _make_table(ComBackend(), [["A", "1"]], headers=["Name", "Qty"])
+
+    assert {
+        table.GetCellTextStyle(r, c) for r in range(table.Rows) for c in range(table.Columns)
+    } == {"Standard"}
+
+
+async def test_non_ascii_table_points_its_cells_at_a_cjk_style():
+    """A Chinese cell on Standard (txt.shx) draws as nothing: cells follow
+    SetCellTextStyle, not the AcDbText StyleName."""
+    with (
+        patch("backends.com_backend._acad_doc", return_value=MagicMock()),
+        patch("backends.com_backend._com_cell_textstyle_name", return_value="CN"),
+    ):
+        table = await _make_table(ComBackend(), [["通信机房", "100 柜"]], headers=["名称", "数量"])
+
+    assert {
+        table.GetCellTextStyle(r, c) for r in range(table.Rows) for r in range(0, 1)
+        for c in range(table.Columns)
+    } == {"CN"}
+
+
+async def test_non_ascii_table_warns_and_keeps_standard_when_no_cjk_font():
+    """A seat without a CJK face still writes the table - it just cannot draw it."""
+    with (
+        patch("backends.com_backend._acad_doc", return_value=MagicMock()),
+        patch("backends.com_backend._com_cell_textstyle_name", return_value=None),
+    ):
+        table = await _make_table(ComBackend(), [["通信机房", "1"]])
+
+    assert {
+        table.GetCellTextStyle(r, c) for r in range(table.Rows) for c in range(table.Columns)
+    } == {"Standard"}
+
+
+async def test_needs_cjk_style_detects_non_ascii_only():
+    from backends.com_backend import _com_needs_cjk_style
+
+    assert _com_needs_cjk_style([["GPU", "12 kW"]]) is False
+    assert _com_needs_cjk_style([["GPU 机柜"]]) is True
+    assert _com_needs_cjk_style([["288.0 m²"]]) is True, "superscript 2 needs the same face"
+    assert _com_needs_cjk_style([["Ø40"]]) is True
