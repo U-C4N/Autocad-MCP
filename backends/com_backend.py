@@ -33,6 +33,8 @@ from engineering.errors import (
     CadNotRunningError,
     CommandIncompleteError,
     EntityNotFoundError,
+    LispNotExecutedError,
+    LispRuntimeError,
     classify,
 )
 from engineering.measure import is_self_intersecting, polygon_area_perimeter
@@ -10328,17 +10330,47 @@ class ComBackend(ComCheckpoints, AutoCADBackend):
             # N6: SendCommand is void-returning, so the value can't be read from its
             # return. Stash it in USERS1 and read it back after the form completes
             # (CMDACTIVE-polled by _safe_send_command).
-            wrapped = f'(vl-load-com)(setvar "USERS1" (vl-princ-to-string (progn {expression})))'
+            #
+            # 1.8-24: USERS1 is a *document* variable that persists across calls.
+            # Before this version an expression that raised never reached the
+            # `setvar` (an AutoLISP error aborts the enclosing form), so the read
+            # returned whatever an earlier call had left behind - a silent stale
+            # answer that looked like a real result. MEASURED on AutoCAD 2026
+            # (2026-11-18): `(progn (car nil) (vla-get-Rows ...))` returned the
+            # previous call's string.
+            #
+            # The value now goes out tagged, and a sentinel is written first, so
+            # three outcomes are distinguishable:
+            #   OK:<value>      the expression returned
+            #   ERR:<message>   the expression raised (vl-catch-all-apply)
+            #   <sentinel>      the form never ran at all
+            sentinel = f"!PENDING:{uuid.uuid4().hex[:16]}"
+            wrapped = (
+                f'(vl-load-com)(setvar "USERS1" "{sentinel}")'
+                f'(setq *mcp-lisp-r* (vl-catch-all-apply (quote (lambda () (progn {expression})))))'
+                '(if (vl-catch-all-error-p *mcp-lisp-r*)'
+                '  (setvar "USERS1" (strcat "ERR:" (vl-catch-all-error-message *mcp-lisp-r*)))'
+                '  (setvar "USERS1" (strcat "OK:" (vl-princ-to-string *mcp-lisp-r*))))'
+            )
             self._safe_send_command(doc, wrapped)
             try:
                 result = doc.GetVariable("USERS1")
-            except Exception as exc:  # optional read: the expression already ran
+            except Exception as exc:  # the expression ran; only the read failed
                 log.debug("doc.GetVariable(USERS1) failed, reporting nil: %s", exc)
                 result = None
+            raw = "" if result is None else str(result)
+            if raw == sentinel:
+                raise LispNotExecutedError(expression)
+            if raw.startswith("ERR:"):
+                raise LispRuntimeError(expression, raw[4:])
+            if raw.startswith("OK:"):
+                raw = raw[3:]
+            # A seat that echoed nothing back (no tag, not the sentinel) keeps the
+            # 1.7 reading rather than inventing a failure.
             return {
                 "ok": True,
                 "expression": expression,
-                "result": str(result) if result not in (None, "") else "nil",
+                "result": raw if raw != "" else "nil",
             }
 
         return await self._run(_sync)
